@@ -711,6 +711,97 @@ async function consolidateUser(userId, opts = {}) {
     return { before, after: before - removedIds.length, merged: removedIds.length, clusters: plan.length, merges };
 }
 
+// Merge DUPLICATE experience recipes within an activity. Procedures are keyed by
+// activity and may hold a few variants (MAX_ACTIVITY_VARIANTS), but near-identical
+// recipes for the same activity are just dups. For each activity, cluster its
+// procedures by embedding cosine and merge each cluster into its strongest member
+// — strongest = most reinforced (count), then most efficient (fewest bestSteps),
+// then most recent. The winner ABSORBS the losers' counts (experience depth is
+// preserved, not lost), and we enforce ≤ MAX_ACTIVITY_VARIANTS survivors.
+async function consolidateProcedures(userId, opts = {}) {
+    const { apply = true, minSem = CONSOLIDATE_SEM } = opts;
+    const list = await listMemories(userId);
+    const procs = list.filter((m) => m.type === 'procedure' && !m.pinned);
+    const byId = new Map(procs.map((m) => [m.id, m]));
+    const byActivity = new Map();
+    for (const p of procs) {
+        const a = p.activity || 'unknown';
+        if (!byActivity.has(a)) byActivity.set(a, []);
+        byActivity.get(a).push(p);
+    }
+    const stronger = (a, b) =>
+        ((b.count || 1) - (a.count || 1))
+        || ((a.bestSteps || a.steps || 999) - (b.bestSteps || b.steps || 999))
+        || (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || '');
+
+    const plan = [];                 // { winner, losers }
+    for (const [, group] of byActivity) {
+        if (group.length < 2) continue;
+        // Union-find by cosine within this activity (same-activity dups merge;
+        // genuinely-distinct tool paths stay separate).
+        const parent = new Map(group.map((m) => [m.id, m.id]));
+        const find = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; } return r; };
+        for (const m of group) {
+            let res = null;
+            try { res = await memoryIndex.search(userId, String(m.text || ''), 8); } catch (_) { res = null; }
+            if (!res || !res.scores) continue;
+            for (const [otherId, score] of res.scores) {
+                if (otherId === m.id || score < minSem) continue;
+                const o = byId.get(otherId);
+                if (!o || (o.activity || 'unknown') !== (m.activity || 'unknown')) continue;
+                const ra = find(m.id), rb = find(otherId);
+                if (ra !== rb) parent.set(ra, rb);
+            }
+        }
+        const clusters = new Map();
+        for (const m of group) { const r = find(m.id); if (!clusters.has(r)) clusters.set(r, []); clusters.get(r).push(m); }
+        let survivors = [];
+        for (const members of clusters.values()) {
+            members.sort(stronger);
+            survivors.push(members[0]);
+            if (members.length > 1) plan.push({ winner: members[0], losers: members.slice(1) });
+        }
+        // Enforce the variant cap: if too many DISTINCT recipes survive, fold the
+        // weakest into the strongest survivor.
+        if (survivors.length > MAX_ACTIVITY_VARIANTS) {
+            survivors.sort(stronger);
+            const keep = survivors.slice(0, MAX_ACTIVITY_VARIANTS);
+            const excess = survivors.slice(MAX_ACTIVITY_VARIANTS);
+            plan.push({ winner: keep[0], losers: excess });
+        }
+    }
+
+    const merges = plan.map((p) => ({ keep: `${p.winner.activity} ·×${p.winner.count || 1}`, dropped: p.losers.map((l) => `${l.activity} ·×${l.count || 1}`) }));
+    if (!apply || !plan.length) {
+        return { before: procs.length, merged: apply ? 0 : plan.reduce((n, p) => n + p.losers.length, 0), groups: plan.length, merges };
+    }
+    const removedIds = [];
+    const touched = [];
+    await mutateUser(userId, (l) => {
+        const idx = new Map(l.map((m) => [m.id, m]));
+        for (const p of plan) {
+            const w = idx.get(p.winner.id);
+            if (!w) continue;
+            for (const lz of p.losers) {
+                w.count = (w.count || 1) + (lz.count || 1);                       // absorb experience depth
+                if ((lz.bestSteps || Infinity) < (w.bestSteps || Infinity)) w.bestSteps = lz.bestSteps;
+                const kw = new Set([...(w.keywords || []), ...(lz.keywords || [])]);
+                w.keywords = Array.from(kw).slice(0, 40);
+                removedIds.push(lz.id);
+            }
+            if ((w.count || 1) >= 3 && w.impact !== 'important') w.impact = 'important';  // mirrors auto-promote
+            w.title = deriveMemoryTitle(w);
+            w.updatedAt = nowIso();
+            touched.push({ ...w });
+        }
+        const drop = new Set(removedIds);
+        for (let i = l.length - 1; i >= 0; i--) if (drop.has(l[i].id)) l.splice(i, 1);
+    });
+    for (const rec of touched) memoryIndex.upsert(userId, rec).catch(() => {});
+    if (removedIds.length) memoryIndex.removeMany(userId, removedIds).catch(() => {});
+    return { before: procs.length, merged: removedIds.length, groups: plan.length, merges };
+}
+
 async function countForUser(userId) {
     const list = await listMemories(userId);
     return list.length;
@@ -1097,6 +1188,7 @@ module.exports = {
     clearMemories,
     addAutoMemories,
     consolidateUser,
+    consolidateProcedures,
     upsertModelLearning,
     upsertActivityMemory,
     normalizeActivity,

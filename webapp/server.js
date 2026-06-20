@@ -22460,11 +22460,51 @@ app.post('/api/memories', requireAuth, async (req, res) => {
     }
 });
 
+// Prune "scratch" facts — auto-extracted FACTS that aren't durable memories
+// about the user but one-off conversation leftovers (task-specific state, "since
+// I don't have the file…", transient context). The local model judges each in
+// batches; only AUTO, non-pinned, non-procedure facts are eligible, so manual
+// entries / preferences / experience are never at risk. Conservative: drops only
+// what the model explicitly flags; no model running → no-op.
+async function pruneScratchFacts(userId, { apply }) {
+    const all = await memoryService.listMemories(userId);
+    const facts = all.filter(m => m.source === 'auto' && (m.type || 'fact') === 'fact' && !m.pinned);
+    if (!facts.length) return { candidates: 0, dropped: 0, sample: [] };
+    let running = false;
+    for (const inst of modelInstances.values()) if (inst.status === 'running') { running = true; break; }
+    if (!running) return { candidates: facts.length, dropped: 0, sample: [], note: 'no model running — skipped' };
+
+    const SYS = 'You audit stored long-term "memories". KEEP durable facts about the USER: identity, life, work, projects, environment, accounts, tools, and RECURRING interests or domains they engage with repeatedly (e.g. a security-analysis topic they keep returning to — keep these even when phrased "the user is interested in …"). DROP only: (a) a ONE-OFF task they asked about once ("looking for streaming sites for movie X", "renting a hand truck"); (b) transient session state / scratch ("since I don\'t have the file…", "the SVG isn\'t on disk", a single past artifact\'s byte size); (c) a specific date/time or live-news item; (d) content the ASSISTANT produced (article quotes, code/templates, citations, news write-ups). When unsure whether an interest is durable or one-off, KEEP it. Reply with ONLY a JSON array of the item NUMBERS to DROP. If none, reply [].';
+    const drop = new Set();
+    const CHUNK = 25;
+    for (let i = 0; i < facts.length; i += CHUNK) {
+        const batch = facts.slice(i, i + CHUNK);
+        const numbered = batch.map((m, j) => `${j + 1}. ${m.text}`).join('\n');
+        let raw;
+        try {
+            raw = await Promise.race([
+                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220 }),
+                new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('prune timeout')), 25000); if (t.unref) t.unref(); }),
+            ]);
+        } catch (_) { continue; }                            // batch failed → keep this batch
+        const stripped = String(raw || '').replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '');
+        const m = stripped.match(/\[[\s\S]*?\]/);
+        if (!m) continue;
+        let arr; try { arr = JSON.parse(m[0]); } catch (_) { continue; }
+        if (!Array.isArray(arr)) continue;
+        for (const n of arr) { const idx = Number(n) - 1; if (idx >= 0 && batch[idx]) drop.add(batch[idx].id); }
+    }
+    const dropIds = [...drop];
+    const sample = facts.filter(f => drop.has(f.id)).slice(0, 15).map(f => (f.text || '').slice(0, 85));
+    if (apply) { for (const id of dropIds) { try { await memoryService.deleteMemory(id); } catch (_) { /* continue */ } } }
+    return { candidates: facts.length, dropped: dropIds.length, sample };
+}
+
 // Maintenance: clean junk + consolidate near-duplicates for the CALLER'S OWN
 // account. Dry-run by default (apply:false) → returns what WOULD change so the
 // user can review before committing. apply:true performs it. Owner-scoped via
 // memAccountId — never touches another account's memories.
-//   body: { apply?: boolean=false, llm?: boolean=true }
+//   body: { apply?, llm?, minSem?, mergeProcedures?, pruneScratch? }
 app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
     try {
         const userId = memAccountId(req);
@@ -22506,22 +22546,46 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
 
         const consol = await memoryService.consolidateUser(userId, { apply, mergeText, ...(minSem ? { minSem } : {}) });
 
+        // 3) PROCEDURE merge (opt-in) — collapse same-activity duplicate recipes.
+        const procResult = req.body?.mergeProcedures
+            ? await memoryService.consolidateProcedures(userId, { apply, ...(minSem ? { minSem } : {}) })
+            : null;
+
+        // 4) SCRATCH-FACT prune (opt-in, LLM judges durable-vs-one-off).
+        const pruneResult = req.body?.pruneScratch
+            ? await pruneScratchFacts(userId, { apply })
+            : null;
+
+        const removedCount = junk.length
+            + (consol.merged || consol.merges.reduce((n, x) => n + x.dropped.length, 0))
+            + (procResult ? (procResult.merged || procResult.merges.reduce((n, x) => n + x.dropped.length, 0)) : 0)
+            + (pruneResult ? pruneResult.dropped : 0);
         const after = apply
-            ? await memoryService.countForUser(userId).catch(() => before - junk.length - consol.merged)
+            ? await memoryService.countForUser(userId).catch(() => before - removedCount)
             : before;                                        // dry-run: store unchanged
-        const projected = before - junk.length - (consol.merged || consol.merges.reduce((n, x) => n + x.dropped.length, 0));
 
         res.json({
             apply,
             before,
             after: apply ? after : undefined,
-            projectedAfter: apply ? undefined : projected,
+            projectedAfter: apply ? undefined : before - removedCount,
             junk: { count: junk.length, sample: junkSample },
             consolidation: {
                 clusters: consol.clusters,
                 merged: apply ? consol.merged : consol.merges.reduce((n, x) => n + x.dropped.length, 0),
                 sample: consol.merges.slice(0, 10),
             },
+            procedures: procResult ? {
+                groups: procResult.groups,
+                merged: apply ? procResult.merged : procResult.merges.reduce((n, x) => n + x.dropped.length, 0),
+                sample: procResult.merges.slice(0, 10),
+            } : undefined,
+            scratchPrune: pruneResult ? {
+                candidates: pruneResult.candidates,
+                dropped: pruneResult.dropped,
+                note: pruneResult.note,
+                sample: pruneResult.sample,
+            } : undefined,
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
