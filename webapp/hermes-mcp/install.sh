@@ -267,10 +267,46 @@ fi
 
 npm config set strict-ssl false >/dev/null 2>&1 || true
 mkdir -p "$MCP_DIR"
+
+# Print actionable guidance for a rejected bearer key. $1 = HTTP code,
+# $2 = path to the saved response body (may contain the server's JSON error).
+auth_hint() {
+    local code="$1" body="$2"
+    err "HTTP $code from the server — the bearer key was rejected."
+    if [ "$code" = "401" ]; then
+        err "  401 Unauthorized. The Authorization header didn't pass auth. Check that:"
+        err "    • the key is a *Bearer Only* key (API Keys tab → 'Bearer Only' flag);"
+        err "      a standard key+secret pair is NOT accepted as a Bearer token."
+        err "    • the key is Active (not disabled/revoked)."
+        err "    • MODELSERVER_API_KEY is set in THIS shell with no stray spaces/newline:"
+        err "        export MODELSERVER_API_KEY=<your-bearer-key>"
+        err "    • you're hitting the right host: $BASE_URL"
+    elif [ "$code" = "403" ]; then
+        err "  403 Forbidden — the key authenticated but lacks the 'agents' permission."
+        err "  Edit the key in the API Keys tab and grant 'agents'."
+    fi
+    if [ -n "$body" ] && [ -s "$body" ]; then
+        err "  server said: $(head -c 300 "$body" | tr -d '\n')"
+    fi
+}
+
 fetch_file() {
     local file="$1"
-    curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
-        "$BASE_URL/api/hermes/files/$file" -o "$MCP_DIR/$file"
+    local out="$MCP_DIR/$file"
+    local code
+    # No -f: we want to read the error BODY/STATUS on failure (a -f'd curl
+    # exits silently on 401, which is exactly what hides auth problems).
+    # -w prints the HTTP status to stdout; the body goes to -o.
+    code=$(curl -sSk -w '%{http_code}' \
+        -H "Authorization: Bearer $MODELSERVER_API_KEY" \
+        "$BASE_URL/api/hermes/files/$file" -o "$out" 2>/dev/null)
+    if [ "$code" = "200" ]; then
+        return 0
+    fi
+    err "Download of '$file' failed."
+    auth_hint "$code" "$out"
+    rm -f "$out"
+    return 1
 }
 fetch_file modelserver-mcp.mjs || { err "Failed to download modelserver-mcp.mjs"; exit 1; }
 fetch_file configure.mjs       || { err "Failed to download configure.mjs";       exit 1; }

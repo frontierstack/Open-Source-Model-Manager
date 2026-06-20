@@ -6386,9 +6386,13 @@ fetch('${baseUrl}/api/model-configs', {
 # (NodeSource → nvm fallback), missing curl, broken sudo. Idempotent.
 
 # Auth required — bearer-mode API key (Authorization: Bearer …).
+# Downloads to a temp file and checks the HTTP status so a 401 (wrong/
+# non-bearer/inactive key) is shown instead of silently piping nothing to bash.
 export MODELSERVER_API_KEY="your_bearer_key"
-curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/hermes/install | bash`,
+code=$(curl -sSk -w '%{http_code}' -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
+  -o /tmp/hermes-install.sh ${baseUrl}/api/hermes/install)
+[ "$code" = 200 ] && bash /tmp/hermes-install.sh \\
+  || { echo "Install fetch failed (HTTP $code) — is MODELSERVER_API_KEY a Bearer Only, active key?"; cat /tmp/hermes-install.sh; }`,
                 python: `import os, subprocess, requests
 
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
@@ -11253,8 +11257,9 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                             const keyDisplay = selectedKey
                                                 ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
                                                 : '<your-bearer-key>';
-                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/hermes/install | bash`;
-                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/hermes/install | bash`;
+                                            const installCmd = (key) => `export MODELSERVER_API_KEY="${key}"\ncode=$(curl -sSk -w '%{http_code}' -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  -o /tmp/hermes-install.sh ${baseUrl}/api/hermes/install)\n[ "$code" = 200 ] && bash /tmp/hermes-install.sh \\\n  || { echo "Install fetch failed (HTTP $code) — is the key Bearer Only + active?"; cat /tmp/hermes-install.sh; }`;
+                                            const cmdReveal = installCmd(keyDisplay);
+                                            const cmdFull = installCmd(keyForCmd);
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
                                             return (
                                                 <>
