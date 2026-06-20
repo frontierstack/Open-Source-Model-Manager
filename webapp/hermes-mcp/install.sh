@@ -26,15 +26,89 @@ set -u
 BASE_URL_DEFAULT="__MODELSERVER_BASE_URL__"
 BASE_URL="${MODELSERVER_BASE_URL:-$BASE_URL_DEFAULT}"
 MCP_DIR="$HOME/.hermes/mcp-servers/modelserver"
+START_TS=$SECONDS
 
-# ---------- helpers ----------
-c_blue=$'\033[1;36m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_green=$'\033[1;32m'; c_off=$'\033[0m'
-log()  { printf "%s[hermes-install]%s %s\n" "$c_blue"   "$c_off" "$*"; }
-warn() { printf "%s[hermes-install]%s %s\n" "$c_yellow" "$c_off" "$*" >&2; }
-err()  { printf "%s[hermes-install]%s %s\n" "$c_red"    "$c_off" "$*" >&2; }
-ok()   { printf "%s[hermes-install]%s %s\n" "$c_green"  "$c_off" "$*"; }
+# ============================================================================
+# TERMINAL OUTPUT HELPERS  (mirrors the style of build.sh / start.sh)
+# ============================================================================
+
+# Colors — only when stdout is a terminal and NO_COLOR isn't set, so a
+# `curl | bash > install.log` stays clean.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; DIM=''; BOLD=''; NC=''
+fi
+
+SYM_OK="${GREEN}✓${NC}"; SYM_FAIL="${RED}✗${NC}"; SYM_SKIP="${DIM}–${NC}"
+SYM_WARN="${YELLOW}!${NC}"; SYM_ARROW="${CYAN}→${NC}"; SYM_INFO="${BLUE}ℹ${NC}"
+
+log_info()    { printf "  %s  %s\n" "$SYM_INFO"  "$*"; }
+log_success() { printf "  %s  %s\n" "$SYM_OK"    "$*"; }
+log_warning() { printf "  %s  %s%s%s\n" "$SYM_WARN" "$YELLOW" "$*" "$NC" >&2; }
+log_error()   { printf "  %s  %s%s%s\n" "$SYM_FAIL" "$RED"    "$*" "$NC" >&2; }
+log_step()    { printf "  %s  %s\n" "$SYM_ARROW" "$*"; }
+log_skip()    { printf "  %s  %s%s%s\n" "$SYM_SKIP" "$DIM" "$*" "$NC"; }
+
+# Back-compat aliases for the older call sites below.
+log()  { log_info "$*"; }
+warn() { log_warning "$*"; }
+err()  { log_error "$*"; }
+ok()   { log_success "$*"; }
+
+# Section header — visually separates install phases.
+section() {
+    printf "\n  %s%s%s%s\n" "$BOLD" "$CYAN" "$1" "$NC"
+    printf "  %s" "$DIM"; printf '%.0s─' $(seq 1 "${#1}"); printf "%s\n" "$NC"
+}
+
+# Braille spinner for long-running tasks. Animates only on a TTY; otherwise it
+# prints a single static step line so piped/redirected runs stay readable.
+SPINNER_PID=""
+start_spinner() {
+    local msg="$1"
+    if [ ! -t 1 ]; then
+        log_step "$msg"
+        SPINNER_PID=""
+        return
+    fi
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    (
+        local i=0
+        while true; do
+            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$msg"
+            i=$(( (i + 1) % ${#frames[@]} ))
+            sleep 0.1
+        done
+    ) &
+    SPINNER_PID=$!
+    disown "$SPINNER_PID" 2>/dev/null || true
+}
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+        kill "$SPINNER_PID" 2>/dev/null
+        wait "$SPINNER_PID" 2>/dev/null || true
+    fi
+    SPINNER_PID=""
+    [ -t 1 ] && printf "\r\033[K"  # clear the spinner line
+    return 0
+}
+# Make sure a stray spinner never survives an early exit / Ctrl-C.
+trap 'stop_spinner' EXIT INT TERM
+
+# Format seconds as "Xm Ys".
+fmt_duration() {
+    local secs=$1
+    if [ "$secs" -ge 60 ]; then echo "$((secs / 60))m $((secs % 60))s"; else echo "${secs}s"; fi
+}
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- banner ----------
+printf "\n  %s%sHermes Agent Installer%s\n" "$BOLD" "$CYAN" "$NC"
+printf "  %smodelserver MCP server + provider setup%s\n" "$DIM" "$NC"
+printf "  %s%s%s\n" "$DIM" "$BASE_URL" "$NC"
 
 # Privilege-escalation wrapper that copes with broken sudo.
 SUDO=""
@@ -67,103 +141,121 @@ if [ "$(ulimit -s 2>/dev/null)" = "unlimited" ]; then
     fi
 fi
 
-# ---------- step 1: SSL bypass for MITM environments ----------
-log "Step 1/6: SSL/MITM bypass"
+# ============================================================================
+# Step 1/6 · SSL / MITM bypass
+# ============================================================================
+section "Step 1/6 · SSL / MITM bypass"
 if ! [ -f "$HOME/.curlrc" ] || ! grep -qE '^[[:space:]]*insecure' "$HOME/.curlrc" 2>/dev/null; then
     printf "insecure\n" >> "$HOME/.curlrc"
-    log "  appended 'insecure' to ~/.curlrc"
+    log_success "appended 'insecure' to ~/.curlrc"
 else
-    log "  ~/.curlrc already has 'insecure'"
+    log_skip "~/.curlrc already has 'insecure'"
 fi
 export NODE_TLS_REJECT_UNAUTHORIZED=0
+log_success "NODE_TLS_REJECT_UNAUTHORIZED=0 for this run"
 
-# ---------- step 2: ensure curl ----------
-log "Step 2/6: curl"
-if ! have curl; then
-    log "  installing curl"
-    if have apt-get; then
-        sudo_run apt-get update -y >/dev/null 2>&1 || true
-        sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y curl \
-            || sudo_run apt-get install -y curl \
-            || { err "Failed to install curl"; exit 1; }
-    else
+# ============================================================================
+# Step 2/6 · curl
+# ============================================================================
+section "Step 2/6 · curl"
+if have curl; then
+    log_skip "curl present  ${DIM}$(curl --version | head -1)${NC}"
+else
+    if ! have apt-get; then
         err "No apt-get; install curl manually then re-run."
         exit 1
     fi
+    start_spinner "Installing curl"
+    {
+        sudo_run apt-get update -y
+        sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y curl \
+            || sudo_run apt-get install -y curl
+    } >/dev/null 2>&1
+    stop_spinner
+    if have curl; then
+        log_success "curl installed  ${DIM}$(curl --version | head -1)${NC}"
+    else
+        err "Failed to install curl"
+        exit 1
+    fi
 fi
-log "  curl present: $(curl --version | head -1)"
 
-# ---------- step 3: ensure Node >= 20 (MCP server + configure.mjs need it) ----------
-log "Step 3/6: Node >= 20"
+# ============================================================================
+# Step 3/6 · Node >= 20  (MCP server + configure.mjs need it)
+# ============================================================================
+section "Step 3/6 · Node >= 20"
 maj=$(node_major)
 if node_ok; then
-    log "  Node $(node -v) detected — OK"
+    log_skip "Node $(node -v) detected — OK"
 else
     if [ "$maj" -gt 0 ]; then
-        warn "  Node $(node -v) too old (need Node >=20); upgrading."
+        log_warning "Node $(node -v) too old (need Node >=20); upgrading."
     else
-        log "  Node not installed; installing Node 22 LTS"
+        log_info "Node not installed; installing Node 22 LTS"
     fi
 
     installed=0
     NODE_LOG=$(mktemp -t hermes-install-node.XXXXXX)
-    log "  (full Node-install log: $NODE_LOG)"
+    log_info "full Node-install log: ${DIM}$NODE_LOG${NC}"
 
     # Path A: NodeSource via apt (fast, system-wide).
     if [ "$installed" = 0 ] && have apt-get && [ -n "$SUDO" -o "$(id -u)" -eq 0 ]; then
-        log "  trying NodeSource (apt path)"
+        start_spinner "Installing Node 22 LTS via NodeSource (apt)"
         {
             printf '\n=== NodeSource setup script ===\n'
             curl -fsSLk https://deb.nodesource.com/setup_22.x | sudo_run -E bash -
             printf '\n=== apt install nodejs ===\n'
             sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
         } >>"$NODE_LOG" 2>&1
+        stop_spinner
         if node_ok; then
             installed=1
-            ok "  installed system Node $(node -v)"
+            log_success "installed system Node $(node -v)"
         else
-            warn "  NodeSource path didn't produce Node>=20; tail of log:"
-            tail -8 "$NODE_LOG" | sed 's/^/    /' >&2
+            log_warning "NodeSource path didn't produce Node>=20; tail of log:"
+            tail -8 "$NODE_LOG" | sed 's/^/      /' >&2
         fi
     fi
 
     # Path B: nvm (per-user, no apt).
     if [ "$installed" = 0 ]; then
-        log "  trying nvm (per-user path)"
         export NVM_DIR="$HOME/.nvm"
         if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-            log "  downloading nvm"
+            start_spinner "Downloading nvm (per-user Node)"
             {
                 printf '\n=== nvm install.sh ===\n'
                 curl -kfsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
             } >>"$NODE_LOG" 2>&1
+            stop_spinner
             if [ ! -s "$NVM_DIR/nvm.sh" ]; then
                 err "nvm download failed; tail of log:"
-                tail -15 "$NODE_LOG" | sed 's/^/    /' >&2
+                tail -15 "$NODE_LOG" | sed 's/^/      /' >&2
                 err "Full log: $NODE_LOG"
                 exit 1
             fi
+            log_success "nvm installed"
         fi
         # shellcheck disable=SC1091
         . "$NVM_DIR/nvm.sh"
-        log "  running 'nvm install 22' (this can take 1-3 min)"
+        start_spinner "Installing Node 22 via nvm (can take 1-3 min)"
         {
             printf '\n=== nvm install 22 ===\n'
             NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install 22
         } >>"$NODE_LOG" 2>&1
+        stop_spinner
         if ! node_ok || ! have node; then
             for ver in 22.20.0 22.19.0 20.18.0; do
-                log "  alias '22' unresolvable; trying pinned v$ver"
+                start_spinner "alias '22' unresolvable; trying pinned v$ver"
                 {
                     printf '\n=== nvm install %s ===\n' "$ver"
                     NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install "$ver"
                 } >>"$NODE_LOG" 2>&1
+                stop_spinner
                 if node_ok; then break; fi
             done
         fi
         # Final fallback: direct tarball install.
         if ! node_ok || ! have node; then
-            log "  nvm can't reach nodejs.org/dist/; trying direct tarball install"
             tarball_ver=22.20.0
             arch=$(uname -m); case "$arch" in
                 x86_64) arch=x64 ;;
@@ -171,21 +263,23 @@ else
             esac
             tarball="node-v${tarball_ver}-linux-${arch}.tar.xz"
             tdir=$(mktemp -d)
+            start_spinner "nvm can't reach nodejs.org; trying direct tarball ($tarball)"
             {
                 printf '\n=== direct tarball install (%s) ===\n' "$tarball"
                 cd "$tdir" \
                     && curl -fkLO "https://nodejs.org/dist/v${tarball_ver}/${tarball}" \
                     && sudo_run tar -xJf "$tarball" -C /usr/local --strip-components=1
             } >>"$NODE_LOG" 2>&1
+            stop_spinner
             rm -rf "$tdir"
         fi
         if node_ok; then
             installed=1
             nvm use "$(node -v | sed 's/^v//')" >>"$NODE_LOG" 2>&1 || true
-            ok "  installed Node $(node -v)"
+            log_success "installed Node $(node -v)"
         else
             err "Could not install Node>=20 by any path; tail of log:"
-            tail -30 "$NODE_LOG" | sed 's/^/    /' >&2
+            tail -30 "$NODE_LOG" | sed 's/^/      /' >&2
             err "Full log: $NODE_LOG"
             exit 1
         fi
@@ -197,7 +291,9 @@ else
     fi
 fi
 
-# ---------- step 3b: ensure npm, and make node/npm/npx GLOBALLY visible ----------
+# ============================================================================
+# Step 3b · npm + global node/npm/npx
+# ============================================================================
 # Two real-world failures this fixes:
 #   (1) The Hermes TUI shells out to `node` with a MINIMAL PATH — an nvm-only
 #       install lives in ~/.nvm/.../bin and isn't on that PATH, so the TUI reports
@@ -207,16 +303,18 @@ fi
 # subprocesses) makes node/npm/npx resolvable for Hermes regardless of how Node
 # was installed. The symlink targets are self-contained binaries, so they work
 # without nvm being sourced.
-log "Step 3b: npm + global node/npm/npx"
+section "Step 3b · npm + global node/npm/npx"
 if ! have npm; then
-    warn "  npm not found alongside node; attempting to install"
+    log_warning "npm not found alongside node; attempting to install"
     if [ -n "${NVM_DIR:-}" ] && [ -f "$NVM_DIR/nvm.sh" ]; then
         # shellcheck disable=SC1091
         . "$NVM_DIR/nvm.sh" 2>/dev/null || true
     fi
     if ! have npm && have apt-get; then
-        sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y npm >/dev/null 2>&1 \
-            || sudo_run apt-get install -y npm >/dev/null 2>&1 || true
+        start_spinner "Installing npm via apt"
+        { sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y npm \
+            || sudo_run apt-get install -y npm; } >/dev/null 2>&1
+        stop_spinner
     fi
 fi
 sudo_run mkdir -p /usr/local/bin 2>/dev/null || true
@@ -224,19 +322,25 @@ for bin in node npm npx; do
     p="$(command -v "$bin" 2>/dev/null)"
     if [ -n "$p" ] && [ "$p" != "/usr/local/bin/$bin" ]; then
         if sudo_run ln -sf "$p" "/usr/local/bin/$bin" 2>/dev/null; then
-            log "  linked $bin -> /usr/local/bin/$bin ($p)"
+            log_success "linked $bin ${DIM}→ /usr/local/bin/$bin ($p)${NC}"
         fi
     fi
 done
-if have node; then log "  node: $(node -v 2>/dev/null), npm: $(npm -v 2>/dev/null || echo MISSING)"; fi
+if have node; then log_info "node $(node -v 2>/dev/null), npm $(npm -v 2>/dev/null || echo MISSING)"; fi
 
-# ---------- step 4: ensure Hermes Agent ----------
-log "Step 4/6: Hermes Agent CLI"
+# ============================================================================
+# Step 4/6 · Hermes Agent CLI
+# ============================================================================
+section "Step 4/6 · Hermes Agent CLI"
 if have hermes && hermes --version >/dev/null 2>&1; then
-    log "  Hermes already installed: $(hermes --version 2>/dev/null | head -1)"
+    log_skip "Hermes already installed: $(hermes --version 2>/dev/null | head -1)"
 else
-    log "  installing Hermes Agent (nousresearch)"
-    if curl -fsSLk https://hermes-agent.nousresearch.com/install.sh | bash; then
+    HERMES_LOG=$(mktemp -t hermes-install-cli.XXXXXX)
+    start_spinner "Installing Hermes Agent (nousresearch)"
+    curl -fsSLk https://hermes-agent.nousresearch.com/install.sh 2>>"$HERMES_LOG" | bash >>"$HERMES_LOG" 2>&1
+    hermes_rc=$?
+    stop_spinner
+    if [ "$hermes_rc" = 0 ]; then
         # The Hermes installer edits shell rc; pull common install dirs onto PATH
         # for the rest of THIS script so `hermes` is callable below.
         for d in "$HOME/.local/bin" "$HOME/.hermes/bin"; do
@@ -244,19 +348,23 @@ else
         done
         export PATH
         if have hermes; then
-            ok "  installed Hermes $(hermes --version 2>/dev/null | head -1 || echo)"
+            log_success "installed Hermes $(hermes --version 2>/dev/null | head -1 || echo)"
         else
-            warn "  Hermes installed but not on PATH in this shell — re-source your shell rc (e.g. 'source ~/.bashrc') after this finishes."
+            log_warning "Hermes installed but not on PATH in this shell — re-source your shell rc (e.g. 'source ~/.bashrc') after this finishes."
         fi
     else
-        warn "  Hermes auto-install failed (network/MITM?). Install it manually:"
-        warn "    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
-        warn "  Continuing — the MCP server + config will still be installed."
+        log_warning "Hermes auto-install failed (network/MITM?); tail of log:"
+        tail -8 "$HERMES_LOG" | sed 's/^/      /' >&2
+        log_warning "Install it manually:  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
+        log_warning "Continuing — the MCP server + config will still be installed."
     fi
 fi
 
-# ---------- step 5: drop the modelserver MCP server ----------
-log "Step 5/6: modelserver MCP server at $MCP_DIR"
+# ============================================================================
+# Step 5/6 · modelserver MCP server
+# ============================================================================
+section "Step 5/6 · modelserver MCP server"
+log_info "target: ${DIM}$MCP_DIR${NC}"
 if [ -z "${MODELSERVER_API_KEY:-}" ]; then
     err "MODELSERVER_API_KEY is not set. Re-run with:"
     err "    export MODELSERVER_API_KEY=<your-bearer-key>"
@@ -303,30 +411,48 @@ fetch_file() {
     if [ "$code" = "200" ]; then
         return 0
     fi
+    stop_spinner
     err "Download of '$file' failed."
     auth_hint "$code" "$out"
     rm -f "$out"
     return 1
 }
+start_spinner "Downloading MCP server files"
 fetch_file modelserver-mcp.mjs || { err "Failed to download modelserver-mcp.mjs"; exit 1; }
 fetch_file configure.mjs       || { err "Failed to download configure.mjs";       exit 1; }
 fetch_file package.json        || { err "Failed to download package.json";        exit 1; }
-log "  files dropped"
+stop_spinner
+log_success "downloaded modelserver-mcp.mjs, configure.mjs, package.json"
 
 if [ -d "$MCP_DIR/node_modules/@modelcontextprotocol/sdk" ] && [ -d "$MCP_DIR/node_modules/yaml" ]; then
-    log "  MCP server deps already present, skipping npm install"
+    log_skip "MCP server deps already present, skipping npm install"
 else
-    log "  installing MCP server deps (@modelcontextprotocol/sdk, yaml)"
-    ( cd "$MCP_DIR" && npm install --omit=dev --silent >/dev/null 2>&1 ) \
-        || { err "npm install in $MCP_DIR failed"; exit 1; }
+    start_spinner "Installing MCP server deps (@modelcontextprotocol/sdk, yaml)"
+    ( cd "$MCP_DIR" && npm install --omit=dev --silent >/dev/null 2>&1 )
+    deps_rc=$?
+    stop_spinner
+    if [ "$deps_rc" = 0 ]; then
+        log_success "MCP server deps installed"
+    else
+        err "npm install in $MCP_DIR failed"
+        exit 1
+    fi
 fi
 
-# ---------- step 6: merge Hermes config + persist env ----------
-log "Step 6/6: ~/.hermes/config.yaml + shell rc"
-if ( cd "$MCP_DIR" && MODELSERVER_BASE_URL="$BASE_URL" MODELSERVER_API_KEY="$MODELSERVER_API_KEY" node configure.mjs ); then
-    ok "  merged provider + MCP config into ~/.hermes/config.yaml"
+# ============================================================================
+# Step 6/6 · ~/.hermes/config.yaml + shell rc
+# ============================================================================
+section "Step 6/6 · ~/.hermes/config.yaml + shell rc"
+CONF_LOG=$(mktemp -t hermes-install-config.XXXXXX)
+start_spinner "Merging provider + MCP config into ~/.hermes/config.yaml"
+( cd "$MCP_DIR" && MODELSERVER_BASE_URL="$BASE_URL" MODELSERVER_API_KEY="$MODELSERVER_API_KEY" node configure.mjs ) >>"$CONF_LOG" 2>&1
+conf_rc=$?
+stop_spinner
+if [ "$conf_rc" = 0 ]; then
+    log_success "merged provider + MCP config into ~/.hermes/config.yaml"
 else
-    err "  configure.mjs failed — set up ~/.hermes/config.yaml manually (see README)."
+    err "configure.mjs failed — set up ~/.hermes/config.yaml manually (see README). tail of log:"
+    tail -12 "$CONF_LOG" | sed 's/^/      /' >&2
 fi
 
 # Persist MODELSERVER_BASE_URL (and a hint about the key) into shell rc.
@@ -342,23 +468,32 @@ if [ -f "$shell_rc" ] && ! grep -q 'MODELSERVER_BASE_URL' "$shell_rc"; then
         printf '# Set MODELSERVER_API_KEY to your bearer-mode API key (created in the API Keys tab):\n'
         printf '# export MODELSERVER_API_KEY="..."\n'
     } >> "$shell_rc"
-    log "  appended MODELSERVER_BASE_URL to $shell_rc"
+    log_success "appended MODELSERVER_BASE_URL to $shell_rc"
+else
+    log_skip "MODELSERVER_BASE_URL already in $shell_rc"
 fi
 
-# ---------- verification ----------
-echo
-ok "Install complete."
-echo "  Node:        $(node -v 2>/dev/null || echo MISSING)"
-echo "  Hermes:      $(hermes --version 2>/dev/null | head -1 || echo 'MISSING — re-source your shell rc or install manually')"
-echo "  MCP server:  $MCP_DIR"
-echo "  Config:      $HOME/.hermes/config.yaml"
-echo "  Base URL:    $BASE_URL"
-echo
-echo "Provider, model, API key, and tool-approvals are pre-configured — no setup"
-echo "wizard. Just run Hermes:"
-echo "  hermes          # classic CLI"
-echo "  hermes --tui    # modern TUI (recommended)"
-echo
-echo "(If 'hermes' isn't found, run 'source ~/.bashrc' — or 'source ~/.zshrc' — first.)"
-echo "(Tool approvals default to OFF for frictionless runs — dial back up with"
-echo " 'hermes config set approvals.mode smart'.)"
+# ============================================================================
+# Summary
+# ============================================================================
+section "Install complete  ${DIM}($(fmt_duration $((SECONDS - START_TS))))${NC}"
+printf "  %s  Node        %s%s%s\n" "$SYM_OK" "$DIM" "$(node -v 2>/dev/null || echo MISSING)" "$NC"
+if have hermes && hermes --version >/dev/null 2>&1; then
+    printf "  %s  Hermes      %s%s%s\n" "$SYM_OK" "$DIM" "$(hermes --version 2>/dev/null | head -1)" "$NC"
+else
+    printf "  %s  Hermes      %s%s%s\n" "$SYM_WARN" "$DIM" "MISSING — re-source your shell rc or install manually" "$NC"
+fi
+printf "  %s  MCP server  %s%s%s\n" "$SYM_OK" "$DIM" "$MCP_DIR" "$NC"
+printf "  %s  Config      %s%s%s\n" "$SYM_OK" "$DIM" "$HOME/.hermes/config.yaml" "$NC"
+printf "  %s  Base URL    %s%s%s\n" "$SYM_OK" "$DIM" "$BASE_URL" "$NC"
+
+printf "\n  %sProvider, model, API key, and tool-approvals are pre-configured — no setup\n" "$BOLD"
+printf "  wizard. Just run Hermes:%s\n" "$NC"
+printf "    %shermes%s          %s# classic CLI%s\n" "$CYAN" "$NC" "$DIM" "$NC"
+printf "    %shermes --tui%s    %s# modern TUI (recommended)%s\n" "$CYAN" "$NC" "$DIM" "$NC"
+printf "\n  %s(If 'hermes' isn't found, run 'source ~/.bashrc' — or 'source ~/.zshrc' — first.)%s\n" "$DIM" "$NC"
+printf "  %s(Tool approvals default to OFF for frictionless runs — dial back up with%s\n" "$DIM" "$NC"
+printf "  %s 'hermes config set approvals.mode smart'.)%s\n" "$DIM" "$NC"
+
+# Successful end — drop the EXIT spinner-cleanup trap so it doesn't re-fire.
+trap - EXIT INT TERM
