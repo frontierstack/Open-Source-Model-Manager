@@ -61,6 +61,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # to include unconditionally.
         git \
         ca-certificates \
+        # ripgrep (rg) powers the grep_code code-nav skill — much faster than
+        # the pure-Python os.walk fallback on large workspaces. ~5 MB.
+        ripgrep \
         # curl + gnupg for the NodeSource setup script just below. Removed
         # again before the layer ends so they don't bloat the image.
         curl \
