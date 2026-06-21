@@ -18254,6 +18254,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // (mid-research turn ends "Let me dig deeper..." / "I'll search
             // for X" without emitting the next tool_call).
             let abandonedResearchRetried = false;
+            // One-shot retry latch for the announced-action detector (model
+            // narrates a tool-shaped action it is about to take — "let me write
+            // Python to parse the log and create the chart", "I'll generate a
+            // graph" — but ends the turn with NO tool_call, on round 0 too).
+            let announcedActionRetried = false;
             // Hoisted out of the per-round body: skills don't change mid-turn,
             // so loading and indexing them once per request avoids re-walking
             // the (potentially large) skills file on every tool round.
@@ -18337,9 +18342,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 const roundInputTokens = currentMessages.reduce(
                     (sum, m) => sum + estimateTokens(m.content), 0
                 );
+                const roundHeadroom = contextSize - roundInputTokens - toolCatalogTokens - 200;
+                // Tool-emitting rounds need a BIGGER output budget than a prose
+                // answer: a render_chart `data` array or a run_python program with
+                // the dataset embedded inline can be many thousands of tokens. The
+                // user's prose max_tokens (initialMaxTokens, commonly 8192) is the
+                // wrong cap for that — on a 131k-ctx model with ~100k free tokens,
+                // capping the round at 8192 truncates the tool-call JSON mid-
+                // argument (no trailing brace) → the truncation guard refuses
+                // dispatch → the model appears to "stop" without producing the
+                // chart/file (observed: "Graph this training run" → model narrates
+                // "let me write Python…" then nothing). When tools are attached,
+                // let the round use the free context headroom up to
+                // TOOL_ROUND_MAX_TOKENS so a complete tool call fits; the final
+                // prose synthesis below still respects initialMaxTokens.
+                const TOOL_ROUND_MAX_TOKENS = 32768;
+                const roundCap = toolCatalog.length
+                    ? Math.max(initialMaxTokens, Math.min(TOOL_ROUND_MAX_TOKENS, roundHeadroom))
+                    : initialMaxTokens;
                 const roundMaxTokens = Math.max(
                     MIN_OUTPUT_BUDGET,
-                    Math.min(initialMaxTokens, contextSize - roundInputTokens - toolCatalogTokens - 200)
+                    Math.min(roundCap, roundHeadroom)
                 );
 
                 finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
@@ -18877,6 +18900,43 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             {
                                 role: 'system',
                                 content: 'You ended your last turn announcing more work ("' + snippet + '") but did not actually emit the tool_call. Either call the tool now to follow through, OR write the final answer to the user using the tool results already in this conversation. Do not narrate plans without executing them — the runtime only acts on real tool_calls.',
+                            },
+                        ];
+                        continue; // re-stream
+                    }
+                }
+
+                // Announced-action detector: the model described a tool-shaped
+                // action it was ABOUT to take ("let me write Python to parse the
+                // log and create the chart", "I'll generate a graph", "let me
+                // plot this") but ended the turn with NO tool_call — common with
+                // reasoning-on local models on ROUND 0, where they narrate the
+                // plan in prose and emit EOS without ever calling render_chart /
+                // run_python / create_file. None of the detectors above catch
+                // this: abandoned-research requires toolCallRound > 0 and uses
+                // research verbs (dig/search/fetch), and false-completion only
+                // matches PAST-tense file claims. So "Graph this training run"
+                // → the model says "let me write Python to create the chart" →
+                // EOS → user sees narration and never gets the chart. Nudge once
+                // to actually emit the tool_call. Conservative: requires an
+                // intent phrase + a creation verb + a concrete artifact target
+                // in the tail, a short turn, and zero tool_calls this round.
+                if (!announcedActionRetried && accumulatedToolCalls.length === 0) {
+                    const trimmed = (fullResponse || '').trim();
+                    const tail = trimmed.slice(-320);
+                    const intent = /\b(?:let\s+me|let['’]?s|i['’]?ll|i\s+will|i\s+can|i\s+am\s+going\s+to|i['’]?m\s+going\s+to|i['’]?m\s+gonna|here['’]?s|now\s+i['’]?ll|now\s+let['’]?s)\b/i;
+                    const actionVerb = /\b(?:writ(?:e|ing)|creat(?:e|ing)|generat(?:e|ing)|build(?:ing)?|mak(?:e|ing)|plot(?:t(?:ed|ing))?|graph(?:ing)?|chart(?:ing)?|render(?:ing)?|draw(?:ing)?|produc(?:e|ing)|comput(?:e|ing)|calculat(?:e|ing)|pars(?:e|ing)|run(?:ning)?|execut(?:e|ing)|cod(?:e|ing)|extract(?:ing)?)\b/i;
+                    const target = /\b(chart|graph|plot|figure|visuali[sz]ation|diagram|file|code|script|python|table|spreadsheet|csv|pdf|image|document)\b/i;
+                    const isShort = trimmed.length < 1400;
+                    if (isShort && intent.test(tail) && actionVerb.test(tail) && target.test(tail)) {
+                        announcedActionRetried = true;
+                        const snippet = tail.replace(/\s+/g, ' ').slice(-160);
+                        console.warn(`[Chat Stream] Announced-action-without-tool detected (round ${toolCallRound}) — re-streaming with nudge. Tail: "${snippet}"`);
+                        currentMessages = [
+                            ...currentMessages,
+                            {
+                                role: 'system',
+                                content: 'You described an action you were going to take ("' + snippet + '") but did NOT emit the tool_call, so nothing actually happened and the user got no result. The runtime only acts on real tool_calls — narrating a plan does nothing. Call the appropriate tool NOW with the full arguments: to produce a chart, call render_chart; to run code, call run_python; to write a file, call create_file. Do not describe what you would do — emit the tool_call.',
                             },
                         ];
                         continue; // re-stream
@@ -23012,6 +23072,7 @@ app.use((req, res) => {
                     description:
                         'USE WHEN the user asks to visualize data, plot a chart, graph numbers, or display time-series. ' +
                         'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries / fetch_url / web_search. ' +
+                        'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers out of the conversation/log yourself and pass them straight here in `data[]`; this renders an interactive chart inline in one step, whereas run_python+matplotlib is slower, can truncate on large data, and only yields a static image. ' +
                         'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
                         'For multi-series charts, pass each series as `{ name, color? }` in `series[]` and one `{ x, <seriesName>: y, ... }` object per x-value in `data[]`. For single-series charts, just use `{ x, y }`. ' +
                         'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary.',
