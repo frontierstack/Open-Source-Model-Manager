@@ -657,6 +657,13 @@ const PATH_ARG_NAMES = [
     'codeFile',
     // create_xlsx's large-dataset escape hatch: a /workspace JSON path of rows.
     'rowsFile',
+    // create_pdf / create_docx large-body escape hatch: a /workspace path of
+    // markdown written via create_file/append_to_file. The WRITER (create_file)
+    // already routes a bare/`/tmp` path under /workspace via these same rules,
+    // so the READER must too — otherwise the model writes to
+    // `/workspace/tmp/report.md` but create_pdf reads `/tmp/report.md` literally
+    // and 404s ("contentFile not found"). Mirrors rowsFile above.
+    'contentFile', 'content_file',
 ];
 
 /** Create (if needed) + chmod the per-(user, conversation) workspace.
