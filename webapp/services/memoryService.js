@@ -76,6 +76,16 @@ const SUPERSEDE_MIN_SHARED = 3;
 // anchor against embedding quirks.
 const SUPERSEDE_SEM = 0.5;
 const SUPERSEDE_SEM_MIN_SHARED = 2;
+// "Related but distinct" band for AUTO-LINKING memories (the model making
+// links). Sits BELOW the 0.5 merge floor (truly-duplicate pairs supersede or
+// consolidate instead of merely linking) and ABOVE the 0.28 inject gate (so a
+// link always means "meaningfully related"). The ≥2 shared-keyword anchor
+// guards a coincidental cosine from linking unrelated memories; the per-memory
+// cap stops a dense topic from linking everything to everything (anti-sprawl).
+// Tunable without a rebuild via env.
+const LINK_SEM = Number(process.env.MEMORY_LINK_SEM) || 0.46;
+const LINK_MIN_SHARED = 2;
+const LINK_MAX_PER_NEW = 3;
 // Cosine for the background consolidation pass (consolidateUser). Calibrated on
 // the real store: 0.55 leaves obvious dup clusters un-merged, 0.45 starts fusing
 // DISTINCT preferences (video-download absorbing image-extraction); 0.5 collapses
@@ -490,6 +500,69 @@ async function setLink(userId, idA, idB, { unlink = false } = {}) {
     return snap ? { changed, ...snap } : null;
 }
 
+/** Resolve a model-facing [#handle] (the first 6 hex of the id, dashes
+ * stripped — see the injector's handleOf) OR a full id to the owning memory.
+ * Mirrors the handle match used by upsertModelLearning's `replaces`. */
+async function resolveHandle(userId, handle) {
+    const h = String(handle || '').replace(/^#/, '').trim().toLowerCase();
+    if (!h) return null;
+    const list = await listMemories(userId);
+    return list.find((m) => {
+        const id = String(m.id).toLowerCase();
+        return id === h || id.startsWith(h) || id.replace(/-/g, '').startsWith(h);
+    }) || null;
+}
+
+/** BACKFILL / maintenance: auto-link existing memories that are clearly RELATED
+ * (semantic cosine ≥ minSem + a shared-keyword anchor) but distinct (not already
+ * merged or linked). Bounded per memory so the graph stays sparse and useful for
+ * link-expansion. Dry-run (apply:false) returns the proposed pairs; apply:true
+ * sets the symmetric links. Engine down → no-op (needs embeddings to judge
+ * relatedness). Returns { scanned, proposed, linked, pairs:[{a,b,sem,aText,bText}] }. */
+async function linkRelatedMemories(userId, { apply = false, minSem = LINK_SEM, maxPerMemory = 4 } = {}) {
+    const all = await listMemories(userId);
+    if (all.length < 2) return { scanned: all.length, proposed: 0, linked: 0, pairs: [] };
+    const byId = new Map(all.map((m) => [m.id, m]));
+    const pairKey = (a, b) => [a, b].sort().join('|');
+    const seen = new Set();
+    const degree = new Map();                      // NEW links we'd add per memory
+    const deg = (id) => degree.get(id) || 0;
+    const incr = (id) => degree.set(id, deg(id) + 1);
+    const proposals = [];
+    for (const m of all) {
+        // Skip procedures on BOTH sides: they're activity-keyed persona memories
+        // that share recipe boilerplate ("the tools that got it done — …"), which
+        // inflates their cosine into false links. Links are for facts/preferences
+        // that genuinely share a topic/entity.
+        if (m.type === 'procedure') continue;
+        let sem = null;
+        try { sem = await memoryIndex.search(userId, String(m.text || ''), 16); } catch (_) { sem = null; }
+        if (!sem || !sem.scores) continue;
+        const cands = [...sem.scores.entries()]
+            .filter(([id, s]) => id !== m.id && s >= minSem)
+            .sort((a, b) => b[1] - a[1]);
+        for (const [id, s] of cands) {
+            if (deg(m.id) >= maxPerMemory) break;
+            if (deg(id) >= maxPerMemory) continue;
+            const other = byId.get(id);
+            if (!other || other.type === 'procedure') continue;
+            if (Array.isArray(m.links) && m.links.includes(id)) continue;     // already linked
+            if (topicOverlap(m.keywords || [], other.keywords || []).inter < LINK_MIN_SHARED) continue;
+            const k = pairKey(m.id, id);
+            if (seen.has(k)) continue;
+            seen.add(k); incr(m.id); incr(id);
+            proposals.push({ a: m.id, b: id, sem: Number(s.toFixed(3)), aText: (m.text || '').slice(0, 70), bText: (other.text || '').slice(0, 70) });
+        }
+    }
+    let linked = 0;
+    if (apply) {
+        for (const p of proposals) {
+            try { const r = await setLink(userId, p.a, p.b); if (r && r.changed) linked++; } catch (_) { /* continue */ }
+        }
+    }
+    return { scanned: all.length, proposed: proposals.length, linked, pairs: proposals.slice(0, 30) };
+}
+
 /** Remove all memories for a user (used by the "clear all" route). */
 async function clearMemories(userId) {
     const removed = await mutateUser(userId, (list) => {
@@ -640,6 +713,36 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
             touched.push(rec);
             items.push({ text: rec.text, type: rec.type, impact: rec.impact });
             added++;
+            // Auto-link this NEW memory to existing memories it's clearly
+            // RELATED to (cosine in the link band + shared-keyword anchor) but
+            // NOT a duplicate of (those superseded above). Reuses the
+            // candidate→existing cosines already computed for supersedence —
+            // symmetric, bounded, keyword-anchored. This is the model "making"
+            // links as memory forms; retrieval link-expansion then surfaces the
+            // connected cluster together. Links don't change the embedding, so
+            // no re-index of the peer is needed (the list mutation persists).
+            if (candSem[ci]) {
+                const related = [];
+                for (const m of list) {
+                    if (m.id === rec.id) continue;
+                    // Procedures are activity-keyed persona memories; they share
+                    // recipe boilerplate ("the tools that got it done — …") that
+                    // inflates their mutual cosine into false links. Don't link
+                    // them — links are for facts/preferences that share a topic.
+                    if (m.type === 'procedure') continue;
+                    const sem = candSem[ci].get(m.id) ?? 0;
+                    if (sem < LINK_SEM) continue;
+                    if (topicOverlap(m.keywords || [], kw).inter < LINK_MIN_SHARED) continue;
+                    related.push({ m, sem });
+                }
+                related.sort((a, b) => b.sem - a.sem);
+                for (const { m } of related.slice(0, LINK_MAX_PER_NEW)) {
+                    if (!Array.isArray(m.links)) m.links = [];
+                    if (!rec.links.includes(m.id)) rec.links.push(m.id);
+                    if (!m.links.includes(rec.id)) { m.links.push(rec.id); m.updatedAt = nowIso(); }
+                }
+                if (rec.links.length > 50) rec.links = rec.links.slice(0, 50);
+            }
         }
         if (added) dropped = pruneUser(list, userId);
     });
@@ -1224,6 +1327,8 @@ module.exports = {
     updateMemory,
     deleteMemory,
     setLink,
+    resolveHandle,
+    linkRelatedMemories,
     clearMemories,
     addAutoMemories,
     consolidateUser,

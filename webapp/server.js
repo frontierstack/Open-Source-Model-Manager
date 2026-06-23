@@ -12834,6 +12834,12 @@ const MEMORY_MIN_SCORE = 2;
 // 0.35 looked safe on terse probes but rejected most sentence-length queries.
 // Tunable without a rebuild via env.
 const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') || 0.28;
+// Max memories pulled in by 1-hop LINK EXPANSION at retrieval. A memory the user
+// or the model CONNECTED to a relevant one rides along even if it wouldn't pass
+// the relevance gate on its own — that's the whole point of a link. Bounded +
+// token-budgeted so a dense link graph can't flood the context; 1-hop only (we
+// never expand an expansion). Set to 0 to disable. Tunable without a rebuild.
+const LINK_EXPANSION_MAX = parseInt(process.env.MEMORY_LINK_EXPANSION_MAX) || 4;
 
 // Semantic scores for a chat query: search with the full text AND a
 // keyword-condensed form, keeping the best cosine per memory. Real chat
@@ -13746,7 +13752,21 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         // A genuine global style pref that lacks such a marker still surfaces
         // once the model records it (record_learning → curated) or the user adds
         // it by hand (manual → curated); both bypass relevance unconditionally.
-        return /\b(from now on|going forward|by default|always|never|whenever|every time)\b/.test(t);
+        // The strong markers are unambiguously about a standing user rule.
+        if (/\b(from now on|going forward|always|never|whenever|every time)\b/.test(t)) return true;
+        // "by default" is the ambiguous one: it far more often describes a
+        // THIRD-PARTY software default ("the server runs on port 3000 by
+        // default", "it installs by default") than a user standing rule. Treat
+        // it as a global directive ONLY when the sentence is explicitly about how
+        // the USER wants things done (a 1st/2nd-person directive cue) AND is NOT
+        // a 3rd-person description of how some tool behaves. Without this, an
+        // auto/assistant-side software-trivia line injected on 100% of turns —
+        // the measured "by default" precision leak (id 096fa323).
+        if (/\bby default\b/.test(t)) {
+            return /\b(i|i'd|i'm|we|you|your|use|prefer|default to|stick to|give me|send me|reply|respond|answer|format|output)\b/.test(t)
+                && !/\b(runs?|installs?|listens?|serves?|exposes?|binds?|starts?|comes?|ships?|defaults? to port|on port)\b/.test(t);
+        }
+        return false;
     };
     const scoreOf = (m) => {
         const ts = Date.parse(m.updatedAt || m.createdAt || '') || now;
@@ -13803,6 +13823,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
 
     const picked = [];
     let usedTokens = 0;
+    let linkExpanded = 0;
     // Pass 0 — experience/procedures: the persona always applies, capped by a
     // 40% sub-budget. The activity-matched one (if any) leads.
     let procCount = 0;
@@ -13831,6 +13852,34 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         picked.push(f.m); usedTokens += tk; factCount++;
     }
     if (picked.length === 0) return null;
+
+    // ---- Link-aware expansion (1-hop) -----------------------------------
+    // A memory the user (Memory tab) or the model (record_learning relatesTo /
+    // auto-link on extraction) CONNECTED to one that's already relevant rides
+    // along — even if it wouldn't clear the relevance gate by itself. That's the
+    // point of a link: "when this surfaces, surface what it's tied to." Bounded
+    // by LINK_EXPANSION_MAX + the token budget, 1-hop only (we snapshot `picked`
+    // so an expansion never seeds further expansion), and muted/dangling/
+    // ephemeral targets are skipped. `all` is the non-muted set, so byId can't
+    // resurface a muted memory.
+    if (LINK_EXPANSION_MAX > 0) {
+        const pickedIds = new Set(picked.map(m => m.id));
+        const byId = new Map(all.map(m => [m.id, m]));
+        for (const seed of [...picked]) {
+            if (linkExpanded >= LINK_EXPANSION_MAX) break;
+            const links = Array.isArray(seed.links) ? seed.links : [];
+            for (const lid of links) {
+                if (linkExpanded >= LINK_EXPANSION_MAX) break;
+                if (pickedIds.has(lid)) continue;
+                const lm = byId.get(lid);
+                if (!lm) continue;                              // dangling / muted
+                if (isEphemeralFact(lm.text)) continue;         // never resurface time-bound content
+                const tk = tokOf(lm);
+                if (usedTokens + tk > tokenBudget) continue;
+                picked.push(lm); pickedIds.add(lid); usedTokens += tk; linkExpanded++;
+            }
+        }
+    }
 
     // Render: experience (persona) FIRST, then directives, then facts.
     const impactRank = { important: 0, medium: 1, low: 2 };
@@ -13878,13 +13927,14 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         const lines = facts.map(m => `- ${m.text}`).join('\n');
         parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
     }
-    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts; ${semScores ? 'semantic' : 'keyword'} mode) conv=${currentConvId || '-'}`);
+    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts${linkExpanded ? `, +${linkExpanded} via links` : ''}; ${semScores ? 'semantic' : 'keyword'} mode) conv=${currentConvId || '-'}`);
     return {
         block: parts.join('\n\n'),
         count: picked.length,
         procedures: procedures.length,
         learnings: learnings.length,
         facts: facts.length,
+        linked: linkExpanded,
         tokens: usedTokens,
         previews: picked.slice(0, 5).map(m => (m.text || '').slice(0, 120)),
     };
@@ -16249,6 +16299,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             `Memory: referenced ${memoryResult.count} memor${memoryResult.count === 1 ? 'y' : 'ies'} ` +
                             `(${memoryResult.procedures} experience, ${memoryResult.learnings} learning${memoryResult.learnings === 1 ? '' : 's'}, ` +
                             `${memoryResult.facts} fact${memoryResult.facts === 1 ? '' : 's'}, ${memoryResult.tokens} tok)` +
+                            (memoryResult.linked ? ` +${memoryResult.linked} via links` : '') +
                             (activityHint ? ` [activity: ${activityHint}]` : '') +
                             (preview ? ` — ${preview}` : '')
                         );
@@ -16284,6 +16335,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             type: 'memory_injected',
                             count: memoryResult.count,
                             tokens: memoryResult.tokens,
+                            linked: memoryResult.linked,
                             previews: memoryResult.previews,
                         };
                     }
@@ -22663,6 +22715,15 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
             ? await pruneScratchFacts(userId, { apply })
             : null;
 
+        // 5) LINK related (opt-in) — connect clearly-related EXISTING memories
+        // (cosine ≥ minSem + shared-keyword anchor, bounded per memory) so they
+        // surface together at retrieval (1-hop link expansion). Backfills the
+        // links the auto-linker only creates for memories added going forward.
+        // Needs the embedding engine; engine down → no-op.
+        const linkResult = req.body?.linkRelated
+            ? await memoryService.linkRelatedMemories(userId, { apply, ...(minSem ? { minSem } : {}) })
+            : null;
+
         const removedCount = junk.length
             + (consol.merged || consol.merges.reduce((n, x) => n + x.dropped.length, 0))
             + (procResult ? (procResult.merged || procResult.merges.reduce((n, x) => n + x.dropped.length, 0)) : 0)
@@ -22692,6 +22753,12 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
                 dropped: pruneResult.dropped,
                 note: pruneResult.note,
                 sample: pruneResult.sample,
+            } : undefined,
+            linkRelated: linkResult ? {
+                scanned: linkResult.scanned,
+                proposed: linkResult.proposed,
+                linked: apply ? linkResult.linked : 0,
+                sample: linkResult.pairs.slice(0, 12),
             } : undefined,
         });
     } catch (e) {
@@ -25190,6 +25257,7 @@ app.use((req, res) => {
                         'Capture the OUTCOME and the better next move — e.g. "Searched site A first, results were thin; broadening to A+B+C worked better — start broad next time, keep searching if weak." ' +
                         'Phrase lessons as ADAPTIVE HEURISTICS, never rigid absolutes: prefer "start with X, then try a few alternatives and keep going if results are weak" over "only ever use X". ' +
                         'CONSOLIDATE rather than pile up near-duplicates: if a related lesson already exists (you may see it tagged like [#a1b2c3] in your context), pass that handle as `replaces` to UPDATE/improve it in place. If you omit `replaces`, a close existing lesson is refined automatically. ' +
+                        'CONNECT related memories: if this lesson is RELATED to other memories you can see (tagged [#handle]) but does NOT replace them — e.g. a preference that pairs with a fact, or two lessons about the same project — pass their handles in `relatesTo` to link them, so they surface together next time. ' +
                         'Record generalizable lessons, not one-off task facts (those are captured automatically). ' +
                         'If the lesson is about HOW you performed a kind of task (reading emails, web research, analyzing a file), set `activity` to that high-level label — it consolidates into your EXPERIENCE for that activity (your persona) and is reused to do it faster next time. ' +
                         'Runs silently — do not announce it, ask permission, or mention the [#handles] to the user.',
@@ -25210,6 +25278,7 @@ app.use((req, res) => {
                             context: { type: 'string', description: 'Optional: when/why it matters, so future-you applies it correctly.' },
                             replaces: { type: 'string', description: 'Optional: the [#handle] of an existing learning shown in your context to UPDATE/replace instead of creating a new one. Use this to keep memory consolidated.' },
                             activity: { type: 'string', description: 'Optional: a high-level ACTIVITY label (e.g. "reading emails", "web research", "binary analysis") if this lesson is about HOW you performed that kind of task. Consolidates into your experience for that activity (your persona) and is reused to go faster next time.' },
+                            relatesTo: { type: 'array', items: { type: 'string' }, description: 'Optional: [#handles] of existing memories this lesson is RELATED to (but does not replace). They will be linked so they surface together next time. Internal — never shown to the user.' },
                         },
                         required: ['lesson', 'impact'],
                         additionalProperties: false,
@@ -25231,6 +25300,25 @@ app.use((req, res) => {
             const context = String(args?.context || '').trim();
             const text = context ? `${lesson} — context: ${context}` : lesson;
             const keywords = extractQueryKeywords(text);
+            // Explicit model-driven LINKING: connect this lesson to the related
+            // memories the model named by [#handle] (resolved to ids), symmetric
+            // and best-effort. Returns how many new links were made. 1-hop
+            // retrieval expansion then surfaces them together next time.
+            const relatesTo = Array.isArray(args?.relatesTo) ? args.relatesTo.slice(0, 5) : [];
+            const linkRelated = async (newId) => {
+                if (!newId || !relatesTo.length) return 0;
+                let linked = 0;
+                for (const h of relatesTo) {
+                    try {
+                        const tgt = await memoryService.resolveHandle(userId, h);
+                        if (tgt && tgt.id !== newId) {
+                            const r = await memoryService.setLink(userId, newId, tgt.id);
+                            if (r && r.changed) linked++;
+                        }
+                    } catch (_) { /* best-effort */ }
+                }
+                return linked;
+            };
             try {
                 // Experience path: when the model labels an ACTIVITY, this lesson
                 // is about HOW it did that kind of task — store it as a procedure
@@ -25253,10 +25341,11 @@ app.use((req, res) => {
                         tokens: Math.ceil(text.length / 3), source: 'model',
                         sourceConvId: ctx.conversationId || null,
                     });
+                    const arLinked = await linkRelated(ar.id);
                     logUserActivity(userId,
-                        `Memory: ${ar.updated ? 'updated existing experience (refined)' : 'created new experience'} [${memoryService.normalizeActivity(activityLabel)}] (×${ar.count}, ${ar.impact}) — “${lesson.slice(0, 70)}”`);
+                        `Memory: ${ar.updated ? 'updated existing experience (refined)' : 'created new experience'} [${memoryService.normalizeActivity(activityLabel)}] (×${ar.count}, ${ar.impact})${arLinked ? ` +${arLinked} link${arLinked === 1 ? '' : 's'}` : ''} — “${lesson.slice(0, 70)}”`);
                     return {
-                        success: true, id: ar.id, updated: ar.updated,
+                        success: true, id: ar.id, updated: ar.updated, linked: arLinked,
                         recorded: { activity: memoryService.normalizeActivity(activityLabel), impact: ar.impact, count: ar.count },
                         note: ar.updated ? 'Refined your experience for this activity.' : 'Recorded experience for this activity; it will guide similar tasks.',
                     };
@@ -25271,14 +25360,16 @@ app.use((req, res) => {
                     tokens: Math.ceil(text.length / 3),
                     sourceConvId: ctx.conversationId || null,
                 }, { replaces: args?.replaces || null });
+                const resLinked = await linkRelated(res.id);
                 // Process-log the model-recorded learning so the user sees the
                 // assistant's self-improvement happening, not just a silent tool call.
                 logUserActivity(userId,
-                    `Memory: ${res.updated ? 'updated existing learning (refined)' : 'created new learning'} [${type}/${res.impact}] — “${lesson.slice(0, 80)}”`);
+                    `Memory: ${res.updated ? 'updated existing learning (refined)' : 'created new learning'} [${type}/${res.impact}]${resLinked ? ` +${resLinked} link${resLinked === 1 ? '' : 's'}` : ''} — “${lesson.slice(0, 80)}”`);
                 return {
                     success: true,
                     id: res.id,
                     updated: res.updated,
+                    linked: resLinked,
                     recorded: { type, impact: res.impact },
                     note: res.updated
                         ? 'Refined an existing learning (consolidated, not duplicated).'
