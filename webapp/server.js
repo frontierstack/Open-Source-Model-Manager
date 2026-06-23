@@ -22705,6 +22705,30 @@ app.delete('/api/memories/:id', requireAuth, async (req, res) => {
     }
 });
 
+// Connect / disconnect two memories (bidirectional). Both must belong to the
+// caller's account (admins bypass). body: { targetId, unlink? }.
+app.post('/api/memories/:id/link', requireAuth, async (req, res) => {
+    try {
+        const mem = await loadOwnedMemory(req, res); if (!mem) return;
+        const targetId = String(req.body?.targetId || '').trim();
+        if (!targetId) return res.status(400).json({ error: 'targetId is required' });
+        if (targetId === mem.id) return res.status(400).json({ error: 'cannot link a memory to itself' });
+        const target = await memoryService.getMemory(targetId);
+        if (!target) return res.status(404).json({ error: 'target memory not found' });
+        // Both sides must be owned by the same account so we never weave a
+        // cross-account link (mem is already ownership-checked above).
+        if (target.userId !== mem.userId) {
+            return res.status(403).json({ error: 'memories belong to different accounts' });
+        }
+        const unlink = req.body?.unlink === true;
+        const result = await memoryService.setLink(mem.userId, mem.id, targetId, { unlink });
+        if (!result) return res.status(404).json({ error: 'memory not found' });
+        res.json({ success: true, changed: result.changed, source: result.a, target: result.b });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Clear ALL of the caller's own memories (the tab's "clear all" action).
 app.delete('/api/memories', requireAuth, async (req, res) => {
     try {

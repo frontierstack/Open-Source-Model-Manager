@@ -380,6 +380,9 @@ function normalizeRecord(input) {
         // never injected. Together they give an escape hatch short of delete.
         pinned: input.pinned === true,
         muted: input.muted === true,
+        // Bidirectional associations to other memories (their ids). Lets the
+        // user group related memories so the tab can surface them together.
+        links: Array.isArray(input.links) ? input.links.filter((x) => typeof x === 'string').slice(0, 50) : [],
         // Experience/procedure memories: `activity` is the consolidation key,
         // `count` is how many times that activity has been reinforced (depth of
         // experience). Null/1 for ordinary memories.
@@ -427,6 +430,7 @@ async function updateMemory(id, patch) {
         if (Number.isFinite(patch.count)) m.count = patch.count;
         if (patch.pinned !== undefined) m.pinned = patch.pinned === true;
         if (patch.muted !== undefined) m.muted = patch.muted === true;
+        if (Array.isArray(patch.links)) m.links = patch.links.filter((x) => typeof x === 'string').slice(0, 50);
         // Title is always derived — recompute whenever the body/type/activity
         // that feeds it may have changed.
         m.title = deriveMemoryTitle(m);
@@ -446,10 +450,44 @@ async function deleteMemory(id) {
         const i = list.findIndex((m) => m.id === id);
         if (i < 0) return false;
         list.splice(i, 1);
+        // Drop any dangling links the deleted memory was part of so the other
+        // side of a connection doesn't keep pointing at a ghost.
+        for (const m of list) {
+            if (Array.isArray(m.links) && m.links.includes(id)) {
+                m.links = m.links.filter((l) => l !== id);
+                m.updatedAt = nowIso();
+            }
+        }
         return true;
     });
     if (removed) memoryIndex.remove(existing.userId, id).catch(() => {});
     return removed;
+}
+
+/** Symmetrically connect (or disconnect) two memories owned by the same
+ * account: each record gets the other's id in its `links` array (removed when
+ * `unlink`). Both live in the same per-account shard, so one mutateUser covers
+ * both sides. Returns { changed, a, b } or null if either id is missing. */
+async function setLink(userId, idA, idB, { unlink = false } = {}) {
+    if (!idA || !idB || idA === idB) return null;
+    let changed = false;
+    let snap = null;
+    await mutateUser(userId, (list) => {
+        const a = list.find((x) => x.id === idA);
+        const b = list.find((x) => x.id === idB);
+        if (!a || !b) return null;
+        const apply = (m, otherId) => {
+            const links = Array.isArray(m.links) ? m.links : [];
+            const has = links.includes(otherId);
+            if (unlink && has) { m.links = links.filter((l) => l !== otherId); m.updatedAt = nowIso(); changed = true; }
+            else if (!unlink && !has) { m.links = [...links, otherId].slice(0, 50); m.updatedAt = nowIso(); changed = true; }
+        };
+        apply(a, idB);
+        apply(b, idA);
+        snap = { a: { ...a }, b: { ...b } };
+        return true;
+    });
+    return snap ? { changed, ...snap } : null;
 }
 
 /** Remove all memories for a user (used by the "clear all" route). */
@@ -1185,6 +1223,7 @@ module.exports = {
     createMemory,
     updateMemory,
     deleteMemory,
+    setLink,
     clearMemories,
     addAutoMemories,
     consolidateUser,
