@@ -13445,10 +13445,14 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
         // with a brief preview of what was learned this turn.
         const preview = addedItems.slice(0, 3)
             .map(it => `${it.superseded ? '↻ ' : ''}${it.type}/${it.impact || 'low'}: “${(it.text || '').slice(0, 60)}”`).join('; ');
-        const verb = superseded > 0 && added === 0
-            ? `updated ${superseded}` : `created ${added}${superseded ? `, updated ${superseded}` : ''}`;
+        // Lead with "created new" vs "updated existing" so the user can tell at
+        // a glance whether this turn added a fresh memory or enhanced one already
+        // on file (supersedence refines an existing row in place).
+        const verbParts = [];
+        if (added > 0) verbParts.push(`created ${added} new`);
+        if (superseded > 0) verbParts.push(`updated ${superseded} existing`);
         logUserActivity(userId,
-            `Memory: ${verb} memor${(added + superseded) === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
+            `Memory: ${verbParts.join(', ')} memor${(added + superseded) === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
     }
 }
 
@@ -13591,7 +13595,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
             steps: (steps === undefined ? okChips.length : steps),
         });
         logUserActivity(userId,
-            `Memory: ${res.updated ? (res.keptRecipe ? 'reinforced' : 'refined') : 'recorded'} experience [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
+            `Memory: ${res.updated ? `updated existing experience (${res.keptRecipe ? 'reinforced' : 'refined'})` : 'created new experience'} [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
     } catch (e) {
         console.warn('[Memory] activity record failed:', e.message);
     }
@@ -25183,7 +25187,7 @@ app.use((req, res) => {
                         sourceConvId: ctx.conversationId || null,
                     });
                     logUserActivity(userId,
-                        `Memory: ${ar.updated ? 'refined' : 'recorded'} experience [${memoryService.normalizeActivity(activityLabel)}] (reinforced ${ar.count}×, ${ar.impact}) — “${lesson.slice(0, 70)}”`);
+                        `Memory: ${ar.updated ? 'updated existing experience (refined)' : 'created new experience'} [${memoryService.normalizeActivity(activityLabel)}] (×${ar.count}, ${ar.impact}) — “${lesson.slice(0, 70)}”`);
                     return {
                         success: true, id: ar.id, updated: ar.updated,
                         recorded: { activity: memoryService.normalizeActivity(activityLabel), impact: ar.impact, count: ar.count },
@@ -25203,7 +25207,7 @@ app.use((req, res) => {
                 // Process-log the model-recorded learning so the user sees the
                 // assistant's self-improvement happening, not just a silent tool call.
                 logUserActivity(userId,
-                    `Memory: ${res.updated ? 'refined' : 'recorded'} learning [${type}/${res.impact}] — “${lesson.slice(0, 80)}”`);
+                    `Memory: ${res.updated ? 'updated existing learning (refined)' : 'created new learning'} [${type}/${res.impact}] — “${lesson.slice(0, 80)}”`);
                 return {
                     success: true,
                     id: res.id,
