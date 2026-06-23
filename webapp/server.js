@@ -13079,12 +13079,14 @@ const LLM_EXTRACT_SYSTEM_PROMPT =
     '- "correction": the user corrected the assistant — what to do instead.\n' +
     '- "limitation": something that does not work / is unavailable.\n' +
     '- "workaround": a working alternative that was found.\n' +
-    '- "learning": what approach worked or failed — phrase as an ADAPTIVE heuristic ("start broad, narrow if results are weak"), never a rigid absolute.\n' +
+    '- "learning": what approach worked or failed when DOING a task (coding, research, analysis) — phrase as an ADAPTIVE heuristic the assistant should reuse ("ran into X, doing Y first avoids it"; "approach Z worked best for this kind of task"), never a rigid absolute. THIS IS THE MOST VALUABLE TYPE — prefer it.\n' +
     'Rules:\n' +
     '- Only items worth remembering WEEKS from now, in unrelated conversations.\n' +
+    '- The GOAL is to make the assistant work better next time: capture what went wrong and the fix, the best approach found for a task, durable facts about the user, and how they like work done. Favor experiential learnings (what worked / what to do better).\n' +
+    '- DO NOT store the user\'s passive INTERESTS, hobbies, or topics they were merely curious about this turn ("the user is interested in <show/game/topic>", "is a fan of X", "likes the series Y", "enjoys watching Z"). These are not actionable. (A working-style preference like "prefers concise answers" or a durable WORK/identity fact like "is a backend engineer" IS fine — the test is whether it changes how you should WORK or who they ARE, not what they happen to enjoy.)\n' +
     '- NO content whose VALUE is time-bound (current date/time, today\'s news, live prices).\n' +
     '- A durable change phrased with time words ("we are migrating to X this year", "I use Y now") IS worth keeping — rephrase it atemporally as the new steady state (e.g. "The user\'s hospital is migrating its network from Cisco to Juniper"), do not drop it.\n' +
-    '- DO NOT extract the assistant\'s OWN output as facts: article/search-result summaries, quoted passages, headings/bullets/tables, code snippets, commands, links/citations, or "what we found" write-ups are NOT memories. A memory is about the USER (their life/work/projects/environment) or their stable preferences/corrections — never the content the assistant produced this turn.\n' +
+    '- DO NOT extract the assistant\'s OWN output as facts: article/search-result summaries, quoted passages, headings/bullets/tables, code snippets, commands, links/citations, or "what we found" write-ups are NOT memories. A memory is about the USER (their life/work/projects/environment), their stable preferences/corrections, or a reusable lesson from the task — never the content the assistant produced this turn.\n' +
     '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
     '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
     '- 0 to 5 items. If nothing qualifies, return [].';
@@ -13209,7 +13211,16 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
             // (corrections / workarounds / learnings the exchange established);
             // real user facts come from the USER side (or the LLM extractor).
             if (role === 'assistant' && !isDirectiveType) continue;
+            // A question is the user ASKING, not a durable fact — "my script
+            // keeps crashing — any idea why?" is not a memory. Drop interrogative
+            // sentences from the fact path (directive cues, which can phrase a
+            // request, are exempt).
+            if (!isDirectiveType && /\?\s*$/.test(sentence.trim())) continue;
             if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
+            // Passive consumption-interest ("user is into the show X") is not a
+            // memory the user wants — drop it here too (the candidate choke point
+            // is the backstop, this keeps it out of the per-turn top-N as well).
+            if (!isDirectiveType && isLowValueInterest(sentence)) continue;
             // Drop time-bound / live-news facts: their truth is anchored to this
             // moment, so persisting them poisons future turns (a cached "today
             // is …" date, yesterday's headlines). Directive-typed sentences
@@ -13287,6 +13298,30 @@ const EPHEMERAL_PATTERNS = [
 function isEphemeralFact(sentence) {
     const s = String(sentence || '');
     return EPHEMERAL_PATTERNS.some((re) => re.test(s));
+}
+
+// A PASSIVE consumption/curiosity statement about the user — "the user is
+// interested in X", "has an interest in the series Y", "is a fan of Z",
+// "enjoys watching/reading/playing W", "likes the show/anime/game …". The user
+// explicitly does NOT want these stored: they are not actionable for serving
+// them better. Memory should hold (a) durable WORK/identity facts, (b)
+// behavioral preferences (HOW they want work done), and (c) experiential
+// learnings (what approach worked / failed). Deliberately targets the
+// consumption/curiosity FRAMING, so professional-identity facts ("works in
+// cybersecurity", "is a backend engineer") and real working-style preferences
+// ("prefers concise answers", "wants code first") are NOT matched.
+const INTEREST_PATTERNS = [
+    /\binterest(ed)?\s+in\b/i,
+    /\bhas (an?|some) (interest|fascination|fondness|liking|passion|curiosity|affinity|obsession)\b/i,
+    /\bis (interested|curious|enthusiastic|passionate|keen|excited)\b/i,
+    /\b(is|are|being)\s+(a |an )?(big |huge |avid |major |massive )?fan(s)? of\b/i,
+    /\benjoys?\s+(watching|reading|playing|listening|following|the\b|this\b)/i,
+    /\b(likes?|loves?|enjoys?|follows?|watches?|reads?|plays?|into)\b[^.]*\b(series|show|movie|film|anime|manga|cartoon|game|video game|book|novel|comic|song|album|artist|band|musician|character|franchise|genre|sport|team|celebrity|youtuber|streamer)\b/i,
+];
+function isLowValueInterest(text) {
+    const s = String(text || '');
+    if (!s) return false;
+    return INTEREST_PATTERNS.some((re) => re.test(s));
 }
 
 // A keyword distinctive enough that a SINGLE shared one is a confident match:
@@ -13403,6 +13438,11 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
             extracted = extractMemoriesFromTurn(pair.userText, pair.assistantText);
         }
         for (const mem of extracted) {
+            // Drop passive consumption/curiosity statements ("user is interested
+            // in X", "is a fan of Y") regardless of how either extractor typed
+            // them — the user wants memory focused on durable facts, behavioral
+            // preferences, and experiential learnings, not topic interests.
+            if (isLowValueInterest(mem.text)) continue;
             candidates.push({
                 text: mem.text,
                 keywords: mem.keywords,
@@ -22538,7 +22578,7 @@ async function pruneScratchFacts(userId, { apply }) {
     for (const inst of modelInstances.values()) if (inst.status === 'running') { running = true; break; }
     if (!running) return { candidates: facts.length, dropped: 0, sample: [], note: 'no model running — skipped' };
 
-    const SYS = 'You audit stored long-term "memories". KEEP durable facts about the USER: identity, life, work, projects, environment, accounts, tools, and RECURRING interests or domains they engage with repeatedly (e.g. a security-analysis topic they keep returning to — keep these even when phrased "the user is interested in …"). DROP only: (a) a ONE-OFF task they asked about once ("looking for streaming sites for movie X", "renting a hand truck"); (b) transient session state / scratch ("since I don\'t have the file…", "the SVG isn\'t on disk", a single past artifact\'s byte size); (c) a specific date/time or live-news item; (d) content the ASSISTANT produced (article quotes, code/templates, citations, news write-ups). When unsure whether an interest is durable or one-off, KEEP it. Reply with ONLY a JSON array of the item NUMBERS to DROP. If none, reply [].';
+    const SYS = 'You audit stored long-term "memories". KEEP durable facts about the USER: identity, life, work, projects, environment, accounts, tools, and the WORK/PROJECT domains they operate in (e.g. they regularly do malware analysis for their job — that is a work fact, keep it). DROP: (a) PASSIVE interests / hobbies / topics they were merely curious about ("the user is interested in <show/game/topic>", "is a fan of X", "enjoys watching Y") — these are not actionable; (b) a ONE-OFF task they asked about once ("looking for streaming sites for movie X", "renting a hand truck"); (c) transient session state / scratch ("since I don\'t have the file…", "the SVG isn\'t on disk", a single past artifact\'s byte size); (d) a specific date/time or live-news item; (e) content the ASSISTANT produced (article quotes, code/templates, citations, news write-ups). When unsure whether something is a durable WORK fact or a passive interest, prefer to DROP passive interests but KEEP work/identity facts. Reply with ONLY a JSON array of the item NUMBERS to DROP. If none, reply [].';
     const drop = new Set();
     const CHUNK = 25;
     for (let i = 0; i < facts.length; i += CHUNK) {
@@ -22580,9 +22620,12 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
         const all = await memoryService.listMemories(userId);
         const before = all.length;
 
-        // 1) JUNK — only AUTO-extracted non-procedure lines the (strengthened)
-        // junk filter now flags. Never deletes manual/user-authored or procedures.
-        const junk = all.filter(m => m.source === 'auto' && m.type !== 'procedure' && isJunkMemoryLine(String(m.text || '')));
+        // 1) JUNK — AUTO-extracted non-procedure lines the (strengthened) junk
+        // filter flags, PLUS passive consumption-interest statements ("user is
+        // interested in X", "is a fan of Y") which the user does not want stored.
+        // Never deletes manual/user-authored or procedures.
+        const junk = all.filter(m => m.source === 'auto' && m.type !== 'procedure'
+            && (isJunkMemoryLine(String(m.text || '')) || isLowValueInterest(String(m.text || ''))));
         const junkSample = junk.slice(0, 15).map(m => ({ id: m.id, type: m.type, text: (m.text || '').slice(0, 90) }));
         if (apply) {
             for (const m of junk) { try { await memoryService.deleteMemory(m.id); } catch (_) { /* continue */ } }

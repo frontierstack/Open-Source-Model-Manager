@@ -101,7 +101,16 @@ export default function MemoryPanel() {
     const [newText, setNewText] = React.useState('');
     const [newType, setNewType] = React.useState('preference');
     const [newImpact, setNewImpact] = React.useState('medium');
+    const [newPinned, setNewPinned] = React.useState(false);
+    const [newLinks, setNewLinks] = React.useState([]);          // memory ids to connect on create
+    const [newLinkPickerOpen, setNewLinkPickerOpen] = React.useState(false);
+    const [newLinkQuery, setNewLinkQuery] = React.useState('');
     const [busy, setBusy] = React.useState(false);
+
+    const resetCreate = () => {
+        setNewText(''); setNewType('preference'); setNewImpact('medium');
+        setNewPinned(false); setNewLinks([]); setNewLinkPickerOpen(false); setNewLinkQuery('');
+    };
 
     const [filter, setFilter] = React.useState('');
     const [query, setQuery] = React.useState('');
@@ -170,7 +179,15 @@ export default function MemoryPanel() {
                 method: 'POST',
                 body: JSON.stringify({ text: newText.trim(), type: newType || null, impact: newImpact || null }),
             });
-            setShowCreate(false); setNewText('');
+            // Apply the extra options to the freshly created memory: pin flag +
+            // any connections the user chose in the form.
+            if (newPinned) {
+                try { await jsonFetch(`/api/memories/${memory.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: true }) }); } catch (_) { /* non-fatal */ }
+            }
+            for (const targetId of newLinks) {
+                try { await jsonFetch(`/api/memories/${memory.id}/link`, { method: 'POST', body: JSON.stringify({ targetId }) }); } catch (_) { /* non-fatal */ }
+            }
+            setShowCreate(false); resetCreate();
             await loadMemories();
             setSelectedId(memory.id);
         } catch (e) { setError(e.message); } finally { setBusy(false); }
@@ -265,6 +282,13 @@ export default function MemoryPanel() {
             (!linkQuery.trim() || (m.text || '').toLowerCase().includes(linkQuery.trim().toLowerCase())))
         : [];
 
+    // Create-form link selection (connections are applied after the memory is
+    // created, since the new id doesn't exist yet).
+    const newLinkedMemories = newLinks.map((id) => memories.find((m) => m.id === id)).filter(Boolean);
+    const newLinkCandidates = memories.filter((m) =>
+        !newLinks.includes(m.id) &&
+        (!newLinkQuery.trim() || (m.text || '').toLowerCase().includes(newLinkQuery.trim().toLowerCase())));
+
     return (
         <div className="flex flex-col" style={{ color: 'var(--text-primary)', height: 'calc(100vh - 140px)', minHeight: '460px' }}>
             {/* Header */}
@@ -299,7 +323,7 @@ export default function MemoryPanel() {
                     )}
                     <button
                         type="button"
-                        onClick={() => setShowCreate((v) => !v)}
+                        onClick={() => { if (showCreate) { setShowCreate(false); resetCreate(); } else { setShowCreate(true); } }}
                         className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition"
                         style={{ backgroundColor: 'var(--accent-primary)', color: '#fff' }}
                     >
@@ -309,33 +333,130 @@ export default function MemoryPanel() {
             </div>
 
             {showCreate && (
-                <div className="mb-4 rounded-lg border p-3" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-secondary)' }}>
+                <div className="mb-4 rounded-lg border p-4" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-secondary)' }}>
+                    <div className="mb-2 text-sm font-semibold tracking-tight">New memory</div>
                     <textarea
                         autoFocus
                         value={newText}
                         onChange={(e) => setNewText(e.target.value)}
-                        placeholder="Something the model should always remember about you (e.g. 'Prefers concise answers with code first, no preamble')."
-                        rows={2}
-                        className="w-full resize-y rounded-md border px-3 py-2 text-sm outline-none"
+                        placeholder="Something the model should always remember (e.g. 'Prefers concise answers with code first, no preamble', or a lesson: 'When parsing GGUF, check the header magic first — saves a failed load')."
+                        rows={3}
+                        className="w-full resize-y rounded-md border px-3 py-2 text-sm leading-relaxed outline-none"
                         style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
                     />
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <select value={newType} onChange={(e) => setNewType(e.target.value)}
-                            className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                            {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                        <select value={newImpact} onChange={(e) => setNewImpact(e.target.value)}
-                            className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                            {IMPACTS.map((t) => <option key={t} value={t}>{t}</option>)}
-                        </select>
+
+                    {/* Field row: type + impact + pin */}
+                    <div className="mt-3 flex flex-wrap items-end gap-4">
+                        <label className="flex flex-col gap-1">
+                            <span className="text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>Type</span>
+                            <select value={newType} onChange={(e) => setNewType(e.target.value)}
+                                className="rounded-md border px-2 py-1.5 text-sm outline-none"
+                                style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
+                                {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                            <span className="text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>Impact</span>
+                            <select value={newImpact} onChange={(e) => setNewImpact(e.target.value)}
+                                className="rounded-md border px-2 py-1.5 text-sm outline-none"
+                                style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
+                                {IMPACTS.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                        </label>
+                        <button
+                            type="button"
+                            onClick={() => setNewPinned((v) => !v)}
+                            title="Pin — never auto-pruned from the store"
+                            className="inline-flex h-[34px] items-center gap-1.5 rounded-md px-3 text-sm font-medium transition"
+                            style={newPinned
+                                ? { color: 'var(--accent-primary)', border: '1px solid var(--border-focus)', backgroundColor: 'var(--accent-muted)' }
+                                : { color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
+                        >
+                            <PinIcon size={14} /> {newPinned ? 'Pinned' : 'Pin'}
+                        </button>
+                    </div>
+
+                    {/* Connections */}
+                    <div className="mt-3">
+                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5 text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>
+                                <LinkIcon size={12} /> Connect to{newLinkedMemories.length > 0 ? ` · ${newLinkedMemories.length}` : ''}
+                            </span>
+                            {memories.length > 0 && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setNewLinkPickerOpen((v) => !v); setNewLinkQuery(''); }}
+                                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition"
+                                    style={newLinkPickerOpen
+                                        ? { backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--border-focus)' }
+                                        : { color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
+                                >
+                                    <PlusIcon size={12} /> Add link
+                                </button>
+                            )}
+                        </div>
+
+                        {newLinkedMemories.length > 0 && (
+                            <div className="mb-2 flex flex-wrap gap-1.5">
+                                {newLinkedMemories.map((lm) => (
+                                    <span key={lm.id} className="inline-flex max-w-[260px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
+                                        style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+                                        <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, backgroundColor: (SOURCE_META[lm.source] || SOURCE_META.auto).dot }} />
+                                        <span className="truncate" title={lm.text}>{lm.title || lm.text}</span>
+                                        <button type="button" onClick={() => setNewLinks((ids) => ids.filter((x) => x !== lm.id))} className="shrink-0" style={{ color: 'var(--text-tertiary)' }}>
+                                            <XIcon size={13} />
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+
+                        {newLinkPickerOpen && (
+                            <div className="rounded-md border" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)' }}>
+                                <input
+                                    value={newLinkQuery}
+                                    onChange={(e) => setNewLinkQuery(e.target.value)}
+                                    placeholder="Search memories to connect…"
+                                    className="w-full rounded-t-md border-b px-3 py-2 text-sm outline-none"
+                                    style={{ backgroundColor: 'transparent', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
+                                />
+                                <div className="max-h-44 overflow-y-auto p-1">
+                                    {newLinkCandidates.length === 0 ? (
+                                        <div className="p-3 text-center text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                                            {memories.length === 0 ? 'No memories to connect yet.' : 'No memories match.'}
+                                        </div>
+                                    ) : newLinkCandidates.slice(0, 40).map((c) => (
+                                        <button key={c.id} type="button"
+                                            onClick={() => { setNewLinks((ids) => [...ids, c.id]); setNewLinkQuery(''); }}
+                                            className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition"
+                                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-hover)'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}>
+                                            <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, marginTop: 5, backgroundColor: (SOURCE_META[c.source] || SOURCE_META.auto).dot }} />
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{c.title || c.text}</div>
+                                                <div className="line-clamp-1 text-[0.68rem]" style={{ color: 'var(--text-tertiary)' }}>{c.text}</div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-2">
                         <button
                             type="button" disabled={busy || !newText.trim()} onClick={createMemory}
-                            className="ml-auto rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+                            className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
                             style={{ backgroundColor: 'var(--accent-primary)', color: '#fff' }}
                         >
                             {busy ? 'Saving…' : 'Add memory'}
+                        </button>
+                        <button
+                            type="button" onClick={() => { setShowCreate(false); resetCreate(); }}
+                            className="rounded-md px-4 py-2 text-sm font-medium"
+                            style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
+                        >
+                            Cancel
                         </button>
                     </div>
                 </div>
