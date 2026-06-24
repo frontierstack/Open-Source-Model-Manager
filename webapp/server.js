@@ -11806,7 +11806,7 @@ function extractTextFromHtml(html, maxLength = 5000) {
 }
 
 // Helper function to fetch content from a URL using axios (fallback)
-async function fetchUrlContentAxios(url, timeout = 8000) {
+async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000) {
     try {
         const response = await axios.get(url, {
             headers: {
@@ -11826,8 +11826,13 @@ async function fetchUrlContentAxios(url, timeout = 8000) {
             return { success: false, error: 'Not HTML content' };
         }
 
-        const content = extractTextFromHtml(response.data);
-        return { success: true, content, url };
+        // Thread the caller's maxLength through (was a fixed 5000 internal cap, which
+        // silently halved articles for the axios fast path) and surface the <title>
+        // so web_search/fetch_url titles aren't blanked when the fast path serves.
+        const content = extractTextFromHtml(response.data, maxLength);
+        const titleMatch = String(response.data || '').match(/<title[^>]*>([^<]+)<\/title>/i);
+        const title = titleMatch ? titleMatch[1].trim() : '';
+        return { success: true, content, title, url };
     } catch (error) {
         return {
             success: false,
@@ -11860,6 +11865,25 @@ function isContentTooThin(content, url) {
         if (pattern.test(trimmed) && trimmed.length < 1000) return true;
     }
     return false;
+}
+
+// Bot-challenge / interstitial markers (Cloudflare "Just a moment", CAPTCHA,
+// "access denied", etc.). Used by the axios fast path in fetchUrlContent to
+// decide whether a cheap GET actually returned the page or a challenge wall —
+// a challenge body must escalate to Scrapling/Playwright, never short-circuit.
+// Module-scope (the IIFE-local CHALLENGE_MARKERS is out of scope here). Caps the
+// scan so a huge body doesn't pay a full regex sweep.
+const CHALLENGE_MARKERS = [
+    /just a moment/i, /checking your browser/i, /cf-challenge/i,
+    /cf-browser-verification/i, /__cf_chl_/i, /attention required/i,
+    /access denied/i, /captcha/i, /verifying you are human/i,
+    /enable javascript and cookies to continue/i, /unusual traffic/i,
+    /pardon our interruption/i,
+];
+function looksLikeChallenge(text) {
+    if (!text) return false;
+    const blob = String(text).slice(0, 8000);
+    return CHALLENGE_MARKERS.some((re) => re.test(blob));
 }
 
 
@@ -12208,6 +12232,34 @@ async function fetchUrlContent(url, options = {}) {
     // This avoids wasting time on Scrapling/Playwright for binary files
     const fileResult = await fetchUrlAsFile(url, { timeout, maxLength });
     if (fileResult) return fileResult;
+
+    // ---- Axios fast path -------------------------------------------------
+    // A cheap HTTP GET first. The Scrapling-first cascade below launches a
+    // Python StealthyFetcher browser subprocess on EVERY url (~3s warm, and a
+    // thin-content miss cascades into a multi-second Playwright run) — but the
+    // large majority of pages are plain, static HTML that a 100-400ms axios GET
+    // returns in full. Short-circuit ONLY on a real, substantive, non-challenged
+    // HTML response; anything else (timeout, non-2xx, non-HTML, thin body, or a
+    // Cloudflare/CAPTCHA interstitial) falls through to the IDENTICAL
+    // Scrapling → Playwright cascade, so bot/JS robustness is unchanged.
+    // Skipped for includeLinks callers (axios can't extract links).
+    if (!options.includeLinks) {
+        try {
+            const ax = await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength);
+            if (ax && ax.success && ax.content &&
+                !isContentTooThin(ax.content, url) &&
+                !looksLikeChallenge(ax.content)) {
+                return {
+                    success: true,
+                    url,
+                    content: smartTruncate(ax.content, maxLength),
+                    title: ax.title || '',
+                    links: [],
+                    source: 'axios-fast',
+                };
+            }
+        } catch (_) { /* fall through to the Scrapling → Playwright cascade */ }
+    }
 
     // Try Scrapling first if available (best CAPTCHA evasion)
     if (scraplingService) {
@@ -13043,6 +13095,8 @@ function isJunkMemoryLine(sentence) {
     // statement punctuation. Real facts mentioning code survive (the cue must be
     // structural), code FRAGMENTS stored verbatim do not.
     if (/^\s*\$\w+\s*=/.test(t)) return true;                         // $x = …
+    if (/^\s*(echo|curl|wget|sudo|apt|apk|npm|pip|git|chmod|mkdir|export)\s+["'-]/i.test(t)) return true;  // a line that IS a shell command (echo "…", curl -…), not prose about one
+    if (/^\s*["'][^"'\n]{1,60}["']\s*[:=]\s*["']/.test(t)) return true;                                     // "key" = "value" / "Header": "value" literal — a code/config fragment, not a fact
     if (/\b(Where-Object|Write-Host|ForEach-Object|Select-Object|Invoke-RestMethod)\b/.test(t)) return true;
     if (/=>|;\s*$|\{\s*$|^\s*(function|const|let|var|def|class|import|return|public|private)\b/.test(t)) return true;
     // Link-dominated line ("📖 Read more: [Vogue HK](https://…)", "https://… for updates"):
@@ -13055,6 +13109,29 @@ function isJunkMemoryLine(sentence) {
     // "IP 1.2.3.4") survive; the scoreFactuality length gate backstops the rest.
     const letters = (t.match(/[a-zA-Z]/g) || []).length;
     if (letters < 4) return true;
+    return false;
+}
+
+// A line that is a REQUEST/COMMAND to the assistant ("Give me all the info for
+// the Diablo 4 patch", "show me a picture of X", "can you check Y?") rather than
+// a durable FACT about the user. Such lines describe what the user wanted in one
+// turn, not a stable truth — re-injected later under "WHAT YOU KNOW ABOUT THIS
+// USER" they're noise (the largest junk class in the live store).
+// IMPORTANT: this is type-AWARE at every call site (only ever applied to
+// fact-typed / !isDirectiveType candidates). It must NOT be wired into
+// isJunkMemoryLine, which runs PRE-classification and would silently kill a
+// leading-imperative DIRECTIVE ("please always use tabs", "from now on output
+// JSON") — exactly the behavioral memory worth keeping.
+// `^`-anchored + multi-word, assistant-addressed openers only, so a mid-sentence
+// "the API lets users find records" never matches. Weak verbs (check/verify/…)
+// require an explicit "please" softener so a bare imperative isn't over-caught.
+function looksLikeRequest(text) {
+    const t = String(text || '').trim();
+    if (/\?\s*$/.test(t)) return true;                                  // trailing-? = a question
+    // Strong, unambiguous request openers (with or without a leading "please").
+    if (/^(please\s+)?(give me|show me|tell me|find me|get me|send me|look ?up|search for|help me|can you|could you|would you|will you)\b/i.test(t)) return true;
+    // Weaker verbs count as a request ONLY when softened by an explicit "please".
+    if (/^please\s+(give|show|tell|find|get|search|look ?up|check|verify|confirm|make sure|pull up)\b/i.test(t)) return true;
     return false;
 }
 
@@ -13217,11 +13294,14 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
             // (corrections / workarounds / learnings the exchange established);
             // real user facts come from the USER side (or the LLM extractor).
             if (role === 'assistant' && !isDirectiveType) continue;
-            // A question is the user ASKING, not a durable fact — "my script
-            // keeps crashing — any idea why?" is not a memory. Drop interrogative
-            // sentences from the fact path (directive cues, which can phrase a
-            // request, are exempt).
-            if (!isDirectiveType && /\?\s*$/.test(sentence.trim())) continue;
+            // A question OR a bare command to the assistant is the user ASKING,
+            // not a durable fact — "my script keeps crashing — any idea why?",
+            // "Give me all the info for the Diablo 4 patch" are not memories. Drop
+            // request-shaped sentences from the fact path. The `!isDirectiveType`
+            // guard is load-bearing: an imperative PREFERENCE ("please always use
+            // tabs", "from now on output JSON") is typed preference/correction by
+            // classifyMemoryHeuristic → isDirectiveType, and must stay exempt.
+            if (!isDirectiveType && looksLikeRequest(sentence)) continue;
             if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
             // Passive consumption-interest ("user is into the show X") is not a
             // memory the user wants — drop it here too (the candidate choke point
@@ -13300,6 +13380,12 @@ const EPHEMERAL_PATTERNS = [
     /\bheadlines?\b/i,
     /\bnews (right now|today|this (week|morning))\b/i,
     /\bin the news\b/i,
+    // Transient SESSION-scoped state — a file that was/wasn't on disk THIS
+    // session, what's available "in this conversation". True only for the moment
+    // it was captured; re-injected on a later turn it's actively misleading
+    // ("the SVG isn't available on disk in this session" when it later is).
+    /\b(in|for|during) this (session|conversation|chat|turn)\b/i,
+    /\b(isn'?t|is not|not|no longer)\s+(available|present|found|on disk)\b[^.]{0,40}\b(on disk|this session|this conversation)\b/i,
 ];
 function isEphemeralFact(sentence) {
     const s = String(sentence || '');
@@ -13449,6 +13535,11 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
             // them — the user wants memory focused on durable facts, behavioral
             // preferences, and experiential learnings, not topic interests.
             if (isLowValueInterest(mem.text)) continue;
+            // Bare request/command stored as a fact — covers BOTH the heuristic
+            // and the LLM extractor uniformly (the LLM path occasionally emits a
+            // raw user request as type:'fact'). Scoped to fact-typed only, so an
+            // imperative-phrased directive is untouched.
+            if (mem.type === 'fact' && looksLikeRequest(mem.text)) continue;
             candidates.push({
                 text: mem.text,
                 keywords: mem.keywords,
@@ -13688,6 +13779,11 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
             if (sem.total === 0 && storedCount > 0) {
                 memoryService.reindexUser(userId).catch(() => {});
                 semScores = null;
+            } else if (sem.total > 0) {
+                // Engine confirmed HEALTHY (real vectors back): if this account
+                // extracted memories while it was down, merge the duplicates that
+                // accreted keyword-only. Fire-and-forget, no-ops unless flagged.
+                memoryService.reconcileIfPending(userId);
             }
         }
     } catch (_) { semScores = null; }
@@ -13782,7 +13878,12 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const procScoreOf = (m) => {
         const activityMatch = (activityHint && m.activity === activityHint) ? 1.5 : 0;
         const depthBoost = Math.min(0.4, 0.1 * ((m.count || 1) - 1));
-        return relOf(m) + activityMatch + depthBoost + scoreOf(m);
+        // scoreOf already includes relOf(m) once — adding relOf again here
+        // double-counted relevance, letting a coincidentally keyword-heavy
+        // WRONG-activity procedure outrank the activity-matched one. Count
+        // relevance once (via scoreOf) so activityMatch (1.5) strictly dominates
+        // it (max 1.0), restoring "the activity match leads".
+        return activityMatch + depthBoost + scoreOf(m);
     };
 
     const PROC_MAX = 8, DIRECTIVE_MAX = 18, FACT_MAX = 8;
@@ -13818,7 +13919,12 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // strongest matches fill the remaining budget first.
     const factCands = all
         .filter(m => !isDirective(m) && !isProcedure(m))
-        .filter(m => !isEphemeralFact(m.text) && isRelevant(m))
+        // Retrieval defense for already-stored rows: a passive interest or a
+        // request-shaped fact never injects even if it clears the relevance gate
+        // (extraction-time filters only stop NEW writes; these clean the legacy
+        // store). Directives/procedures are excluded above, so an imperative-
+        // phrased preference is unaffected.
+        .filter(m => !isEphemeralFact(m.text) && !isLowValueInterest(m.text) && !looksLikeRequest(m.text) && isRelevant(m))
         .map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
 
     const picked = [];
@@ -13874,6 +13980,19 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
                 const lm = byId.get(lid);
                 if (!lm) continue;                              // dangling / muted
                 if (isEphemeralFact(lm.text)) continue;         // never resurface time-bound content
+                if (isLowValueInterest(lm.text)) continue;      // never resurface a passive interest via a link
+                // A linked memory rides along only if it's genuinely on-topic for
+                // THIS turn: it clears the normal relevance gate, OR is a semantic
+                // near-miss in the top-k (relaxed floor), OR always-surfaces anyway
+                // (pinned / global directive / procedure). Without this, link
+                // expansion injected arbitrary similarity-graph neighbors that never
+                // matched the query — the leak this gate closes. Keyword-only mode
+                // (semScores null) → semOf null → the relaxed-floor clause is inert
+                // and gating falls to isRelevant's keyword arm, so memory never
+                // silently breaks.
+                const alwaysSurface = lm.pinned || isProcedure(lm) || isGlobalBehavioralDirective(lm);
+                const linkRelevant = isRelevant(lm) || ((semOf(lm) ?? 0) >= MEMORY_SEM_THRESHOLD * 0.7);
+                if (!alwaysSurface && !linkRelevant) continue;
                 const tk = tokOf(lm);
                 if (usedTokens + tk > tokenBudget) continue;
                 picked.push(lm); pickedIds.add(lid); usedTokens += tk; linkExpanded++;
@@ -17618,6 +17737,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         } catch (e) {
             console.warn('[Chat Stream] tool catalog build failed:', e.message);
         }
+        // Memoize the catalog's JSON + token estimate ONCE per turn — it's stable
+        // across every tool round (built here, never rebuilt), but was re-
+        // JSON.stringify'd (40-60KB) 2-3x per round in the hot loop. The forced-
+        // synthesis path empties `toolCatalog` IN PLACE then restores it, so each
+        // CONSUMER below still gates on the LIVE `toolCatalog.length` and selects
+        // these memoized values only when tools are actually attached — i.e. ''/0
+        // during synthesis. `estimateTokens` is the chat-stream-local estimator,
+        // matching the original call sites exactly.
+        const toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+        const toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
         // Accumulator is reset at the start of every model turn (outer loop).
         let accumulatedToolCalls = [];
         let toolCallRound = 0;
@@ -17912,7 +18041,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // the request actually sends (stringified messages + catalog)
                     // so it is the final guarantee even if the outer loop's
                     // content-only budgeting undercounts structural overhead.
-                    const toolsTokensForFit = toolCatalog.length ? estimateTokens(JSON.stringify(toolCatalog)) : 0;
+                    const toolsTokensForFit = toolCatalog.length ? toolCatalogTokens : 0;  // live-guarded: 0 during forced synthesis
                     let sendMessages = requestMessages;
                     {
                         const fitted = fitMessagesToContext(requestMessages, toolsTokensForFit, Math.min(maxTokens, MIN_OUTPUT_BUDGET));
@@ -17936,7 +18065,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     let actualMaxTokens = maxTokens;
                     try {
                         const messagesJson = JSON.stringify(sendMessages);
-                        const toolsJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                        const toolsJson = toolCatalog.length ? toolCatalogJson : '';  // live-guarded: '' during forced synthesis
                         const inputTokenEstimate = estimateTokens(messagesJson + toolsJson);
                         const headroom = contextSize - inputTokenEstimate - 200;
                         if (actualMaxTokens > headroom) {
@@ -18253,7 +18382,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // the catalog) then clamps max_tokens to the 64-token floor and
             // every tool call truncates mid-argument. A big skill catalog
             // (100+ tools) is easily 10-15k tokens.
-            const toolCatalogTokens = toolCatalog.length ? estimateTokens(JSON.stringify(toolCatalog)) : 0;
+            // (toolCatalogTokens is memoized once per turn at the catalog build
+            // above; this loop never empties toolCatalog, so it's the same value.)
             // MIN_OUTPUT_BUDGET (1024) is declared once in the handler scope
             // above and shared with streamOneRequest's last-resort fit.
             updateJobPhase('generating');
@@ -22676,8 +22806,22 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
         // filter flags, PLUS passive consumption-interest statements ("user is
         // interested in X", "is a fan of Y") which the user does not want stored.
         // Never deletes manual/user-authored or procedures.
+        // Deterministic request-junk detector — runs REGARDLESS of model
+        // availability (pruneScratchFacts needs a loaded model and bails without
+        // one, which is exactly when bare-request facts accrete unaudited). Flags
+        // only an AUTO fact that LEADS with a request to the assistant AND carries
+        // no durable first/second-person predicate or stable identifier — i.e. a
+        // one-off task ask ("Give me all the info for the Diablo 4 patch"), never a
+        // fact about the user. "When unsure, KEEP."
+        const isRequestJunk = (m) => {
+            const t = String(m.text || '');
+            return m.source === 'auto' && m.type === 'fact' && !m.pinned
+                && looksLikeRequest(t)
+                && !/\b(i (am|use|prefer|work|run|need|have|like|want)|i'?m|my )\b/i.test(t)         // no first/second-person durable predicate
+                && !/(\d{1,3}(\.\d{1,3}){3}|cve-\d|\/[\w./-]+|[a-z0-9.-]+\.(com|net|org|io|in|dev|app|gov))\b/i.test(t); // no IP/CVE/path/domain
+        };
         const junk = all.filter(m => m.source === 'auto' && m.type !== 'procedure'
-            && (isJunkMemoryLine(String(m.text || '')) || isLowValueInterest(String(m.text || ''))));
+            && (isJunkMemoryLine(String(m.text || '')) || isLowValueInterest(String(m.text || '')) || isRequestJunk(m)));
         const junkSample = junk.slice(0, 15).map(m => ({ id: m.id, type: m.type, text: (m.text || '').slice(0, 90) }));
         if (apply) {
             for (const m of junk) { try { await memoryService.deleteMemory(m.id); } catch (_) { /* continue */ } }
@@ -23039,6 +23183,15 @@ app.use((req, res) => {
             if (!rawQuery) return { error: 'query is required' };
             const q = extractSearchQuery(rawQuery);
             const limit = Math.min(10, Math.max(1, parseInt(args?.limit || 5, 10)));
+            // Result cache — reuses the /api/search `searchCache` (1h TTL, 1000-entry
+            // LRU). Repeated identical searches within a turn/session skip the full
+            // DDG round-trip. ONLY successful, fully-parsed results are cached: error
+            // / rate-limited returns are never pinned, so a transient block re-runs
+            // the whole DDG→Brave→Scrapling evasion chain on the next call.
+            const cacheKey = `wsearch:${q}:${limit}`;
+            cleanExpiredCache();
+            if (searchCache.has(cacheKey)) { const c = searchCache.get(cacheKey); return { ...c.data, cached: true }; }
+            const cacheReturn = (out) => { searchCache.set(cacheKey, { data: out, timestamp: Date.now() }); return out; };
             try {
                 const resp = await axios.get(
                     `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
@@ -23052,25 +23205,12 @@ app.use((req, res) => {
                 );
                 const html = resp.data || '';
                 if (html.includes('anomaly-modal')) {
-                    // DDG hit CAPTCHA — fall back through the same chain
-                    // /api/search uses: Scrapling → Brave Search HTML parse.
-                    if (scraplingService) {
-                        try {
-                            const sr = await scraplingService.search(q, limit);
-                            if (sr?.success && Array.isArray(sr.results) && sr.results.length) {
-                                return {
-                                    query: q,
-                                    source: 'scrapling',
-                                    count: sr.results.length,
-                                    results: sr.results.slice(0, limit).map(r => ({
-                                        title: r.title || 'No title',
-                                        url: r.url,
-                                        snippet: r.snippet || '',
-                                    })),
-                                };
-                            }
-                        } catch (_) { /* fall through to Brave */ }
-                    }
+                    // DDG hit CAPTCHA — fall back through Brave FIRST, then Scrapling.
+                    // Brave is a cheap axios HTML GET that actually produces results
+                    // post-CAPTCHA (~10s). Scrapling here just re-fetches the SAME
+                    // already-CAPTCHA'd DDG endpoint via a plain Fetcher (no evasion
+                    // advantage in this block), so it's demoted below Brave and only
+                    // runs when Brave parses nothing — avoiding a redundant subprocess.
                     try {
                         const braveResp = await axios.get(
                             `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
@@ -23108,10 +23248,27 @@ app.use((req, res) => {
                             bResults.push({ title, url, snippet: bDescs[i] || '' });
                         }
                         if (bResults.length) {
-                            return { query: q, source: 'brave', count: bResults.length, results: bResults };
+                            return cacheReturn({ query: q, source: 'brave', count: bResults.length, results: bResults });
                         }
-                    } catch (_) { /* fall through to error */ }
-                    return { error: 'search rate-limited by DuckDuckGo; Scrapling and Brave fallbacks also failed. Consider calling scrapling_fetch directly on the target domain.', query: q };
+                    } catch (_) { /* fall through to Scrapling */ }
+                    if (scraplingService) {
+                        try {
+                            const sr = await scraplingService.search(q, limit);
+                            if (sr?.success && Array.isArray(sr.results) && sr.results.length) {
+                                return cacheReturn({
+                                    query: q,
+                                    source: 'scrapling',
+                                    count: sr.results.length,
+                                    results: sr.results.slice(0, limit).map(r => ({
+                                        title: r.title || 'No title',
+                                        url: r.url,
+                                        snippet: r.snippet || '',
+                                    })),
+                                });
+                            }
+                        } catch (_) { /* fall through to error */ }
+                    }
+                    return { error: 'search rate-limited by DuckDuckGo; Brave and Scrapling fallbacks also failed. Consider calling scrapling_fetch directly on the target domain.', query: q };
                 }
                 const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
                 const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
@@ -23133,7 +23290,7 @@ app.use((req, res) => {
                         snippet: sm ? sm[1].replace(/<[^>]*>/g, '').trim() : '',
                     });
                 }
-                return { query: q, count: results.length, results };
+                return cacheReturn({ query: q, count: results.length, results });
             } catch (e) {
                 return { error: `search failed: ${e.message}`, query: q };
             }
@@ -23470,7 +23627,11 @@ app.use((req, res) => {
                 const candidates = (imgs || [])
                     .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
                     .filter(im => { const k = normKey(im.url); if (!k || seenSrc.has(k)) return false; seenSrc.add(k); return true; })
-                    .slice(0, Math.max(count * 3, count + 6));
+                    // Probe ~1.5x the needed count (+4 floor for dead-result
+                    // tolerance) instead of 3x — every extra candidate pays a
+                    // liveness probe + capture; 1.5x amply covers the dead-URL drop
+                    // rate while cutting wasted probes/bandwidth and tail latency.
+                    .slice(0, Math.max(Math.ceil(count * 1.5), count + 4));
                 const vetted = await Promise.all(candidates.map(async (im) => {
                     const renderTries = [];
                     for (const cand of [im.thumbnail, im.url]) {
@@ -23547,15 +23708,23 @@ app.use((req, res) => {
                 // (bounded — the pool is small). Largest images first.
                 if (pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.extractPageImages === 'function') {
                     const perPage = Math.max(4, count * 2);
-                    for (const pg of pageUrls.slice(0, 4)) {
-                        try {
-                            const res = await playwrightService.extractPageImages(pg.url, { maxResults: perPage });
-                            if (res && res.success && Array.isArray(res.images)) {
-                                for (const im of res.images.slice(0, perPage)) {
-                                    images.push(mk(pg.meta, im.url, { source: 'page', sourceUrl: pg.url }));
-                                }
+                    const targets = pageUrls.slice(0, 4);
+                    // Render the gallery pages in PARALLEL (matches find_video's
+                    // page extraction). Concurrency is hard-capped by the Playwright
+                    // pool (getBrowser queues, never over-subscribes), and
+                    // extractPageImages self-bounds with an internal timeout. Results
+                    // are consumed IN ARRAY ORDER so which images survive finalize's
+                    // count-slice is identical to the old serial loop.
+                    const perPageResults = await Promise.all(targets.map(pg =>
+                        playwrightService.extractPageImages(pg.url, { maxResults: perPage })
+                            .then(res => ({ pg, res }))
+                            .catch(() => ({ pg, res: null }))));   // one bad page can't sink the batch
+                    for (const { pg, res } of perPageResults) {
+                        if (res && res.success && Array.isArray(res.images)) {
+                            for (const im of res.images.slice(0, perPage)) {
+                                images.push(mk(pg.meta, im.url, { source: 'page', sourceUrl: pg.url }));
                             }
-                        } catch (_) { /* one bad page shouldn't sink the rest */ }
+                        }
                     }
                 }
 
@@ -23841,7 +24010,9 @@ app.use((req, res) => {
             const finalize = async (vids, source, lim = count) => {
                 const candidates = (vids || [])
                     .filter(v => v && (v.embedUrl || v.videoUrl))
-                    .slice(0, Math.max(lim * 3, lim + 6));
+                    // ~1.5x margin (+4 floor) instead of 3x — same dead-result
+                    // tolerance, fewer wasted ranged probes (see find_image).
+                    .slice(0, Math.max(Math.ceil(lim * 1.5), lim + 4));
                 const vetted = await Promise.all(candidates.map(async (v) => {
                     const embedUrl = v.embedUrl ? toHttps(v.embedUrl) : null;
                     let videoUrl = v.videoUrl ? toHttps(v.videoUrl) : null;
@@ -23851,19 +24022,28 @@ app.use((req, res) => {
                     // the probe is authoritative. For a file the model or an
                     // og:video tag explicitly declared, a known video extension is
                     // trusted even when the ranged probe is flaky.
+                    // Run the video + thumbnail probes CONCURRENTLY (the direct-file
+                    // branch otherwise did them serially). Trust logic is byte-for-
+                    // byte the original, applied to the resolved booleans.
+                    const streamy = videoUrl && (v.streamType || isStreamManifest(videoUrl));
+                    const vidP = (!embedUrl && videoUrl)
+                        ? (streamy ? probeReachable(videoUrl) : probeVideo(videoUrl))
+                        : null;
+                    const httpsThumb = (v.thumbnail && !v.trustThumb) ? toHttps(v.thumbnail) : null;
+                    const thumbP = httpsThumb ? probeImage(httpsThumb) : null;
+                    const [vidOk, thumbOk] = await Promise.all([vidP, thumbP]);
                     if (!embedUrl && videoUrl) {
-                        if (v.streamType || isStreamManifest(videoUrl)) {
+                        if (streamy) {
                             // HLS/DASH manifest — liveness is "does it load", not
                             // "is it video/*". The client plays it via hls.js.
-                            if (!(await probeReachable(videoUrl))) videoUrl = null;
+                            if (!vidOk) videoUrl = null;
                         } else {
-                            const ok = await probeVideo(videoUrl);
-                            if (!ok && (v.mustProbe || !isDirectVideo(videoUrl))) videoUrl = null;
+                            if (!vidOk && (v.mustProbe || !isDirectVideo(videoUrl))) videoUrl = null;
                         }
                     }
                     if (!embedUrl && !videoUrl) return null;
                     let thumbnail = v.thumbnail ? toHttps(v.thumbnail) : null;
-                    if (thumbnail && !v.trustThumb && !(await probeImage(thumbnail))) thumbnail = null;
+                    if (thumbnail && !v.trustThumb && thumbOk === false) thumbnail = null;   // === false: a non-probed (null) thumb never gets nulled
                     return { ...v, embedUrl, videoUrl, thumbnail, url: toHttps(v.url || v.sourceUrl || '') };
                 }));
                 const clean = vetted.filter(Boolean).slice(0, lim);
@@ -23994,7 +24174,7 @@ app.use((req, res) => {
                 if (!/^https?:\/\//i.test(pageUrl) || isPrivateUrl(pageUrl)) return null;
                 let res;
                 try {
-                    res = await playwrightService.sniffMediaStreams(pageUrl, { interact: true, timeout: 18000, settleMs: 2500, captureMs: 4500, maxResults: 12 });
+                    res = await playwrightService.sniffMediaStreams(pageUrl, { interact: true, timeout: 18000, settleMs: 2500, captureMs: 4500, maxResults: 12, earlyExit: true });
                 } catch (_) { return null; }
                 if (!res || !res.success) return null;
                 const media = Array.isArray(res.media) ? res.media : [];

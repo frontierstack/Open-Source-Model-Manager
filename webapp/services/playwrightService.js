@@ -165,7 +165,12 @@ function flattenJsonToText(data, maxLength = 6000, prefix = '', depth = 0) {
 
 // Browser pool management
 let browserPool = [];
-const MAX_POOL_SIZE = 3;
+// Default 3 (unchanged). Operators on a larger host can raise it via
+// PLAYWRIGHT_MAX_POOL to reduce serialization under the find_image/find_video/
+// sniff fan-outs (which can request 4-12 pages). Default is deliberately NOT
+// bumped — headless-chromium peak RSS isn't predictable from a launch-time
+// check, so a silent raise risks OOM next to the model containers.
+const MAX_POOL_SIZE = Math.max(1, parseInt(process.env.PLAYWRIGHT_MAX_POOL, 10) || 3);
 const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 let poolCleanupInterval = null;
 
@@ -915,14 +920,40 @@ async function fetchUrlContent(url, options = {}) {
         // Wait for JS to render content
         if (waitForJS) {
             // Wait for networkidle first (best signal that JS frameworks have loaded data)
+            // Kept at 8s and BEFORE the settle poll so the XHR-capture window
+            // (page.on('response') → capturedJsonResponses) is unchanged — the
+            // "Structured data:" enrichment is not cut short.
             try {
                 await page.waitForLoadState('networkidle', { timeout: 8000 });
             } catch (e) {
                 // Ignore timeout, continue with what we have
             }
 
-            // Give JS time to hydrate and render (especially for shadow DOM components, SPAs)
-            await page.waitForTimeout(randomDelay(3000, 5000));
+            // Bounded content-settle poll — replaces a flat 3-5s hydration wait.
+            // Exit as soon as the document is complete AND body text has stabilized
+            // (>=500 chars, unchanged across two 250ms samples), capped at ~3s. The
+            // readyState gate keeps an XHR-hydrating SPA from being cut early; a
+            // ~700-900ms floor preserves the anti-bot "human dwell" signal and gives
+            // the DOM a beat to paint. A genuinely thin page never satisfies the
+            // >=500 condition, polls to the cap, and the <500 slow-SPA path below
+            // still runs — slow-render recovery is unchanged. Net: a fast-rendering
+            // page returns in ~1-1.5s instead of a fixed 3-5s.
+            await page.waitForTimeout(randomDelay(700, 900));   // hard floor
+            {
+                let lastLen = -1, stable = 0;
+                for (let i = 0; i < 10; i++) {
+                    let ready = 'complete', len = 0;
+                    try {
+                        [ready, len] = await page.evaluate(() => [
+                            document.readyState, (document.body?.innerText || '').trim().length
+                        ]);
+                    } catch (_) { break; }   // navigation/eval race — stop polling, proceed
+                    if (ready === 'complete' && len >= 500 && len === lastLen) { stable++; if (stable >= 1) break; }
+                    else stable = 0;
+                    lastLen = len;
+                    await page.waitForTimeout(250);
+                }
+            }
 
             // Check if page has meaningful content, if not wait longer for late-loading SPAs
             const bodyTextLength = await page.evaluate(() => (document.body?.innerText || '').trim().length);
@@ -1496,6 +1527,11 @@ async function sniffMediaStreams(url, options = {}) {
         settleMs = 3500,
         captureMs = 6000,
         maxResults = 25,
+        // When true (find_video's single-pick fallback), the settle + capture
+        // waits bail as soon as a manifest is observed, instead of burning the
+        // full fixed windows. The native sniff_media_streams inventory tool keeps
+        // earlyExit=false so it still returns the COMPLETE stream inventory.
+        earlyExit = false,
     } = options;
 
     let poolEntry = null;
@@ -1551,11 +1587,27 @@ async function sniffMediaStreams(url, options = {}) {
         page.on('request', (req) => { try { record(req.url(), ''); } catch (_) {} });
         page.on('response', (resp) => { try { record(resp.url(), resp.headers()['content-type'] || ''); } catch (_) {} });
 
+        // Wait helper: fixed window normally; under earlyExit, poll in 250ms steps
+        // and bail the instant an HLS/DASH manifest is observed (segments are
+        // unreliable — they may never appear within the window — so gate on
+        // manifests only), capped at the same window.
+        const waitWindow = async (capMs) => {
+            if (!earlyExit) { await page.waitForTimeout(capMs); return; }
+            const steps = Math.max(1, Math.ceil(capMs / 250));
+            for (let i = 0; i < steps; i++) {
+                if (counts.hls > 0 || counts.dash > 0) break;
+                await page.waitForTimeout(250);
+            }
+        };
+
         // Don't hard-fail on a >=400 HTML status — some player pages 403 the
         // document yet still expose the stream over XHR.
         await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
-        try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
-        await page.waitForTimeout(settleMs);
+        // networkidle never fires on a live-streaming page, so the old 8s cap was
+        // pure wasted wait (the catch already swallows the timeout); 3s is enough
+        // for non-streaming setup. Applies to both paths.
+        try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {}
+        await waitWindow(settleMs);
 
         // Supplement with DOM-declared sources (cheap; catches <video>/og:video)
         // plus provider <iframe> players the JS injected — a YouTube/Vimeo/etc.
@@ -1613,7 +1665,7 @@ async function sniffMediaStreams(url, options = {}) {
                 const box = await page.locator('video').first().boundingBox().catch(() => null);
                 if (box && box.width > 80) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
             } catch (_) {}
-            await page.waitForTimeout(captureMs);
+            await waitWindow(captureMs);
         }
 
         // Order: manifests first (hls, then dash), then files; preserve

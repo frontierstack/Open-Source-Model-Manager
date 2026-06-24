@@ -94,6 +94,14 @@ const LINK_MAX_PER_NEW = 3;
 const CONSOLIDATE_SEM = 0.5;
 const CONSOLIDATE_MIN_SHARED = 2;
 const CONSOLIDATE_SOFT_CAP = 90;   // run the pass once a user's store grows past this
+
+// Accounts whose auto-extraction ran while the embedding engine was DOWN, so the
+// semantic supersede/auto-link pass couldn't fire and near-duplicates may have
+// accreted keyword-only. The next injector turn that confirms a HEALTHY engine
+// calls reconcileIfPending() to merge them. In-memory + best-effort by design —
+// a process restart simply forgets it (the SOFT_CAP consolidation backstop and
+// the maintenance endpoint still catch any survivors).
+const pendingSemReconcile = new Set();
 // Experience variants: how many distinct recipes one activity may hold, and
 // how close a new recipe must be (topic overlap) to refine an existing one
 // instead of becoming a new variant. Practice specializes: "coding" on a React
@@ -638,10 +646,25 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
     for (const c of candidates) {
         let scores = null;
         try {
-            const sem = await memoryIndex.search(userId, String(c.text || ''), 32);
+            // k=50 (the engine's hard clamp, kb_engine.py) rather than 32: the
+            // supersede/auto-link scan only sees the top-k existing memories per
+            // candidate, so a busy account with >32 topically-clustered memories
+            // would silently stop superseding (one-directional, no symmetry
+            // rescue) and accumulate duplicates. A larger k only adds candidates
+            // against the SAME cosine+shared-keyword gates, so it can't cause a
+            // wrong merge — it only eliminates false-negatives.
+            const sem = await memoryIndex.search(userId, String(c.text || ''), 50);
             scores = sem ? sem.scores : null;
         } catch (_) { scores = null; }
         candSem.push(scores);
+    }
+    // Rank 11 — engine-down detection: every candidate searched but ALL returned
+    // null means the embedding engine is down (an empty but HEALTHY index returns
+    // a non-null empty Map). Flag the account so the next healthy injector turn
+    // reconciles the duplicates that accreted keyword-only while it was down.
+    // In-memory + best-effort (no disk write); cleared on reconcile.
+    if (candidates.length && candSem.every((s) => s === null)) {
+        pendingSemReconcile.add(userId);
     }
     let added = 0;
     let superseded = 0;
@@ -770,7 +793,12 @@ async function consolidateUser(userId, opts = {}) {
     const before = list.length;
     if (auto && before <= CONSOLIDATE_SOFT_CAP) return { before, after: before, merged: 0, clusters: 0, merges: [] };
 
-    const eligible = (m) => m && !m.pinned && m.type !== 'procedure';
+    // Manual (user-authored) memories are protected like pinned/procedures — a
+    // consolidation pass must never merge away a fact the USER wrote by hand
+    // (e.g. a hand-added config requirement getting absorbed into a looser
+    // auto-extracted paraphrase of the same subject). Auto memories still
+    // consolidate among themselves.
+    const eligible = (m) => m && !m.pinned && m.type !== 'procedure' && m.source !== 'manual';
     const byId = new Map(list.map((m) => [m.id, m]));
 
     // Union-find over "near-duplicate" edges.
@@ -1319,6 +1347,18 @@ async function migrateLegacyForUserImpl(userId) {
     return { migrated: true, imported };
 }
 
+// Called by the injector ONCE it has confirmed the embedding engine is healthy
+// (a non-null semantic result this turn). If this account extracted memories
+// while the engine was down (flagged in pendingSemReconcile), merge the
+// duplicates that accreted keyword-only. keep-strongest (mergeText:null);
+// consolidateUser itself no-ops if the engine is somehow down again, and never
+// touches pinned/manual/procedure rows. Fire-and-forget.
+function reconcileIfPending(userId) {
+    if (!userId || !pendingSemReconcile.has(userId)) return;
+    pendingSemReconcile.delete(userId);
+    consolidateUser(userId, { auto: false, apply: true, mergeText: null }).catch(() => {});
+}
+
 module.exports = {
     // CRUD
     listMemories,
@@ -1339,6 +1379,7 @@ module.exports = {
     deriveMemoryTitle,
     countForUser,
     reindexUser,
+    reconcileIfPending,
     // cursors
     getCursor,
     setCursor,
