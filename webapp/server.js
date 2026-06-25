@@ -854,43 +854,111 @@ function scrubHarmonyTokens(s) {
 }
 
 // Reasoning-loop detector. Some models (observed on gemma-4 Harmony
-// templates) get stuck in a "Wait, I will read X.**" style enumeration
-// in their reasoning stream — 50+ numbered steps, no tool call, no
-// content, just endless to-do restating. The tool-call loop detector
-// can't catch this because there are no tool calls. This watches the
-// reasoning accumulated during a single round and returns a reason
-// string when it looks pathological; caller aborts the stream.
+// templates and reasoning-ON Qwen3/DeepSeek checkpoints) get stuck in a
+// "Wait, I will read X.**" style enumeration in their reasoning stream —
+// 50+ restated steps, no tool call, no content, just endless re-planning.
+// The tool-call loop detector can't catch this (there are no tool calls).
+// This watches the reasoning accumulated during a single round and returns
+// a reason string when it looks pathological. The CALLER no longer
+// dead-stops on a hit — it nudges the model to break out and re-streams
+// (see the reasoning-loop recovery block in /api/chat/stream), so the
+// detector can afford to be a little more eager without abandoning a turn.
 //
-// Two signals:
-//   - Hard cap: > REASONING_HARD_CAP chars of reasoning this round with
-//     zero content and zero tool calls → abort. Safety net for cases
-//     where the repeating phrase isn't one we recognize.
-//   - Phrase repetition: recognizable loop phrases appearing 8+ times
-//     in the last 4000 chars of the round's reasoning → abort. Catches
-//     it earlier than the hard cap.
-const REASONING_HARD_CAP = 15000;
+// Signals (the caller AND-gates all of them on "this round produced zero
+// content and zero tool calls", so a turn that interleaves real output with
+// long reasoning is never flagged):
+//   1. Phrase repetition — a recognizable loop phrase 8+ times in the tail.
+//   2. Verbatim-segment repetition — the SAME substantial reasoning
+//      sentence/line repeated REASONING_REPEAT_MIN+ times AND making up
+//      >= REASONING_REPEAT_RATIO of the tail's segments. Catches loops whose
+//      phrasing we don't hardcode (model restating one step over and over).
+//   3. Soft cap — past REASONING_HARD_CAP chars, fire when the tail is
+//      LOW-diversity (unique word-trigram ratio < REASONING_LOW_DIVERSITY).
+//   4. Absolute cap — past the larger REASONING_ABSOLUTE_CAP, fire on a
+//      LOOSER diversity gate (< REASONING_ABSOLUTE_DIVERSITY): the longer a
+//      content-less trace runs, the more a repetitive tail signals a loop.
+//      A genuinely high-entropy long trace (hard math/codegen reasoning) keeps
+//      minting new trigrams and survives BOTH caps — its only ceiling is the
+//      model's own max_tokens budget, which already bounds total reasoning, so
+//      we never clip diverse in-progress thinking (a reasoning model streams
+//      its whole CoT as content-less reasoning, so caps must not punish length).
+// The two length caps + the nudge-retry budget are env-tunable (no rebuild),
+// matching the codebase's other tunable thresholds. Recovery is graceful, so
+// these can be tuned per-deployment without risking a dead-stopped turn.
+const REASONING_HARD_CAP = parseInt(process.env.REASONING_HARD_CAP, 10) || 15000;
+const REASONING_ABSOLUTE_CAP = parseInt(process.env.REASONING_ABSOLUTE_CAP, 10) || 40000;
+const _reasoningMaxRetries = parseInt(process.env.REASONING_LOOP_MAX_RETRIES, 10);
+const REASONING_LOOP_MAX_RETRIES = Number.isNaN(_reasoningMaxRetries) ? 2 : Math.max(0, _reasoningMaxRetries);
 const REASONING_CHECK_GRANULARITY = 1500;
+const REASONING_LOW_DIVERSITY = 0.40;        // soft-cap diversity gate (strict)
+const REASONING_ABSOLUTE_DIVERSITY = 0.55;   // absolute-cap diversity gate (looser)
+const REASONING_REPEAT_MIN = 6;
+const REASONING_REPEAT_MIN_LEN = 20;
+const REASONING_REPEAT_RATIO = 0.40;
 const REASONING_LOOP_PHRASES = [
     { pattern: /\bWait,\s*I\s+will\b/gi, name: 'Wait, I will' },
     { pattern: /\bLet'?s\s+(go|start)\b/gi, name: "Let's go/start" },
     { pattern: /\bOkay,?\s+let'?s\b/gi, name: "Okay, let's" },
 ];
+// Unique word-trigram ratio over a text window. Looping text reuses the same
+// trigrams (low ratio); progressing text keeps minting new ones (high ratio).
+function uniqueTrigramRatio(text) {
+    const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+    if (words.length < 3) return 1; // too little to judge — treat as diverse
+    const seen = new Set();
+    let total = 0;
+    for (let i = 0; i + 2 < words.length; i++) {
+        seen.add(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
+        total++;
+    }
+    return total ? seen.size / total : 1;
+}
 function makeReasoningLoopDetector() {
-    // State per request. Tracks when we last ran the repetition check
-    // so we don't scan the buffer on every 20-char SSE delta.
+    // State per ROUND (the detector is created fresh inside streamOneRequest
+    // each round so lastCheckAt resets). Tracks when we last ran the scan so
+    // we don't re-scan the buffer on every 20-char SSE delta.
     let lastCheckAt = 0;
     return function detect(reasoningThisRound) {
         const len = reasoningThisRound.length;
         if (len - lastCheckAt < REASONING_CHECK_GRANULARITY) return null;
         lastCheckAt = len;
-        if (len > REASONING_HARD_CAP) {
-            return `hard cap (${REASONING_HARD_CAP} chars of reasoning with no content or tool call)`;
-        }
         const tail = reasoningThisRound.slice(-4000);
+        // 1. Known loop phrases.
         for (const { pattern, name } of REASONING_LOOP_PHRASES) {
             const matches = tail.match(pattern);
             if (matches && matches.length >= 8) {
-                return `"${name}" appeared ${matches.length} times in the last ~4000 chars of reasoning`;
+                return `"${name}" repeated ${matches.length}x in recent reasoning`;
+            }
+        }
+        // 2. Generic verbatim-segment repetition.
+        const segs = tail
+            .split(/[\n.!?]+/)
+            .map(s => s.trim().toLowerCase().replace(/\s+/g, ' '))
+            .filter(s => s.length >= REASONING_REPEAT_MIN_LEN);
+        if (segs.length >= REASONING_REPEAT_MIN) {
+            const counts = new Map();
+            let top = 0, topSeg = '';
+            for (const s of segs) {
+                const c = (counts.get(s) || 0) + 1;
+                counts.set(s, c);
+                if (c > top) { top = c; topSeg = s; }
+            }
+            if (top >= REASONING_REPEAT_MIN && top / segs.length >= REASONING_REPEAT_RATIO) {
+                return `the same reasoning step repeated ${top}x ("${topSeg.slice(0, 40)}…")`;
+            }
+        }
+        // 3/4. Length caps, BOTH diversity-gated so a genuinely high-entropy
+        // trace survives (only max_tokens bounds it). The bar lowers as the
+        // content-less run grows: a strict gate at the soft cap, a looser gate
+        // at the larger absolute cap — the longer it runs with no output, the
+        // more a repetitive tail signals a loop rather than real progress.
+        if (len > REASONING_HARD_CAP) {
+            const ratio = uniqueTrigramRatio(tail);
+            if (len > REASONING_ABSOLUTE_CAP && ratio < REASONING_ABSOLUTE_DIVERSITY) {
+                return `absolute cap (${REASONING_ABSOLUTE_CAP}+ chars, low-diversity tail ${ratio.toFixed(2)})`;
+            }
+            if (ratio < REASONING_LOW_DIVERSITY) {
+                return `${REASONING_HARD_CAP}+ chars of low-diversity reasoning (trigram diversity ${ratio.toFixed(2)})`;
             }
         }
         return null;
@@ -17964,10 +18032,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             kind: 'waiting',
         });
 
-        // Reasoning-loop guard — per-request state. Once a loop is detected
-        // and aborted, we stay in the aborted state for the rest of the turn.
-        let reasoningLoopAborted = false;
-        const reasoningLoopDetector = makeReasoningLoopDetector();
+        // Reasoning-loop recovery — per-turn state. A detected loop no longer
+        // dead-stops the turn: streamOneRequest aborts only the looping ROUND
+        // and returns a 'reasoning_loop' sentinel; the recovery block in the
+        // tool loop nudges the model to break out and re-streams up to
+        // REASONING_LOOP_MAX_RETRIES, then forces a tools-and-thinking-
+        // suppressed synthesis (gated on reasoningLoopExhausted) so the user
+        // still gets a real answer instead of a "rephrase your request" dead
+        // end. The detector itself is created PER ROUND inside streamOneRequest
+        // (so its granularity cursor resets each round). lastReasoningLoopReason
+        // carries the most recent reason out for logging/status.
+        // REASONING_LOOP_MAX_RETRIES is module-level + env-tunable.
+        let reasoningLoopRetries = 0;
+        let reasoningLoopExhausted = false;
+        let lastReasoningLoopReason = '';
 
         // Floor on the per-request output budget. Below this, tool calls
         // reliably truncate mid-JSON. Shared by streamOneRequest's last-resort
@@ -18026,8 +18104,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Buffer state resets between rounds so a stray open tag in
             // round N doesn't bleed into round N+1.
             const textualToolCallExtractor = makeTextualToolCallExtractor();
+            // Per-round reasoning-loop detector (granularity cursor resets each
+            // round) + a per-round AbortController. On a detected loop we abort
+            // ONLY this round's backend generation (sparing the completion
+            // budget) and resolve the sentinel 'reasoning_loop' — WITHOUT
+            // touching the turn-level streamAbortController, so the outer loop
+            // can nudge + re-stream. Turn-level aborts (user cancel via
+            // DELETE /streaming) are forwarded to the round controller so a real
+            // cancel still stops axios; the forwarder is removed on settle so
+            // listeners never accumulate across rounds/continuations/synthesis.
+            const roundLoopDetector = makeReasoningLoopDetector();
+            const roundAbortController = new AbortController();
+            let loopDetectedThisRound = false;
+            const onTurnAbort = () => { try { roundAbortController.abort(); } catch (_) {} };
+            if (streamAbortController.signal.aborted) roundAbortController.abort();
+            else streamAbortController.signal.addEventListener('abort', onTurnAbort, { once: true });
+            const cleanupTurnAbortForward = () => {
+                try { streamAbortController.signal.removeEventListener('abort', onTurnAbort); } catch (_) {}
+            };
             return new Promise(async (resolve, reject) => {
                 let lastFinishReason = 'stop';
+                // Single idempotent settlement: the first settle wins, so an
+                // abort-by-loop 'error' and a racing clean 'end' can neither
+                // double-settle nor lose the sentinel. Always cleans up the
+                // turn-abort forwarder.
+                let settled = false;
+                const settle = (isResolve, value) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanupTurnAbortForward();
+                    if (isResolve) resolve(value); else reject(value);
+                };
 
                 try {
                     // Authoritative last-resort fit: before clamping max_tokens,
@@ -18094,7 +18201,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
                         data: requestBody,
                         responseType: 'stream',
-                        signal: streamAbortController.signal
+                        signal: roundAbortController.signal
                     });
 
                     // Persistent buffer across chunks — TCP packet boundaries do not
@@ -18105,6 +18212,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const sseDecoder = new StringDecoder('utf8');
                     let sseBuffer = '';
                     response.data.on('data', (chunk) => {
+                        // Once a reasoning loop is detected (or the stream has
+                        // otherwise settled), drop any late chunks the aborting
+                        // backend still emits so they can't append stray
+                        // content/reasoning into the round we're recovering.
+                        if (settled) return;
                         try {
                             sseBuffer += sseDecoder.write(chunk);
                             const lines = sseBuffer.split('\n');
@@ -18225,29 +18337,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                                 // Reasoning-loop guard. Only triggers when this round
                                                 // has produced NO content and NO tool calls — a valid
                                                 // turn that happens to have long reasoning sprinkled
-                                                // with actual output won't be killed.
-                                                if (!reasoningLoopAborted) {
+                                                // with actual output won't be flagged. On a hit we abort
+                                                // ONLY this round (the per-round controller) and resolve
+                                                // the 'reasoning_loop' sentinel; the outer recovery block
+                                                // nudges the model to break out and re-streams instead of
+                                                // dead-stopping the turn. No dead-stop note is written
+                                                // here — recovery / forced synthesis owns the messaging.
+                                                if (!loopDetectedThisRound) {
                                                     const roundContentLen = fullResponse.length - roundContentStart;
                                                     const noProgress = roundContentLen === 0 && accumulatedToolCalls.length === 0;
                                                     if (noProgress) {
-                                                        const reason = reasoningLoopDetector(fullReasoning.slice(roundReasoningStart));
+                                                        const reason = roundLoopDetector(fullReasoning.slice(roundReasoningStart));
                                                         if (reason) {
-                                                            reasoningLoopAborted = true;
-                                                            const note = `\n\n_[The model got stuck in a reasoning loop — ${reason}. Stream was stopped before burning the completion budget. Try rephrasing the request, breaking it into smaller steps, or using a different model.]_`;
-                                                            fullResponse += note;
-                                                            console.warn(`[Chat Stream] Reasoning loop detected — ${reason}; aborting stream`);
-                                                            if (clientConnected) {
-                                                                try {
-                                                                    res.write(`data: ${JSON.stringify({
-                                                                        choices: [{ delta: { content: note }, index: 0 }]
-                                                                    })}\n\n`);
-                                                                } catch (_) { clientConnected = false; }
-                                                            }
-                                                            if (streamingConversationId) {
-                                                                const job = activeStreamingJobs.get(streamingConversationId);
-                                                                if (job) job.content = fullResponse;
-                                                            }
-                                                            streamAbortController.abort();
+                                                            loopDetectedThisRound = true;
+                                                            lastReasoningLoopReason = reason;
+                                                            console.warn(`[Chat Stream] Reasoning loop detected — ${reason}; aborting round to recover`);
+                                                            roundAbortController.abort();
+                                                            settle(true, 'reasoning_loop');
+                                                            return;
                                                         }
                                                     }
                                                 }
@@ -18273,6 +18380,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     });
 
                     response.data.on('end', () => {
+                        // If a reasoning loop was detected mid-round, the stream
+                        // is being aborted — settle the sentinel and skip the
+                        // trailing-buffer drain (it would only re-append the
+                        // looped tail we're discarding).
+                        if (loopDetectedThisRound) { settle(true, 'reasoning_loop'); return; }
                         // Flush any residual bytes held by StringDecoder (partial
                         // multi-byte UTF-8) and process any trailing buffered line
                         // that didn't end with '\n'.
@@ -18355,14 +18467,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 } catch (_) { clientConnected = false; }
                             }
                         }
-                        resolve(lastFinishReason);
+                        settle(true, lastFinishReason);
                     });
 
                     response.data.on('error', (error) => {
-                        reject(error);
+                        // A loop-triggered round abort surfaces here as a
+                        // CanceledError — resolve the sentinel instead of
+                        // rejecting so the outer loop recovers. A turn-level
+                        // (user) cancel forwarded to roundAbortController also
+                        // lands here; loopDetectedThisRound is false in that
+                        // case, so it rejects and the user cancel propagates.
+                        if (loopDetectedThisRound) { settle(true, 'reasoning_loop'); return; }
+                        settle(false, error);
                     });
                 } catch (error) {
-                    reject(error);
+                    if (loopDetectedThisRound) { settle(true, 'reasoning_loop'); return; }
+                    settle(false, error);
                 }
             });
         };
@@ -18592,6 +18712,50 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 );
 
                 finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
+
+                // --- Reasoning-loop recovery -------------------------------
+                // The model spun in its reasoning stream this round (phrase /
+                // verbatim repetition / low-diversity / cap) with no content
+                // and no tool call; streamOneRequest aborted just THIS round
+                // (sparing the completion budget) and returned the
+                // 'reasoning_loop' sentinel. Instead of dead-stopping the turn,
+                // nudge the model to stop deliberating and either act or answer,
+                // then re-stream — escalating across REASONING_LOOP_MAX_RETRIES.
+                // When the budget is spent, fall through to the tools-and-
+                // thinking-suppressed forced synthesis below so the user still
+                // gets a real answer. The nudge 'continue' does NOT increment
+                // toolCallRound (matches the other re-stream detectors); the
+                // turn-level retry counter is the only bound.
+                if (finishReason === 'reasoning_loop') {
+                    // Honor a user cancel that landed DURING the loop: if the
+                    // turn-level controller is aborted, do not re-prompt —
+                    // break out and let the normal abort/cancel path run.
+                    if (streamAbortController.signal.aborted) break;
+                    if (reasoningLoopRetries < REASONING_LOOP_MAX_RETRIES) {
+                        reasoningLoopRetries++;
+                        const escalate = reasoningLoopRetries >= REASONING_LOOP_MAX_RETRIES;
+                        logChatActivity(`Reasoning loop (${lastReasoningLoopReason}) — nudging the model to answer (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`);
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'status',
+                                    message: 'Model was over-deliberating — nudging it to respond',
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                        const nudge = escalate
+                            ? 'You are repeating your reasoning without making progress. STOP thinking now and immediately write your best direct answer to the user from what you already know. Do not deliberate further. If a tool is strictly required, emit exactly ONE tool_call instead — but do not keep planning.'
+                            : 'You appear to be looping in your reasoning without reaching a conclusion. Stop re-planning and commit now: either emit a single tool_call to take the next concrete action, or write your final answer to the user directly. Keep any further reasoning very brief.';
+                        currentMessages = [...currentMessages, { role: 'system', content: nudge }];
+                        console.warn(`[Chat Stream] Reasoning loop — re-streaming with ${escalate ? 'escalated ' : ''}nudge (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`);
+                        continuationCount = 0; // fresh length budget for the re-stream
+                        continue; // re-stream WITHOUT incrementing toolCallRound
+                    }
+                    // Retry budget spent — stop nudging and force a synthesis.
+                    reasoningLoopExhausted = true;
+                    console.warn(`[Chat Stream] Reasoning loop persisted after ${REASONING_LOOP_MAX_RETRIES} nudge(s) — forcing synthesis`);
+                    break; // exit the tool loop → forced-synthesis block below
+                }
 
                 // Auto-continuation loop: if model hit length limit, keep going.
                 // Skipped when tool calls are accumulated — the slim continuation
@@ -19188,14 +19352,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             //    no answer. Re-run with tools suppressed so the model has
             //    to write text from the tool results already in context.
             //
-            // Skip forced synthesis when reasoningLoopAborted is set —
-            // fullResponse already carries the "loop detected" note that
-            // the user needs to see, and forcing another round would
-            // likely re-enter the same loop.
+            // 4. A reasoning loop persisted through every nudge retry
+            //    (reasoningLoopExhausted). This is now ALSO a forced-synthesis
+            //    trigger: rather than dead-stopping, we suppress tools AND
+            //    thinking (/no_think) and make the model answer from what it
+            //    has. Handled in the trigger below + the synthesis message.
             const hitIterationCap = toolCallRound > chatTools.MAX_TOOL_ITERATIONS
                 && (finishReason === 'tool_calls'
                     || (finishReason === 'length' && accumulatedToolCalls.length > 0));
-            const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim() && !reasoningLoopAborted;
+            const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim();
             // 3. The model walked through many tool calls narrating each step
             //    ("Let me try X", "Now let me Y:") and then stopped mid-thought
             //    with the trailing text ending on a sentence-fragment marker
@@ -19212,31 +19377,47 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             const endsMidThought = trailing.length > 0
                 && /[:;—–]\s*$/.test(trailing.slice(-4));
             const exitedMidThought = toolCallRound > 1 && endsMidThought
-                && accumulatedToolCalls.length === 0
-                && !reasoningLoopAborted;
-            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought) {
-                if (hitIterationCap) {
+                && accumulatedToolCalls.length === 0;
+            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted) {
+                if (reasoningLoopExhausted) {
+                    console.warn(`[Chat Stream] Reasoning loop exhausted — forcing tools+thinking-suppressed synthesis`);
+                } else if (hitIterationCap) {
                     console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached — forcing synthesis`);
                 } else if (exitedMidThought) {
                     console.warn(`[Chat Stream] Tool loop exited mid-thought after ${toolCallRound} tool call(s) — forcing synthesis (trail: ${JSON.stringify(trailing.slice(-60))})`);
                 } else {
                     console.warn(`[Chat Stream] Tool loop exited with empty response after ${toolCallRound} tool call(s) — forcing synthesis`);
                 }
-                if (clientConnected) {
+                // Run synthesis when the client is connected OR when a loop
+                // exhausted — the latter must still generate (into fullResponse)
+                // for a BACKGROUND turn so it persists a real answer instead of
+                // a blank bubble. res.write calls inside self-guard on clientConnected.
+                if (clientConnected || reasoningLoopExhausted) {
                     try {
                         if (clientConnected) {
                             try {
                                 res.write(`data: ${JSON.stringify({
                                     type: 'status',
-                                    message: 'Tool call budget exhausted — synthesizing from collected results',
+                                    message: reasoningLoopExhausted
+                                        ? 'Model kept over-deliberating — forcing a direct answer'
+                                        : 'Tool call budget exhausted — synthesizing from collected results',
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
+                        // For an exhausted reasoning loop, prepend /no_think (when
+                        // the model honors it) so the synthesis itself can't loop
+                        // again, and tell it plainly to stop deliberating.
+                        const loopSynthPrefix = (reasoningLoopExhausted && modelSupportsNoThinkPrefix(targetModel)) ? '/no_think\n' : '';
                         const synthesisMessages = [
                             ...currentMessages,
                             {
                                 role: 'user',
-                                content: hitIterationCap
+                                content: reasoningLoopExhausted
+                                    ? loopSynthPrefix +
+                                      'You kept repeating your reasoning without ever answering. Stop deliberating completely. ' +
+                                      'Write the best direct answer you can RIGHT NOW using what is already in this conversation. ' +
+                                      'Do not call any tools and do not think out loud — just give the answer, even if brief or partial.'
+                                    : hitIterationCap
                                     ? 'You have reached the maximum number of tool calls allowed for this turn. ' +
                                       'Synthesize your final answer now from the tool results already in this conversation — ' +
                                       'do not request any more tools. If some information is missing, state that clearly ' +
@@ -19273,6 +19454,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                     } catch (synthErr) {
                         console.warn('[Chat Stream] Forced synthesis failed:', synthErr.message);
+                    }
+                    // Last-resort note: only if a loop persisted AND the forced
+                    // synthesis STILL produced nothing. Mutate fullResponse
+                    // unconditionally (so a backgrounded turn persists an
+                    // explanation rather than a blank bubble); gate only the SSE.
+                    if (reasoningLoopExhausted && !fullResponse.trim()) {
+                        const soft = '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_';
+                        fullResponse += soft;
+                        if (streamingConversationId) {
+                            const job = activeStreamingJobs.get(streamingConversationId);
+                            if (job) job.content = fullResponse;
+                        }
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    choices: [{ delta: { content: soft }, index: 0 }],
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
                     }
                 }
             }
@@ -19421,11 +19621,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // endpoint handles partial-response persistence for those.
         const wasAborted = streamAbortController.signal.aborted;
         // User-cancelled aborts skip this save — DELETE /streaming handles
-        // persistence for those. Reasoning-loop aborts DO save, because
-        // fullResponse already contains the "loop detected" note that the
-        // user needs to see persisted (otherwise the chat reloads as an
-        // empty assistant bubble with no explanation).
-        if ((!wasAborted || reasoningLoopAborted) && streamingConversationId && fullResponse) {
+        // persistence for those. A reasoning loop no longer aborts the
+        // turn-level controller (it recovers in-place), so the normal
+        // !wasAborted path persists the recovered/synthesized answer (or the
+        // last-resort note) just like any other completed turn.
+        if (!wasAborted && streamingConversationId && fullResponse) {
             try {
                 const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
                 // Only append if the last message isn't already this
@@ -19465,7 +19665,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // model's persona). Fire-and-forget — must never block the response.
         // Captures the successful tool path so the next similar task front-loads
         // what worked and skips re-exploration → fewer tool calls, faster.
-        if (streamingConversationId && !streamAbortController.signal.aborted) {
+        // Skipped on an exhausted reasoning loop — its tool path is degenerate
+        // (the model never converged) and would poison the procedure store.
+        if (streamingConversationId && !streamAbortController.signal.aborted && !reasoningLoopExhausted) {
             recordTurnActivity({
                 userId: chatMemId,
                 conversationId: streamingConversationId,
