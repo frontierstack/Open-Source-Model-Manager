@@ -10,7 +10,7 @@ import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
     Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
     Sparkles, Wand2, FlaskConical, RotateCcw,
-    LayoutGrid, Workflow, ListChecks, Boxes, Clock,
+    LayoutGrid, Workflow, ListChecks, Boxes, Clock, Blocks,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -561,25 +561,31 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (_) { return []; }
     }, []);
 
+    // Build the node palette from built-in primitives + the user's custom
+    // node-types. Reusable so the Library's node-builder can refresh it on save.
+    const loadPalette = useCallback(async () => {
+        const [bRes, cRes] = await Promise.all([
+            fetch('/api/node-types/builtin', { credentials: 'include' }),
+            fetch('/api/node-types', { credentials: 'include' }),
+        ]);
+        const builtins = bRes.ok ? await bRes.json() : [];
+        const custom = cRes.ok ? await cRes.json() : [];
+        const pal = [
+            ...(builtins || []).map(b => {
+                const key = b.key || b.type;
+                return { key, kind: b.type, label: PALETTE_LABEL_OVERRIDE[key] || b.label, category: PALETTE_CATEGORY_OVERRIDE[key] || b.category, defaults: b.defaults || {}, custom: false, description: b.description || '', app: PALETTE_APP[key] || null };
+            }),
+            ...(custom || []).filter(c => c.enabled !== false).map(c => ({ key: c.id, kind: c.baseType || 'tool', label: c.name, category: c.category, defaults: c.defaults || {}, custom: true, description: c.description || '', app: null })),
+        ].filter(p => !PALETTE_HIDDEN.has(p.key) && !PALETTE_HIDDEN.has(p.kind));
+        setPalette(pal);
+    }, []);
+
     useEffect(() => {
         (async () => {
-            const [bRes, cRes] = await Promise.all([
-                fetch('/api/node-types/builtin', { credentials: 'include' }),
-                fetch('/api/node-types', { credentials: 'include' }),
-            ]);
-            const builtins = bRes.ok ? await bRes.json() : [];
-            const custom = cRes.ok ? await cRes.json() : [];
-            const pal = [
-                ...(builtins || []).map(b => {
-                    const key = b.key || b.type;
-                    return { key, kind: b.type, label: PALETTE_LABEL_OVERRIDE[key] || b.label, category: PALETTE_CATEGORY_OVERRIDE[key] || b.category, defaults: b.defaults || {}, custom: false, description: b.description || '', app: PALETTE_APP[key] || null };
-                }),
-                ...(custom || []).filter(c => c.enabled !== false).map(c => ({ key: c.id, kind: c.baseType || 'tool', label: c.name, category: c.category, defaults: c.defaults || {}, custom: true, description: c.description || '', app: null })),
-            ].filter(p => !PALETTE_HIDDEN.has(p.key) && !PALETTE_HIDDEN.has(p.kind));
-            setPalette(pal);
+            await loadPalette();
             await Promise.all([loadAutomations(), loadChips()]);
         })();
-    }, [loadAutomations, loadChips]);
+    }, [loadPalette, loadAutomations, loadChips]);
 
     // Seed per-node results from the most recent run so clicking a node shows
     // its last output even after a page reload (best-effort; silent on failure).
@@ -1390,7 +1396,7 @@ function FlowEditor({ showSnackbar, models }) {
                 <RunsScreen automations={automations} selectedId={selected?.id} confirm={confirm} notify={notify} onOpenBuilder={(a) => { if (a) selectAutomation(a.id); setScreen('builder'); }} />
             )}
             {screen === 'library' && (
-                <LibraryScreen groupedPalette={groupedPalette} categoryOrder={CATEGORY_ORDER} categoryLabel={CATEGORY_LABEL} automations={automations} onAddToFlow={async (item, flowId) => { if (flowId) { await selectAutomation(flowId); } else { await newAutomation(); } addFromPalette(item); setScreen('builder'); }} />
+                <LibraryScreen groupedPalette={groupedPalette} categoryOrder={CATEGORY_ORDER} categoryLabel={CATEGORY_LABEL} automations={automations} notify={notify} confirm={confirm} onPaletteChanged={loadPalette} onAddToFlow={async (item, flowId) => { if (flowId) { await selectAutomation(flowId); } else { await newAutomation(); } addFromPalette(item); setScreen('builder'); }} />
             )}
             {screen === 'builder' && (<>
             {/* Header */}
@@ -1455,10 +1461,12 @@ function FlowEditor({ showSnackbar, models }) {
                     ? { position: 'fixed', top: 0, bottom: 0, left: 0, zIndex: 60, width: 'min(86vw, 320px)', background: 'var(--bg)', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)', transition: 'transform 0.28s ease', boxShadow: leftDrawerOpen ? '0 0 24px rgba(0,0,0,0.4)' : 'none' }
                     : { width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     {!isMobile && <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />}
-                    <div style={{ padding: '12px 12px 11px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
-                        <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
-                            <Plus size={15} /> <span>New automation</span>
-                        </button>
+                    <div style={{ padding: '12px 12px 11px', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                            <button className="auto-btn auto-btn--accent auto-newbtn" onClick={newAutomation}>
+                                <Plus size={14} strokeWidth={2.2} /> <span>New automation</span>
+                            </button>
+                        </div>
                         <div className="auto-rail__aihint">Create with AI</div>
                         <div className="auto-rail__aibtns">
                             <button className="auto-btn auto-btn--grow" onClick={() => openAssistant('build')} title="Describe an automation and let the model build it for you">
@@ -1469,7 +1477,7 @@ function FlowEditor({ showSnackbar, models }) {
                             </button>
                         </div>
                     </div>
-                    <div style={{ overflowY: 'auto', flex: '0 0 auto', maxHeight: '38%', padding: '4px 8px 8px' }}>
+                    <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, padding: '4px 8px 8px', borderTop: '1px solid var(--rule)' }}>
                         <div className="auto-rail__section">
                             <span>Automations</span>
                             {automations.length > 0 && <span className="auto-rail__count">{automations.length}</span>}
@@ -3621,19 +3629,42 @@ function RunsScreen({ automations = [], onOpenBuilder, confirm, notify }) {
     );
 }
 
-function LibraryScreen({ groupedPalette = {}, categoryOrder = [], categoryLabel = {}, automations = [], onAddToFlow }) {
+function customAsPaletteItem(nt) {
+    return { key: nt.id, kind: nt.baseType || 'tool', label: nt.name, category: nt.category, defaults: nt.defaults || {}, custom: true, description: nt.description || '' };
+}
+
+function LibraryScreen({ groupedPalette = {}, categoryOrder = [], categoryLabel = {}, automations = [], notify, confirm, onPaletteChanged, onAddToFlow }) {
     const [q, setQ] = useState('');
     const [pending, setPending] = useState(null); // node item awaiting an automation choice
+    const [customTypes, setCustomTypes] = useState([]);
+    const [builder, setBuilder] = useState(null); // { base? } when open
     const query = q.trim().toLowerCase();
     const match = (it) => !query || (`${it.label} ${it.description || ''}`).toLowerCase().includes(query);
     const live = automations.filter(a => !a.archived);
 
+    const loadCustom = useCallback(async () => {
+        try { const r = await fetch('/api/node-types', { credentials: 'include' }); const d = r.ok ? await r.json() : []; setCustomTypes(Array.isArray(d) ? d : []); }
+        catch (_) { setCustomTypes([]); }
+    }, []);
+    useEffect(() => { loadCustom(); }, [loadCustom]);
+
+    const onSaved = async () => { setBuilder(null); await loadCustom(); if (onPaletteChanged) await onPaletteChanged(); notify && notify('Custom block saved'); };
+    const removeType = async (nt) => {
+        const ok = confirm ? await confirm({ title: 'Delete block', message: `Delete the custom block “${nt.name}”? Flows already using it keep working.`, confirmLabel: 'Delete', danger: true }) : window.confirm('Delete this block?');
+        if (!ok) return;
+        try {
+            const r = await fetch(`/api/node-types/${nt.id}`, { method: 'DELETE', credentials: 'include' });
+            if (!r.ok) throw new Error('Failed');
+            await loadCustom(); if (onPaletteChanged) await onPaletteChanged(); notify && notify('Block deleted');
+        } catch (_) { notify && notify('Failed to delete block', 'error'); }
+    };
+
     const choose = (item) => {
-        // No flows yet → straight to a new one. Exactly one → use it. Else ask.
         if (live.length === 0) { onAddToFlow(item, null); return; }
         if (live.length === 1) { onAddToFlow(item, live[0].id); return; }
         setPending(item);
     };
+    const myCustom = customTypes.filter(c => match({ label: c.name, description: c.description }));
 
     return (
         <div className="auto-screen">
@@ -3642,9 +3673,29 @@ function LibraryScreen({ groupedPalette = {}, categoryOrder = [], categoryLabel 
                     <div className="auto-ptitle">Node library</div>
                     <div className="auto-psub">Building blocks for your automations</div>
                 </div>
-                <div className="auto-libsearch"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search nodes…" /></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div className="auto-libsearch"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search nodes…" /></div>
+                    <button className="auto-btn auto-btn--accent" onClick={() => setBuilder({})}><Blocks size={14} /> <span>Manage Node</span></button>
+                </div>
             </div>
             <div className="auto-libpage">
+                {myCustom.length > 0 && (
+                    <>
+                        <div className="auto-libsection"><span className="auto-libsection__t">Custom blocks</span><span className="auto-libsection__c">{myCustom.length}</span><span className="auto-libsection__hr" /></div>
+                        {myCustom.map(nt => (
+                            <div key={nt.id} className="auto-ncard auto-ncard--custom">
+                                <span className={`auto-ncard__cat cc-${consoleCat(nt.baseType)}`} />
+                                <div className="auto-ncard__nm">{nt.name}{nt._ownerName ? <span className="auto-ncard__owner">{nt._ownerName}</span> : null}</div>
+                                {nt.description && <div className="auto-ncard__des">{nt.description}</div>}
+                                <div className="auto-ncard__actions">
+                                    <button onClick={() => choose(customAsPaletteItem(nt))}><Plus size={12} /> Add</button>
+                                    <button onClick={() => setBuilder({ base: nt })}><Wand2 size={12} /> Edit</button>
+                                    <button className="is-danger" onClick={() => removeType(nt)}><Trash2 size={12} /></button>
+                                </div>
+                            </div>
+                        ))}
+                    </>
+                )}
                 {categoryOrder.map(cat => {
                     const items = (groupedPalette[cat] || []).filter(match);
                     if (!items.length) return null;
@@ -3682,6 +3733,93 @@ function LibraryScreen({ groupedPalette = {}, categoryOrder = [], categoryLabel 
                     </div>
                 </div>
             )}
+            {builder && <NodeBuilderModal base={builder.base} onClose={() => setBuilder(null)} onSaved={onSaved} notify={notify} />}
+        </div>
+    );
+}
+
+// LLM-assisted node-type authoring: describe a block (or a change to an existing
+// one) → the loaded model drafts a node-type → preview → save. POST /build drafts;
+// POST/PUT /api/node-types persists.
+function NodeBuilderModal({ base, onClose, onSaved, notify }) {
+    const isEdit = !!base;
+    const [prompt, setPrompt] = useState('');
+    const [building, setBuilding] = useState(false);
+    const [preview, setPreview] = useState(isEdit ? base : null);
+    const [saving, setSaving] = useState(false);
+    const [err, setErr] = useState('');
+
+    const build = async () => {
+        if (!prompt.trim()) return;
+        setBuilding(true); setErr('');
+        try {
+            const r = await fetch('/api/node-types/build', {
+                method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: prompt.trim(), base: isEdit ? base : undefined }),
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'The model could not build that — try rephrasing.');
+            setPreview(p => ({ ...(isEdit ? base : {}), ...d.nodeType }));
+        } catch (e) { setErr(e.message); }
+        finally { setBuilding(false); }
+    };
+
+    const save = async () => {
+        if (!preview || !preview.name) { setErr('Nothing to save yet — build a block first.'); return; }
+        setSaving(true); setErr('');
+        const body = { name: preview.name, category: preview.category, description: preview.description, baseType: preview.baseType, defaults: preview.defaults || {}, fields: preview.fields || [], condition: preview.condition ?? null };
+        try {
+            const r = await fetch(isEdit ? `/api/node-types/${base.id}` : '/api/node-types', {
+                method: isEdit ? 'PUT' : 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'Failed to save');
+            onSaved();
+        } catch (e) { setErr(e.message); setSaving(false); }
+    };
+
+    const defaultsEntries = preview && preview.defaults ? Object.entries(preview.defaults) : [];
+    return (
+        <div className="cf-modal-backdrop" onMouseDown={onClose}>
+            <div className="auto-nbmodal" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="auto-nbmodal__head">
+                    <span className="auto-nbmodal__title">{isEdit ? `Edit “${base.name}”` : 'Build a node'}</span>
+                    <button className="ai-modal__close" onClick={onClose} title="Close"><CloseIcon size={16} /></button>
+                </div>
+                <div className="auto-nbmodal__body">
+                    <label className="ai-modal__label">{isEdit ? 'Describe the change' : 'Describe the block you want'}</label>
+                    <textarea className="ai-modal__composer" style={{ minHeight: 96 }} value={prompt} onChange={(e) => setPrompt(e.target.value)}
+                        placeholder={isEdit ? 'e.g. also pre-fill the channel to #alerts and keep only the message field editable' : 'e.g. a connector that posts a message to my Slack #alerts channel'} />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                        <button className="auto-btn auto-btn--accent" onClick={build} disabled={building || !prompt.trim()}>
+                            <Sparkles size={13} /> <span>{building ? 'Building…' : (preview && !isEdit ? 'Rebuild' : 'Build with AI')}</span>
+                        </button>
+                    </div>
+                    {err && <div className="auto-deterr" style={{ marginTop: 10 }}>{err}</div>}
+                    {preview && preview.name && (
+                        <div className="auto-nbprev">
+                            <div className="auto-nbprev__top">
+                                <input className="auto-nbprev__name" value={preview.name} onChange={(e) => setPreview(p => ({ ...p, name: e.target.value }))} />
+                                <span className={`auto-pill cc-${consoleCat(preview.baseType)}`} style={{ background: 'transparent', color: `var(--cat-${consoleCat(preview.baseType)})` }}>{preview.category}</span>
+                            </div>
+                            <div className="auto-nbprev__base">specializes <code>{preview.baseType}</code></div>
+                            <textarea className="auto-nbprev__desc" value={preview.description || ''} onChange={(e) => setPreview(p => ({ ...p, description: e.target.value }))} placeholder="Description" />
+                            {defaultsEntries.length > 0 && (
+                                <div className="auto-nbprev__sec"><div className="auto-nbprev__lbl">Pre-filled</div>
+                                    {defaultsEntries.map(([k, v]) => <div key={k} className="auto-nbprev__kv"><code>{k}</code><span>{String(typeof v === 'object' ? JSON.stringify(v) : v).slice(0, 90)}</span></div>)}
+                                </div>
+                            )}
+                            {(preview.fields || []).length > 0 && (
+                                <div className="auto-nbprev__sec"><div className="auto-nbprev__lbl">Editable fields</div><div className="auto-nbprev__fields">{preview.fields.join(' · ')}</div></div>
+                            )}
+                        </div>
+                    )}
+                </div>
+                <div className="auto-nbmodal__foot">
+                    <button className="auto-btn" onClick={onClose}>Cancel</button>
+                    <button className="auto-btn auto-btn--accent" onClick={save} disabled={!preview || !preview.name || saving}>{saving ? 'Saving…' : (isEdit ? 'Save changes' : 'Save block')}</button>
+                </div>
+            </div>
         </div>
     );
 }
