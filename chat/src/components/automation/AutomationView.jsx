@@ -1538,6 +1538,7 @@ function FlowEditor({ showSnackbar, models }) {
                             edgeTypes={edgeTypes}
                             fitView
                             deleteKeyCode={['Backspace', 'Delete']}
+                            zoomOnDoubleClick={false}
                             proOptions={{ hideAttribution: true }}
                         >
                             <Background gap={18} size={1} />
