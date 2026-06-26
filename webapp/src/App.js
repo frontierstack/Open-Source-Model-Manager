@@ -116,7 +116,6 @@ import {
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
     Boxes as LucideBoxes,
-    Workflow as LucideWorkflow,
     Library as LucideLibrary,
     Brain as LucideBrain,
 } from 'lucide-react';
@@ -127,7 +126,6 @@ import UsersPanel from './components/UsersPanel';
 import KnowledgeBasePanel from './components/KnowledgeBasePanel';
 import MemoryPanel from './components/MemoryPanel';
 import AppsPanel from './components/AppsPanel';
-import AutomationLibrary from './components/AutomationLibrary';
 import MyModelsPanel from './components/MyModelsPanel';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
 import UserDialog from './components/UserDialog';
@@ -667,7 +665,7 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 9, 10]; // 8 (Automations) removed — built in the Chat app
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
@@ -7736,7 +7734,6 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
         { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
-        { id: 8, icon: <LucideWorkflow size={18} strokeWidth={1.75} />,   label: 'Automations' },
         { id: 9, icon: <LucideLibrary size={18} strokeWidth={1.75} />,    label: 'Knowledge Base' },
         { id: 10, icon: <LucideBrain size={18} strokeWidth={1.75} />,     label: 'Memory' }
     ];
@@ -13153,10 +13150,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             </AppsPanel>
                         )}
 
-                        {/* Automations Tab — building-block library (user-visible) */}
-                        {visibleTabOrder[activeTab] === 8 && (
-                            <AutomationLibrary showSnackbar={showSnackbar} isAdmin={isAdmin} />
-                        )}
+                        {/* Automations are built + managed entirely in the Chat app
+                            (sidebar → Automation); the webapp tab was removed. */}
                         {visibleTabOrder[activeTab] === 9 && (
                             <KnowledgeBasePanel />
                         )}
