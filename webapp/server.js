@@ -9287,6 +9287,111 @@ app.post('/api/node-types', requireAuth, async (req, res) => {
     }
 });
 
+// Pull a node-type JSON object out of a model completion that may include
+// reasoning text, prose, or ```json fences. Tries (1) fenced block, (2) the
+// whole string, then (3) each balanced {...} object (last first), keeping the
+// one that looks like a node-type. Never returns reasoning braces.
+function extractNodeTypeJson(text) {
+    let t = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '');
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) { const s = parseBuilderSpec(fence[1].trim()); if (s && typeof s === 'object') return s; }
+    const whole = parseBuilderSpec(t.trim());
+    if (whole && (whole.baseType || whole.category || whole.name)) return whole;
+    const objs = [];
+    let depth = 0, start = -1;
+    for (let i = 0; i < t.length; i++) {
+        const c = t[i];
+        if (c === '{') { if (depth === 0) start = i; depth++; }
+        else if (c === '}') { depth--; if (depth === 0 && start >= 0) { objs.push(t.slice(start, i + 1)); start = -1; } }
+    }
+    for (let i = objs.length - 1; i >= 0; i--) {
+        const o = parseBuilderSpec(objs[i]);
+        if (o && typeof o === 'object' && (o.baseType || o.category || o.name)) return o;
+    }
+    return whole && typeof whole === 'object' ? whole : null;
+}
+
+// Coerce a model-produced spec into a valid node-type (never trust it raw).
+function sanitizeNodeTypeSpec(spec, base) {
+    spec = (spec && typeof spec === 'object') ? spec : {};
+    const builtins = automationEngine.BUILTIN_NODE_TYPES || [];
+    const valid = new Set(builtins.map(b => b.type));
+    let baseType = String(spec.baseType || spec.base || (base && base.baseType) || '').trim();
+    if (!valid.has(baseType)) baseType = (base && base.baseType) || 'tool';
+    const prim = builtins.find(b => b.type === baseType);
+    let category = String(spec.category || '').trim().toLowerCase();
+    if (!['trigger', 'gate', 'connector'].includes(category)) {
+        category = (prim && ['trigger', 'gate', 'connector'].includes(prim.category)) ? prim.category : 'connector';
+    }
+    const defaults = (spec.defaults && typeof spec.defaults === 'object' && !Array.isArray(spec.defaults)) ? spec.defaults : {};
+    const fields = Array.isArray(spec.fields) ? spec.fields.filter(f => typeof f === 'string') : ((prim && prim.fields) || []);
+    return {
+        name: String(spec.name || (base && base.name) || 'Custom node').trim().slice(0, 60),
+        category,
+        baseType,
+        description: String(spec.description || '').trim().slice(0, 300),
+        defaults,
+        fields,
+        condition: spec.condition !== undefined ? spec.condition : ((base && base.condition) ?? null),
+    };
+}
+
+// LLM-assisted node-type authoring: describe a block (or a change to an existing
+// one) and the loaded model drafts a node-type spec. Returns a PREVIEW only —
+// the client saves it via POST/PUT once the user is happy.
+app.post('/api/node-types/build', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { prompt, model, base } = req.body || {};
+    if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'A prompt is required' });
+    try {
+        const prims = (automationEngine.BUILTIN_NODE_TYPES || [])
+            .filter(b => ['trigger', 'gate', 'connector'].includes(b.category))
+            .map(b => `- ${b.type} (${b.category}) — ${b.label}: ${b.description}${(b.fields && b.fields.length) ? ` | fields: ${b.fields.join(', ')}` : ''}`)
+            .join('\n');
+        const sys = [
+            'You design reusable "node-types" (building blocks) for a visual workflow builder.',
+            'A node-type SPECIALIZES one built-in primitive by pre-filling configuration (defaults)',
+            'and choosing which fields stay editable. Output ONLY a single JSON object, no prose, no',
+            'markdown fences, in exactly this shape:',
+            '{',
+            '  "name": "Short Title Case name",',
+            '  "category": "trigger" | "gate" | "connector",',
+            '  "baseType": "<one of the built-in types listed below>",',
+            '  "description": "one sentence describing what this block does",',
+            '  "defaults": { /* pre-filled values for the baseType\'s fields */ },',
+            '  "fields": [ /* subset of the baseType\'s fields to keep editable */ ],',
+            '  "condition": null',
+            '}',
+            'Rules: category MUST match the chosen baseType\'s category. baseType MUST be exactly one of',
+            'the listed types. defaults keys MUST be real fields of that baseType. Keep it minimal and',
+            'correct; use {{last}} or {{nodes.id.field}} templating inside string defaults when useful.',
+            '',
+            'Built-in primitives you may specialize:',
+            prims,
+        ].join('\n');
+        const baseMsg = (base && typeof base === 'object')
+            ? `Here is an existing node-type as JSON:\n${JSON.stringify({ name: base.name, category: base.category, baseType: base.baseType, description: base.description, defaults: base.defaults, fields: base.fields, condition: base.condition }, null, 2)}\n\nApply this change and return the FULL updated node-type JSON:\n${String(prompt).trim()}`
+            : `Create a node-type for:\n${String(prompt).trim()}`;
+        // /no_think suppresses reasoning on Qwen-family models (ignored as plain
+        // text elsewhere) so we get clean JSON; extraction below is robust anyway.
+        const userMsg = `/no_think\n${baseMsg}\n\nRespond with ONLY the JSON object.`;
+        const text = await runModelCompletion({
+            messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
+            model, temperature: 0.2, maxTokens: 3000,
+        });
+        const spec = extractNodeTypeJson(text);
+        if (!spec) return res.status(422).json({ error: 'The model did not return a usable node-type. Try rephrasing.' });
+        const nodeType = sanitizeNodeTypeSpec(spec, base);
+        if (!nodeType.name) return res.status(422).json({ error: 'The drafted node-type was missing a name. Try again.' });
+        res.json({ nodeType });
+    } catch (error) {
+        console.error('Error building node-type:', error);
+        res.status(500).json({ error: error.message || 'Failed to build node-type' });
+    }
+});
+
 app.put('/api/node-types/:id', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
