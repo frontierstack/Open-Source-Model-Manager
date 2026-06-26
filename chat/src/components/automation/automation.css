@@ -1,12 +1,36 @@
-/* Automation editor — React Flow theming, node visuals, and run animations.
-   Uses the chat theme tokens (--bg/--surface/--ink/--accent/--rule/--ok/
-   --danger/--radius) so it tracks all themes + the accent picker. */
+/* Automation editor — "Automation Console" design adopted as STRUCTURE (node
+   card layout, category-colored accents, icon side-rail, runs screen) on top of
+   the live chat theme. Base surfaces/text/accent come from the chat theme tokens
+   (var(--bg/--surface/--ink/--accent/...)) so the page tracks light/dark + the
+   accent picker exactly like the rest of webchat. Only the things that are
+   genuinely design-semantic and theme-independent are fixed here: the five
+   node CATEGORY hues, and a theme-aware idle-edge color. */
+
+.auto-shell {
+    /* Category accents — semantic node colors, same in every theme. */
+    --cat-amber: #f2b765;   /* triggers */
+    --cat-mint: #34c79a;    /* AI / model */
+    --cat-cyan: #2bb6cf;    /* fetch / transform */
+    --cat-violet: #8f7bf0;  /* logic */
+    --cat-coral: #e8775c;   /* delivery / output */
+    /* Idle connector lines track the theme (muted rule color). */
+    --edge: var(--ink-4, var(--ink-3, #94a3b8));
+}
 
 .automation-flow {
     background: var(--bg);
     width: 100%;
     height: 100%;
 }
+/* Dotted grid backdrop matching the design canvas, tinted to the theme. */
+.auto-shell .react-flow,
+.auto-shell .automation-flow {
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, var(--rule) 1.1px, transparent 1.1px);
+    background-size: 22px 22px;
+    background-position: -1px -1px;
+}
+.auto-shell .react-flow__background { display: none; }
 
 /* ---- left rail (automations + palette) ----
    Modernized nav: 8px-grid spacing, uppercase section labels, soft dividers,
@@ -256,33 +280,74 @@
     border-radius: var(--radius, 10px);
 }
 
-/* Handles */
+/* Handles (connection ports) — slate by default, light up in the node's
+   category color on node hover, mint while you're dragging a connection. */
 .automation-flow .react-flow__handle {
-    width: 9px;
-    height: 9px;
-    background: var(--accent);
-    border: 2px solid var(--surface);
+    width: 11px;
+    height: 11px;
+    background: var(--bg);
+    border: 2px solid var(--edge);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.automation-flow .react-flow__handle:hover { background: var(--ink); }
+.auto-node:hover ~ .react-flow__handle,
+.auto-node:hover .react-flow__handle { border-color: var(--cat); }
+.automation-flow .react-flow__handle.connectionindicator:hover,
+.automation-flow .react-flow__handle-connecting {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+}
 
-/* ---- Custom node ---- */
+/* ---- Custom node (Automation Console glanceable card) ----
+   Each node carries a --cat color (set by its .c-* class). The card shows a
+   top accent bar, a category-tinted icon box, a name + type line, a status dot
+   and a config-summary description — so the canvas reads at a glance. */
 .auto-node {
+    --cat: var(--cat-cyan);
+    position: relative;
     background: var(--surface);
-    border: 1px solid var(--rule-2, var(--rule));
-    border-left: 3px solid var(--accent);
-    border-radius: var(--radius, 10px);
-    min-width: 168px;
-    max-width: 240px;
-    padding: 9px 11px;
+    border: 1px solid var(--rule);
+    border-radius: 13px;
+    width: 210px;
+    min-height: 76px;
+    padding: 12px 13px;
     color: var(--ink);
-    font-size: 12.5px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.18);
-    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    font-size: 13px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    transition: box-shadow 0.13s ease, border-color 0.13s ease;
 }
-.auto-node.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.auto-node__head { display: flex; align-items: center; gap: 7px; }
-.auto-node__icon { display: inline-flex; color: var(--accent); flex-shrink: 0; }
-.auto-node__title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.auto-node:hover { border-color: #33415a; }
+.auto-node.selected {
+    border-color: var(--cat);
+    box-shadow: 0 0 0 1px var(--cat), 0 10px 28px -12px color-mix(in oklab, var(--cat) 50%, transparent);
+}
+/* category accent bar across the top */
+.auto-node__bar {
+    position: absolute; top: -1px; left: 16px; right: 16px; height: 2px;
+    border-radius: 2px; background: var(--cat);
+}
+.auto-node__head { display: flex; align-items: center; gap: 10px; }
+.auto-node__icon {
+    display: grid; place-items: center; flex-shrink: 0;
+    width: 32px; height: 32px; border-radius: 8px;
+    background: color-mix(in oklab, var(--cat) 16%, transparent);
+    color: var(--cat);
+}
+.auto-node__titles { display: flex; flex-direction: column; min-width: 0; }
+.auto-node__title {
+    font-weight: 600; font-size: 13px; line-height: 1.15;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.auto-node__type {
+    font-size: 11px; color: var(--ink-4);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.auto-node__dot {
+    width: 7px; height: 7px; border-radius: 50%; margin-left: auto; flex-shrink: 0;
+    background: var(--ink-4);
+}
+.auto-node__dot.ok { background: var(--ok); }
+.auto-node__dot.bad { background: var(--danger); }
 /* Per-node power toggle — sits at the top-right of the node head. */
 .auto-node__power {
     margin-left: auto;
@@ -301,17 +366,22 @@
 /* Disabled node: dim the body content but keep the power button bright so it
    can be re-enabled. Opacity is per-element (not on the whole node) so the
    button stays fully visible. */
-.auto-node.is-disabled { border-left-style: dashed; }
+.auto-node.is-disabled { border-style: dashed; }
+.auto-node.is-disabled .auto-node__bar { opacity: 0.4; }
 .auto-node.is-disabled .auto-node__icon,
-.auto-node.is-disabled .auto-node__title,
+.auto-node.is-disabled .auto-node__titles,
 .auto-node.is-disabled .auto-node__sub,
 .auto-node.is-disabled .auto-node__out,
 .auto-node.is-disabled .auto-node__chips { opacity: 0.4; }
 .auto-node__sub {
-    margin-top: 3px;
-    font-size: 11px;
+    margin-top: 9px;
+    font-size: 12px;
+    line-height: 1.35;
     color: var(--ink-3, var(--ink-2));
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
 }
 .auto-node__handle-label {
     position: absolute;
@@ -353,21 +423,21 @@
 .auto-node__file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auto-node__sent { flex-shrink: 0; color: var(--ok, #22c55e); font-weight: 600; }
 
-/* category accents (left bar) */
-.auto-node--trigger   { border-left-color: var(--ok, #22c55e); }
-.auto-node--trigger .auto-node__icon { color: var(--ok, #22c55e); }
-.auto-node--gate      { border-left-color: var(--warning, #f59e0b); }
-.auto-node--gate .auto-node__icon { color: var(--warning, #f59e0b); }
-.auto-node--output    { border-left-color: var(--ink-3, #94a3b8); }
-.auto-node--output .auto-node__icon { color: var(--ink-3, #94a3b8); }
+/* category accents — each sets the node's --cat color (drives bar + icon tint) */
+.auto-node.c-amber  { --cat: var(--cat-amber); }
+.auto-node.c-mint   { --cat: var(--cat-mint); }
+.auto-node.c-cyan   { --cat: var(--cat-cyan); }
+.auto-node.c-violet { --cat: var(--cat-violet); }
+.auto-node.c-coral  { --cat: var(--cat-coral); }
 
 /* ---- run status ---- */
 .auto-node.is-running {
-    border-color: var(--accent);
+    border-color: var(--cat-cyan);
+    box-shadow: 0 0 0 1px var(--cat-cyan), 0 0 30px -6px color-mix(in oklab, var(--cat-cyan) 80%, transparent);
     animation: autoPulse 1.1s ease-in-out infinite;
 }
-.auto-node.is-done   { border-left-color: var(--ok, #22c55e); box-shadow: 0 0 0 1px var(--ok, #22c55e); }
-.auto-node.is-failed { border-left-color: var(--danger, #ef4444); box-shadow: 0 0 0 1px var(--danger, #ef4444); }
+.auto-node.is-done   { border-color: color-mix(in oklab, var(--ok) 55%, var(--rule)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--ok) 45%, transparent); }
+.auto-node.is-failed { border-color: var(--danger, #ef4444); box-shadow: 0 0 0 1px var(--danger, #ef4444); }
 
 .auto-node__status { margin-left: auto; display: inline-flex; align-items: center; }
 .auto-node__spinner {
@@ -380,8 +450,8 @@
 
 @keyframes autoSpin { to { transform: rotate(360deg); } }
 @keyframes autoPulse {
-    0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
-    50%      { box-shadow: 0 0 0 5px var(--accent-soft); }
+    0%, 100% { box-shadow: 0 0 0 1px var(--cat-cyan), 0 0 24px -8px color-mix(in oklab, var(--cat-cyan) 80%, transparent); }
+    50%      { box-shadow: 0 0 0 1px var(--cat-cyan), 0 0 40px -4px color-mix(in oklab, var(--cat-cyan) 90%, transparent); }
 }
 
 /* ---- construction / diff replay ----
@@ -455,10 +525,9 @@
 }
 @keyframes autoDash { to { stroke-dashoffset: -20; } }
 
-/* Idle connector lines — kept high-contrast against the canvas so the graph
-   reads clearly (was --rule-2, which washed out on darker themes). */
-.react-flow__edge-path { stroke: var(--ink-3, #94a3b8); stroke-width: 2; }
-.automation-flow .react-flow__edge:hover .react-flow__edge-path { stroke: var(--ink-2, #cbd5e1); }
+/* Idle connector lines — slate edges matching the console; coral on hover. */
+.auto-shell .react-flow__edge-path { stroke: var(--edge); stroke-width: 2; }
+.automation-flow .react-flow__edge:hover .react-flow__edge-path { stroke: var(--cat-coral); }
 
 /* Per-edge delete button (rendered at the line midpoint via EdgeLabelRenderer).
    Subtle by default, turns red on hover. Removes the line only, not the nodes. */
@@ -687,3 +756,210 @@
     .ai-modal { width: 100%; max-height: 92vh; }
     .ai-modal-backdrop { padding: 2vh 8px 8px; }
 }
+
+/* ============================================================ *
+ * Console shell: icon side-rail + Dashboard / Runs / Library
+ * screens (design structure). Surfaces/text use the chat theme
+ * tokens so these track light/dark + the accent picker; only the
+ * node category hues (--cat-*) are fixed.
+ * ============================================================ */
+.auto-iconrail {
+    width: 60px; flex-shrink: 0;
+    border-right: 1px solid var(--rule);
+    background: var(--surface, var(--bg));
+    display: flex; flex-direction: column; align-items: center;
+    padding: 12px 0; gap: 6px;
+}
+.auto-iconrail__brand {
+    width: 34px; height: 34px; border-radius: 9px; margin-bottom: 10px;
+    display: grid; place-items: center; flex-shrink: 0;
+    background: var(--accent); color: var(--accent-ink, #fff);
+    font-weight: 700; font-size: 16px; line-height: 1;
+}
+.auto-iconrail__btn {
+    width: 42px; height: 40px; border-radius: 11px;
+    display: grid; place-items: center; cursor: pointer;
+    color: var(--ink-3); border: 1px solid transparent; background: transparent;
+    transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+}
+.auto-iconrail__btn:hover { background: var(--bg); color: var(--ink); }
+.auto-iconrail__btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: var(--rule); }
+.auto-iconrail__sp { flex: 1; }
+.auto-main { min-width: 0; }
+
+/* Generic console screen scaffold */
+.auto-screen { flex: 1; min-height: 0; overflow: auto; }
+.auto-phead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 26px 0; }
+.auto-ptitle { font-size: 21px; font-weight: 600; letter-spacing: -.01em; color: var(--ink); }
+.auto-psub { color: var(--ink-3); font-size: 13px; margin-top: 3px; }
+.auto-empty { padding: 40px 26px; color: var(--ink-3); font-size: 13px; text-align: center; }
+
+/* Dashboard */
+.auto-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 20px 26px 6px; }
+.auto-stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 15px 16px; }
+.auto-stat--link { cursor: pointer; } .auto-stat--link:hover { border-color: var(--accent); }
+.auto-stat__lab { font-size: 12px; color: var(--ink-3); }
+.auto-stat__num { font-size: 25px; font-weight: 600; letter-spacing: -.02em; margin-top: 8px; color: var(--ink); }
+.auto-stat--link .auto-stat__num { font-size: 16px; color: var(--accent); }
+.auto-sechd { display: flex; align-items: center; justify-content: space-between; padding: 18px 26px 2px; }
+.auto-sectt { font-size: 14px; font-weight: 600; color: var(--ink); }
+.auto-cardgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding: 12px 26px 28px; }
+.auto-acard { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 15px; cursor: pointer; transition: border-color .12s ease; }
+.auto-acard:hover { border-color: var(--accent); }
+.auto-acard__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.auto-acard__nm { font-size: 14px; font-weight: 600; color: var(--ink); }
+.auto-acard__des { font-size: 12px; color: var(--ink-3); margin-top: 3px; font-family: var(--font-mono, monospace); }
+.auto-chain { display: flex; align-items: center; gap: 5px; margin-top: 14px; min-height: 14px; }
+.auto-chain__chip { width: 14px; height: 14px; border-radius: 5px; flex-shrink: 0; }
+.auto-chain__dash { flex: 0 0 14px; height: 1px; background: var(--rule); }
+.auto-chain__more { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono, monospace); margin-left: 2px; }
+.cc-amber { background: color-mix(in oklab, var(--cat-amber) 22%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat-amber); }
+.cc-mint { background: color-mix(in oklab, var(--cat-mint) 22%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat-mint); }
+.cc-cyan { background: color-mix(in oklab, var(--cat-cyan) 22%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat-cyan); }
+.cc-violet { background: color-mix(in oklab, var(--cat-violet) 22%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat-violet); }
+.cc-coral { background: color-mix(in oklab, var(--cat-coral) 22%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat-coral); }
+
+/* Pills (status) */
+.auto-pill { font-size: 11px; padding: 3px 9px; border-radius: 20px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border: 1px solid transparent; }
+.auto-pill.ok { background: color-mix(in oklab, var(--cat-mint) 16%, transparent); color: var(--cat-mint); }
+.auto-pill.warn { background: color-mix(in oklab, var(--cat-amber) 16%, transparent); color: var(--cat-amber); }
+.auto-pill.err { background: color-mix(in oklab, var(--cat-coral) 16%, transparent); color: var(--cat-coral); }
+
+/* Runs screen */
+.auto-filters { display: flex; gap: 8px; padding: 16px 26px 12px; align-items: center; }
+.auto-fchip { height: 30px; padding: 0 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); color: var(--ink-3); font-size: 12.5px; display: inline-flex; align-items: center; cursor: pointer; }
+.auto-fchip.is-on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.auto-runsgrid { display: grid; grid-template-columns: 1fr minmax(300px, 360px); gap: 18px; padding: 0 26px 28px; align-items: start; }
+.auto-tbl { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; overflow: hidden; }
+.auto-trow { display: grid; grid-template-columns: 96px 1fr 110px 100px 72px; align-items: center; padding: 0 14px; height: 50px; border-bottom: 1px solid var(--rule-2, var(--rule)); font-size: 13px; cursor: pointer; }
+.auto-trow:last-child { border-bottom: none; }
+.auto-trow--head { height: 38px; color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; cursor: default; }
+.auto-trow:not(.auto-trow--head):hover { background: var(--bg); }
+.auto-trow.is-act { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.auto-tst { display: flex; align-items: center; gap: 7px; color: var(--ink-2); }
+.auto-tdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.auto-tflow { min-width: 0; } .auto-tflow__nm { font-weight: 500; color: var(--ink); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-tflow__tg { font-size: 11px; color: var(--ink-3); }
+.auto-tmut { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--ink-3); }
+.auto-tid { font-family: var(--font-mono, monospace); font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.auto-tempty { padding: 26px 16px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
+.auto-detail { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 16px; }
+.auto-dethd { display: flex; align-items: center; justify-content: space-between; }
+.auto-detid { font-family: var(--font-mono, monospace); font-size: 13px; color: var(--ink-2); }
+.auto-detmeta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0 16px; }
+.auto-detk { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+.auto-detv { font-size: 13px; margin-top: 3px; color: var(--ink); }
+.auto-deterr { color: var(--cat-coral); font-size: 12px; margin-bottom: 10px; }
+.auto-steps { position: relative; }
+.auto-step { display: flex; gap: 12px; padding-bottom: 14px; position: relative; }
+.auto-step:last-child { padding-bottom: 0; }
+.auto-step__ln { position: absolute; left: 8px; top: 18px; bottom: -2px; width: 1.5px; background: var(--rule); }
+.auto-step__sd { width: 17px; height: 17px; flex-shrink: 0; display: grid; place-items: center; z-index: 1; }
+.auto-step__bd { min-width: 0; flex: 1; }
+.auto-step__nm { font-size: 13px; font-weight: 500; color: var(--ink); }
+.auto-step__sum { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.auto-step__err { font-size: 11.5px; color: var(--cat-coral); margin-top: 2px; }
+
+/* Library screen */
+.auto-libsearch input { width: 260px; max-width: 40vw; background: var(--surface); border: 1px solid var(--rule); border-radius: 9px; padding: 8px 11px; color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+.auto-libsearch input:focus { border-color: var(--accent); }
+.auto-libpage { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding: 16px 26px 28px; }
+.auto-libsection { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.auto-libsection:first-child { margin-top: 0; }
+.auto-libsection__t { font-size: 13px; font-weight: 600; color: var(--ink); }
+.auto-libsection__c { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono, monospace); }
+.auto-libsection__hr { flex: 1; height: 1px; background: var(--rule-2, var(--rule)); }
+.auto-ncard { background: var(--surface); border: 1px solid var(--rule); border-radius: 13px; padding: 14px; cursor: pointer; transition: border-color .12s ease; }
+.auto-ncard:hover { border-color: var(--accent); }
+.auto-ncard__nm { font-size: 13px; font-weight: 600; color: var(--ink); }
+.auto-ncard__des { font-size: 12px; color: var(--ink-3); line-height: 1.45; margin-top: 6px; }
+.auto-ncard__add { margin-top: 11px; font-size: 12px; color: var(--accent); display: flex; align-items: center; gap: 5px; opacity: 0; transition: opacity .12s ease; }
+.auto-ncard:hover .auto-ncard__add { opacity: 1; }
+
+@media (max-width: 768px) {
+    .auto-iconrail { width: 52px; }
+    .auto-stats { grid-template-columns: 1fr 1fr; }
+    .auto-runsgrid { grid-template-columns: 1fr; }
+}
+
+/* Runs detail extras: open-in-builder link, per-step status tag, artifacts */
+.auto-linkbtn { background: none; border: none; cursor: pointer; color: var(--accent); font: inherit; font-size: 12px; padding: 0; }
+.auto-linkbtn:hover { text-decoration: underline; }
+.auto-step__nm { display: flex; align-items: center; gap: 7px; }
+.auto-step__tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 999px; color: var(--ink-3); background: var(--bg); border: 1px solid var(--rule-2, var(--rule)); }
+.auto-step__tag.s-completed, .auto-step__tag.s-success, .auto-step__tag.s-ok { color: var(--cat-mint); border-color: color-mix(in oklab, var(--cat-mint) 45%, transparent); }
+.auto-step__tag.s-failed, .auto-step__tag.s-error { color: var(--cat-coral); border-color: color-mix(in oklab, var(--cat-coral) 45%, transparent); }
+.auto-step__arts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.auto-step__art { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--accent); text-decoration: none; border: 1px solid var(--accent); border-radius: 6px; padding: 2px 8px; background: var(--accent-soft); }
+.auto-step__art:hover { filter: brightness(1.08); }
+
+/* Library cards: clamp long descriptions, even card heights, no clunky overflow */
+.auto-ncard { display: flex; flex-direction: column; min-height: 116px; }
+.auto-ncard__des {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; flex: 1;
+}
+.auto-ncard__add { margin-top: auto; }
+
+/* ---- Settings-chip inspector + data-wiring clarity ----
+   Keeps the "everything is a chip" model (settings stay chips) but makes the
+   data picker more discoverable and drop targets obvious. */
+/* The "{ }" insert-data button reads as an affordance, not a faint glyph. */
+.auto-tagbtn { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, var(--rule)); background: var(--accent-soft); opacity: .9; }
+.auto-tagbtn:hover, .auto-tagbtn.is-open { opacity: 1; border-color: var(--accent); }
+/* Stronger drop state when wiring a data ref into a value box. */
+.cf-val.is-drop { outline: 2px solid var(--accent); outline-offset: 2px; background: var(--accent-soft); border-radius: 7px; }
+/* Slightly more breathing room + contrast so chips read as discrete controls. */
+.cf-board { gap: 13px; }
+.cf-chip { background: var(--bg); border-color: var(--rule); }
+.cf-sec__label { color: var(--ink-2); }
+/* Data palette: clearer "draggable / insertable" cue. */
+.cf-datachip { box-shadow: inset 0 0 0 1px transparent; }
+.cf-datachip:hover { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* ---- Tabbed inspector (Parameters / Settings / Docs wrapping the chips) ---- */
+.auto-insptabs { display: flex; gap: 2px; border-bottom: 1px solid var(--rule-2, var(--rule)); margin: 2px 0 13px; }
+.auto-insptab { padding: 7px 11px; font-size: 12.5px; color: var(--ink-3); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+.auto-insptab:hover:not(.is-on) { color: var(--ink-2); }
+.auto-insptab.is-on { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* ---- On-canvas "+" node picker ---- */
+.auto-addmenu-backdrop { position: fixed; inset: 0; z-index: 70; }
+.auto-addmenu { position: fixed; z-index: 71; width: 260px; max-height: 360px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 16px 44px rgba(0,0,0,.4); overflow: hidden; }
+.auto-addmenu__search { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-bottom: 1px solid var(--rule-2, var(--rule)); color: var(--ink-3); }
+.auto-addmenu__search input { flex: 1; border: none; background: transparent; color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+.auto-addmenu__list { overflow-y: auto; padding: 6px; }
+.auto-addmenu__item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px; border: none; background: transparent; color: var(--ink); border-radius: 8px; cursor: pointer; font-size: 13px; text-align: left; }
+.auto-addmenu__item:hover { background: var(--accent-soft); color: var(--accent); }
+.auto-addmenu__dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.auto-addmenu__lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-addmenu__empty { padding: 14px; color: var(--ink-3); font-size: 12px; text-align: center; }
+
+/* ---- "Add to which flow?" chooser (Library) ---- */
+.auto-pickflow { width: 360px; max-width: 92vw; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); overflow: hidden; display: flex; flex-direction: column; }
+.auto-pickflow__head { padding: 13px 15px; border-bottom: 1px solid var(--rule-2, var(--rule)); font-weight: 600; font-size: 14px; color: var(--ink); }
+.auto-pickflow__list { max-height: 50vh; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 3px; }
+.auto-pickflow__item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 1px solid var(--rule-2, var(--rule)); background: var(--bg); color: var(--ink); border-radius: 9px; cursor: pointer; font-size: 13px; text-align: left; }
+.auto-pickflow__item:hover { border-color: var(--accent); background: var(--accent-soft); }
+.auto-pickflow__nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-pickflow__meta { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono, monospace); }
+.auto-pickflow__new { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 4px 12px 14px; padding: 9px; border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 9px; cursor: pointer; font-size: 12.5px; font-weight: 600; }
+
+/* Library card category marker */
+.auto-ncard { position: relative; }
+.auto-ncard__cat { position: absolute; top: 13px; right: 13px; width: 10px; height: 10px; border-radius: 3px; }
+
+/* Inspector "Add transform" picker (replaces the removed Transforms rail) */
+.cf-tadd { position: relative; }
+.cf-tadd__panel { margin-top: 7px; border: 1px solid var(--rule); border-radius: 10px; background: var(--bg); padding: 8px; }
+.cf-tadd__list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+.cf-tadd__item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: transparent; color: var(--ink); border-radius: 7px; padding: 6px 8px; cursor: pointer; font-size: 12.5px; }
+.cf-tadd__item:hover { background: var(--accent-soft); color: var(--accent); }
+.cf-tadd__lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-tadd__cat { font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .03em; }
+
+/* Runs: full-width table + centered run-detail modal (not a side panel) */
+.auto-runlist { padding: 0 26px 28px; }
+.auto-runmodal { width: 600px; max-width: 94vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--rule); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.5); overflow: hidden; }
+.auto-runmodal__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 15px; border-bottom: 1px solid var(--rule-2, var(--rule)); flex-shrink: 0; }
+.auto-runmodal__body { padding: 16px; overflow-y: auto; min-height: 0; }

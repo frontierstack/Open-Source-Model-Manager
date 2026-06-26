@@ -84,12 +84,45 @@ export function iconFor(kind, data = {}) {
     return kind === 'tool' ? iconForTool(data.tool) : pickIcon(kind);
 }
 
-function categoryClass(kind) {
+// Visual category → accent color (matches the Automation Console design):
+// amber triggers · mint AI · cyan transform/fetch · violet logic · coral delivery.
+function colorCat(kind, data = {}) {
+    if (!kind) return 'c-cyan';
+    if (kind.startsWith('trigger.')) return 'c-amber';
+    if (kind === 'model') return 'c-mint';
+    if (kind.startsWith('gate.') || kind === 'merge' || kind === 'map') return 'c-violet';
+    if (kind === 'output' || kind === 'slack' || kind === 'telegram' || kind === 'telegram_get') return 'c-coral';
+    return 'c-cyan';
+}
+
+function categoryClass(kind, data = {}) {
+    // Legacy structural class (kept for trigger/gate/output specific rules) plus
+    // the new color category that drives the accent bar + icon tint.
+    let legacy = '';
+    if (kind && kind.startsWith('trigger.')) legacy = 'auto-node--trigger';
+    else if (kind && (kind.startsWith('gate.') || kind === 'merge')) legacy = 'auto-node--gate';
+    else if (kind === 'output') legacy = 'auto-node--output';
+    return `${legacy} ${colorCat(kind, data)}`.trim();
+}
+
+// Short human "type" label shown under the node name (the design's .nty line).
+function typeLabelFor(kind, data = {}) {
     if (!kind) return '';
-    if (kind.startsWith('trigger.')) return 'auto-node--trigger';
-    if (kind.startsWith('gate.') || kind === 'merge') return 'auto-node--gate';
-    if (kind === 'output') return 'auto-node--output';
-    return '';
+    if (kind === 'tool') return (data.tool || 'tool').replace(/_/g, ' ');
+    if (kind === 'model') return 'AI · Model';
+    if (kind === 'map') return 'Loop';
+    if (kind === 'set') return 'Set fields';
+    if (kind === 'merge') return 'Merge';
+    if (kind === 'output') return 'Output';
+    if (kind === 'parse_json') return 'Parse JSON';
+    if (kind === 'render_html') return 'Render HTML';
+    if (kind === 'export_file') return 'Export file';
+    if (kind === 'web_search') return 'Web search';
+    if (kind === 'fetch_url') return 'Fetch URL';
+    if (kind === 'delay') return 'Delay';
+    if (kind.startsWith('trigger.')) return 'Trigger · ' + kind.slice(8).replace(/_/g, ' ');
+    if (kind.startsWith('gate.')) return kind.slice(5).toUpperCase();
+    return kind.replace(/[._]/g, ' ');
 }
 
 // Live countdown to the next epoch-aligned interval fire (matches the server's
@@ -158,10 +191,14 @@ export default function AutomationNode({ id, data, selected }) {
         : anim === 'pulse' ? 'is-pulsing'
         : anim === 'remove' ? 'is-removing auto-node--diffremove' : '';
     const sub = subtitleFor(kind, data);
+    const typeLabel = typeLabelFor(kind, data);
+    const dotState = status === 'completed' ? 'ok' : status === 'failed' ? 'bad' : 'idle';
 
     return (
-        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''} ${chipOver ? 'is-chip-target' : ''} ${disabled ? 'is-disabled' : ''}`}
+        <div className={`auto-node ${categoryClass(kind, data)} ${statusClass} ${animClass} ${selected ? 'selected' : ''} ${chipOver ? 'is-chip-target' : ''} ${disabled ? 'is-disabled' : ''}`}
             onDragOver={onChipDragOver} onDragLeave={() => setChipOver(false)} onDrop={onChipDrop}>
+            {/* category accent bar (top) */}
+            <span className="auto-node__bar" />
             {/* target handles (left) */}
             {targets.map((t, i) => (
                 <Handle
@@ -174,11 +211,14 @@ export default function AutomationNode({ id, data, selected }) {
             ))}
 
             <div className="auto-node__head">
-                <span className="auto-node__icon"><Icon size={15} strokeWidth={2} /></span>
-                <span className="auto-node__title">{data.label || kind}</span>
-                {status === 'running' && (
-                    <span className="auto-node__status"><span className="auto-node__spinner" /></span>
-                )}
+                <span className="auto-node__icon"><Icon size={16} strokeWidth={2} /></span>
+                <span className="auto-node__titles">
+                    <span className="auto-node__title">{data.label || kind}</span>
+                    {typeLabel && <span className="auto-node__type">{typeLabel}</span>}
+                </span>
+                {status === 'running'
+                    ? <span className="auto-node__status"><span className="auto-node__spinner" /></span>
+                    : <span className={`auto-node__dot ${dotState}`} />}
                 {/* Per-node power toggle (top-right). nodrag/stopPropagation so
                     clicking it doesn't drag or select the node. Disabled nodes
                     are skipped by the engine and don't fire their trigger. */}

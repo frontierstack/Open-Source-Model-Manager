@@ -10,6 +10,7 @@ import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
     Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
     Sparkles, Wand2, FlaskConical, RotateCcw,
+    LayoutGrid, Workflow, ListChecks, Boxes, Clock,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -460,6 +461,10 @@ function FlowEditor({ showSnackbar, models }) {
     const [chipsLibOpen, setChipsLibOpen] = useState(false);
     const [chipLibQuery, setChipLibQuery] = useState('');
     const [showHistory, setShowHistory] = useState(false);
+    // Top-level console screen (design's icon side-rail): dashboard | builder | runs | library.
+    const [screen, setScreen] = useState('builder');
+    // On-canvas "+" add-node popup: { x, y (screen), flowPos } | null.
+    const [addMenu, setAddMenu] = useState(null);
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
     const [nodeOutputs, setNodeOutputs] = useState({}); // nodeId -> { status, output, error }
@@ -641,8 +646,10 @@ function FlowEditor({ showSnackbar, models }) {
             if (!res.ok) throw new Error('Failed to create automation');
             const wf = await res.json();
             await loadAutomations();
-            selectAutomation(wf.id);
+            await selectAutomation(wf.id);
+            return wf.id;
         } catch (err) { notify(err.message, 'error'); }
+        return null;
     }, [loadAutomations, selectAutomation]);
 
     // Close the open automation and return to the list view (clears the canvas
@@ -1275,8 +1282,20 @@ function FlowEditor({ showSnackbar, models }) {
     // Refresh the history list when a run finishes while the panel is open.
     useEffect(() => { if (showHistory && !running) loadRuns(); }, [running, showHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const onNodeClick = useCallback((_e, node) => { setSelectedNodeId(node.id); setShowHistory(false); }, []);
-    const onPaneClick = useCallback(() => setSelectedNodeId(null), []);
+    const onNodeClick = useCallback((_e, node) => { setSelectedNodeId(node.id); setAddMenu(null); }, []);
+    // Single click empty canvas → just deselect (and dismiss any open add menu).
+    const onPaneClick = useCallback(() => { setSelectedNodeId(null); setAddMenu(null); }, []);
+    // DOUBLE-click empty canvas → open the "+" add-node popup at the cursor; the
+    // picked node drops at that flow position. Only fires on the bare pane so a
+    // double-click on a node is unaffected.
+    const onCanvasDoubleClick = useCallback((e) => {
+        if (!selected) return;
+        const t = e.target;
+        if (!(t && t.classList && t.classList.contains('react-flow__pane'))) return;
+        let flowPos = null;
+        try { flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY }); } catch (_) {}
+        setAddMenu({ x: e.clientX, y: e.clientY, flowPos });
+    }, [selected, screenToFlowPosition]);
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId) || null;
 
@@ -1360,7 +1379,20 @@ function FlowEditor({ showSnackbar, models }) {
     };
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)' }}>
+        <div className="auto-shell" style={{ display: 'flex', flexDirection: 'row', height: '100%', background: 'var(--bg)' }}>
+            {/* Console icon side-rail (design nav): Dashboard / Builder / Runs / Library */}
+            <AutoIconRail screen={screen} setScreen={setScreen} runningCount={running ? 1 : 0} />
+            <div className="auto-main" style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
+            {screen === 'dashboard' && (
+                <DashboardScreen automations={automations} onOpen={(a) => { selectAutomation(a.id); setScreen('builder'); }} onNew={() => { newAutomation(); setScreen('builder'); }} onRuns={() => setScreen('runs')} />
+            )}
+            {screen === 'runs' && (
+                <RunsScreen automations={automations} selectedId={selected?.id} confirm={confirm} notify={notify} onOpenBuilder={(a) => { if (a) selectAutomation(a.id); setScreen('builder'); }} />
+            )}
+            {screen === 'library' && (
+                <LibraryScreen groupedPalette={groupedPalette} categoryOrder={CATEGORY_ORDER} categoryLabel={CATEGORY_LABEL} automations={automations} onAddToFlow={async (item, flowId) => { if (flowId) { await selectAutomation(flowId); } else { await newAutomation(); } addFromPalette(item); setScreen('builder'); }} />
+            )}
+            {screen === 'builder' && (<>
             {/* Header */}
             <div className="auto-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--rule)', flexShrink: 0 }}>
                 {isMobile && (
@@ -1393,7 +1425,7 @@ function FlowEditor({ showSnackbar, models }) {
                             <button className="auto-btn auto-btn--icon" onClick={() => toggleFlag('archived')} title={selected.archived ? 'Unarchive' : 'Archive'}>
                                 {selected.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
                             </button>
-                            <button className={`auto-btn${showHistory ? ' is-active' : ''}`} onClick={() => (showHistory ? setShowHistory(false) : openHistory())} title="Run history">
+                            <button className="auto-btn" onClick={() => setScreen('runs')} title="Run history">
                                 <HistoryIcon size={14} /> <span>History</span>
                             </button>
                             <button className={`auto-btn${dirty ? ' is-active' : ''}`} onClick={save} disabled={!dirty}>
@@ -1423,7 +1455,7 @@ function FlowEditor({ showSnackbar, models }) {
                     ? { position: 'fixed', top: 0, bottom: 0, left: 0, zIndex: 60, width: 'min(86vw, 320px)', background: 'var(--bg)', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)', transition: 'transform 0.28s ease', boxShadow: leftDrawerOpen ? '0 0 24px rgba(0,0,0,0.4)' : 'none' }
                     : { width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     {!isMobile && <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />}
-                    <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)', maxHeight: '52vh', overflowY: 'auto', flexShrink: 0 }}>
+                    <div style={{ padding: '12px 12px 11px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
                         <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
                             <Plus size={15} /> <span>New automation</span>
                         </button>
@@ -1468,134 +1500,11 @@ function FlowEditor({ showSnackbar, models }) {
                             );
                         })}
                     </div>
-                    {/* Palette */}
-                    <div className="auto-rail__section" style={{ borderTop: '1px solid var(--rule)', padding: '10px 8px 6px' }}>
-                        <span>Node Palette</span>
-                        {!selected && <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: 'var(--ink-4, var(--ink-3))' }}>select an automation</span>}
-                    </div>
-                    <div style={{ padding: '0 8px 6px' }}>
-                        <input
-                            type="text"
-                            value={paletteQuery}
-                            onChange={(e) => setPaletteQuery(e.target.value)}
-                            placeholder="Search nodes…"
-                            style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }}
-                        />
-                    </div>
-                    <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-                    <div style={{ padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
-                        {(() => {
-                            const q = paletteQuery.trim().toLowerCase();
-                            const searching = q.length > 0;
-                            const matches = (item) => !searching || (`${item.label} ${item.description || ''}`).toLowerCase().includes(q);
-                            const renderItemBtn = (item, displayLabel) => (
-                                <button key={item.key}
-                                    className="auto-chip"
-                                    draggable
-                                    onDragStart={(e) => onPaletteDragStart(e, item)}
-                                    onClick={() => addFromPalette(item)}
-                                    title={item.description || item.label}
-                                >
-                                    <span className="auto-chip__icon"><Plus size={12} /></span>
-                                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayLabel}</span>
-                                    {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
-                                </button>
-                            );
-                            const renderedCats = CATEGORY_ORDER.map(cat => {
-                                const allItems = groupedPalette[cat];
-                                if (!allItems || allItems.length === 0) return null;
-                                const items = allItems.filter(matches);
-                                if (items.length === 0) return null; // hide categories with no matches
-                                const collapsed = !searching && !!collapsedCats[cat];
-                                return (
-                                    <div key={cat} style={{ marginBottom: 4 }}>
-                                        <button
-                                            className="auto-cat"
-                                            onClick={() => setCollapsedCats(c => ({ ...c, [cat]: !c[cat] }))}
-                                        >
-                                            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                                            <span>{CATEGORY_LABEL[cat] || cat}</span>
-                                            <span className="auto-rail__count">{items.length}</span>
-                                        </button>
-                                        {!collapsed && (cat === 'connector' ? (() => {
-                                            // Connectors: group by external app into collapsible sub-sections.
-                                            const flat = items.filter(it => !it.app);
-                                            const byApp = {};
-                                            for (const it of items) { if (it.app) (byApp[it.app] || (byApp[it.app] = [])).push(it); }
-                                            const apps = Object.keys(byApp).sort((a, b) => a.localeCompare(b));
-                                            return (<>
-                                                {flat.map(item => renderItemBtn(item, item.label))}
-                                                {apps.map(app => {
-                                                    const appItems = byApp[app];
-                                                    const appCollapsed = !searching && !!collapsedApps[app];
-                                                    const prefix = `${app} · `;
-                                                    return (
-                                                        <div key={app} style={{ marginLeft: 8, paddingLeft: 4, borderLeft: '1px solid var(--rule-2, var(--rule))' }}>
-                                                            <button
-                                                                className="auto-cat"
-                                                                style={{ fontSize: 9.5, padding: '5px 2px 4px', textTransform: 'none', letterSpacing: 0.2 }}
-                                                                onClick={() => setCollapsedApps(c => ({ ...c, [app]: !c[app] }))}
-                                                            >
-                                                                {appCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
-                                                                <span>{app}</span>
-                                                                <span className="auto-rail__count">{appItems.length}</span>
-                                                            </button>
-                                                            {!appCollapsed && appItems.map(item => renderItemBtn(item, item.label.startsWith(prefix) ? item.label.slice(prefix.length) : item.label))}
-                                                        </div>
-                                                    );
-                                                })}
-                                            </>);
-                                        })() : items.map(item => renderItemBtn(item, item.label)))}
-                                    </div>
-                                );
-                            }).filter(Boolean);
-                            if (searching && renderedCats.length === 0) {
-                                return <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: '12px 6px', textAlign: 'center' }}>No nodes match “{paletteQuery.trim()}”.</div>;
-                            }
-                            return renderedCats;
-                        })()}
-                    </div>
-                    {/* Chips library — drag a chip onto a node to transform its output */}
-                    <div className="auto-rail__section auto-chips-head" style={{ borderTop: '1px solid var(--rule)', padding: '10px 8px 6px', cursor: 'pointer' }} onClick={() => setChipsLibOpen(o => !o)}>
-                        {chipsLibOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        <span>Chips</span>
-                        <span className="auto-rail__count">{CHIP_LIBRARY.length}</span>
-                    </div>
-                    {chipsLibOpen && (<>
-                        <div style={{ padding: '0 8px 6px' }}>
-                            <input type="text" value={chipLibQuery} onChange={(e) => setChipLibQuery(e.target.value)} placeholder="Search chips…" style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }} />
-                        </div>
-                        <div style={{ padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
-                            {!selected && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', padding: '4px 2px 8px' }}>Open an automation to use chips.</div>}
-                            {(() => {
-                                const q = chipLibQuery.trim().toLowerCase();
-                                const match = (c) => !q || (`${c.label} ${c.desc} ${c.category}`).toLowerCase().includes(q);
-                                const cats = CHIP_LIB_CATEGORIES.map(cat => {
-                                    const items = CHIP_LIBRARY.filter(c => c.category === cat && match(c));
-                                    if (!items.length) return null;
-                                    return (
-                                        <div key={cat} style={{ marginBottom: 6 }}>
-                                            <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: .3, color: 'var(--ink-3)', margin: '4px 2px' }}>{cat}</div>
-                                            <div className="cf-tray">
-                                                {items.map(c => (
-                                                    <span key={c.id} className="cf-libchip" draggable title={c.desc}
-                                                        onDragStart={(e) => { e.dataTransfer.setData(CHIP_LIB_DRAG, c.id); e.dataTransfer.effectAllowed = 'copy'; }}>
-                                                        {c.label}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    );
-                                }).filter(Boolean);
-                                return cats.length ? cats : <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: '8px 4px' }}>No chips match “{chipLibQuery.trim()}”.</div>;
-                            })()}
-                        </div>
-                    </>)}
-                    </div>
+                    {/* Node palette + Transforms moved out of the Builder: nodes come from the Library tab / double-clicking the canvas; transforms are attached from a node's inspector. */}
                 </div>
 
                 {/* Canvas */}
-                <div style={{ flex: 1, minWidth: 0, position: 'relative' }} onDragOver={onDragOver} onDrop={onDrop}>
+                <div style={{ flex: 1, minWidth: 0, position: 'relative' }} onDragOver={onDragOver} onDrop={onDrop} onDoubleClick={onCanvasDoubleClick}>
                     {!selected ? (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--ink-3)', fontSize: 13, textAlign: 'center', padding: 24 }}>
                             {isMobile
@@ -1643,6 +1552,14 @@ function FlowEditor({ showSnackbar, models }) {
                             ) : null}
                         </div>
                     )}
+                    {addMenu && (
+                        <NodePicker
+                            x={addMenu.x} y={addMenu.y}
+                            items={palette}
+                            onPick={(item) => { addFromPalette(item, addMenu.flowPos || undefined); setAddMenu(null); }}
+                            onClose={() => setAddMenu(null)}
+                        />
+                    )}
                     {!assembling && canReplay && selected && (
                         <button className="auto-btn auto-btn--sm auto-replay" onClick={replayAssembly} title="Replay how the assistant assembled this workflow">
                             <RotateCcw size={13} /> <span>Replay assembly</span>
@@ -1688,20 +1605,9 @@ function FlowEditor({ showSnackbar, models }) {
                         onOpenChipBuilder={() => setChipBuilderOpen(true)}
                     />
                 )}
-
-                {/* Run history panel */}
-                {showHistory && (
-                    <RunHistoryPanel
-                        runs={runs}
-                        nodes={nodes}
-                        width={panelWidth}
-                        mobile={isMobile}
-                        onResizeStart={onPanelResizeStart}
-                        onClearHistory={clearRuns}
-                        onClose={() => { setShowHistory(false); setRunDetail(null); }}
-                    />
-                )}
+                {/* Run history now lives in the full Runs screen (icon rail). */}
             </div>
+            </>)}
             {chipBuilderOpen && <ChipBuilder onClose={() => setChipBuilderOpen(false)} customChips={customChips} onSaved={loadChips} notify={notify} />}
 
             {/* ---- AI Assistant modal: roomy composer + readable suggestions ---- */}
@@ -1803,6 +1709,7 @@ function FlowEditor({ showSnackbar, models }) {
                     </div>
                 );
             })()}
+            </div>
         </div>
     );
 }
@@ -2768,6 +2675,36 @@ const CHIP_LIB_CATEGORIES = Array.from(new Set(CHIP_LIBRARY.map(c => c.category)
 // Bare-minimum node settings: just the node's own essential fields as plain
 // controls. No data palette, no {{…}} tags, no args box, no add tray — extra
 // behavior is added by dragging CHIPS (above) onto the node from the left panel.
+// Attach an output transform to the selected node from its inspector (replaces
+// the old drag-from-the-left-rail flow). Click to open a searchable list.
+function TransformAdder({ attached = [], onAdd }) {
+    const [open, setOpen] = useState(false);
+    const [q, setQ] = useState('');
+    const ql = q.trim().toLowerCase();
+    const avail = CHIP_LIBRARY.filter(c => !attached.includes(c.id) && (!ql || (`${c.label} ${c.desc} ${c.category}`).toLowerCase().includes(ql)));
+    return (
+        <div className="cf-tadd">
+            <button type="button" className={`cf-add${open ? ' is-on' : ''}`} onClick={() => { setOpen(o => !o); setQ(''); }}>
+                <span className="cf-add__plus">+</span> Add transform
+            </button>
+            {open && (
+                <div className="cf-tadd__panel">
+                    <input className="cf-binput" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search transforms…" autoFocus style={{ marginBottom: 6 }} />
+                    <div className="cf-tadd__list">
+                        {avail.length === 0 && <div className="cf-hint" style={{ padding: '4px 2px' }}>No transforms{attached.length ? ' left to add' : ''}.</div>}
+                        {avail.map(c => (
+                            <button key={c.id} type="button" className="cf-tadd__item" title={c.desc} onClick={() => { onAdd(c.id); setOpen(false); setQ(''); }}>
+                                <span className="cf-tadd__lbl">{c.label}</span>
+                                <span className="cf-tadd__cat">{c.category}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function ChipBoard({ node, ctx, onChange }) {
     const d = node.data || {}; const kind = d.kind;
     // NOTE: do NOT filter out `special: 'toolArgs'` here — that hid the
@@ -2791,12 +2728,14 @@ function ChipBoard({ node, ctx, onChange }) {
         <div className="cf-board">
             <div className="cf-sec" style={{ gap: 8 }}>{shown.map(renderField)}</div>
             <div className="cf-sec">
-                <div className="cf-sec__label">Chips</div>
-                {attached.length === 0
-                    ? <div className="cf-hint">Drag chips from the <b>Chips</b> panel on the left onto this node to parse or transform its output.</div>
-                    : <div className="cf-tray">{attached.map((cid, i) => { const c = CHIP_LIB_BY_ID[cid]; return (
+                <div className="cf-sec__label">Transforms</div>
+                {attached.length > 0 && (
+                    <div className="cf-tray">{attached.map((cid, i) => { const c = CHIP_LIB_BY_ID[cid]; return (
                         <span key={i} className="cf-chip-pill" title={c ? c.desc : cid}>{c ? c.label : cid}<button className="cf-sub__x" onClick={() => onChange({ chips: attached.filter((_, j) => j !== i) })}>×</button></span>
-                    ); })}</div>}
+                    ); })}</div>
+                )}
+                <TransformAdder attached={attached} onAdd={(id) => { if (!attached.includes(id)) onChange({ chips: [...attached, id] }); }} />
+                {attached.length === 0 && <div className="cf-hint">Optional — reshape this node’s output (parse JSON, pick a field, map a list…).</div>}
             </div>
         </div>
     );
@@ -2943,6 +2882,8 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
     const HeadIcon = iconFor(kind, d);
     const [refCopied, setRefCopied] = useState(false);
     const copyRef = () => { try { navigator.clipboard?.writeText(`{{nodes.${node.id}}}`); setRefCopied(true); setTimeout(() => setRefCopied(false), 1200); } catch (_) {} };
+    const [tab, setTab] = useState('parameters'); // parameters | settings | docs
+    const nodeRef = `{{nodes.${node.id}}}`;
     // Everything the chip board needs to render this node's chips + data palette.
     const chipCtx = { runningModels, nodeList, edgeList, parseFields, incomingFields, customChips, webhookUrl, onGenWebhook, copied, onCopyWebhook, onOpenChipBuilder };
 
@@ -2956,7 +2897,7 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
                 {mobile && (
                     <button className="auto-btn auto-btn--icon auto-btn--sm" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><CloseIcon size={15} /></button>
                 )}
-                <span className="auto-panel__icon"><HeadIcon size={16} strokeWidth={2} /></span>
+                <span className="auto-panel__icon" style={{ background: `color-mix(in oklab, var(--cat-${consoleCat(kind)}) 16%, transparent)`, color: `var(--cat-${consoleCat(kind)})` }}><HeadIcon size={16} strokeWidth={2} /></span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="auto-panel__title" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.label || typeLabel || kind}</div>
                     <div className="auto-panel__sub">{typeLabel || kind}</div>
@@ -2964,7 +2905,49 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
                 <button className="auto-btn auto-btn--icon auto-btn--sm auto-btn--danger" onClick={onDelete} title="Delete node" style={{ flexShrink: 0 }}><Trash2 size={14} /></button>
             </div>
 
-            <ChipBoard node={node} ctx={chipCtx} onChange={onChange} />
+            <div className="auto-insptabs">
+                <button className={`auto-insptab${tab === 'parameters' ? ' is-on' : ''}`} onClick={() => setTab('parameters')}>Parameters</button>
+                <button className={`auto-insptab${tab === 'settings' ? ' is-on' : ''}`} onClick={() => setTab('settings')}>Settings</button>
+                <button className={`auto-insptab${tab === 'docs' ? ' is-on' : ''}`} onClick={() => setTab('docs')}>Docs</button>
+            </div>
+
+            {tab === 'parameters' && <ChipBoard node={node} ctx={chipCtx} onChange={onChange} />}
+
+            {tab === 'settings' && (
+                <div className="cf-board">
+                    <div className="cf-sec">
+                        <div className="cf-sec__label">State</div>
+                        <label className={`auto-switch${false ? ' is-disabled' : ''}`} style={{ padding: '2px 0' }}>
+                            <input type="checkbox" checked={!d.disabled} onChange={() => onChange({ disabled: !d.disabled })} />
+                            <span className="auto-switch__track"><span className="auto-switch__thumb" /></span>
+                            <span>{d.disabled ? 'Node disabled — skipped on run' : 'Node enabled'}</span>
+                        </label>
+                    </div>
+                    <div className="cf-sec">
+                        <div className="cf-sec__label">Danger zone</div>
+                        <button className="auto-btn auto-btn--danger auto-btn--block auto-btn--sm" onClick={onDelete}>
+                            <Trash2 size={13} /> <span>Delete this node</span>
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {tab === 'docs' && (
+                <div className="cf-board">
+                    <div className="cf-sec">
+                        <div className="cf-sec__label">About</div>
+                        <div className="cf-hint">{typeLabel || kind}{isTrigger ? ' — starts the workflow.' : ''}</div>
+                    </div>
+                    <div className="cf-sec">
+                        <div className="cf-sec__label">Reference this step</div>
+                        <div className="auto-panel__ref">
+                            <code>{nodeRef}</code>
+                            <button className="auto-panel__refbtn" onClick={copyRef}>{refCopied ? <Check size={12} /> : <Copy size={12} />}{refCopied ? 'Copied' : 'Copy'}</button>
+                        </div>
+                        <div className="cf-hint" style={{ marginTop: 6 }}>Drop this into a later node’s field (or use its “{'{ }'}” picker) to pass this step’s output downstream.</div>
+                    </div>
+                </div>
+            )}
         </div>
         </DataTagsContext.Provider>
     );
@@ -3130,12 +3113,42 @@ function runStatusColor(s) {
 // ---- Run history: friendly per-node summary ---------------------------------
 // Turns a raw node output into a short, human-readable one-liner. Falls back to
 // "view raw" for anything that doesn't smart-summarize cleanly.
+// Best-effort summary of a JSON string that is TRUNCATED (cut mid-value, so it
+// won't JSON.parse). Pulls friendly fields out by regex — never returns braces.
+function summarizeTruncatedJson(s) {
+    const grab = (re) => { const m = s.match(re); return m ? m[1] : null; };
+    const file = grab(/"(?:outputPath|filePath|filename)"\s*:\s*"([^"]{1,200})"/);
+    if (file) return `Created ${String(file).split(/[\\/]/).pop()}`;
+    const count = grab(/"count"\s*:\s*(\d+)/);
+    const title = grab(/"(?:feedTitle|title|name)"\s*:\s*"([^"]{1,90})"/);
+    if (count) return `${count} item${count === '1' ? '' : 's'}${title ? ' · ' + title : ''}`;
+    if (title) return title;
+    const titles = (s.match(/"title"\s*:/g) || []).length;
+    if (titles) return `${titles} item${titles === 1 ? '' : 's'}`;
+    const links = (s.match(/"(?:url|link)"\s*:/g) || []).length;
+    if (links) return `${links} result${links === 1 ? '' : 's'}`;
+    return 'Structured data';
+}
+
 function summarizeNodeOutput(output) {
     if (output == null) return null;
     if (typeof output === 'string') {
         const s = output.trim();
         if (!s) return '(empty string)';
-        return s.length > 180 ? s.slice(0, 180) + '…' : s;
+        // Node outputs are often serialized: a JSON string or an HTML document.
+        // Parse JSON and summarize its STRUCTURE; never surface raw JSON/HTML.
+        const head = s.slice(0, 600).toLowerCase();
+        if (head.startsWith('<!doctype') || head.startsWith('<html') || (s[0] === '<' && head.includes('<body'))) {
+            const title = (s.match(/<title[^>]*>([^<]{1,80})<\/title>/i) || [])[1];
+            return title ? `HTML page — ${title.trim()}` : `HTML document (${s.length.toLocaleString()} chars)`;
+        }
+        if (s[0] === '{' || s[0] === '[') {
+            // Parse if possible; on TRUNCATED/invalid JSON, extract friendly fields
+            // by regex. Never fall through to printing raw JSON braces.
+            try { return summarizeNodeOutput(JSON.parse(s)); } catch (_) { return summarizeTruncatedJson(s); }
+        }
+        const oneLine = s.replace(/\s+/g, ' ');
+        return oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine;
     }
     if (typeof output === 'number' || typeof output === 'boolean') return String(output);
     if (Array.isArray(output)) {
@@ -3148,6 +3161,32 @@ function summarizeNodeOutput(output) {
         return `${output.length} item${output.length === 1 ? '' : 's'}`;
     }
     if (typeof output === 'object') {
+        // Engine "truncated preview" wrapper: { _truncated, preview }. Unwrap and
+        // summarize the INNER value so we never surface a raw JSON preview string.
+        if (output._truncated !== undefined || output.preview !== undefined) {
+            const inner = output.preview;
+            if (inner && typeof inner === 'object') return summarizeNodeOutput(inner);
+            if (typeof inner === 'string' && inner.trim()) {
+                const t = inner.trim();
+                if (t[0] === '{' || t[0] === '[') return summarizeTruncatedJson(t);
+                return t.replace(/\s+/g, ' ').slice(0, 160) + (output._truncated ? '…' : '');
+            }
+            return 'Large result (truncated)';
+        }
+        // Created-file shape (create_pdf / export_file / html-to-pdf)
+        if (output.outputPath || output.filePath || (Array.isArray(output._artifacts) && output._artifacts.length)) {
+            const fp = output.outputPath || output.filePath || (output._artifacts && output._artifacts[0] && output._artifacts[0].name) || '';
+            const base = String(fp).split('/').pop() || 'file';
+            return `Created ${base}`;
+        }
+        // Feed / list-with-title shape (parse_rss, search, etc.)
+        if (typeof output.count === 'number') {
+            const title = output.title || output.feedTitle || output.name;
+            return `${output.count} item${output.count === 1 ? '' : 's'}${title ? ' · ' + title : ''}`;
+        }
+        // Merge / collection shape: { items: [...] } or { results: [...] }
+        if (Array.isArray(output.items)) return `${output.items.length} item${output.items.length === 1 ? '' : 's'}`;
+        if (Array.isArray(output.results)) return `${output.results.length} result${output.results.length === 1 ? '' : 's'}`;
         // Common "this is a fetch/scrape" shape
         if (output.url && (output.title || output.content)) {
             return `${output.title || output.url}${output.content ? ' — ' + String(output.content).slice(0, 120).replace(/\s+/g, ' ') + '…' : ''}`;
@@ -3162,18 +3201,23 @@ function summarizeNodeOutput(output) {
         // sent/delivered confirmations
         if (output.sent === true) return 'Sent ✓';
         if (output._delivered) return `Delivered to ${output._delivered}`;
-        // Generic: first 3 scalar keys
-        const keys = Object.keys(output).filter(k => k !== '_artifacts' && k !== '_handle' && k !== '_delivered');
+        // Generic: first 3 readable scalar keys. Skip internal (_*) keys and the
+        // bookkeeping `preview`/`success` flags so nothing JSON-ish leaks through.
+        const keys = Object.keys(output).filter(k => !k.startsWith('_') && k !== 'preview' && k !== 'success' && k !== 'ok');
+        const labelize = (k) => k.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase();
         const parts = [];
         for (const k of keys.slice(0, 3)) {
             const v = output[k];
             if (v == null) continue;
-            if (typeof v === 'string') parts.push(`${k}: ${v.length > 50 ? v.slice(0, 50) + '…' : v}`);
-            else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
-            else if (Array.isArray(v)) parts.push(`${k}: [${v.length}]`);
-            else parts.push(`${k}: {…}`);
+            if (typeof v === 'string') {
+                const t = v.trim();
+                if (t.startsWith('{') || t.startsWith('[')) continue; // don't surface embedded JSON
+                parts.push(`${labelize(k)}: ${t.length > 50 ? t.slice(0, 50) + '…' : t}`);
+            }
+            else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${labelize(k)}: ${v}`);
+            else if (Array.isArray(v)) parts.push(`${v.length} ${labelize(k)}`);
         }
-        return parts.length ? parts.join(' · ') : '(object)';
+        return parts.length ? parts.join(' · ') : 'Done';
     }
     return null;
 }
@@ -3300,6 +3344,382 @@ function RunHistoryPanel({ runs, nodes: wfNodes = [], width = 300, mobile = fals
                 );
             })}
         </div>
+    );
+}
+
+/* ============================================================ *
+ * Console screens (design's icon side-rail + Dashboard / Runs /
+ * Library). The Builder screen is the existing 3-pane editor.
+ * ============================================================ */
+
+// Node kind → category color suffix (mirrors AutomationNode.colorCat).
+function consoleCat(kind) {
+    if (!kind) return 'cyan';
+    if (kind.startsWith('trigger.')) return 'amber';
+    if (kind === 'model') return 'mint';
+    if (kind.startsWith('gate.') || kind === 'merge' || kind === 'map') return 'violet';
+    if (kind === 'output' || kind === 'slack' || kind === 'telegram' || kind === 'telegram_get') return 'coral';
+    return 'cyan';
+}
+function nodeKindOf(n) { return (n && (n.kind || (n.data && n.data.kind) || n.type)) || ''; }
+
+const CONSOLE_RAIL = [
+    { id: 'dashboard', label: 'Dashboard', Icon: LayoutGrid },
+    { id: 'builder', label: 'Builder', Icon: Workflow },
+    { id: 'runs', label: 'Runs', Icon: ListChecks },
+    { id: 'library', label: 'Library', Icon: Boxes },
+];
+
+function AutoIconRail({ screen, setScreen }) {
+    return (
+        <nav className="auto-iconrail">
+            <div className="auto-iconrail__brand" title="Automations">A</div>
+            {CONSOLE_RAIL.map(r => (
+                <button key={r.id} type="button"
+                    className={`auto-iconrail__btn${screen === r.id ? ' is-active' : ''}`}
+                    title={r.label} aria-label={r.label}
+                    onClick={() => setScreen(r.id)}>
+                    <r.Icon size={18} strokeWidth={1.8} />
+                </button>
+            ))}
+            <div className="auto-iconrail__sp" />
+        </nav>
+    );
+}
+
+// Small chain of category chips summarizing a flow's nodes (design flow card).
+function FlowChain({ nodes }) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    const shown = list.slice(0, 4);
+    return (
+        <div className="auto-chain">
+            {shown.map((n, i) => (
+                <React.Fragment key={i}>
+                    {i > 0 && <span className="auto-chain__dash" />}
+                    <span className={`auto-chain__chip cc-${consoleCat(nodeKindOf(n))}`} />
+                </React.Fragment>
+            ))}
+            {list.length > shown.length && <span className="auto-chain__more">+{list.length - shown.length}</span>}
+        </div>
+    );
+}
+
+function DashboardScreen({ automations = [], onOpen, onNew, onRuns }) {
+    const total = automations.length;
+    const active = automations.filter(a => a.enabled && !a.archived).length;
+    const paused = automations.filter(a => !a.enabled && !a.archived).length;
+    const archived = automations.filter(a => a.archived).length;
+    const live = automations.filter(a => !a.archived);
+    return (
+        <div className="auto-screen">
+            <div className="auto-phead">
+                <div>
+                    <div className="auto-ptitle">Automations</div>
+                    <div className="auto-psub">{total} workflow{total === 1 ? '' : 's'} in your workspace</div>
+                </div>
+                <button className="auto-btn auto-btn--accent" onClick={onNew}><Plus size={15} /> <span>New automation</span></button>
+            </div>
+            <div className="auto-stats">
+                <div className="auto-stat"><div className="auto-stat__lab">Active flows</div><div className="auto-stat__num">{active}</div></div>
+                <div className="auto-stat"><div className="auto-stat__lab">Paused</div><div className="auto-stat__num">{paused}</div></div>
+                <div className="auto-stat"><div className="auto-stat__lab">Archived</div><div className="auto-stat__num">{archived}</div></div>
+                <div className="auto-stat auto-stat--link" onClick={onRuns} role="button"><div className="auto-stat__lab">Run history</div><div className="auto-stat__num">View →</div></div>
+            </div>
+            <div className="auto-sechd"><div className="auto-sectt">Your flows</div></div>
+            {live.length === 0 ? (
+                <div className="auto-empty">No automations yet. Create one to get started.</div>
+            ) : (
+                <div className="auto-cardgrid">
+                    {live.map(a => {
+                        const nodeCount = Array.isArray(a.nodes) ? a.nodes.length : (a.nodeCount || 0);
+                        const status = a.archived ? 'archived' : a.enabled ? 'active' : 'paused';
+                        const pillCls = status === 'active' ? 'ok' : 'warn';
+                        return (
+                            <div key={a.id} className="auto-acard" onClick={() => onOpen(a)}>
+                                <div className="auto-acard__top">
+                                    <div>
+                                        <div className="auto-acard__nm">{a.name || 'Untitled'}</div>
+                                        <div className="auto-acard__des">{nodeCount} node{nodeCount === 1 ? '' : 's'}</div>
+                                    </div>
+                                    <span className={`auto-pill ${pillCls}`}>{status}</span>
+                                </div>
+                                <FlowChain nodes={a.nodes} />
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
+
+const RUN_FILTERS = [
+    { id: 'all', label: 'All' },
+    { id: 'success', label: 'Success' },
+    { id: 'running', label: 'Running' },
+    { id: 'failed', label: 'Failed' },
+];
+function runMatchesFilter(status, f) {
+    if (f === 'all') return true;
+    const s = String(status || '').toLowerCase();
+    if (f === 'success') return s === 'success' || s === 'completed' || s === 'ok';
+    if (f === 'running') return s === 'running' || s === 'active';
+    if (f === 'failed') return s === 'failed' || s === 'error';
+    return true;
+}
+
+function RunsScreen({ automations = [], onOpenBuilder, confirm, notify }) {
+    const [runs, setRuns] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [filter, setFilter] = useState('all');
+    const [active, setActive] = useState(null);
+    const [detail, setDetail] = useState(null);
+    const [clearing, setClearing] = useState(false);
+
+    const loadAll = useCallback(async () => {
+        setLoading(true);
+        const all = [];
+        await Promise.all((automations || []).map(async a => {
+            try {
+                const r = await fetch(`/api/automations/${a.id}/runs?limit=25`, { credentials: 'include' });
+                if (!r.ok) return;
+                const list = await r.json();
+                (Array.isArray(list) ? list : []).forEach(run => all.push({ ...run, _flow: a.name, _flowId: a.id }));
+            } catch (_) { /* skip */ }
+        }));
+        all.sort((x, y) => new Date(y.startedAt || 0).getTime() - new Date(x.startedAt || 0).getTime());
+        setRuns(all.slice(0, 80));
+        setLoading(false);
+    }, [automations]);
+
+    useEffect(() => { loadAll(); }, [loadAll]);
+
+    const openRun = useCallback(async (run) => {
+        setActive(run);
+        setDetail(null);
+        try {
+            const r = await fetch(`/api/automations/runs/${run.id}`, { credentials: 'include' });
+            setDetail(r.ok ? await r.json() : null);
+        } catch (_) { setDetail(null); }
+    }, []);
+
+    // Clear history for every automation that has runs, then reload.
+    const clearAll = useCallback(async () => {
+        const flowIds = Array.from(new Set(runs.map(r => r._flowId)));
+        if (!flowIds.length) return;
+        const ok = confirm
+            ? await confirm({ title: 'Clear run history', message: `Clear all run history across ${flowIds.length} automation${flowIds.length === 1 ? '' : 's'}? This cannot be undone.`, confirmLabel: 'Clear', danger: true })
+            : window.confirm('Clear all run history? This cannot be undone.');
+        if (!ok) return;
+        setClearing(true);
+        await Promise.all(flowIds.map(id => fetch(`/api/automations/${id}/runs`, { method: 'DELETE', credentials: 'include' }).catch(() => {})));
+        setActive(null); setDetail(null);
+        await loadAll();
+        setClearing(false);
+        if (notify) notify('Run history cleared');
+    }, [runs, confirm, notify, loadAll]);
+
+    const filtered = runs.filter(r => runMatchesFilter(r.status, filter));
+    const wfNodes = (active && automations.find(a => a.id === active._flowId)?.nodes) || [];
+
+    return (
+        <div className="auto-screen">
+            <div className="auto-phead">
+                <div>
+                    <div className="auto-ptitle">Run history</div>
+                    <div className="auto-psub">Executions across all automations</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="auto-btn auto-btn--ghost" onClick={loadAll}><RotateCcw size={14} /> <span>Refresh</span></button>
+                    <button className="auto-btn auto-btn--danger" onClick={clearAll} disabled={clearing || runs.length === 0}>
+                        <Trash2 size={14} /> <span>{clearing ? 'Clearing…' : 'Clear history'}</span>
+                    </button>
+                </div>
+            </div>
+            <div className="auto-filters">
+                {RUN_FILTERS.map(f => (
+                    <span key={f.id} className={`auto-fchip${filter === f.id ? ' is-on' : ''}`} onClick={() => setFilter(f.id)}>{f.label}</span>
+                ))}
+            </div>
+            <div className="auto-runlist">
+                <div className="auto-tbl">
+                    <div className="auto-trow auto-trow--head"><div>Status</div><div>Flow / trigger</div><div>Started</div><div>Run ID</div><div>Duration</div></div>
+                    {loading && <div className="auto-tempty">Loading runs…</div>}
+                    {!loading && filtered.length === 0 && <div className="auto-tempty">No runs match this filter.</div>}
+                    {filtered.map(r => (
+                        <div key={r.id} className={`auto-trow${active && active.id === r.id ? ' is-act' : ''}`} onClick={() => openRun(r)}>
+                            <div className="auto-tst"><span className="auto-tdot" style={{ background: runStatusColor(r.status) }} /><span style={{ textTransform: 'capitalize' }}>{r.status}</span></div>
+                            <div className="auto-tflow"><span className="auto-tflow__nm">{r._flow || 'Flow'}</span><span className="auto-tflow__tg">{r.trigger}</span></div>
+                            <div className="auto-tmut">{fmtRunTime(r.startedAt)}</div>
+                            <div className="auto-tid">{String(r.id).slice(0, 10)}</div>
+                            <div className="auto-tmut">{r.durationMs != null ? `${(r.durationMs / 1000).toFixed(1)}s` : '—'}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+            {active && (
+                <div className="cf-modal-backdrop" onMouseDown={() => { setActive(null); setDetail(null); }}>
+                    <div className="auto-runmodal" onMouseDown={(e) => e.stopPropagation()}>
+                        <div className="auto-runmodal__head">
+                            <div className="auto-detid">{String(active.id).slice(0, 12)}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                {onOpenBuilder && <button className="auto-linkbtn" onClick={() => onOpenBuilder(automations.find(a => a.id === active._flowId))}>Open in builder →</button>}
+                                <span className="auto-pill" style={{ color: runStatusColor(active.status), borderColor: 'transparent', background: 'transparent', textTransform: 'capitalize' }}>{active.status}</span>
+                                <button className="ai-modal__close" onClick={() => { setActive(null); setDetail(null); }} title="Close"><CloseIcon size={16} /></button>
+                            </div>
+                        </div>
+                        <div className="auto-runmodal__body">
+                            <div className="auto-detmeta">
+                                <div><div className="auto-detk">Flow</div><div className="auto-detv">{active._flow}</div></div>
+                                <div><div className="auto-detk">Trigger</div><div className="auto-detv">{active.trigger}</div></div>
+                                <div><div className="auto-detk">Duration</div><div className="auto-detv">{active.durationMs != null ? `${(active.durationMs / 1000).toFixed(1)}s` : '—'}</div></div>
+                                <div><div className="auto-detk">Started</div><div className="auto-detv">{fmtRunTime(active.startedAt)}</div></div>
+                            </div>
+                            {detail && detail.error && <div className="auto-deterr">{detail.error}</div>}
+                            {!detail && <div className="auto-tempty">Loading steps…</div>}
+                            {detail && (
+                                <div className="auto-steps">
+                                    {(detail.nodes || []).map((n, i) => {
+                                        const wf = (wfNodes || []).find(x => x.id === n.nodeId);
+                                        const label = (wf && wf.data && (wf.data.label || wf.data.tool)) || nodeFriendlyType(n.type) || n.nodeId;
+                                        const summary = n.status === 'skipped' ? 'Skipped' : summarizeNodeOutput(n.output);
+                                        const arts = (n.output && typeof n.output === 'object' && Array.isArray(n.output._artifacts))
+                                            ? n.output._artifacts.filter(a => a && a.url && a.name) : [];
+                                        const last = i === detail.nodes.length - 1;
+                                        return (
+                                            <div key={i} className="auto-step">
+                                                {!last && <div className="auto-step__ln" />}
+                                                <span className="auto-step__sd"><NodeStatusDot status={n.status} /></span>
+                                                <div className="auto-step__bd">
+                                                    <div className="auto-step__nm">{label}<span className={`auto-step__tag s-${String(n.status || '').toLowerCase()}`}>{n.status}</span></div>
+                                                    {n.error
+                                                        ? <div className="auto-step__err">{n.error}</div>
+                                                        : summary && <div className="auto-step__sum">{summary}</div>}
+                                                    {arts.length > 0 && (
+                                                        <div className="auto-step__arts">
+                                                            {arts.map((a, j) => {
+                                                                const dlUrl = withDownloadFlag(a.url);
+                                                                return (
+                                                                    <a key={j} href={dlUrl} download={a.name} target="_blank" rel="noopener noreferrer"
+                                                                        onClick={(e) => { e.preventDefault(); saveArtifactViaBlob(dlUrl, a.name).catch(() => { window.location.href = dlUrl; }); }}
+                                                                        className="auto-step__art"><Download size={11} /> {a.name}</a>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function LibraryScreen({ groupedPalette = {}, categoryOrder = [], categoryLabel = {}, automations = [], onAddToFlow }) {
+    const [q, setQ] = useState('');
+    const [pending, setPending] = useState(null); // node item awaiting an automation choice
+    const query = q.trim().toLowerCase();
+    const match = (it) => !query || (`${it.label} ${it.description || ''}`).toLowerCase().includes(query);
+    const live = automations.filter(a => !a.archived);
+
+    const choose = (item) => {
+        // No flows yet → straight to a new one. Exactly one → use it. Else ask.
+        if (live.length === 0) { onAddToFlow(item, null); return; }
+        if (live.length === 1) { onAddToFlow(item, live[0].id); return; }
+        setPending(item);
+    };
+
+    return (
+        <div className="auto-screen">
+            <div className="auto-phead">
+                <div>
+                    <div className="auto-ptitle">Node library</div>
+                    <div className="auto-psub">Building blocks for your automations</div>
+                </div>
+                <div className="auto-libsearch"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search nodes…" /></div>
+            </div>
+            <div className="auto-libpage">
+                {categoryOrder.map(cat => {
+                    const items = (groupedPalette[cat] || []).filter(match);
+                    if (!items.length) return null;
+                    return (
+                        <React.Fragment key={cat}>
+                            <div className="auto-libsection"><span className="auto-libsection__t">{categoryLabel[cat] || cat}</span><span className="auto-libsection__c">{items.length}</span><span className="auto-libsection__hr" /></div>
+                            {items.map(item => (
+                                <div key={item.key} className="auto-ncard" onClick={() => choose(item)}>
+                                    <span className={`auto-ncard__cat cc-${consoleCat(item.kind)}`} />
+                                    <div className="auto-ncard__nm">{item.label}</div>
+                                    {item.description && <div className="auto-ncard__des">{item.description}</div>}
+                                    <div className="auto-ncard__add"><Plus size={13} /> Add to flow</div>
+                                </div>
+                            ))}
+                        </React.Fragment>
+                    );
+                })}
+            </div>
+            {pending && (
+                <div className="cf-modal-backdrop" onMouseDown={() => setPending(null)}>
+                    <div className="auto-pickflow" onMouseDown={(e) => e.stopPropagation()}>
+                        <div className="auto-pickflow__head">Add “{pending.label}” to…</div>
+                        <div className="auto-pickflow__list">
+                            {live.map(a => (
+                                <button key={a.id} className="auto-pickflow__item" onClick={() => { onAddToFlow(pending, a.id); setPending(null); }}>
+                                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: a.enabled !== false ? 'var(--cat-mint)' : 'var(--ink-4)' }} />
+                                    <span className="auto-pickflow__nm">{a.name || 'Untitled'}</span>
+                                    <span className="auto-pickflow__meta">{Array.isArray(a.nodes) ? a.nodes.length : 0} nodes</span>
+                                </button>
+                            ))}
+                        </div>
+                        <button className="auto-pickflow__new" onClick={() => { onAddToFlow(pending, null); setPending(null); }}>
+                            <Plus size={14} /> New automation
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Searchable "+" popup shown when the canvas is clicked — pick a node to drop
+// at that position. Fixed-positioned at the click point, clamped to viewport.
+function NodePicker({ x, y, items = [], onPick, onClose }) {
+    const [q, setQ] = useState('');
+    const inputRef = useRef(null);
+    useEffect(() => {
+        const t = setTimeout(() => { try { inputRef.current && inputRef.current.focus(); } catch (_) {} }, 0);
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => { clearTimeout(t); window.removeEventListener('keydown', onKey); };
+    }, [onClose]);
+    const query = q.trim().toLowerCase();
+    const filtered = items.filter(it => !query || (`${it.label} ${it.description || ''}`).toLowerCase().includes(query));
+    const left = Math.max(8, Math.min(x, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 268));
+    const top = Math.max(8, Math.min(y, (typeof window !== 'undefined' ? window.innerHeight : 800) - 372));
+    return (
+        <>
+            <div className="auto-addmenu-backdrop" onMouseDown={onClose} />
+            <div className="auto-addmenu" style={{ left, top }} onMouseDown={(e) => e.stopPropagation()}>
+                <div className="auto-addmenu__search">
+                    <Plus size={13} />
+                    <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Add a node…" />
+                </div>
+                <div className="auto-addmenu__list">
+                    {filtered.length === 0 && <div className="auto-addmenu__empty">No nodes match.</div>}
+                    {filtered.slice(0, 50).map(it => (
+                        <button key={it.key} className="auto-addmenu__item" onClick={() => onPick(it)} title={it.description || it.label}>
+                            <span className={`auto-addmenu__dot cc-${consoleCat(it.kind)}`} />
+                            <span className="auto-addmenu__lbl">{it.label}</span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+        </>
     );
 }
 
