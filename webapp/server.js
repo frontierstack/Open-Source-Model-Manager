@@ -13510,6 +13510,7 @@ async function llmExtractMemoriesFromTurn(userText, assistantText) {
                 ],
                 temperature: 0,
                 maxTokens: 700,
+                disableThinking: true, // memory extraction needs clean JSON, not a reasoning trace that truncates it
             }),
             new Promise((_, rej) => {
                 const t = setTimeout(() => rej(new Error('llm extraction timed out')), LLM_EXTRACT_TIMEOUT_MS);
@@ -23245,7 +23246,7 @@ async function pruneScratchFacts(userId, { apply }) {
         let raw;
         try {
             raw = await Promise.race([
-                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220 }),
+                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220, disableThinking: true }),
                 new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('prune timeout')), 25000); if (t.unref) t.unref(); }),
             ]);
         } catch (_) { continue; }                            // batch failed → keep this batch
@@ -23315,7 +23316,7 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
                     messages: [
                         { role: 'system', content: 'You merge several memory notes that are about the SAME thing into ONE concise note with the same meaning and no duplication. Keep it a single short statement about the user or their preference. Output ONLY the merged note, no preamble, no list.' },
                         { role: 'user', content: lines },
-                    ], temperature: 0, maxTokens: 160,
+                    ], temperature: 0, maxTokens: 160, disableThinking: true,
                 }),
                 new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('merge timeout')), 20000); if (t.unref) t.unref(); }),
             ]);
