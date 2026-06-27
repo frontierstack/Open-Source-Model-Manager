@@ -5,6 +5,7 @@ import { Check, X, Loader2 } from 'lucide-react';
 // and done (past tense) — so the milestone line mutates in place as the
 // call resolves: "Reading file · utils.js" → "Read · utils.js".
 const VERBS = {
+    web:               ['Browsing the web',        'Browsed the web'],
     web_search:        ['Searching the web',       'Searched'],
     fetch_url:         ['Fetching',                'Fetched'],
     crawl_pages:       ['Crawling',                'Crawled'],

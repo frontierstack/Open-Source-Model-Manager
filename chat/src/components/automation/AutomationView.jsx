@@ -73,8 +73,12 @@ const PALETTE_APP = {
     'trigger.telegram': 'Telegram', telegram: 'Telegram', telegram_get: 'Telegram',
     'trigger.slack': 'Slack', slack: 'Slack',
 };
-// Node keys hidden from the chat palette (display-only; engine still supports them).
-const PALETTE_HIDDEN = new Set(['output']);
+// Node keys hidden from the chat palette (display-only; engine still supports them
+// so EXISTING saved workflows that use them keep running). The Fetch URL node now
+// auto-cascades static→stealth→real-browser, so the separate Playwright Fetch and
+// Scrapling Fetch nodes are redundant for new workflows and are hidden to reduce
+// palette clutter (consolidated, like the chat `web` tool).
+const PALETTE_HIDDEN = new Set(['output', 'playwright_fetch', 'scrapling_fetch']);
 const COND_OP_OPTIONS = [
     { value: '==', label: 'equals' },
     { value: '!=', label: 'does not equal' },

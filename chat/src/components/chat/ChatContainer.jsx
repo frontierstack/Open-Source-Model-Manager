@@ -222,6 +222,24 @@ function extractUrls(text, maxUrls = 3) {
  */
 function extractSources(toolName, result) {
     if (!result || typeof result !== 'object') return null;
+    // Consolidated `web` tool — branch on result.mode (search / read / batch / crawl).
+    if (toolName === 'web') {
+        const fromContent = (c) => (typeof c === 'string' ? c.slice(0, 220) : '');
+        if (Array.isArray(result.results)) { // search OR batch-read
+            return result.results
+                .filter(r => r && typeof r.url === 'string' && /^https?:\/\//.test(r.url))
+                .map(r => ({ url: r.url, title: r.title || '', snippet: r.snippet || fromContent(r.content) }));
+        }
+        if (Array.isArray(result.pages)) { // crawl
+            return result.pages
+                .filter(p => p && typeof p.url === 'string' && /^https?:\/\//.test(p.url))
+                .map(p => ({ url: p.url, title: p.title || '', snippet: fromContent(p.content) }));
+        }
+        if (typeof result.url === 'string' && /^https?:\/\//.test(result.url)) { // single read/interact
+            return [{ url: result.url, title: result.title || '', snippet: fromContent(result.content) }];
+        }
+        return null;
+    }
     if (toolName === 'web_search' && Array.isArray(result.results)) {
         return result.results
             .filter(r => r && typeof r.url === 'string' && /^https?:\/\//.test(r.url))

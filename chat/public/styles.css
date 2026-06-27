@@ -965,6 +965,9 @@ body.font-size-large .markdown-content,
 .collapse{
   visibility: collapse;
 }
+.static{
+  position: static;
+}
 .fixed{
   position: fixed;
 }

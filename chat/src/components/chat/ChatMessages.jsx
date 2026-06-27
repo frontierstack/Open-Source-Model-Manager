@@ -30,7 +30,20 @@ function StreamingMessage() {
         let sources = null;
         const r = tc.result;
         if (r && typeof r === 'object') {
-            if (tc.name === 'web_search' && Array.isArray(r.results)) {
+            const snip = (c) => (typeof c === 'string' ? c.slice(0, 220) : '');
+            if (tc.name === 'web') {
+                if (Array.isArray(r.results)) {
+                    sources = r.results
+                        .filter(x => x && typeof x.url === 'string' && /^https?:\/\//.test(x.url))
+                        .map(x => ({ url: x.url, title: x.title || '', snippet: x.snippet || snip(x.content) }));
+                } else if (Array.isArray(r.pages)) {
+                    sources = r.pages
+                        .filter(p => p && typeof p.url === 'string' && /^https?:\/\//.test(p.url))
+                        .map(p => ({ url: p.url, title: p.title || '', snippet: snip(p.content) }));
+                } else if (typeof r.url === 'string' && /^https?:\/\//.test(r.url)) {
+                    sources = [{ url: r.url, title: r.title || '', snippet: snip(r.content) }];
+                }
+            } else if (tc.name === 'web_search' && Array.isArray(r.results)) {
                 sources = r.results
                     .filter(x => x && typeof x.url === 'string' && /^https?:\/\//.test(x.url))
                     .map(x => ({ url: x.url, title: x.title || '', snippet: x.snippet || '' }));

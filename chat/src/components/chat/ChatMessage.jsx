@@ -34,6 +34,7 @@ function splitReasoningIntoSteps(text) {
 // to humanizing the snake_case name (e.g. extract_archive → "Extract
 // archive") so newly-added skills still get a reasonable label.
 const TOOL_VERBS = {
+    web: 'Browsing the web',
     web_search: 'Searching the web',
     fetch_url: 'Fetching page',
     crawl_pages: 'Crawling pages',

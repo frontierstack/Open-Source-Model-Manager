@@ -16,6 +16,32 @@ function getHostname(url) {
 }
 
 /**
+ * WordPress mshots is a free, no-auth public link-preview service. The FIRST
+ * request for an uncached target returns a "generating…" placeholder and kicks
+ * off the real screenshot in the background; only a later request gets the real
+ * image. That is why the preview used to look blank until you hovered a few
+ * times. We (1) PRE-WARM the screenshot the moment the sources render so mshots
+ * starts generating immediately, and (2) RETRY with a cache-buster while the
+ * popup is open so a placeholder gets swapped for the real screenshot as soon as
+ * it is ready — no more "hover repeatedly to make it appear".
+ */
+function mshotsUrl(url, retry = 0) {
+    const base = `https://s.wordpress.com/mshots/v1/${encodeURIComponent(url)}?w=640&h=400`;
+    return retry ? `${base}&r=${retry}` : base;
+}
+
+const warmedPreviews = new Set();
+function prewarmPreview(url) {
+    if (!url || warmedPreviews.has(url)) return;
+    warmedPreviews.add(url);
+    try {
+        const img = new Image();
+        img.referrerPolicy = 'no-referrer';
+        img.src = mshotsUrl(url);
+    } catch (_) { /* best-effort */ }
+}
+
+/**
  * Deterministic color for a hostname. No network call: we hash the
  * hostname and index into a curated palette. This replaces the previous
  * favicon-service approach which fired visible 404s in the console
@@ -79,14 +105,25 @@ function truncate(text, max) {
  * chopped off at the top of the bubble when a chip was near the top
  * of a message.
  */
-function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, setPreviewStatus }) {
+function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
     const hoverTimerRef = useRef(null);
     const chipRef = useRef(null);
     const [popupPos, setPopupPos] = useState(null);
+    // Per-chip preview state (was shared across all chips, which let one chip's
+    // load state leak onto another). 'loading' | 'loaded' | 'error'.
+    const [previewStatus, setPreviewStatus] = useState('loading');
+    const [retry, setRetry] = useState(0);
+    const retryTimersRef = useRef([]);
 
     const hostname = getHostname(source?.url);
     const isValidUrl = !!hostname;
     const isHovered = hoveredIdx === index;
+
+    // Pre-warm this source's screenshot as soon as the chip mounts so mshots is
+    // generating it well before the user hovers.
+    useEffect(() => {
+        if (isValidUrl) prewarmPreview(source.url);
+    }, [source?.url, isValidUrl]);
 
     const computePopupPos = () => {
         const el = chipRef.current;
@@ -120,7 +157,7 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         hoverTimerRef.current = setTimeout(() => {
             setPopupPos(computePopupPos());
             setHoveredIdx(index);
-        }, 200);
+        }, 150);
     };
 
     const handleMouseLeave = () => {
@@ -144,9 +181,29 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         };
     }, [isHovered]);
 
+    // While the popup is open, retry the screenshot a couple of times so an
+    // initial mshots placeholder is replaced by the real screenshot the moment
+    // it finishes generating, instead of sitting on a blank/placeholder frame.
+    useEffect(() => {
+        retryTimersRef.current.forEach(clearTimeout);
+        retryTimersRef.current = [];
+        if (!isHovered || !isValidUrl) return;
+        // Don't reset to 'loading' if we already have a real image cached.
+        setPreviewStatus((s) => (s === 'loaded' ? 'loaded' : 'loading'));
+        // Cache-busted reloads at 2.5s and 5s upgrade a placeholder → real.
+        retryTimersRef.current.push(setTimeout(() => setRetry((r) => r + 1), 2500));
+        retryTimersRef.current.push(setTimeout(() => setRetry((r) => r + 1), 5000));
+        // Safety: if nothing has loaded after 9s, show the text-only card.
+        retryTimersRef.current.push(setTimeout(() => {
+            setPreviewStatus((prev) => (prev === 'loading' ? 'error' : prev));
+        }, 9000));
+        return () => { retryTimersRef.current.forEach(clearTimeout); retryTimersRef.current = []; };
+    }, [isHovered, isValidUrl]);
+
     useEffect(() => {
         return () => {
             if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+            retryTimersRef.current.forEach(clearTimeout);
         };
     }, []);
 
@@ -194,22 +251,16 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
                             <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
                         </div>
                     )}
-                    {/*
-                        WordPress mshots is a free, no-auth public
-                        link-preview service. First request for an
-                        uncached URL returns a placeholder then
-                        generates the real screenshot in the
-                        background, so subsequent hovers get the
-                        real thing.
-                    */}
                     <img
-                        src={`https://s.wordpress.com/mshots/v1/${encodeURIComponent(source.url)}?w=640&h=400`}
+                        key={retry}
+                        src={mshotsUrl(source.url, retry)}
                         alt=""
+                        referrerPolicy="no-referrer"
                         className={`w-full h-full object-cover transition-opacity duration-200 ${
                             previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
                         }`}
                         onLoad={() => setPreviewStatus('loaded')}
-                        onError={() => setPreviewStatus('error')}
+                        onError={() => setPreviewStatus((p) => (p === 'loaded' ? 'loaded' : 'error'))}
                     />
                 </div>
             )}
@@ -269,20 +320,13 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
  */
 export default function SearchSources({ sources, maxVisible = 8 }) {
     const [hoveredIdx, setHoveredIdx] = useState(null);
-    const [previewStatus, setPreviewStatus] = useState('loading'); // 'loading' | 'loaded' | 'error'
 
-    // Reset preview state whenever the hovered source changes. Also arm
-    // a safety timeout: if the preview image hasn't reported onLoad or
-    // onError within 8 seconds, mark it as errored so the spinner doesn't
-    // hang forever on slow/unresponsive preview services.
+    // Pre-warm every visible source's screenshot as soon as the row renders, so
+    // mshots has finished generating by the time the user hovers a chip.
     useEffect(() => {
-        if (hoveredIdx === null) return;
-        setPreviewStatus('loading');
-        const timer = setTimeout(() => {
-            setPreviewStatus(prev => (prev === 'loading' ? 'error' : prev));
-        }, 8000);
-        return () => clearTimeout(timer);
-    }, [hoveredIdx]);
+        if (!Array.isArray(sources)) return;
+        sources.slice(0, maxVisible).forEach((s) => { if (s?.url) prewarmPreview(s.url); });
+    }, [sources, maxVisible]);
 
     if (!Array.isArray(sources) || sources.length === 0) {
         return null;
@@ -300,8 +344,6 @@ export default function SearchSources({ sources, maxVisible = 8 }) {
                     index={idx}
                     hoveredIdx={hoveredIdx}
                     setHoveredIdx={setHoveredIdx}
-                    previewStatus={previewStatus}
-                    setPreviewStatus={setPreviewStatus}
                 />
             ))}
             {overflow > 0 && (

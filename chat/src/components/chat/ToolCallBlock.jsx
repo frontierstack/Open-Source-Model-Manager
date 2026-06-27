@@ -58,6 +58,7 @@ export default function ToolCallBlock({ tool }) {
     // players, same lift-onto-the-chip pattern as imageSpec.
     const isVideo = !!videoSpec || (type === 'native_tool_call' && label === 'find_video');
     const IconComponent =
+        (type === 'native_tool_call' && label === 'web') ? Globe :
         type === 'web_search' ? Globe :
         type === 'url_fetch' ? LinkIcon :
         isSkillLoad ? BookOpen :
