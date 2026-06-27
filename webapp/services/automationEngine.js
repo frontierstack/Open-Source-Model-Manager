@@ -599,7 +599,29 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             // source: explicit value/template, else the previous node's output.
             let src = (data.source === undefined || data.source === '') ? scope.last : data.source;
             let obj = src;
-            if (typeof src === 'string') { try { obj = JSON.parse(src); } catch { obj = src; } }
+            if (typeof src === 'string') {
+                let s = src.trim();
+                // Tolerate a model/LLM upstream that wraps its JSON in a ```json
+                // code fence or pads it with a sentence of prose — strip the fence,
+                // then fall back to slicing the outermost [...] / {...} so a clean
+                // structure survives. Plain JSON.parse alone left these as a raw
+                // string, so a "<model emits JSON> → parse_json → db_store" wiring
+                // silently stored one junk row instead of the rows.
+                try { obj = JSON.parse(s); }
+                catch {
+                    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+                    if (fence) s = fence[1].trim();
+                    const a = s.indexOf('['), b = s.lastIndexOf(']');
+                    const c = s.indexOf('{'), d = s.lastIndexOf('}');
+                    // Prefer an array slice when it encloses the object slice (a list
+                    // of records), else the object slice.
+                    let cand = null;
+                    if (a !== -1 && b > a && (c === -1 || a < c)) cand = s.slice(a, b + 1);
+                    else if (c !== -1 && d > c) cand = s.slice(c, d + 1);
+                    if (cand) { try { obj = JSON.parse(cand); } catch { obj = src; } }
+                    else obj = src;
+                }
+            }
             // Tolerate JSONPath-style paths (a common model instinct): strip a
             // leading "$"/"$." root and convert ['key']/[0] bracket notation to
             // our dotted form, so "$.posts", "$['posts']" and "$.items[0].url"
@@ -1511,15 +1533,18 @@ function buildBuilderSystemPrompt() {
         '- Exactly ONE trigger node is the entry point. Use "trigger.manual" unless the user asks for a schedule/webhook/event/telegram/slack trigger.',
         '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
         '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
+        '- WEB SEARCH IS THIN — web_search returns only titles/links/short snippets (often just a domain), NEVER the page contents, and it rate-limits boolean/site:-heavy queries. Therefore: (a) keep any web_search query to plain keywords — no parentheses, no AND, at most one OR or one site:; and (b) if the automation needs the actual CONTENT behind the results, you MUST insert a map node that fetch_url\'s each result url ({ "items":"{{nodes.<search>.results}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.url}}", "maxLength":6000 } }) BEFORE any db_store/model — never feed raw web_search results straight into db_store or a model. Whenever a structured source fits the request (an RSS/Atom feed via parse_rss, or a JSON API via http_request), PREFER it over web_search; it returns complete, clean records.',
         '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
         '- BRANCH HANDLES BELONG ONLY TO GATES. A model / tool / connector node has exactly ONE output — NEVER put a "sourceHandle" (e.g. "true"/"false") on an edge whose source is a model/fetch/tool/etc. node; that edge is dead and never fires. To branch on a model\'s answer, send the model INTO a gate.if (e.g. condition on "{{nodes.<model>}}" contains/not_contains a sentinel word) and branch from the GATE, not the model.',
         '- DEDUPE A FEED / "only new or unique ITEMS on future runs" / "notify only when a new post/article/listing appears": use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
         '- DEDUPE KEY RULES (CRITICAL): the "key" MUST be a field that is UNIQUE PER ITEM and STABLE across runs — for articles/posts that is the per-item "link" (or "id"). The db_store input MUST be the LIST OF ITEMS (one row per article), never a single wrapper object. NEVER key on a value that is identical on every run — e.g. a source-page url or site title coming from a fetch_url of a HOMEPAGE/section page: that stores one row per PAGE (the page url never changes), so it reports "new" on the first run and then ZERO forever. That is not dedupe — it silently suppresses ALL content. If you only have a page (not a feed), the items aren\'t separated yet, so fetch_url→db_store CANNOT dedupe articles; use parse_rss on the site\'s feed instead (see below).',
         '- ALERT WHEN SOMETHING BECOMES TRUE / "tell me WHEN tickets go on sale / when it is back in stock / when the status flips" (a state CHANGE on a stable target, NOT a feed of new items): do NOT db_store the search/fetch results — their urls/ids are STABLE across runs, so db_store marks them all "new" on the first run and then ZERO forever, which silently suppresses the alert PERMANENTLY (it never fires even once the thing actually happens). Instead detect the STATE TRANSITION: (1) web_search / fetch_url / http_request the source, (2) a model node that emits a STRICT machine verdict — e.g. prompt it to output exactly "AVAILABLE: <urls>" when the thing is true or exactly "NONE" otherwise, and NOTHING else (pick sentinels where the negative does NOT contain the positive word — "NONE" not "NOT AVAILABLE", since contains-checks would match the substring), (3) track_changes { "key": "<a constant string id for this watch>", "content": "{{nodes.<model>}}" } to detect when that verdict TEXT changes between runs, (4) gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty" } } on the "true" handle (only when the verdict changed), (5) a SECOND gate.if { "condition": { "left": "{{nodes.<model>}}", "op": "not_contains", "right": "NONE" } } on its "true" handle (only when it is now the positive state), (6) telegram/slack. This alerts on the moment of the transition, never suppresses forever, and never spams the same alert every run while the state holds.',
         '- MONITOR ONE PAGE/SOURCE FOR CHANGES AND REPORT WHAT CHANGED (a single URL/API whose CONTENT mutates over time — NOT a feed of new items): use a track_changes node, NOT db_store. Wire: fetch_url (or scrapling_fetch for bot-protected sites, or http_request for a JSON API) → track_changes { "key": "<the url>" } (leave "content" blank to use the fetched body) → gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty", "right": "" } } → model (prompt the diff, e.g. "Summarize what changed on the page:\\n{{nodes.<track>.diff}}") on the "true" handle → telegram/slack. track_changes stores the previous snapshot per key and returns { changed, diff, added, removed, revision }; the FIRST run stores a baseline (changed=false) so nothing is sent until a real change. db_store CANNOT do this (keying a single page by its content makes every version look "new" and gives no diff).',
-        '- LATEST NEWS / ARTICLES FROM A SITE (a feed): the BEST source is the site\'s RSS/Atom FEED, parsed with the parse_rss node — parse_rss { "args": { "url": "https://feeds.bbci.co.uk/news/world/rss.xml" } } returns clean { items:[{title, link, summary, published, id}] } with no scraping. Do NOT use http_request+parse_json on a feed (parse_json cannot parse XML) and do NOT write a run_python XML parser. Do NOT use a site-specific web_search ("site:... latest") — DuckDuckGo rate-limits those. Good world/news feeds: https://feeds.bbci.co.uk/news/world/rss.xml , https://rss.cnn.com/rss/edition_world.rss , https://www.theguardian.com/world/rss , http://rss.cnn.com/rss/cnn_topstories.rss . For cybersecurity: https://www.bleepingcomputer.com/feed/ , https://www.darkreading.com/rss.xml , https://krebsonsecurity.com/feed/ , https://www.securityweek.com/feed/ , https://www.theregister.com/security/headlines.atom (avoid feedburner-backed feeds like thehackernews.com/feeds/posts/default — they 403 behind the egress proxy). web_search is only for open-ended "find pages about X". To report only NEW stories across runs: parse_rss → db_store(key="link") → gate.if({{nodes.<store>.new}} not_empty) → model → create_pdf.',
+        '- LATEST NEWS / ARTICLES FROM A SITE (a feed): the BEST source is the site\'s own RSS/Atom FEED, parsed with the parse_rss node — parse_rss { "args": { "url": "<the feed URL for the source the user named>" } } returns clean { items:[{title, link, summary, published, id}] } with no scraping. Most sites publish a feed at a conventional path such as /feed/, /rss, /rss.xml, /atom.xml, or a /<section>/rss variant; if you are unsure of the exact URL, use the source the user specified (or a sensible feed path for it) — do not substitute an unrelated site. Do NOT use http_request+parse_json on a feed (parse_json cannot parse XML) and do NOT write a run_python XML parser. Do NOT use a site-specific web_search ("site:... latest") — DuckDuckGo rate-limits those. (Some feeds — e.g. feedburner-backed ones — can return 403 behind an egress proxy; if a feed yields nothing, fall back to a fetch_url of the site\'s news/index page.) web_search is only for open-ended "find pages about X". To report only NEW stories across runs: parse_rss → db_store(key="link") → gate.if({{nodes.<store>.new}} not_empty) → model → create_pdf.',
         '- MULTIPLE FEEDS (e.g. a daily newspaper from several sites): give each source its OWN parse_rss node, fan them all into a merge, then db_store. Because parse_rss outputs { items:[…] }, the merge holds N feed-wrapper objects, so the db_store "value" MUST FLATTEN them into one article list: value "{{nodes.<merge>.items.*.items}}" (the ".*.items" maps over every feed and flattens). Do NOT use "{{nodes.<merge>.items}}" (that stores N wrapper objects keyed on a missing field → never dedupes). key "link".',
         '- FULL ARTICLE TEXT (not just the RSS title/summary): after the gate.if(.new not_empty), add a map node that fetches each new article: { "items":"{{nodes.<store>.new}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.link}}", "maxLength":6000 } } → it returns { results:[{url,title,content,…}] }. Feed the model "{{nodes.<map>.results}}". Only the genuinely-new articles get fetched (cheap + on-topic). Without this step the model only sees short feed summaries.',
+        '- KEEP web_search QUERIES SIMPLE: DuckDuckGo/Brave do NOT understand nested boolean logic — a query like ("a" OR "b") AND ("c" OR "d") site:x.com OR site:y.com returns the bare DOMAIN homepages (title just "x.com"), not real results. Write plain keywords plus AT MOST one or two site: filters. No parentheses, no AND, at most one OR.',
+        '- web_search RESULTS ARE THIN (title + url + snippet, often only a domain). NEVER db_store the raw web_search results and feed them straight to a model — the model only gets links/snippets and produces a useless list. If the automation needs the actual CONTENT behind the results, add a map node that fetch_url\'s each result url ({ "items":"{{nodes.<search>.results}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.url}}", "maxLength":6000 } }) BEFORE db_store/model, then feed the model "{{nodes.<map>.results}}". Better still, when a structured source exists for the topic (an RSS feed, a JSON API via http_request, or a single source page fetched with fetch_url), prefer that over web_search — it returns clean, complete records instead of a list of domains. When a model node extracts structured rows from that content, run its output through parse_json before db_store so the rows are stored (and deduped by key) individually.',
         '- CHAINING search/extract → parse_json: the parse_json "path" MUST match the REAL upstream shape. A merge node outputs {items:[...],count}; web_search outputs {results:[...]}. To pull every url from MERGED searches use path "items.*.results.*.url" (NOT "*.url"); from a single web_search use "results.*.url".',
         '- A map (Loop) node\'s "action" is "tool" or "model" — NOT a tool name. For a tool action set "action":"tool" AND "tool":"<valid tool name e.g. fetch_url|crawl_pages>" AND put per-item args in "args" using {{item}} for the current list item. Never put the tool name in "action".',
         '- STRUCTURED DATA FROM A SITE (a JSON API / feed): if the source exposes a JSON endpoint (e.g. .../api/recent, .../api.json, an RSS/Atom feed), ALWAYS use http_request to that endpoint then parse_json — NEVER scrape the HTML page with run_python. parse_json\'s "source" must be the http_request output\'s data, i.e. "{{nodes.<httpId>.data}}"; leave "path" empty to keep the whole parsed array/object, or set it to the field you want (e.g. "results.*.link"). Then db_store the parsed array for dedupe.',
@@ -1562,10 +1587,10 @@ function buildBuilderSystemPrompt() {
         '{"name":"Page change monitor","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"fetch_url","data":{"url":"https://example.com/pricing"}},{"id":"n3","type":"track_changes","data":{"key":"https://example.com/pricing"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.changed}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"This web page changed since the last check. Summarize exactly what changed in plain language for a notification.\\n\\nDIFF:\\n{{nodes.n3.diff}}"}},{"id":"n6","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n5}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
         '',
         'Example — "every hour make a PDF of new world-news headlines (only stories I have not seen)":',
-        '{"name":"Hourly new-news PDF","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://feeds.bbci.co.uk/news/world/rss.xml"}}},{"id":"n3","type":"db_store","data":{"table":"stories","key":"link","value":"{{nodes.n2.items}}"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.new}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"Write a short markdown news brief of these NEW stories (one bullet each: bold headline then one-line summary):\\n{{nodes.n3.new}}"}},{"id":"n6","type":"create_pdf","data":{"args":{"content":"{{nodes.n5}}","filename":"world-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
+        '{"name":"Hourly new-news PDF","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/rss.xml"}}},{"id":"n3","type":"db_store","data":{"table":"stories","key":"link","value":"{{nodes.n2.items}}"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.new}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"Write a short markdown news brief of these NEW stories (one bullet each: bold headline then one-line summary):\\n{{nodes.n3.new}}"}},{"id":"n6","type":"create_pdf","data":{"args":{"content":"{{nodes.n5}}","filename":"world-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
         '',
         'Example — "daily newspaper PDF from SEVERAL cybersecurity sites, only NEW articles, with full article text" (multi-feed + flatten + full-text fetch):',
-        '{"name":"Daily cyber newspaper","nodes":[{"id":"n1","type":"trigger.schedule","data":{"crons":["30 9 * * *"]}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://www.bleepingcomputer.com/feed/"}}},{"id":"n3","type":"parse_rss","data":{"args":{"url":"https://www.darkreading.com/rss.xml"}}},{"id":"n4","type":"parse_rss","data":{"args":{"url":"https://krebsonsecurity.com/feed/"}}},{"id":"n5","type":"merge","data":{}},{"id":"n6","type":"db_store","data":{"table":"cyber_articles","key":"link","value":"{{nodes.n5.items.*.items}}"}},{"id":"n7","type":"gate.if","data":{"condition":{"left":"{{nodes.n6.new}}","op":"not_empty","right":""}}},{"id":"n8","type":"map","data":{"items":"{{nodes.n6.new}}","action":"tool","tool":"fetch_url","args":{"url":"{{item.link}}","maxLength":6000}}},{"id":"n9","type":"model","data":{"prompt":"Write a newspaper-style report from these NEW cybersecurity articles (full text included):\\n{{nodes.n8.results}}"}},{"id":"n10","type":"create_pdf","data":{"args":{"content":"{{nodes.n9}}","filename":"cyber-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n1","target":"n3"},{"source":"n1","target":"n4"},{"source":"n2","target":"n5"},{"source":"n3","target":"n5"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n7","target":"n8","sourceHandle":"true"},{"source":"n8","target":"n9"},{"source":"n9","target":"n10"}]}',
+        '{"name":"Daily cyber newspaper","nodes":[{"id":"n1","type":"trigger.schedule","data":{"crons":["30 9 * * *"]}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/feed/"}}},{"id":"n3","type":"parse_rss","data":{"args":{"url":"https://news.example.org/rss.xml"}}},{"id":"n4","type":"parse_rss","data":{"args":{"url":"https://blog.example.net/feed/"}}},{"id":"n5","type":"merge","data":{}},{"id":"n6","type":"db_store","data":{"table":"cyber_articles","key":"link","value":"{{nodes.n5.items.*.items}}"}},{"id":"n7","type":"gate.if","data":{"condition":{"left":"{{nodes.n6.new}}","op":"not_empty","right":""}}},{"id":"n8","type":"map","data":{"items":"{{nodes.n6.new}}","action":"tool","tool":"fetch_url","args":{"url":"{{item.link}}","maxLength":6000}}},{"id":"n9","type":"model","data":{"prompt":"Write a newspaper-style report from these NEW cybersecurity articles (full text included):\\n{{nodes.n8.results}}"}},{"id":"n10","type":"create_pdf","data":{"args":{"content":"{{nodes.n9}}","filename":"cyber-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n1","target":"n3"},{"source":"n1","target":"n4"},{"source":"n2","target":"n5"},{"source":"n3","target":"n5"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n7","target":"n8","sourceHandle":"true"},{"source":"n8","target":"n9"},{"source":"n9","target":"n10"}]}',
     ].join('\n');
 }
 
@@ -1583,6 +1608,14 @@ const KEEP_TOKEN_BASE = '__KEEP_FIELD_';
 
 function compactWorkflowForLLM(current, threshold = 600) {
     const placeholders = {};
+    // Secondary map keyed on the raw numeric INDEX (not the full token text), used
+    // by expandPlaceholders as a tolerant fallback: a small local model frequently
+    // echoes the token back slightly mangled — drops the collision-avoidance `X`s
+    // (`__KEEP_FIELD_X1__` → `__KEEP_FIELD_1__`), drops an underscore, or changes
+    // case. Exact-string restore then misses it and the bare token leaks into the
+    // SAVED workflow (the "model explains {result:false}" bug). Recovering by index
+    // restores those mangled tokens too.
+    const byIndex = {};
     // Choose a token prefix that does NOT already occur anywhere in the workflow,
     // so a field whose own text happens to contain "__KEEP_FIELD_…" can never be
     // mistaken for a placeholder on the way back. Deterministic, no randomness —
@@ -1596,8 +1629,10 @@ function compactWorkflowForLLM(current, threshold = 600) {
     const walk = (v) => {
         if (typeof v === 'string') {
             if (v.length > threshold) {
-                const token = `${prefix}${n++}__`;
+                const idx = n++;
+                const token = `${prefix}${idx}__`;
                 placeholders[token] = v;
+                byIndex[idx] = v;
                 return token;
             }
             return v;
@@ -1611,7 +1646,58 @@ function compactWorkflowForLLM(current, threshold = 600) {
         return v;
     };
     const compacted = walk(current);
-    return { compacted, placeholders, count: n, prefix };
+    return { compacted, placeholders, byIndex, count: n, prefix };
+}
+
+// Matches a KEEP_FIELD token the model may have echoed back MANGLED: optional
+// leading underscores, an optional underscore + any run of collision `X`s before
+// the index, optional trailing underscores, case-insensitive. The (\d+) capture
+// is the index used to recover the original value by position. Deliberately loose
+// on the wrapper (that is exactly what models corrupt) but anchored on the literal
+// `KEEP_FIELD` marker — which a compacted field value provably never contains — so
+// it cannot misfire on restored user content.
+const KEEP_TOKEN_RESIDUAL = /_{0,2}KEEP_FIELD_?X*(\d+)_{0,2}/i;
+function makeResidualRe() { return new RegExp(KEEP_TOKEN_RESIDUAL.source, 'gi'); }
+
+// True if a value (deep) still carries a KEEP_FIELD token after restore — i.e. the
+// model emitted one we could not map back. Callers use this to recover from the
+// original workflow (the token always stood for an UNCHANGED field) or to reject a
+// corrupted edit rather than save it.
+function hasResidualKeepToken(value) {
+    let found = false;
+    const walk = (v) => {
+        if (found) return;
+        if (typeof v === 'string') { if (KEEP_TOKEN_RESIDUAL.test(v)) found = true; return; }
+        if (Array.isArray(v)) { v.forEach(walk); return; }
+        if (v && typeof v === 'object') { for (const k of Object.keys(v)) walk(v[k]); }
+    };
+    walk(value);
+    return found;
+}
+
+// Last-resort recovery for the edit/repair routes: a KEEP token ALWAYS represents
+// a field the model meant to leave UNCHANGED, so the ground truth is the matching
+// node in the ORIGINAL workflow. For any string in `specNode.data` that still
+// holds a residual token, pull the same field path from `originalNode.data`. This
+// is keyed on node id + path (the edit prompt mandates byte-for-byte id retention)
+// and complements the index-based pass in expandPlaceholders.
+function recoverResidualFromOriginal(specNode, originalNode) {
+    if (!specNode || !specNode.data || !originalNode || !originalNode.data) return specNode;
+    const walk = (cur, orig) => {
+        if (typeof cur === 'string') {
+            if (typeof orig === 'string' && KEEP_TOKEN_RESIDUAL.test(cur)) return orig;
+            return cur;
+        }
+        if (Array.isArray(cur)) return cur.map((x, i) => walk(x, Array.isArray(orig) ? orig[i] : undefined));
+        if (cur && typeof cur === 'object') {
+            const o = {};
+            for (const k of Object.keys(cur)) o[k] = walk(cur[k], (orig && typeof orig === 'object') ? orig[k] : undefined);
+            return o;
+        }
+        return cur;
+    };
+    specNode.data = walk(specNode.data, originalNode.data);
+    return specNode;
 }
 
 // Restore the placeholder tokens anywhere in a value (deep). Replaces every minted
@@ -1620,13 +1706,20 @@ function compactWorkflowForLLM(current, threshold = 600) {
 // different (recovered) node id. Since placeholder values never contain a token
 // (see compactWorkflowForLLM), replace order is irrelevant and no re-substitution
 // can occur. Tokens not in the map (model hallucination) are left untouched.
-function expandPlaceholders(value, placeholders) {
+function expandPlaceholders(value, placeholders, byIndex) {
     const tokens = placeholders ? Object.keys(placeholders) : [];
-    if (!tokens.length) return value;
+    const hasIndex = byIndex && Object.keys(byIndex).length > 0;
+    if (!tokens.length && !hasIndex) return value;
     const walk = (v) => {
         if (typeof v === 'string') {
             let s = v;
+            // Pass 1 — exact token match (the common case; restored values provably
+            // contain no token, so order is irrelevant and re-substitution is impossible).
             for (const t of tokens) if (s.indexOf(t) !== -1) s = s.split(t).join(placeholders[t]);
+            // Pass 2 — tolerant recovery of a MANGLED token by its numeric index
+            // (drops the `X`s / an underscore / changes case). Runs after pass 1, so
+            // it only ever sees tokens the exact pass could not resolve.
+            if (hasIndex) s = s.replace(makeResidualRe(), (m, idx) => (byIndex[idx] !== undefined ? byIndex[idx] : m));
             return s;
         }
         if (Array.isArray(v)) return v.map(walk);
@@ -1952,6 +2045,8 @@ module.exports = {
     materializeWorkflowEdit,
     compactWorkflowForLLM,
     expandPlaceholders,
+    hasResidualKeepToken,
+    recoverResidualFromOriginal,
     diffWorkflows,
     assessRunHealth,
     shouldRepair,

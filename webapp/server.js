@@ -8541,7 +8541,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         // the edit endpoint) so a big systemPrompt/template doesn't truncate the
         // echoed workflow and silently abort the repair loop.
         const currentForLLM = { name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) };
-        const { compacted: compactedWf, placeholders: repairPlaceholders, count: keepCount, prefix: repairPrefix } = automationEngine.compactWorkflowForLLM(currentForLLM);
+        const { compacted: compactedWf, placeholders: repairPlaceholders, byIndex: repairByIndex, count: keepCount, prefix: repairPrefix } = automationEngine.compactWorkflowForLLM(currentForLLM);
         const repairKeepNote = keepCount > 0
             ? `\n\nNOTE: ${keepCount} long field value(s) were replaced with placeholder tokens like ${repairPrefix}0__. Keep each token EXACTLY as-is to leave that field unchanged; only replace a token if the fix requires editing that specific field.`
             : '';
@@ -8561,8 +8561,21 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
             const spec = parseBuilderSpec(raw);
             if (!spec || typeof spec !== 'object') throw new Error('repair reply was not valid JSON');
             // Restore placeholder tokens BEFORE materializing so node-signature
-            // id-recovery operates on the real field values.
-            if (Array.isArray(spec.nodes)) for (const node of spec.nodes) { if (node && node.data) node.data = automationEngine.expandPlaceholders(node.data, repairPlaceholders); }
+            // id-recovery operates on the real field values: exact → tolerant index →
+            // recover a still-residual field from the matching original node. A token
+            // that survives all three would otherwise be saved as a bare placeholder,
+            // so treat that as an unusable repair and skip the pass.
+            const repairOrigById = new Map((base.nodes || []).map(n => [n.id, n]));
+            if (Array.isArray(spec.nodes)) for (const node of spec.nodes) {
+                if (!node || !node.data) continue;
+                node.data = automationEngine.expandPlaceholders(node.data, repairPlaceholders, repairByIndex);
+                if (automationEngine.hasResidualKeepToken(node.data) && repairOrigById.has(node.id)) {
+                    automationEngine.recoverResidualFromOriginal(node, repairOrigById.get(node.id));
+                }
+            }
+            if (keepCount > 0 && Array.isArray(spec.nodes) && spec.nodes.some(n => n && automationEngine.hasResidualKeepToken(n.data))) {
+                throw new Error('repair reply left an unrecoverable placeholder token');
+            }
             const revised = automationEngine.materializeWorkflowEdit(spec, base);
             wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
             buildLog.push(`Pass ${pass}: applied a repair, re-running…`);
@@ -8827,7 +8840,7 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         // output budget when it echoes it back; restored verbatim after parsing.
         // Without this, a big systemPrompt truncates the JSON → "did not return a
         // valid workflow" (the original Cybersecurity-Newspaper edit failure).
-        const { compacted, placeholders, count, prefix } = automationEngine.compactWorkflowForLLM(current);
+        const { compacted, placeholders, byIndex, count, prefix } = automationEngine.compactWorkflowForLLM(current);
         const keepNote = count > 0
             ? `\n\nNOTE: ${count} long field value(s) were replaced with placeholder tokens like ${prefix}0__. Keep each token EXACTLY as-is to leave that field unchanged; only replace a token with new text if THIS change requires editing that specific field.`
             : '';
@@ -8855,13 +8868,28 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         // BEFORE materializing, so id-recovery's node-signature matching sees real
         // values — and the diff, the test-run, and the saved workflow all carry the
         // real text.
-        if (Array.isArray(spec.nodes)) for (const node of spec.nodes) { if (node && node.data) node.data = automationEngine.expandPlaceholders(node.data, placeholders); }
+        // Three-layer restore so a mangled token can never reach the saved workflow
+        // (the "__KEEP_FIELD_1__ leaked into a model prompt → model explains
+        // {result:false}" bug): exact match → tolerant index match → recover the
+        // still-residual field from the matching ORIGINAL node (a token always stood
+        // for an UNCHANGED field). Anything that survives all three means the model
+        // corrupted a long field beyond recovery — reject the edit rather than hand
+        // back (and let the user save) a workflow carrying a bare placeholder token.
+        const origById = new Map((wf.nodes || []).map(n => [n.id, n]));
+        if (Array.isArray(spec.nodes)) for (const node of spec.nodes) {
+            if (!node || !node.data) continue;
+            node.data = automationEngine.expandPlaceholders(node.data, placeholders, byIndex);
+            if (automationEngine.hasResidualKeepToken(node.data) && origById.has(node.id)) {
+                automationEngine.recoverResidualFromOriginal(node, origById.get(node.id));
+            }
+        }
+        if (count > 0 && Array.isArray(spec.nodes) && spec.nodes.some(n => n && automationEngine.hasResidualKeepToken(n.data))) {
+            console.warn(`[automations/edit] ${wf.id}: unrecoverable placeholder token after restore — rejecting to avoid saving a corrupted field.`);
+            return res.status(422).json({ error: 'The edit could not be applied cleanly (the model garbled a long field). Please try again or rephrase the change.' });
+        }
         let proposed;
         try { proposed = automationEngine.materializeWorkflowEdit(spec, wf); }
         catch (e) { return res.status(422).json({ error: `Could not apply the change: ${e.message}` }); }
-        if (count > 0 && prefix && JSON.stringify(proposed.nodes || []).indexOf(prefix) !== -1) {
-            console.warn(`[automations/edit] ${wf.id}: model left an unresolved placeholder token — a long field may be incomplete in the proposed edit.`);
-        }
         let buildLog;
         let testReport = null;
         if (req.body && req.body.test) {
@@ -11558,6 +11586,18 @@ function extractSearchQuery(rawQuery) {
     const wordCount = trimmed.split(/\s+/).length;
     if (trimmed.length < 80 && wordCount < 10) return trimmed;
 
+    // A CRAFTED search query — one using search operators (site:/filetype:/inurl:/
+    // intitle:, a boolean OR, an exclusion, or a "quoted phrase") — is deliberate and
+    // already focused; it is NOT a natural-language paste to be reduced. Reducing it
+    // was catastrophic: `"remote" "incident response" jobs site:greenhouse.io OR
+    // site:lever.co` collapsed to the bare domains `greenhouse.io lever.co`, dropping
+    // the entire subject and returning junk. This is the #1 reason builder/automation
+    // web_search nodes returned irrelevant results — pass crafted queries through
+    // verbatim. (Entity-extraction below still applies to long PROSE pastes.)
+    if (/\b(site|filetype|inurl|intitle|intext|ext):|\sOR\s|\s-\w|"[^"]+"/.test(trimmed)) {
+        return trimmed;
+    }
+
     // Extract key technical entities
     const entities = [];
 
@@ -11611,6 +11651,23 @@ function extractSearchQuery(rawQuery) {
     const queryParts = [...new Set(entities)];
     if (uniqueKeywords.length > 0) {
         queryParts.push(...uniqueKeywords);
+    }
+
+    // Subject safety net: if we matched entities but NO threat-intent keywords, the
+    // result so far is just bare entities (domains/urls) with the actual subject of
+    // the query dropped. Keep the most significant non-stopword terms so the search
+    // still knows what it's looking for (e.g. "...jobs at acme.com" → "acme.com jobs",
+    // not just "acme.com").
+    if (uniqueKeywords.length === 0) {
+        const STOP = new Set(['the','a','an','and','or','of','to','for','in','on','at','is','are','was','were','be','with','from','about','this','that','these','those','i','you','it','my','me','can','please','find','search','look','tell','show','get','give','need','want','some','any','new','latest','recent','their','they','them','what','which','who','how']);
+        const subject = [...new Set(
+            trimmed.toLowerCase()
+                .replace(/https?:\/\/[^\s]+/g, ' ')
+                .replace(/[^a-z0-9\s-]/g, ' ')
+                .split(/\s+/)
+                .filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w))
+        )].filter(w => !queryParts.some(p => p.toLowerCase().includes(w))).slice(0, 6);
+        queryParts.push(...subject);
     }
 
     const extracted = queryParts.join(' ');
