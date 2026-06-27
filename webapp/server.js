@@ -1109,9 +1109,9 @@ function buildChatRuntimePrelude() {
     const text = [
         `Today is ${today}.`,
         `Answer directly from your own knowledge whenever you confidently know the answer and a tool would only be slower — do not call a tool for general knowledge, explanations, reasoning, math you can do, or writing/editing code you can produce yourself. A direct answer is preferred when it is correct and faster.`,
-        `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (web_search, fetch_url), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
+        `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (the \`web\` tool — search the web or read a page/URL), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
         `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
-        `When the user asks for current, external, or time-sensitive information, call web_search or fetch_url BEFORE answering.`,
+        `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -12040,7 +12040,7 @@ function extractTextFromHtml(html, maxLength = 5000) {
 }
 
 // Helper function to fetch content from a URL using axios (fallback)
-async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000) {
+async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts = {}) {
     try {
         const response = await axios.get(url, {
             headers: {
@@ -12066,7 +12066,11 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000) {
         const content = extractTextFromHtml(response.data, maxLength);
         const titleMatch = String(response.data || '').match(/<title[^>]*>([^<]+)<\/title>/i);
         const title = titleMatch ? titleMatch[1].trim() : '';
-        return { success: true, content, title, url };
+        // rawHtml is OPT-IN (only the fast-path thin-content gate asks for it) so a
+        // 1MB+ body never rides downstream into tool results / API responses — the
+        // other callers that spread this object don't request it.
+        const rawHtml = opts.includeRawHtml && typeof response.data === 'string' ? response.data : '';
+        return { success: true, content, title, url, ...(rawHtml ? { rawHtml } : {}) };
     } catch (error) {
         return {
             success: false,
@@ -12089,14 +12093,47 @@ const JS_REQUIRED_PATTERNS = [
 ];
 
 // Check if content is too thin or indicates JS-only page
-function isContentTooThin(content, url) {
+// Text-length floor below which a SPA shell is treated as "skeleton, needs a real
+// browser". Skeletons measured 505-1051 chars; the smallest genuinely-good
+// axios-served page measured 8278 — so 1500 bisects the gap with ~6x margin.
+const SHELL_TEXT_FLOOR = parseInt(process.env.SHELL_TEXT_FLOOR, 10) || 1500;
+
+// Decide, from the RAW HTML, whether a page is a JS app-shell (escalate to a real
+// browser) vs a small-but-COMPLETE page (serve as-is, never over-escalate). Pure
+// extracted-text length can't tell vuejs.org's 689-char hydration shell from
+// example.com's 165-char complete page — only the markup structure can.
+function htmlShellSignal(rawHtml, textLen) {
+    const html = String(rawHtml || '');
+    const htmlLen = html.length;
+    if (!htmlLen) return { isShell: false, isTinyComplete: false };
+    const head = html.slice(0, 200000); // bound the regex sweep on huge bodies
+    const SPA_MARKERS = /<div[^>]+id=["'](?:root|app|__next|__nuxt|app-root|q-app)["']|data-reactroot|data-server-rendered|__NEXT_DATA__|window\.__NUXT__|__remixContext|window\.__INITIAL_STATE__|data-sveltekit|<noscript[^>]*>\s*(?:you|please)?[^<]*enable[^<]*javascript/i;
+    const hasMarker = SPA_MARKERS.test(head);
+    const scriptCount = (head.match(/<script\b/gi) || []).length;
+    const ratio = textLen / htmlLen; // text-to-HTML density
+    // SHELL: a script-heavy / marker-bearing / ultra-low-density large body.
+    const isShell = (hasMarker || ratio < 0.05) && (htmlLen > 30000 || scriptCount >= 8) && ratio < 0.08;
+    // TINY-COMPLETE: a small marker-free high-density page — nothing more to fetch.
+    const isTinyComplete = htmlLen < 5000 && !hasMarker && ratio >= 0.10;
+    return { isShell, isTinyComplete };
+}
+
+function isContentTooThin(content, url, rawHtml) {
     if (!content) return true;
     const trimmed = content.trim();
+    const len = trimmed.length;
+    // Structure-aware decision (only the fast-path gate passes rawHtml; Scrapling-
+    // stage / last-resort callers omit it and keep the text-only behavior below).
+    if (rawHtml) {
+        const { isShell, isTinyComplete } = htmlShellSignal(rawHtml, len);
+        if (isTinyComplete) return false;                 // example.com 165ch → served fast, no 21s over-escalation
+        if (isShell && len < SHELL_TEXT_FLOOR) return true; // vue 689 / nyt 505 / svelte 1051 → escalate to a browser
+    }
     // Short content likely means JS didn't render or extraction got ads/nav only
-    if (trimmed.length < 500) return true;
+    if (len < 500) return true;
     // Check for JS-required boilerplate patterns
     for (const pattern of JS_REQUIRED_PATTERNS) {
-        if (pattern.test(trimmed) && trimmed.length < 1000) return true;
+        if (pattern.test(trimmed) && len < 1000) return true;
     }
     return false;
 }
@@ -12118,6 +12155,22 @@ function looksLikeChallenge(text) {
     if (!text) return false;
     const blob = String(text).slice(0, 8000);
     return CHALLENGE_MARKERS.some((re) => re.test(blob));
+}
+
+// The consolidated `web` chat tool routes to web_search / fetch_url / etc.
+// internally. Map a `web` call to its EFFECTIVE inner operation so the existing
+// name-keyed consumers (rate-limit pivot guard, web-research experience memory,
+// loop detection) keep firing exactly as they did when the model called the
+// individual tools. Non-`web` names pass through unchanged.
+function webEffectiveName(name, rawArgs) {
+    if (name !== 'web') return name;
+    let a = {};
+    try { a = typeof rawArgs === 'string' ? JSON.parse(rawArgs || '{}') : (rawArgs || {}); } catch (_) { a = {}; }
+    const mode = a && a.mode;
+    if (mode === 'search') return 'web_search';
+    if (mode && mode !== 'auto') return 'fetch_url';     // read/stealth/browser/interact/crawl = fetch-class
+    if (a && a.query && !a.url && !a.urls) return 'web_search';
+    return 'fetch_url';
 }
 
 
@@ -12477,20 +12530,33 @@ async function fetchUrlContent(url, options = {}) {
     // Cloudflare/CAPTCHA interstitial) falls through to the IDENTICAL
     // Scrapling → Playwright cascade, so bot/JS robustness is unchanged.
     // Skipped for includeLinks callers (axios can't extract links).
+    // When axios sees a DEFINITE SPA shell, force the cascade through to a real
+    // browser even if a later stage (Scrapling) returns a short-but->500 shell —
+    // Scrapling is a stealth FETCHER, not a full JS engine, so a pure client-
+    // rendered app (e.g. vuejs.org) otherwise dead-ends at a ~700-char nav shell.
+    let forceBrowser = false;
     if (!options.includeLinks) {
         try {
-            const ax = await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength);
-            if (ax && ax.success && ax.content &&
-                !isContentTooThin(ax.content, url) &&
-                !looksLikeChallenge(ax.content)) {
-                return {
-                    success: true,
-                    url,
-                    content: smartTruncate(ax.content, maxLength),
-                    title: ax.title || '',
-                    links: [],
-                    source: 'axios-fast',
-                };
+            const ax = await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true });
+            if (ax && ax.success) {
+                const tooThin = isContentTooThin(ax.content || '', url, ax.rawHtml);
+                // Scan the RAW html — a cf-challenge / noscript interstitial is stripped
+                // out of the extracted text, so the text-only scan never saw it.
+                const challenged = looksLikeChallenge(ax.rawHtml || ax.content || '');
+                if (ax.content && !tooThin && !challenged) {
+                    return {
+                        success: true,
+                        url,
+                        content: smartTruncate(ax.content, maxLength),
+                        title: ax.title || '',
+                        links: [],
+                        source: 'axios-fast',
+                    };
+                }
+                if (ax.rawHtml) {
+                    const sig = htmlShellSignal(ax.rawHtml, String(ax.content || '').trim().length);
+                    if (sig.isShell) forceBrowser = true;
+                }
             }
         } catch (_) { /* fall through to the Scrapling → Playwright cascade */ }
     }
@@ -12503,7 +12569,16 @@ async function fetchUrlContent(url, options = {}) {
                 extractLinks: options.includeLinks || false
             });
 
-            if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url)) {
+            // A duplicated/site-name title ("Mastodon - Mastodon") with little text is
+            // a hydration shell Scrapling didn't render — escalate even though the
+            // text cleared the thin floor (Scrapling output carries no rawHtml, so
+            // htmlShellSignal can't see it; the title is the cheap available signal).
+            const sTitle = String(scraplingResult.title || '');
+            const titleShell = /^(.+?)\s*[-–|]\s*\1$/i.test(sTitle) && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
+            // axios already proved this is an SPA shell — a still-short Scrapling
+            // result means Scrapling didn't render the app either; go to Playwright.
+            const stillShell = forceBrowser && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
+            if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell) {
                 return {
                     success: true,
                     url,
@@ -12513,9 +12588,9 @@ async function fetchUrlContent(url, options = {}) {
                     source: 'scrapling'
                 };
             }
-            // Content too thin or JS-required — fall through to Playwright for JS rendering
-            if (scraplingResult.success && isContentTooThin(scraplingResult.content, url)) {
-                console.log(`[fetchUrlContent] Scrapling returned thin content for ${url} (${(scraplingResult.content || '').length} chars), trying Playwright for JS rendering`);
+            // Content too thin / shell / JS-required — fall through to Playwright for JS rendering
+            if (scraplingResult.success && (isContentTooThin(scraplingResult.content, url) || titleShell || stillShell)) {
+                console.log(`[fetchUrlContent] Scrapling returned ${(titleShell || stillShell) ? 'a shell' : 'thin content'} for ${url} (${(scraplingResult.content || '').length} chars), trying Playwright for JS rendering`);
             }
         } catch (scraplingError) {
             console.log(`Scrapling fetch failed for ${url}: ${scraplingError.message}`);
@@ -13869,7 +13944,7 @@ const ACTIVITY_RULES = [
     { activity: 'document-analysis', label: 'Reading documents',
       test: (t, a, q) => a.has('pdf') || a.has('document') || t.has('read_pdf') || /\bpdf\b|\bdocx?\b/.test(q) },
     { activity: 'web-research', label: 'Web research',
-      test: (t, a, q) => t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact')
+      test: (t, a, q) => t.has('web') || t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact')
           || /\b(search the web|look ?up online|latest|current|news|who is|what is the (price|stock)|google)\b/.test(q) },
     { activity: 'knowledge-base-lookup', label: 'Knowledge base lookup',
       test: (t, a, q) => t.has('search_knowledge_base') || /\b(knowledge ?base|my (docs|documents|files|notes|library|pdfs?|books?)|in my (kb|knowledge))\b/.test(q) },
@@ -19104,7 +19179,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
 
-                        const webSearchBlocked = call.function.name === 'web_search' &&
+                        const callEffName = webEffectiveName(call.function.name, call.function.arguments);
+                        const webSearchBlocked = callEffName === 'web_search' &&
                             webSearchBlockedCount >= 2;
                         let scraplingSearchUrl = null;
                         if (call.function.name === 'scrapling_fetch') {
@@ -19119,7 +19195,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         if (webSearchBlocked || scraplingSearchLoop) {
                             let q = '';
                             try {
-                                if (call.function.name === 'web_search') {
+                                if (callEffName === 'web_search') {
                                     q = String(JSON.parse(call.function.arguments || '{}').query || '').slice(0, 200);
                                 } else if (scraplingSearchUrl) {
                                     const m = scraplingSearchUrl.match(/[?&]q=([^&#]+)/i);
@@ -19267,8 +19343,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 .update(String(resultMsg.content || ''))
                                 .digest('hex')
                                 .slice(0, 16);
+                            // Record the EFFECTIVE inner op for a `web` call so the
+                            // rate-limit/loop/experience-memory consumers keyed on
+                            // 'web_search'/'fetch_url' keep working post-consolidation.
+                            const recName = webEffectiveName(call.function.name, call.function.arguments);
                             let searchBlocked = false;
-                            if (call.function.name === 'web_search') {
+                            if (recName === 'web_search') {
                                 try {
                                     const parsed = JSON.parse(resultMsg.content || '{}');
                                     const errStr = String(parsed?.error || '');
@@ -19286,7 +19366,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
-                                toolName: call.function.name,
+                                toolName: recName,
                                 searchBlocked,
                                 searchEngineHost,
                             });
@@ -22136,7 +22216,7 @@ async function initializeDefaultSkillsOld() {
             {
                 id: crypto.randomBytes(16).toString('hex'),
                 name: 'find_patterns',
-                description: 'Apply a regex to TEXT YOU PROVIDE in the `text` parameter and return the matches. LOCAL operation only — does not search the web, news, files, or any external source. If you need information from the internet, call web_search or fetch_url first, then pass the returned text to this tool.',
+                description: 'Apply a regex to TEXT YOU PROVIDE in the `text` parameter and return the matches. LOCAL operation only — does not search the web, news, files, or any external source. If you need information from the internet, use the `web` tool first, then pass the returned text to this tool.',
                 type: 'tool',
                 parameters: { text: 'string', pattern: 'string', flags: 'string' },
                 code: `function execute(params) {
@@ -23553,6 +23633,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'web_search',
         build() {
+            return null; // consolidated into the `web` tool — hidden from the chat catalog, still registered for automations + the web router
             return {
                 type: 'function',
                 function: {
@@ -23596,7 +23677,10 @@ app.use((req, res) => {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                             'Accept-Language': 'en-US,en;q=0.9',
                         },
-                        timeout: 8000,
+                        // html.duckduckgo.com CAPTCHAs Node's axios on essentially every
+                        // hit, so fail FAST to the Brave/Scrapling fallbacks instead of
+                        // burning 8s on a layer that never succeeds.
+                        timeout: 3500,
                     },
                 );
                 const html = resp.data || '';
@@ -23664,7 +23748,7 @@ app.use((req, res) => {
                             }
                         } catch (_) { /* fall through to error */ }
                     }
-                    return { error: 'search rate-limited by DuckDuckGo; Brave and Scrapling fallbacks also failed. Consider calling scrapling_fetch directly on the target domain.', query: q };
+                    return { error: 'search rate-limited; all search backends (DuckDuckGo, Brave, Scrapling) are temporarily blocked. Read the target page directly with a url, or try again shortly.', retryable: true, source: 'rate-limited', query: q };
                 }
                 const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
                 const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
@@ -23686,7 +23770,11 @@ app.use((req, res) => {
                         snippet: sm ? sm[1].replace(/<[^>]*>/g, '').trim() : '',
                     });
                 }
-                return cacheReturn({ query: q, count: results.length, results });
+                // Cache only a non-empty result set for the full TTL; a 0-result
+                // parse (often a transient block) is returned but NOT pinned for an
+                // hour — otherwise one bad parse poisons the query for 60 min.
+                return results.length ? cacheReturn({ query: q, count: results.length, results })
+                                      : { query: q, count: 0, results, retryable: true };
             } catch (e) {
                 return { error: `search failed: ${e.message}`, query: q };
             }
@@ -23697,6 +23785,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'fetch_url',
         build() {
+            return null; // consolidated into the `web` tool — hidden from the chat catalog, still registered for automations + the web router
             return {
                 type: 'function',
                 function: {
@@ -23747,6 +23836,101 @@ app.use((req, res) => {
         },
     });
 
+    // ----- web (consolidated retrieval tool) -------------------------------
+    // ONE tool the model sees for everything on the open web: search AND read
+    // pages (incl. JS/SPA, dynamic, bot-protected). It is a thin ROUTER — every
+    // branch delegates to the existing tool's execute() via toolRegistry, so the
+    // behavior is identical and there is zero divergence. The six retrieval tools
+    // it routes to (web_search/fetch_url/scrapling_fetch/playwright_fetch/
+    // playwright_interact/crawl_pages) stay REGISTERED (automations + executeToolCall
+    // dispatch them by name) but are hidden from the chat catalog (build → null).
+    tools.registerTool({
+        name: 'web',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'web',
+                    description:
+                        'The single tool for everything on the open web: SEARCH and READ pages (including JavaScript/SPA, dynamic, lazy-loaded, and bot-protected sites). ' +
+                        'Pass `query` to search the web (returns up to 5 {title,url,snippet}); pass `url` (or `urls`, up to 3) to read a page\'s readable text. ' +
+                        'Reading auto-cascades static fetch → stealth anti-bot → real-browser render, so you do NOT need to pick an engine or re-read the same URL a different way — one call handles Cloudflare / "Just a moment" / CAPTCHA and JS-rendered SPAs. ' +
+                        'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to also collect links. ' +
+                        'For a page that needs interaction first (accept a cookie wall, submit a form, click "load more", scroll for lazy content) use mode:"interact" with an ordered `actions` array. For "top N / most recent N" across a paginated listing use mode:"crawl". ' +
+                        'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. ' +
+                        'Trust fetched/searched content over training when they conflict, and cite the URL(s). If a result carries a `hint` about bot protection or a dynamic price, follow it (the cascade already tried stealth — switch source via a new search rather than re-reading the same URL). Rejects private/internal addresses.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'Search the web (use this OR url/urls).' },
+                            url: { type: 'string', description: 'A single page URL to read.' },
+                            urls: { type: 'array', items: { type: 'string' }, description: 'Up to 3 page URLs to read in one call.' },
+                            mode: { type: 'string', enum: ['auto', 'search', 'read', 'stealth', 'browser', 'interact', 'crawl'], description: 'Default auto (query→search, url→read). stealth/browser force anti-bot/real-browser; interact runs `actions` first; crawl walks pagination.' },
+                            want: { type: 'string', enum: ['text', 'images', 'links'], description: 'When reading: text (default), images (with captions), or links.' },
+                            actions: { type: 'array', items: { type: 'object' }, description: 'For mode:"interact" — ordered steps (click/type/wait/scroll/waitForNavigation).' },
+                            read: { type: 'integer', minimum: 0, maximum: 3, description: 'On a search, also fetch the top N results\' full text (default 0).' },
+                            limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Search: max results (default 5).' },
+                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Read: truncate content (default 15000).' },
+                            maxPages: { type: 'integer', minimum: 1, maximum: 20, description: 'crawl: max pages (default 5).' },
+                            timeout: { type: 'integer', description: 'Per-request timeout (ms).' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const a = args || {};
+            const reg = tools.toolRegistry;
+            const run = (name, routedArgs) => {
+                const def = reg.get(name);
+                if (!def || typeof def.execute !== 'function') return Promise.resolve({ error: `web: inner tool "${name}" unavailable` });
+                return def.execute(routedArgs, ctx);
+            };
+            const mode = a.mode || 'auto';
+            const hasUrl = !!(a.url || (Array.isArray(a.urls) && a.urls.length));
+            const wantSearch = mode === 'search' || (mode === 'auto' && a.query && !hasUrl);
+
+            // ---- SEARCH ----
+            if (wantSearch || (mode === 'auto' && !hasUrl && a.query)) {
+                const sr = await run('web_search', { query: a.query, limit: a.limit });
+                // Optionally read the top N result URLs in the same call.
+                const readN = Math.min(3, Math.max(0, parseInt(a.read || 0, 10)));
+                if (readN && sr && Array.isArray(sr.results) && sr.results.length) {
+                    const top = sr.results.slice(0, readN);
+                    const reads = await Promise.all(top.map(r =>
+                        run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
+                    top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
+                }
+                return { mode: 'search', ...(sr || {}) };
+            }
+
+            // ---- READ (single or batch) ----
+            const want = a.want || 'text';
+            const readOne = (url) => {
+                if (mode === 'stealth') return run('scrapling_fetch', { url, maxLength: a.maxLength, timeout: a.timeout });
+                if (mode === 'browser' || want === 'images') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true });
+                if (want === 'links') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true, includeLinks: true });
+                return run('fetch_url', { url, maxLength: a.maxLength });
+            };
+            if (mode === 'interact') {
+                if (!a.url) return { error: 'web mode:"interact" requires a url and an actions[] array' };
+                return { mode: 'interact', ...(await run('playwright_interact', { url: a.url, actions: a.actions || [], timeout: a.timeout, maxLength: a.maxLength })) };
+            }
+            if (mode === 'crawl') {
+                if (!a.url) return { error: 'web mode:"crawl" requires a url' };
+                return { mode: 'crawl', ...(await run('crawl_pages', { url: a.url, maxPages: a.maxPages, maxLength: a.maxLength, timeout: a.timeout })) };
+            }
+            if (Array.isArray(a.urls) && a.urls.length) {
+                const list = a.urls.slice(0, 3);
+                const results = await Promise.all(list.map(u => readOne(u).catch(e => ({ url: u, success: false, error: String(e && e.message || e) }))));
+                return { mode: 'read', results };
+            }
+            if (a.url) return { mode: 'read', ...(await readOne(a.url)) };
+            return { error: 'web: provide `query` to search or `url`/`urls` to read.' };
+        },
+    });
+
     // ----- render_chart ----------------------------------------------------
     // Lets the model emit a structured chart spec that the chat UI renders
     // inline as a real Recharts SVG. The tool itself does no I/O — it just
@@ -23762,7 +23946,7 @@ app.use((req, res) => {
                     name: 'render_chart',
                     description:
                         'USE WHEN the user asks to visualize data, plot a chart, graph numbers, or display time-series. ' +
-                        'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries / fetch_url / web_search. ' +
+                        'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries or the `web` tool. ' +
                         'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers out of the conversation/log yourself and pass them straight here in `data[]`; this renders an interactive chart inline in one step, whereas run_python+matplotlib is slower, can truncate on large data, and only yields a static image. ' +
                         'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
                         'For multi-series charts, pass each series as `{ name, color? }` in `series[]` and one `{ x, <seriesName>: y, ... }` object per x-value in `data[]`. For single-series charts, just use `{ x, y }`. ' +
@@ -23873,7 +24057,7 @@ app.use((req, res) => {
                     name: 'find_image',
                     description:
                         'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
-                        'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The web-search tools see the live web and find the most relevant, current images. ' +
+                        'PREFERRED FLOW: FIRST use the `web` tool (search the web, or read a page with want:"images") to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The `web` tool sees the live web and finds the most relevant, current images. ' +
                         'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
                         'Pass EVERY image URL you find here even if you suspect the site blocks hotlinking — when a URL will not load directly the tool saves the picture server-side (like "save image as") and embeds the bytes so it still renders. NEVER fall back to printing the image URL as a text link. ' +
                         'You do NOT need direct image URLs: you can pass the PAGE URLs the web search returned (a wallpaper gallery, an Unsplash/Pexels/Pixabay listing, an article — e.g. "https://wallpaperaccess.com/abstract-space-art") and the tool opens each in a real browser and extracts the rendered images itself. So if scraping a page for <img> links fails because it is JavaScript-rendered, do NOT keep trying — just pass the page URL here. ' +
@@ -24150,7 +24334,7 @@ app.use((req, res) => {
                     return {
                         needsWebSearch: true,
                         query,
-                        instruction: `Do NOT display images from the built-in search yet. FIRST call web_search (or scrapling_fetch / crawl_pages / fetch_url) to find real image URLs for "${query}" on relevant pages, then call find_image again with those URLs in \`urls\` to display them. ONLY if the web search surfaces no usable image URL, call find_image again with query:"${query}" and retryDirect:true.`,
+                        instruction: `Do NOT display images from the built-in search yet. FIRST use the \`web\` tool (search the web, or read a page with want:"images") to find real image URLs for "${query}" on relevant pages, then call find_image again with those URLs in \`urls\` to display them. ONLY if the web search surfaces no usable image URL, call find_image again with query:"${query}" and retryDirect:true.`,
                     };
                 }
                 // already redirected once for this query → proceed to built-in search
@@ -24253,7 +24437,7 @@ app.use((req, res) => {
             return {
                 error: `No images found for "${query}" via the built-in image search.`,
                 query,
-                hint: 'Try a simpler, more visual query (the subject only). If it still finds nothing, use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to locate a real image URL on a relevant page, then call find_image again with that URL in `urls` to display it.',
+                hint: 'Try a simpler, more visual query (the subject only). If it still finds nothing, use the `web` tool (search the web, or read a page with want:"images") to locate a real image URL on a relevant page, then call find_image again with that URL in `urls` to display it.',
             };
         },
     });
@@ -24286,7 +24470,7 @@ app.use((req, res) => {
                     name: 'find_video',
                     description:
                         'USE WHEN the user asks to find / show / display / get / play a video, clip, trailer, or "show me footage of X". It displays videos inline in the chat as click-to-play players. ' +
-                        'HOW IT WORKS: YOU find the video, this tool displays it. The normal flow is: (1) call web_search for the topic to find pages/URLs that have the video; (2) call find_video with those URLs in `urls`. find_video then EXTRACTS the playable video from each URL and renders it inline — pass a YouTube/Vimeo/Dailymotion watch link OR a direct .mp4/.webm OR even an ordinary article/page that contains a video (the tool pulls the embedded video out of the page for you). ' +
+                        'HOW IT WORKS: YOU find the video, this tool displays it. The normal flow is: (1) use the `web` tool (search) for the topic to find pages/URLs that have the video; (2) call find_video with those URLs in `urls`. find_video then EXTRACTS the playable video from each URL and renders it inline — pass a YouTube/Vimeo/Dailymotion watch link OR a direct .mp4/.webm OR even an ordinary article/page that contains a video (the tool pulls the embedded video out of the page for you). ' +
                         'If a page loads its video via JavaScript, find_video automatically inspects the page network traffic in a real browser to recover the stream (HLS .m3u8 / DASH .mpd / a dynamically-loaded .mp4) — so passing the page URL usually just works, and a .m3u8 plays via the built-in HLS player. If it still reports it could not extract one, call sniff_media_streams on that page to list every streaming URL, then pass the best one back here. ' +
                         'Do NOT invent video URLs — only pass URLs you actually found via a tool. If you call this with just a `query` and no `urls`, it will tell you to web_search first. Do not write your own markdown/HTML video links; route everything through this tool so it displays automatically. ' +
                         'Shows up to ~6 videos (whatever you pass, capped); pass count:1 when the user asks for "a"/"one" video. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
@@ -24666,7 +24850,7 @@ app.use((req, res) => {
                 return {
                     needsWebSearch: true,
                     query,
-                    instruction: `find_video does not search on its own — YOU find the video. FIRST call web_search for "${query}" (add a word like "video", "trailer", or "clip", or the platform, if it helps). Collect the resulting URLs: watch pages (YouTube/Vimeo/Dailymotion/etc.) AND ordinary pages/articles that contain a video both work — find_video will pull the embedded video out of a page for you. If a page's video is JavaScript-loaded and find_video cannot extract it, fetch the page with playwright_fetch — it renders the page and lists the playable video URLs under a "Videos:" heading (provider embeds, <video> files, og:video) — or use sniff_media_streams for HLS/DASH stream URLs, then pass those. Then call find_video again with the URLs in \`urls\` to display them inline.`,
+                    instruction: `find_video does not search on its own — YOU find the video. FIRST use the \`web\` tool to search for "${query}" (add a word like "video", "trailer", or "clip", or the platform, if it helps). Collect the resulting URLs: watch pages (YouTube/Vimeo/Dailymotion/etc.) AND ordinary pages/articles that contain a video both work — find_video will pull the embedded video out of a page for you. If a page's video is JavaScript-loaded and find_video cannot extract it, read the page with the \`web\` tool using want:"links" — it renders the page and lists the playable video URLs under a "Videos:" heading (provider embeds, <video> files, og:video) — or use sniff_media_streams for HLS/DASH stream URLs, then pass those. Then call find_video again with the URLs in \`urls\` to display them inline.`,
                 };
             }
             return {
@@ -24914,6 +25098,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'scrapling_fetch',
         build() {
+            return null; // consolidated into the `web` tool (mode:"stealth") — hidden from chat catalog, still registered
             return {
                 type: 'function',
                 function: {
@@ -24983,6 +25168,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'playwright_fetch',
         build() {
+            return null; // consolidated into the `web` tool (mode:"browser" / want:"images") — hidden from chat catalog, still registered
             return {
                 type: 'function',
                 function: {
@@ -25046,6 +25232,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'playwright_interact',
         build() {
+            return null; // consolidated into the `web` tool (mode:"interact") — hidden from chat catalog, still registered
             return {
                 type: 'function',
                 function: {
@@ -25166,6 +25353,7 @@ app.use((req, res) => {
     tools.registerTool({
         name: 'crawl_pages',
         build() {
+            return null; // consolidated into the `web` tool (mode:"crawl") — hidden from chat catalog, still registered
             return {
                 type: 'function',
                 function: {
