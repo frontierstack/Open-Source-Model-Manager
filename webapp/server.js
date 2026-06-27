@@ -6099,11 +6099,78 @@ app.post('/api/sandbox/run-code', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'code (string) is required' });
     }
     const lang = String(language || '').toLowerCase();
-    if (lang !== 'python' && lang !== 'py' && lang !== 'python3') {
+    const isPython = lang === 'python' || lang === 'py' || lang === 'python3';
+    const isJava = lang === 'java';
+    if (!isPython && !isJava) {
         return res.status(400).json({
-            error: `language "${language}" is not runnable server-side. HTML / CSS / JS render client-side in an iframe.`,
+            error: `language "${language}" is not runnable server-side (supported: python, java). HTML / CSS / JS render client-side in an iframe.`,
         });
     }
+    const effectiveTimeoutMs = Math.min(120_000, Math.max(1000, parseInt(timeoutMs, 10) || 30_000));
+
+    // --- Java: compile a single .java file and run it under gVisor --------
+    if (isJava) {
+        try {
+            const sandbox = require('./services/sandboxRunner');
+            // javac requires the file name to match the public class. Derive
+            // the entry class from `public class X` (fall back to the first
+            // `class X`, then Main).
+            const pub = code.match(/public\s+(?:final\s+|abstract\s+)?class\s+([A-Za-z_$][\w$]*)/);
+            const any = code.match(/\bclass\s+([A-Za-z_$][\w$]*)/);
+            const className = (pub && pub[1]) || (any && any[1]) || 'Main';
+            const fileName = `${className}.java`;
+            // /work is mounted read-only, so copy the source into the writable
+            // /tmp tmpfs, compile there, then exec the JVM. `&&` means a
+            // compile error stops before `java` and its stderr surfaces.
+            const run = await sandbox.runPythonSkill({
+                code,                    // satisfies the non-empty guard; unused in cmd mode
+                files: { [fileName]: code },
+                cmd: ['sh', '-c',
+                    `cd /tmp && cp /work/${fileName} ${fileName} && javac ${fileName} && exec java -XX:-UsePerfData -Xmx256m ${className}`],
+                network: 'none',
+                workspace: false,
+                timeoutMs: effectiveTimeoutMs,
+                memory: '512m',          // JVM needs more headroom than CPython
+                cpus: '1.0',
+                toolName: 'chat-code-preview-java',
+                userId: req.userId || null,
+            });
+            if (run.timedOut) {
+                sandbox.cleanupRun(run.runId).catch(() => {});
+                return res.json({
+                    success: false,
+                    timedOut: true,
+                    language: 'java',
+                    error: `Code timed out after ${Math.round(effectiveTimeoutMs / 1000)}s. Common causes: infinite loop, waiting for input (no stdin in sandbox).`,
+                    stdout: run.stdout?.slice(0, 4000) || '',
+                    stderr: run.stderr?.slice(0, 4000) || '',
+                });
+            }
+            if (!run.artifacts.length) sandbox.cleanupRun(run.runId).catch(() => {});
+            const artifacts = (run.artifacts || []).map(a => ({
+                name: a.name,
+                size: a.size,
+                runId: run.runId,
+                url: `/api/tool-artifacts/${run.runId}/${encodeURIComponent(a.name)}`,
+            }));
+            const ok = run.exitCode === 0;
+            return res.json({
+                success: ok,
+                language: 'java',
+                exitCode: run.exitCode,
+                stdout: run.stdout || '',
+                stderr: run.stderr || '',
+                error: ok ? undefined : (run.stderr ? undefined : 'compilation or runtime error'),
+                durationMs: run.durationMs,
+                sandboxed: run.sandboxed,
+                artifacts,
+            });
+        } catch (e) {
+            console.error('run-code (java) failed:', e);
+            return res.status(500).json({ error: e.message || String(e) });
+        }
+    }
+
     try {
         const sandbox = require('./services/sandboxRunner');
         // Wrap arbitrary user code in the standard skill harness so it
@@ -6299,6 +6366,23 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
             'Content-Disposition',
             `${dispType}; filename="${safeForHeader}"; filename*=UTF-8''${utf8FilenameStar}`,
         );
+        // CSP override for HTML artifacts. The global Helmet CSP is nonce-based
+        // (`script-src 'self' 'nonce-…'`, no unsafe-inline) — correct for the
+        // app shell, but it BLOCKS the inline <script> in a model-generated
+        // page (e.g. a calculator's button handlers) when that page is loaded
+        // in the ArtifactsPanel preview iframe, so the page renders but nothing
+        // works. These artifacts are always shown in a SANDBOXED iframe with an
+        // opaque origin (no allow-same-origin), which is the real security
+        // boundary — the framed code cannot reach the parent app, its cookies,
+        // or its storage regardless of this permissive CSP. So relax it here so
+        // generated pages actually run.
+        if (ext === 'html') {
+            res.setHeader(
+                'Content-Security-Policy',
+                "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; " +
+                "img-src * data: blob:; font-src * data: blob:; media-src * data: blob:;",
+            );
+        }
         // Match same-origin already, but X-Content-Type-Options is set globally
         // by helmet so the declared Content-Type is honored without sniffing.
         res.setHeader('Content-Length', String(st.size));

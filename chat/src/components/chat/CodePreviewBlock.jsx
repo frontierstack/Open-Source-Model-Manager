@@ -19,6 +19,9 @@ import { useChatStore } from '../../stores/useChatStore';
  * ever issued.
  */
 const RUNNABLE_PYTHON = new Set(['python', 'py', 'python3']);
+// Java is compiled + run server-side in the same gVisor sandbox as Python
+// (javac a single file in /tmp, then run it). See POST /api/sandbox/run-code.
+const RUNNABLE_JAVA = new Set(['java']);
 const RUNNABLE_HTML = new Set(['html', 'htm']);
 // JS snippets can render interactively by wrapping them in a minimal
 // HTML host — the model's canvas/p5/three/vanilla-JS code runs inside
@@ -35,16 +38,19 @@ export default function CodePreviewBlock({ code, language = 'text', isStreaming 
 
     const lang = (language || '').toLowerCase();
     const isPython = RUNNABLE_PYTHON.has(lang);
+    const isJava = RUNNABLE_JAVA.has(lang);
     const isHtml = RUNNABLE_HTML.has(lang);
     const isJs = RUNNABLE_JS.has(lang);
     const isCss = RUNNABLE_CSS.has(lang);
-    const runnable = enabled && !isStreaming && (isPython || isHtml || isJs || isCss);
+    const runnable = enabled && !isStreaming && (isPython || isJava || isHtml || isJs || isCss);
 
     if (!runnable) {
         return <CodeBlock code={code} language={language} isStreaming={isStreaming} />;
     }
 
-    if (isPython) return <PythonRunBlock code={code} language={language} />;
+    if (isPython || isJava) {
+        return <ServerRunBlock code={code} language={language} serverLang={isJava ? 'java' : 'python'} />;
+    }
     if (isJs) {
         // Wrap the JS in a minimal HTML host with a visible canvas and a
         // console mirror. Defaults to allow-scripts (otherwise there's
@@ -74,7 +80,13 @@ export default function CodePreviewBlock({ code, language = 'text', isStreaming 
             />
         );
     }
-    return <HtmlRunBlock code={code} language={language} />;
+    // Plain HTML: default scripts ON. A live preview whose whole point is
+    // to *run* the page (calculators, interactive widgets) is useless with
+    // scripts off — the page renders but every button is dead. The feature
+    // is already opt-in (codePreviewEnabled) and runs in an opaque-origin
+    // sandbox (see sandboxAttr below), so default-on is both expected and
+    // safe. Users can still untick "allow scripts" for a static render.
+    return <HtmlRunBlock code={code} language={language} defaultScripts={true} />;
 }
 
 // Minimal scaffold around a raw JS snippet so "interactive canvas"
@@ -168,9 +180,10 @@ ${userCode.split('\n').map(l => '    ' + l).join('\n')}
 }
 
 // ---------------------------------------------------------------------------
-// Python runner
+// Server-side runner (Python + Java) — executes in the gVisor sandbox via
+// POST /api/sandbox/run-code and renders stdout/stderr + any image artifacts.
 // ---------------------------------------------------------------------------
-function PythonRunBlock({ code, language }) {
+function ServerRunBlock({ code, language, serverLang = 'python' }) {
     const [state, setState] = useState('idle'); // idle | running | done | error
     const [output, setOutput] = useState(null);
     const [elapsedMs, setElapsedMs] = useState(0);
@@ -198,7 +211,7 @@ function PythonRunBlock({ code, language }) {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ language: 'python', code, timeoutMs: 60_000 }),
+                body: JSON.stringify({ language: serverLang, code, timeoutMs: 60_000 }),
                 signal: abortRef.current.signal,
             });
             const data = await res.json();
@@ -229,7 +242,7 @@ function PythonRunBlock({ code, language }) {
     return (
         <div className="my-3">
             <div className="flex items-center justify-between mb-1.5 pl-1">
-                <span className="text-[11px] text-dark-400 font-mono">python · sandbox</span>
+                <span className="text-[11px] text-dark-400 font-mono">{serverLang} · sandbox</span>
                 {state === 'running' ? (
                     <button
                         onClick={stop}
@@ -330,23 +343,32 @@ function formatBytes(n) {
 }
 
 // ---------------------------------------------------------------------------
-// HTML previewer — iframe with the strictest `sandbox` attribute that still
-// renders visible content. No scripts, no forms, no top-nav — just CSS + DOM.
-// Users can flip on scripts via the toggle below when they knowingly want
-// it (e.g., a small interactive demo). Scripts off is the default.
+// HTML previewer — iframe sandboxed at an opaque origin (no allow-same-origin)
+// so model-generated code runs but cannot reach the parent app. Scripts are
+// ON by default for HTML/JS (so the preview actually runs — calculators,
+// widgets, canvas demos); CSS-only previews default scripts off (they render
+// nothing). Users can flip scripts off via the toggle for a static render.
 // ---------------------------------------------------------------------------
 function HtmlRunBlock({ code, displayCode, language, displayLang, defaultScripts = false }) {
     const [shown, setShown] = useState(false);
-    // When `defaultScripts` is true (JS snippets wrapped as HTML), we pre-
-    // enable scripts since the snippet literally can't work without them.
-    // Plain HTML defaults to scripts-off (safer, still renders visually).
+    // `defaultScripts` is true for HTML and JS snippets (they can't work
+    // without scripts), false for CSS-only previews. Either way the frame is
+    // opaque-origin sandboxed, so default-on is safe.
     const [allowScripts, setAllowScripts] = useState(defaultScripts);
     const [iframeKey, setIframeKey] = useState(0);
 
-    // Build the sandbox attribute dynamically. Baseline denies everything;
-    // scripts+same-origin when the user opts in (or when JS is inherent).
+    // Build the sandbox attribute dynamically. Baseline denies everything.
+    // When scripts are on we grant `allow-scripts` but DELIBERATELY NOT
+    // `allow-same-origin`: a srcDoc iframe inherits the parent's origin, so
+    // allow-scripts + allow-same-origin would let model-generated code reach
+    // window.parent, read the app's localStorage, and make authenticated
+    // requests as the user — a full sandbox escape. Without same-origin the
+    // frame runs at an opaque origin: event handlers, canvas, timers, fetch
+    // to CORS-enabled hosts all work, but it cannot touch the parent app.
+    // (localStorage/sessionStorage throw under an opaque origin — an
+    // acceptable trade for untrusted code the user asked to sandbox.)
     const sandboxAttr = allowScripts
-        ? 'allow-scripts allow-same-origin allow-pointer-lock'
+        ? 'allow-scripts allow-pointer-lock'
         : '';
 
     const label = displayLang || language;

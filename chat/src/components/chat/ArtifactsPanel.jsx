@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { X, Eye, Code, RefreshCw, Download, Share2, FileText } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { X, Eye, Code, RefreshCw, Download, Share2, FileText, Maximize2, Minimize2, Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 
 /**
@@ -100,6 +100,78 @@ function fmtBytes(b) {
 export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelect, onClose }) {
     const [tab, setTab] = useState('preview');
 
+    // --- Resize (docked) + detach (floating window) ----------------------
+    // Self-contained, no ChatContainer changes: docked mode overrides the
+    // flex-item width; detached mode pops the <aside> out of flow as a
+    // position:fixed window the user can drag anywhere and resize from the
+    // corner. All geometry persists to localStorage so it survives reloads.
+    const [docW, setDocW] = useState(() => {
+        const v = parseInt(localStorage.getItem('artifactsPanelWidth'), 10);
+        return Number.isFinite(v) ? Math.max(320, Math.min(v, 1200)) : 420;
+    });
+    const [detached, setDetached] = useState(() => localStorage.getItem('artifactsPanelDetached') === '1');
+    const [winPos, setWinPos] = useState(() => {
+        try {
+            const f = JSON.parse(localStorage.getItem('artifactsPanelFloat') || 'null');
+            if (f && typeof f.x === 'number') return f;
+        } catch (_) { /* ignore */ }
+        return { x: Math.max(40, window.innerWidth - 620), y: 96, w: 560, h: 640 };
+    });
+    // While a drag is active we lay a transparent full-viewport overlay on
+    // top so the preview <iframe> doesn't swallow the mousemove stream.
+    const [dragging, setDragging] = useState(false);
+
+    useEffect(() => { try { localStorage.setItem('artifactsPanelWidth', String(Math.round(docW))); } catch (_) {} }, [docW]);
+    useEffect(() => { try { localStorage.setItem('artifactsPanelDetached', detached ? '1' : '0'); } catch (_) {} }, [detached]);
+    useEffect(() => { try { localStorage.setItem('artifactsPanelFloat', JSON.stringify(winPos)); } catch (_) {} }, [winPos]);
+
+    // Generic pointer-drag: binds window listeners for one drag, restores
+    // selection/cursor on release. `onMove(dx, dy)` gets the delta from the
+    // press point each frame.
+    const startDrag = (e, onMove, cursor) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const sx = e.clientX, sy = e.clientY;
+        setDragging(true);
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = cursor || 'default';
+        const move = (ev) => onMove(ev.clientX - sx, ev.clientY - sy);
+        const up = () => {
+            window.removeEventListener('mousemove', move);
+            window.removeEventListener('mouseup', up);
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+            setDragging(false);
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+    };
+    const onDockResize = (e) => {
+        const startW = docW;
+        // Handle sits on the LEFT edge → dragging left (dx<0) widens.
+        startDrag(e, (dx) => {
+            const w = Math.max(320, Math.min(startW - dx, Math.min(1200, window.innerWidth - 260)));
+            setDocW(w);
+        }, 'col-resize');
+    };
+    const onFloatMove = (e) => {
+        const s = winPos;
+        startDrag(e, (dx, dy) => {
+            const x = Math.max(0, Math.min(s.x + dx, window.innerWidth - 120));
+            const y = Math.max(0, Math.min(s.y + dy, window.innerHeight - 48));
+            setWinPos(p => ({ ...p, x, y }));
+        }, 'grabbing');
+    };
+    const onFloatResize = (e) => {
+        const s = winPos;
+        startDrag(e, (dx, dy) => {
+            const w = Math.max(360, Math.min(s.w + dx, window.innerWidth - s.x));
+            const h = Math.max(300, Math.min(s.h + dy, window.innerHeight - s.y));
+            setWinPos(p => ({ ...p, w, h }));
+        }, 'nwse-resize');
+    };
+
     const active = useMemo(() => {
         if (!artifacts.length) return null;
         return artifacts.find(a => a.id === activeId) || artifacts[artifacts.length - 1];
@@ -147,6 +219,17 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
         background: 'var(--bg-2)',
         display: 'flex', flexDirection: 'column',
     };
+    const panelStyle = detached
+        ? {
+            position: 'fixed', left: winPos.x, top: winPos.y,
+            width: winPos.w, height: winPos.h,
+            zIndex: 60, borderRadius: 12, overflow: 'hidden',
+            border: '1px solid var(--rule)',
+            boxShadow: '0 24px 60px -12px rgba(0,0,0,0.55)',
+            background: 'var(--bg-2)',
+            display: 'flex', flexDirection: 'column',
+        }
+        : { ...panel, position: 'relative', width: docW };
     const header = {
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '12px 14px',
@@ -202,9 +285,27 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                 style={{ background: 'color-mix(in oklab, var(--ink) 60%, transparent)', backdropFilter: 'blur(4px)' }}
                 onClick={onClose}
             />
-            <aside style={panel} className="artifacts-panel">
+            {/* Drag overlay — keeps mousemove flowing over the preview iframe */}
+            {dragging && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 200 }} />
+            )}
+            <aside style={panelStyle} className="artifacts-panel">
+            {/* Docked: left-edge resize handle */}
+            {!detached && (
+                <div
+                    onMouseDown={onDockResize}
+                    title="Drag to resize"
+                    style={{
+                        position: 'absolute', left: -3, top: 0, bottom: 0, width: 8,
+                        cursor: 'col-resize', zIndex: 10,
+                    }}
+                />
+            )}
             <div style={header}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                    style={{ flex: 1, minWidth: 0, cursor: detached ? 'move' : 'default' }}
+                    onMouseDown={detached ? onFloatMove : undefined}
+                >
                     <div style={{
                         fontSize: 10.5, color: 'var(--ink-3)',
                         letterSpacing: '.04em', textTransform: 'uppercase',
@@ -291,6 +392,17 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                 ))}
                 <button
                     style={iconBtn}
+                    onClick={() => setDetached(d => !d)}
+                    title={detached ? 'Dock to side' : 'Detach — float anywhere'}
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                >
+                    {detached
+                        ? <Minimize2 style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                        : <Maximize2 style={{ width: 14, height: 14 }} strokeWidth={1.75} />}
+                </button>
+                <button
+                    style={iconBtn}
                     onClick={onClose}
                     title="Close"
                     onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
@@ -367,6 +479,19 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     </button>
                 )}
             </div>
+            {/* Detached: bottom-right resize grip */}
+            {detached && (
+                <div
+                    onMouseDown={onFloatResize}
+                    title="Drag to resize"
+                    style={{
+                        position: 'absolute', right: 0, bottom: 0,
+                        width: 18, height: 18, cursor: 'nwse-resize', zIndex: 10,
+                        background: 'linear-gradient(135deg, transparent 50%, var(--ink-4) 50%, var(--ink-4) 62%, transparent 62%, transparent 74%, var(--ink-4) 74%, var(--ink-4) 86%, transparent 86%)',
+                        borderBottomRightRadius: 12,
+                    }}
+                />
+            )}
             </aside>
         </>
     );
@@ -378,7 +503,136 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
 // render inline, and binary file types fall back to an "Open in new tab"
 // button. Text-based files (json, csv, md, py, js, ...) render their
 // fetched source through CodeBlock.
+// Run-in-panel for Python / Java artifacts. Posts to the same
+// /api/sandbox/run-code endpoint the inline code-block Run button uses, then
+// renders stdout / stderr and any image artifacts inline in the panel.
+function RunnablePreview({ code, language }) {
+    const serverLang = language === 'java' ? 'java' : 'python';
+    const [state, setState] = useState('idle'); // idle | running | done | error
+    const [output, setOutput] = useState(null);
+    const abortRef = useRef(null);
+
+    const run = async () => {
+        setState('running');
+        setOutput(null);
+        abortRef.current = new AbortController();
+        try {
+            const res = await fetch('/api/sandbox/run-code', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ language: serverLang, code, timeoutMs: 60_000 }),
+                signal: abortRef.current.signal,
+            });
+            const data = await res.json();
+            setState(!res.ok || data.success === false ? 'error' : 'done');
+            setOutput(data);
+        } catch (e) {
+            if (e.name === 'AbortError') { setState('idle'); setOutput(null); return; }
+            setState('error');
+            setOutput({ error: e.message });
+        } finally {
+            abortRef.current = null;
+        }
+    };
+    const stop = () => { if (abortRef.current) abortRef.current.abort(); };
+
+    const btn = {
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '5px 11px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+        border: 0, cursor: 'pointer',
+    };
+    const pre = {
+        margin: 0, padding: '10px 12px', fontFamily: 'var(--font-mono)',
+        fontSize: 12, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        overflowX: 'auto',
+    };
+
+    return (
+        <div style={{ padding: '14px 16px 40px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <span style={{ fontSize: 11, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
+                    {serverLang} · sandbox
+                </span>
+                {state === 'running' ? (
+                    <button style={{ ...btn, background: 'color-mix(in oklab, #ef4444 14%, transparent)', color: '#ef4444' }} onClick={stop}>
+                        <Square style={{ width: 12, height: 12 }} strokeWidth={2.5} /> Stop
+                    </button>
+                ) : (
+                    <button style={{ ...btn, background: 'var(--accent)', color: 'var(--accent-ink)' }} onClick={run}>
+                        <Play style={{ width: 12, height: 12 }} strokeWidth={2.5} /> Run
+                    </button>
+                )}
+            </div>
+
+            <CodeBlock code={code} language={language} isStreaming={false} />
+
+            {state === 'running' && (
+                <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--ink-3)', fontSize: 12 }}>
+                    <Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> executing in sandbox…
+                </div>
+            )}
+
+            {output && (state === 'done' || state === 'error') && (
+                <div style={{ marginTop: 12, border: '1px solid var(--rule)', borderRadius: 8, overflow: 'hidden' }}>
+                    <div style={{ padding: '6px 12px', background: 'var(--bg-2)', fontSize: 10.5, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {state === 'error' && <AlertCircle style={{ width: 12, height: 12, color: '#ef4444' }} />}
+                        output
+                        {typeof output.durationMs === 'number' && (
+                            <span style={{ marginLeft: 'auto', color: 'var(--ink-4)' }}>{Math.round(output.durationMs)}ms</span>
+                        )}
+                    </div>
+                    {output.stdout && <pre style={{ ...pre, color: 'var(--ink-2)' }}>{output.stdout}</pre>}
+                    {output.stderr && <pre style={{ ...pre, color: '#f87171', borderTop: '1px solid var(--rule)' }}>{output.stderr}</pre>}
+                    {output.error && !output.stdout && !output.stderr && (
+                        <pre style={{ ...pre, color: '#f87171' }}>{output.error}</pre>
+                    )}
+                    {output.timedOut && (
+                        <div style={{ padding: '6px 12px', fontSize: 11, color: '#fbbf24', borderTop: '1px solid var(--rule)' }}>execution timed out</div>
+                    )}
+                    {Array.isArray(output.artifacts) && output.artifacts.length > 0 && (
+                        <div style={{ borderTop: '1px solid var(--rule)', padding: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {output.artifacts.map(a => {
+                                const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(a.name);
+                                return (
+                                    <div key={a.runId + '/' + a.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                        {isImage && (
+                                            <img src={a.url} alt={a.name} style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 6, border: '1px solid var(--rule)', background: '#fff' }} />
+                                        )}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
+                                            <span>{a.name}</span>
+                                            <span style={{ color: 'var(--ink-4)' }}>{fmtBytes(a.size)}</span>
+                                            <a href={a.url} target="_blank" rel="noreferrer" download={a.name}
+                                               style={{ marginLeft: 'auto', color: 'var(--accent)', textDecoration: 'underline' }}>download</a>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function FilePreviewBody({ active, fileSource }) {
+    // Runnable languages (Python / Java) get a Run button right in the
+    // Preview tab — executed server-side in the gVisor sandbox, with stdout
+    // and any image artifacts (matplotlib PNGs, etc.) rendered inline here.
+    const RUNNABLE = ['python', 'py', 'python3', 'java'];
+    if (RUNNABLE.includes(active.language)) {
+        if (active.kind === 'file') {
+            if (fileSource?.loading) {
+                return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading…</div>;
+            }
+            if (fileSource?.error) {
+                return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load file: {fileSource.error}</div>;
+            }
+        }
+        const code = active.kind === 'file' ? (fileSource?.text || '') : (active.source || '');
+        return <RunnablePreview code={code} language={active.language} />;
+    }
     if (active.kind !== 'file') {
         return (
             <div style={{ padding: '16px 18px 40px' }}>
@@ -392,12 +646,18 @@ function FilePreviewBody({ active, fileSource }) {
             <iframe
                 src={active.url}
                 title={active.title || 'preview'}
-                // `allow-downloads` lets the user Ctrl+S / right-click-save
-                // from inside the sandboxed iframe — without it Chrome
-                // silently blocks the save. `allow-popups-to-escape-sandbox`
-                // lets links inside the page open externally with their own
-                // (un-sandboxed) origin so Leaflet/Mapbox tile URLs work.
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+                // Sandboxed at an OPAQUE origin: deliberately NO allow-same-
+                // origin. The artifact is served from the app's own origin, so
+                // allow-scripts + allow-same-origin together would let model-
+                // generated code reach the parent app, its cookies and storage
+                // (the browser even warns it "can escape its sandboxing"). With
+                // an opaque origin the page's scripts run (button handlers,
+                // canvas, timers) but cannot touch the app — the real security
+                // boundary that makes the relaxed artifact CSP safe.
+                // `allow-downloads` lets Ctrl+S / right-click-save work (Chrome
+                // blocks it otherwise); `allow-popups-to-escape-sandbox` opens
+                // links externally with their own origin (Leaflet/Mapbox tiles).
+                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
             />
         );

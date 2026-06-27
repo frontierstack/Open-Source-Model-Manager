@@ -285,7 +285,20 @@ except Exception as _e:
     }))
     sys.exit(1)
 `;
-    await fs.writeFile(path.join(scratchIn, 'skill.py'), harness);
+    if (opts.cmd) {
+        // Generic exec mode (non-Python languages, e.g. Java). The caller
+        // supplies an explicit container command and the source files to
+        // stage under /work; the Python `skill.py` harness/`execute()`
+        // convention is skipped entirely. The caller reads raw
+        // stdout/stderr/exitCode from the result (no JSON result envelope).
+        for (const [name, content] of Object.entries(opts.files || {})) {
+            const safe = path.basename(name);
+            if (!safe || safe.startsWith('.') || safe.includes('..')) continue;
+            await fs.writeFile(path.join(scratchIn, safe), content);
+        }
+    } else {
+        await fs.writeFile(path.join(scratchIn, 'skill.py'), harness);
+    }
 
     // 2. Build container config
     const useRunsc = await runscAvailable();
@@ -400,7 +413,7 @@ except Exception as _e:
     try {
         container = await docker.createContainer({
             Image: SANDBOX_IMAGE,
-            Cmd: ['python3', '/work/skill.py'],
+            Cmd: opts.cmd || ['python3', '/work/skill.py'],
             WorkingDir: '/work',
             Env: env,
             AttachStdout: true,

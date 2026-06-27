@@ -187,6 +187,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-ex
 RUN pip install --no-cache-dir yt-dlp==2026.03.17 \
     && python3 -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
 
+# JDK for the chat's "Run" button on Java code blocks / .java artifacts.
+# default-jdk-headless pulls OpenJDK (javac + java, no GUI/awt libs) — the
+# run-code endpoint compiles a single .java file in the writable /tmp tmpfs
+# and runs it under gVisor like Python. ~300 MB; headless keeps it lean.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        default-jdk-headless \
+    && rm -rf /var/lib/apt/lists/* \
+    && javac --version && java --version
+
 # matplotlib headless default — prevents "no display name" errors when
 # snippets forget plt.switch_backend('Agg').
 ENV MPLBACKEND=Agg
