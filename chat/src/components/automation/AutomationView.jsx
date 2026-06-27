@@ -2076,7 +2076,7 @@ function ToolArgsChips({ d, onChange, nodeList, registerActive }) {
     const extra = Array.from(new Set([...Object.keys(args).filter(k => !knownKeys.has(k)), ...customKeys]));
     return (
         <div className="cf-sec">
-            <div className="cf-sec__label">Parameters</div>
+            <div className="cf-sec__label">Details</div>
             {known.map(p => p.options
                 ? <ChoiceChip key={p.key} chip={{ label: p.label }} value={args[p.key]} options={p.options.map(o => ({ value: o, label: o }))} onChange={(v) => setArg(p.key, v)} />
                 : <ValueChip key={p.key} chip={{ label: p.label, type: p.multiline ? 'multiline' : 'value', acceptsData: true, mono: p.mono }} value={args[p.key]} onChange={(v) => setArg(p.key, v)} nodeList={nodeList} registerActive={registerActive} />)}
@@ -2086,7 +2086,8 @@ function ToolArgsChips({ d, onChange, nodeList, registerActive }) {
                     <input className="cf-num" style={{ width: 140 }} autoFocus placeholder="parameter name" value={newKey} onChange={(e) => setNewKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newKey.trim()) { setCustomKeys(cs => [...cs, newKey.trim()]); setNewKey(''); setAdding(false); } }} />
                     <button className="cf-add" onClick={() => { if (newKey.trim()) setCustomKeys(cs => [...cs, newKey.trim()]); setNewKey(''); setAdding(false); }}>Add</button>
                 </div>
-            ) : <div className="cf-tray"><button className="cf-add" onClick={() => setAdding(true)}><span className="cf-add__plus">+</span> parameter</button></div>}
+            ) : <div className="cf-tray"><button className="cf-add" onClick={() => setAdding(true)}><span className="cf-add__plus">+</span> Add a custom field</button></div>}
+            <div className="cf-hint">Optional — only if this tool needs a setting that isn’t shown above.</div>
         </div>
     );
 }
@@ -2456,65 +2457,63 @@ const SEND_MODE_OPTS = [{ value: 'pdf', label: 'The PDF only' }, { value: 'both'
 const MATCH_OPTS = ['contains', 'equals', 'startsWith', 'regex'].map(m => ({ value: m, label: m }));
 const CHIP_DEFS_BY_KIND = {
     model: [
-        { field: 'prompt', label: 'Prompt', type: 'multiline', required: true, placeholder: 'Leave blank to receive the previous step’s output, or drop in data chips' },
-        { field: 'systemPrompt', label: 'System prompt', type: 'multiline' },
-        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models' },
+        { field: 'prompt', label: 'Prompt', type: 'multiline', required: true, placeholder: 'Leave blank to receive the previous step’s output, or drop in data chips', help: 'What to ask the model. Leave blank to just hand it the previous step’s output.' },
+        { field: 'systemPrompt', label: 'System prompt', type: 'multiline', advanced: true, help: 'Optional persona / standing instructions for the model.' },
+        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models', advanced: true },
     ],
     tool: [
         { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. query_sqlite' },
-        { field: 'args.filename', label: 'File name', type: 'value', acceptsData: false, placeholder: 'report.pdf', when: { field: 'tool', op: 'eq', value: 'create_pdf' } },
-        { field: 'args.outputName', label: 'File name', type: 'value', acceptsData: false, placeholder: 'report.pdf', when: { field: 'tool', op: 'eq', value: 'html_to_pdf' } },
         { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', required: true },
-        { field: 'sendMode', label: 'When sent to next node', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
+        { field: 'sendMode', label: 'What to pass to the next step', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', advanced: true, when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
     ],
     web_search: [
-        { field: 'query', label: 'Query', type: 'value', required: true },
-        { field: 'limit', label: 'Limit', type: 'number', placeholder: '5' },
+        { field: 'query', label: 'What to search for', type: 'value', required: true },
+        { field: 'limit', label: 'Number of results', type: 'number', placeholder: '5', advanced: true, help: 'How many results to use (default 5).' },
     ],
     fetch_url: [
         { field: 'url', label: 'URL', type: 'value', required: true, placeholder: 'https://…' },
-        { field: 'maxLength', label: 'Max length', type: 'number' },
+        { field: 'maxLength', label: 'Max characters', type: 'number', advanced: true, help: 'Limit how much of the page to read.' },
     ],
     parse_json: [
-        { field: 'path', label: 'Keep only this field', type: 'value', acceptsData: false, suggestFrom: 'parseFields', placeholder: 'e.g. results.*.url — blank keeps all' },
+        { field: 'path', label: 'Pick a field', type: 'value', acceptsData: false, suggestFrom: 'parseFields', placeholder: 'e.g. results.*.url — blank keeps all', help: 'Pull out just one field. Leave blank to keep the whole result.' },
     ],
     db_store: [
-        { field: 'table', label: 'Table', type: 'value', acceptsData: false, required: true, placeholder: 'records' },
+        { field: 'table', label: 'Collection name', type: 'value', acceptsData: false, required: true, placeholder: 'records', help: 'A name for this saved list (you choose it).' },
         { field: 'value', label: 'Data to store', type: 'multiline', placeholder: 'Blank stores the previous step’s output' },
-        { field: 'key', label: 'Unique key field (track changes)', type: 'value', acceptsData: false, suggestFrom: 'incomingFields', placeholder: 'e.g. link,post_title' },
-        { field: 'keyStrip', label: 'Ignore words in key', type: 'value', acceptsData: false, when: { field: 'key', op: 'truthy' } },
-        { field: 'keyNormalize', label: 'Normalize key (ignore case & punctuation)', type: 'toggle', when: { field: 'key', op: 'truthy' } },
-        { field: 'db', label: 'Database file', type: 'value', acceptsData: false, placeholder: 'automation.db' },
+        { field: 'key', label: 'Skip duplicates by', type: 'value', acceptsData: false, suggestFrom: 'incomingFields', placeholder: 'e.g. link', help: 'The field that’s unique per item (e.g. link or id) so the same item is never sent twice. You can list a couple, comma-separated (e.g. link,title).' },
+        { field: 'keyStrip', label: 'Ignore words when comparing', type: 'value', acceptsData: false, advanced: true, help: 'Words/prefixes to ignore when matching duplicates (e.g. “UPDATE:”).', when: { field: 'key', op: 'truthy' } },
+        { field: 'keyNormalize', label: 'Ignore case & punctuation', type: 'toggle', advanced: true, when: { field: 'key', op: 'truthy' } },
+        { field: 'db', label: 'Storage file', type: 'value', acceptsData: false, placeholder: 'automation.db', advanced: true, help: 'Which storage file to use (default automation.db). Leave as-is unless you want a separate store.' },
     ],
     db_query: [
-        { field: 'table', label: 'Table', type: 'value', acceptsData: false, required: true, placeholder: 'records' },
+        { field: 'table', label: 'Collection name', type: 'value', acceptsData: false, required: true, placeholder: 'records', help: 'The same collection name you stored into.' },
         { field: 'order', label: 'Order', type: 'choice', required: true, default: 'id DESC', options: [{ value: 'id DESC', label: 'Newest first' }, { value: 'id ASC', label: 'Oldest first' }, { value: 'ts DESC', label: 'By time, newest first' }, { value: 'ts ASC', label: 'By time, oldest first' }] },
         { field: 'limit', label: 'How many', type: 'number', placeholder: '100' },
-        { field: 'sql', label: 'Advanced: raw SQL', type: 'multiline', acceptsData: false, placeholder: 'SELECT data FROM records WHERE …' },
-        { field: 'db', label: 'Database file', type: 'value', acceptsData: false, placeholder: 'automation.db' },
+        { field: 'sql', label: 'Raw SQL query', type: 'multiline', acceptsData: false, placeholder: 'SELECT data FROM records WHERE …', advanced: true, help: 'Advanced — a custom SELECT instead of the options above.' },
+        { field: 'db', label: 'Storage file', type: 'value', acceptsData: false, placeholder: 'automation.db', advanced: true, help: 'Which storage file to read (default automation.db).' },
     ],
     render_html: [{ field: 'html', label: 'HTML', type: 'multiline', required: true, placeholder: '<h1>Report</h1> — blank wraps the previous output' }],
     export_file: [
         { field: 'format', label: 'Format', type: 'choice', required: true, default: 'txt', options: ['txt', 'csv', 'json', 'md', 'html', 'pdf'].map(f => ({ value: f, label: f.toUpperCase() })) },
         { field: 'filename', label: 'Filename', type: 'value', acceptsData: false, required: true, placeholder: 'report' },
-        { field: 'content', label: 'Content', type: 'multiline', placeholder: 'Blank uses the previous step’s output' },
+        { field: 'content', label: 'Content', type: 'multiline', placeholder: 'Blank uses the previous step’s output', help: 'Leave blank to save the previous step’s output.' },
     ],
     slack: [
-        { field: 'text', label: 'Message / caption', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
-        { field: 'attachFile', label: 'Upload upstream file', type: 'toggle', default: true },
+        { field: 'text', label: 'Message', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
         { field: 'botToken', label: 'Slack bot token (xoxb-…)', type: 'value', acceptsData: false, required: true, when: { field: 'attachFile', op: 'neq', value: false } },
         { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, when: { field: 'attachFile', op: 'neq', value: false } },
         { field: 'webhookUrl', label: 'Webhook URL (text only)', type: 'value', acceptsData: false, placeholder: 'https://hooks.slack.com/…' },
+        { field: 'attachFile', label: 'Upload a file from a previous step', type: 'toggle', default: true, advanced: true },
     ],
     telegram: [
         { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
         { field: 'chatId', label: 'Chat ID', type: 'value', required: true, placeholder: 'e.g. 123456789 or @channel' },
-        { field: 'text', label: 'Message / caption', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
-        { field: 'attachFile', label: 'Send upstream file as a document', type: 'toggle', default: true },
+        { field: 'text', label: 'Message', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
+        { field: 'attachFile', label: 'Send a file from a previous step', type: 'toggle', default: true, advanced: true },
     ],
     telegram_get: [
         { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
-        { field: 'limit', label: 'Limit', type: 'number', placeholder: '10' },
+        { field: 'limit', label: 'How many messages', type: 'number', placeholder: '10', advanced: true },
     ],
     send_file: [
         { field: 'to', label: 'Send to', type: 'choice', required: true, default: 'telegram', options: [{ value: 'telegram', label: 'Telegram' }, { value: 'slack', label: 'Slack' }, { value: 'http', label: 'HTTP upload' }] },
@@ -2522,7 +2521,7 @@ const CHIP_DEFS_BY_KIND = {
         { field: 'chatId', label: 'Chat ID', type: 'value', required: true, when: { field: 'to', op: 'eq', value: 'telegram' } },
         { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, when: { field: 'to', op: 'eq', value: 'slack' } },
         { field: 'url', label: 'Upload URL', type: 'value', required: true, when: { field: 'to', op: 'eq', value: 'http' } },
-        { field: 'caption', label: 'Caption / message', type: 'value' },
+        { field: 'caption', label: 'Caption / message', type: 'value', advanced: true },
     ],
     delay: [{ field: 'ms', label: 'Delay (ms)', type: 'number', required: true }],
     set: [
@@ -2530,22 +2529,22 @@ const CHIP_DEFS_BY_KIND = {
         { field: 'value', label: 'Value', type: 'value', required: true, placeholder: 'text or drop a data chip' },
     ],
     map: [
-        { field: 'items', label: 'Items to loop over', type: 'value', required: true, placeholder: 'drop a list chip, e.g. results' },
+        { field: 'items', label: 'Items to loop over', type: 'value', required: true, placeholder: 'drop a list chip, e.g. results', help: 'The list to repeat this for. Drop in a list from an earlier step.' },
         { field: 'action', label: 'For each item', type: 'choice', required: true, default: 'tool', options: [{ value: 'tool', label: 'Run a tool / skill' }, { value: 'model', label: 'Run the model' }] },
         { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. fetch_url', when: { field: 'action', op: 'neq', value: 'model' } },
         { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', when: { field: 'action', op: 'neq', value: 'model' } },
         { field: 'prompt', label: 'Prompt', type: 'multiline', required: true, placeholder: 'Summarize this: drop the item chip', when: { field: 'action', op: 'eq', value: 'model' } },
-        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models', when: { field: 'action', op: 'eq', value: 'model' } },
-        { field: 'maxConcurrency', label: 'Max parallel', type: 'number', placeholder: '3' },
+        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models', advanced: true, when: { field: 'action', op: 'eq', value: 'model' } },
+        { field: 'maxConcurrency', label: 'How many at once', type: 'number', placeholder: '3', advanced: true, help: 'How many items to process in parallel (default 3).' },
     ],
     'gate.if': [
         { field: 'condition.left', label: 'Value to check', type: 'value', required: true, placeholder: 'previous output' },
-        { field: 'condition.op', label: 'Operator', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
+        { field: 'condition.op', label: 'Is', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
         { field: 'condition.right', label: 'Compare to', type: 'value', required: true, when: { field: 'condition.op', op: 'notIn', value: ['empty', 'not_empty'] } },
     ],
     'gate.filter': [
         { field: 'condition.left', label: 'Value to check', type: 'value', required: true, placeholder: 'previous output' },
-        { field: 'condition.op', label: 'Operator', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
+        { field: 'condition.op', label: 'Is', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
         { field: 'condition.right', label: 'Compare to', type: 'value', required: true, when: { field: 'condition.op', op: 'notIn', value: ['empty', 'not_empty'] } },
     ],
     'gate.switch': [
@@ -2556,15 +2555,15 @@ const CHIP_DEFS_BY_KIND = {
     'trigger.event': [{ field: 'event', label: 'Event name', type: 'value', acceptsData: false, required: true, placeholder: 'model.loaded' }],
     'trigger.telegram': [
         { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
-        { field: 'chatId', label: 'Chat ID filter', type: 'value', acceptsData: false, placeholder: 'only this chat / @channel' },
-        { field: 'keyword', label: 'Keyword filter', type: 'value', acceptsData: false },
-        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, when: { field: 'keyword', op: 'truthy' } },
+        { field: 'chatId', label: 'Only this chat', type: 'value', acceptsData: false, placeholder: 'only this chat / @channel', advanced: true, help: 'Optional — limit to one chat / channel.' },
+        { field: 'keyword', label: 'Only messages containing', type: 'value', acceptsData: false, advanced: true, help: 'Optional — only run when the message matches.' },
+        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, advanced: true, when: { field: 'keyword', op: 'truthy' } },
     ],
     'trigger.slack': [
         { field: 'botToken', label: 'Bot token (xoxb-…)', type: 'value', acceptsData: false, required: true, placeholder: 'xoxb-…' },
         { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, placeholder: 'C0123456789' },
-        { field: 'keyword', label: 'Keyword filter', type: 'value', acceptsData: false },
-        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, when: { field: 'keyword', op: 'truthy' } },
+        { field: 'keyword', label: 'Only messages containing', type: 'value', acceptsData: false, advanced: true, help: 'Optional — only run when the message matches.' },
+        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, advanced: true, when: { field: 'keyword', op: 'truthy' } },
     ],
     'trigger.webhook': [{ field: '__webhook', label: 'Webhook', type: 'special', special: 'webhook', required: true }],
 };
@@ -2575,7 +2574,7 @@ function chipApplies(chip, kind) {
     return Array.isArray(a) ? a.includes(kind) : a === kind;
 }
 function chipsForKind(kind, ctx) {
-    const out = [{ field: 'label', label: 'Label', type: 'value', acceptsData: false, required: true }];
+    const out = [{ field: 'label', label: 'Step name', type: 'value', acceptsData: false, advanced: true }];
     for (const c of (CHIP_DEFS_BY_KIND[kind] || [])) out.push({ ...c });
     const noFwd = (typeof kind === 'string' && (kind.startsWith('trigger.') || kind.startsWith('gate.'))) || kind === 'output' || kind === 'merge';
     if (!noFwd) out.push({ field: 'forward', label: 'Output → next step', type: 'multiline', hint: 'Shape what flows on. Blank = send the whole output.' });
@@ -2694,7 +2693,7 @@ function TransformAdder({ attached = [], onAdd }) {
     return (
         <div className="cf-tadd">
             <button type="button" className={`cf-add${open ? ' is-on' : ''}`} onClick={() => { setOpen(o => !o); setQ(''); }}>
-                <span className="cf-add__plus">+</span> Add transform
+                <span className="cf-add__plus">+</span> Add a clean-up step
             </button>
             {open && (
                 <div className="cf-tadd__panel">
@@ -2725,27 +2724,75 @@ function ChipBoard({ node, ctx, onChange }) {
     const defaults = {}; for (const s of specs) if (s.default !== undefined) defaults[s.field] = s.default;
     const set = (s, val) => onChange(patchFor(d, s.field, val));
     const shown = specs.filter(s => evalWhen(s.when, d, defaults));
-    const renderField = (s) => {
-        if (s.type === 'special') return <React.Fragment key={s.field}>{renderSpecial(s, d, onChange, ctx, null)}</React.Fragment>;
-        if (s.type === 'choice') return <ChoiceChip key={s.field} chip={s} value={getAt(d, s.field)} options={resolveOptions(s, ctx)} onChange={(v) => set(s, v)} />;
-        if (s.type === 'toggle') return <ToggleChip key={s.field} chip={s} value={getAt(d, s.field) ?? s.default} onChange={(v) => set(s, v)} />;
-        if (s.type === 'number') return <NumberChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
-        return <ValueChip key={s.field} chip={{ ...s, acceptsData: false }} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
-    };
+    // Lead with the load-bearing field(s); tuck rarely-needed ones (and the
+    // optional output clean-up) behind one "Advanced" disclosure so a beginner
+    // sees a short, obvious form. `advanced` + `help` are display-only flags on
+    // the chip defs — they compile to the SAME node.data, engine untouched.
+    const shownMain = shown.filter(s => !s.advanced);
+    const shownAdv = shown.filter(s => s.advanced);
     const attached = Array.isArray(d.chips) ? d.chips : [];
+    // Gates skip node.data.chips at runtime (their output carries a _handle), so a
+    // transform there never runs — don't offer to add one; only let the user
+    // remove a stray one left from before.
+    const isGate = typeof kind === 'string' && kind.startsWith('gate.');
+    const canAddTransforms = !isGate;
+    const showTransformsBlock = canAddTransforms || attached.length > 0;
+    const mainEmpty = shownMain.length === 0; // e.g. merge / output / manual trigger
+
+    const [advOpen, setAdvOpen] = useState(false);
+    // Reset/auto-open per selected node (ChipBoard is reused across selections):
+    // open Advanced when something there is already configured so it's never hidden.
+    useEffect(() => {
+        const anyAdvSet = shownAdv.some(s => { const v = getAt(d, s.field); return v !== undefined && v !== ''; });
+        setAdvOpen(attached.length > 0 || anyAdvSet);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [node.id]);
+
+    const renderField = (s) => {
+        let el;
+        if (s.type === 'special') el = renderSpecial(s, d, onChange, ctx, null);
+        else if (s.type === 'choice') el = <ChoiceChip chip={s} value={getAt(d, s.field)} options={resolveOptions(s, ctx)} onChange={(v) => set(s, v)} />;
+        else if (s.type === 'toggle') el = <ToggleChip chip={s} value={getAt(d, s.field) ?? s.default} onChange={(v) => set(s, v)} />;
+        else if (s.type === 'number') el = <NumberChip chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
+        else el = <ValueChip chip={{ ...s, acceptsData: false }} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
+        // Tiny plain-English hint under the chip (never on special editors).
+        return (s.help && s.type !== 'special')
+            ? <div className="cf-field" key={s.field}>{el}<div className="cf-help">{s.help}</div></div>
+            : <React.Fragment key={s.field}>{el}</React.Fragment>;
+    };
+
+    const transformsBlock = showTransformsBlock ? (
+        <div className="cf-sec">
+            <div className="cf-sec__label">Clean up the output (optional)</div>
+            {attached.length > 0 && (
+                <div className="cf-tray">{attached.map((cid, i) => { const c = CHIP_LIB_BY_ID[cid]; return (
+                    <span key={i} className="cf-chip-pill" title={c ? c.desc : cid}>{c ? c.label : cid}<button className="cf-sub__x" onClick={() => onChange({ chips: attached.filter((_, j) => j !== i) })}>×</button></span>
+                ); })}</div>
+            )}
+            {canAddTransforms && <TransformAdder attached={attached} onAdd={(id) => { if (!attached.includes(id)) onChange({ chips: [...attached, id] }); }} />}
+            {canAddTransforms && attached.length === 0 && <div className="cf-hint">Optional — only if you want to tidy this step’s result first (e.g. remove extra spaces, keep the first item, or pull out the links).</div>}
+        </div>
+    ) : null;
+
+    const hasAdvanced = !mainEmpty && (shownAdv.length > 0 || showTransformsBlock);
+
     return (
         <div className="cf-board">
-            <div className="cf-sec" style={{ gap: 8 }}>{shown.map(renderField)}</div>
-            <div className="cf-sec">
-                <div className="cf-sec__label">Transforms</div>
-                {attached.length > 0 && (
-                    <div className="cf-tray">{attached.map((cid, i) => { const c = CHIP_LIB_BY_ID[cid]; return (
-                        <span key={i} className="cf-chip-pill" title={c ? c.desc : cid}>{c ? c.label : cid}<button className="cf-sub__x" onClick={() => onChange({ chips: attached.filter((_, j) => j !== i) })}>×</button></span>
-                    ); })}</div>
-                )}
-                <TransformAdder attached={attached} onAdd={(id) => { if (!attached.includes(id)) onChange({ chips: [...attached, id] }); }} />
-                {attached.length === 0 && <div className="cf-hint">Optional — reshape this node’s output (parse JSON, pick a field, map a list…).</div>}
-            </div>
+            {/* If a node has no main field (merge/output/manual), show its Advanced
+                fields inline rather than an empty box + lone disclosure. */}
+            <div className="cf-sec" style={{ gap: 8 }}>{(mainEmpty ? shownAdv : shownMain).map(renderField)}</div>
+            {mainEmpty && transformsBlock}
+            {hasAdvanced && (
+                <div className="cf-sec">
+                    <button type="button" className="cf-advhead" onClick={() => setAdvOpen(o => !o)}>
+                        <span aria-hidden>{advOpen ? '▾' : '▸'}</span> Advanced
+                    </button>
+                    {advOpen && (<>
+                        {shownAdv.length > 0 && <div className="cf-sec" style={{ gap: 8 }}>{shownAdv.map(renderField)}</div>}
+                        {transformsBlock}
+                    </>)}
+                </div>
+            )}
         </div>
     );
 }

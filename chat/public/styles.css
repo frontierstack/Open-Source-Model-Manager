@@ -6667,6 +6667,14 @@ svg.react-flow__connectionline {
 .cf-datachip__s { color: var(--ink-3); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; }
 .cf-hint { font-size: 10.5px; color: var(--ink-3); line-height: 1.45; }
 
+/* A field + its tiny plain-English help line (node-form simplification). */
+.cf-field { display: flex; flex-direction: column; gap: 3px; }
+.cf-help { font-size: 10px; color: var(--ink-3); line-height: 1.4; margin: 1px 2px 0; }
+/* Collapsible "Advanced" disclosure header inside a node's settings. */
+.cf-advhead { display: flex; align-items: center; gap: 6px; background: transparent; border: none; cursor: pointer; padding: 2px 0; font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--ink-3); }
+.cf-advhead:hover { color: var(--ink-2); }
+.cf-advhead > span { font-size: 9px; }
+
 /* A node on the canvas accepting a dropped data chip. */
 .auto-node.is-chip-target { outline: 2px dashed var(--accent); outline-offset: 3px; }
 
