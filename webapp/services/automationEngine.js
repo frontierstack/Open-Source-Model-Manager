@@ -451,6 +451,11 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 temperature: data.temperature != null ? Number(data.temperature) : undefined,
                 maxTokens: data.maxTokens != null ? Number(data.maxTokens) : undefined,
                 userId: ctx.userId,
+                // Suppress chain-of-thought by default: a model step's output is the
+                // ANSWER that flows downstream, and reasoning just adds latency (and
+                // can truncate the answer at small max_tokens). Opt back in per node
+                // with data.enableThinking:true for an analytical step that benefits.
+                disableThinking: data.enableThinking ? false : true,
             });
             // The model's response IS the node's output, so it flows cleanly to the
             // next node (and the Output box defaults to forwarding it as-is). The
@@ -849,6 +854,9 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                                 temperature: data.temperature != null ? Number(data.temperature) : undefined,
                                 maxTokens: data.maxTokens != null ? Number(data.maxTokens) : undefined,
                                 userId: ctx.userId,
+                                // Thinking off per item by default (see model node); opt back
+                                // in with data.enableThinking:true.
+                                disableThinking: data.enableThinking ? false : true,
                             });
                             results[i] = text != null ? String(text) : '';
                         } else {
