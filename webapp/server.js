@@ -8274,7 +8274,7 @@ async function judgeGoalAchieved(goalPrompt, runSummary, model, dedupVerified = 
         { role: 'system', content: 'You verify whether an automation run achieved the user\'s goal. Reply with ONLY a JSON object: {"achieved": true|false, "problems": "<what is missing or wrong; empty if achieved>", "fix": "<one concrete change to the workflow; empty if achieved>"}. Judge the END RESULT, not intentions.' + dedupNote },
         { role: 'user', content: `User's goal for the automation:\n${String(goalPrompt).slice(0, 1200)}\n\nWhat the run produced (per node, in order):\n${runSummary}\n\nDid the run ACHIEVE the goal? Require: real data flowed end-to-end (not placeholders, empties, or "no content" apologies); the FINAL artifact matches the request (if a PDF/report/file was asked for, an artifact was actually generated with real content; if charts/graphs were asked for, a chart/render step ran; if a summary/notification was asked for, it is substantive); and any "only new items / only when changed" requirement is implemented with a db_store key or track_changes node.\n\nIMPORTANT — judge the WIRING, not the luck of this run: a run that correctly produces NOTHING because there is no new/changed/matching data yet is SUCCESSFUL, not a failure. Specifically:\n- The FIRST run of a change monitor (track_changes returns changed=false / firstSeen — it stores a baseline) and a dedup re-run where nothing is new (db_store .new is empty, so a downstream gate correctly skips the notification) are CORRECT behavior.\n- For a workflow started by an EXTERNAL message/webhook trigger (telegram / slack / webhook), this TEST run uses PLACEHOLDER/empty input — so input-dependent gates (e.g. checking the message text for a keyword) will naturally NOT match and the run may take a default/no-op branch. That is EXPECTED, not a defect. Judge whether the gates REFERENCE the trigger input correctly (e.g. {{input.text}}) and each branch leads to a sensible action — NOT whether a particular branch fired this run.\nDo NOT judge whether cross-run dedup / "only new" / "only changed" actually works — that is verified SEPARATELY by re-running the workflow. In particular, a FRESH run that stores ALL items with 0 skipped/duplicates is CORRECT (nothing has been seen yet) — never call that a dedup failure. Treat the "only new" requirement as satisfied as long as the graph HAS the right structure for it: a db_store with a key (or a track_changes node) feeding a gate that routes the new/changed data onward. Judge only what THIS run shows: did real content flow (not placeholders/errors), and was the requested final output (PDF/report/file/chart/message) actually produced this run.\nMark achieved=true whenever real content flowed and the requested artifact was produced (or correctly skipped on a no-new/no-match run). Only mark achieved=false for a real wiring/logic defect (missing PDF/chart step, broken field paths, NO db_store-key/track_changes at all for an "only new" requirement, a gate that can NEVER be true, empty/error data where there should be content). Ignore missing credentials/tokens and unreachable external sites. Respond with ONLY the JSON object.` },
     ];
-    const text = await runModelCompletion({ messages, model, temperature: 0, maxTokens: 500 });
+    const text = await runModelCompletion({ messages, model, temperature: 0, maxTokens: 500, disableThinking: true });
     let raw = String(text || '').trim();
     const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
     const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
@@ -8335,11 +8335,25 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         }
         return L.join('\n');
     };
+    // A webhook/message-triggered workflow whose steps read {{input...}} has NO real
+    // user input during a TEST run. Feed it a representative sample so input-dependent
+    // nodes (fetch_url {{input.url}}, a keyword gate on {{input.text}}, …) actually
+    // execute end-to-end and can be judged fairly, instead of failing on empty input.
+    const triggerType = ((wfObj.nodes || []).find(n => typeof n.type === 'string' && n.type.startsWith('trigger.')) || {}).type || '';
+    const inputDriven = /^trigger\.(webhook|telegram|slack|manual)$/.test(triggerType)
+        && /\{\{\s*input\b/.test(JSON.stringify(wfObj.nodes || []));
+    const testInput = inputDriven
+        ? { url: 'https://example.com', text: 'test message', message: 'test message', body: 'test', query: 'test', content: 'test', chat: { id: '0' }, user: 'tester', from: { id: '0' } }
+        : {};
+    // Missing-input errors that slip through anyway are "needs live input", not a defect.
+    const isInputMissingError = (s) => /\b(is required|are required|missing)\b/i.test(String(s || ''))
+        && /\b(url|input|content|value|text|query|message|body)\b/i.test(String(s || ''));
+
     const runOnce = async () => {
         try {
             // Mirror test-run events to the user's SSE stream so the editor
             // animates each pass on the board when the workflow is open (Edit case).
-            const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: (evt) => { try { mirrorAutomationEvent(req.userId, evt); } catch (_) {} } });
+            const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: testInput, onEvent: (evt) => { try { mirrorAutomationEvent(req.userId, evt); } catch (_) {} } });
             let rec = null; try { rec = await workflowRunStore.getRun(req.userId, runId); } catch (_) {}
             return { outcome, rec };
         } catch (e) { return { outcome: { status: 'failed', error: e.message }, rec: null }; }
@@ -8505,9 +8519,18 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         const badIds = new Set((assess.issues || []).map(i => i.nodeId).filter(Boolean));
         buildLog.push(`Pass ${pass}: ${assess.ok ? 'data is flowing' : 'issues — ' + issuesLine}`);
 
+        // "Needs live input" — an input-driven workflow whose only high-severity
+        // issues are missing-input errors during the no-input test run. Treat like
+        // config: it builds correctly and runs when triggered with real data.
+        const highIssues = (assess.issues || []).filter(i => i.severity === 'high');
+        const inputNeeded = inputDriven && !assess.ok && highIssues.length > 0
+            && highIssues.every(i => isInputMissingError(i.detail));
+
         // Stop early when healthy, or when the only thing wrong is missing config.
-        if (configError) {
-            buildLog.push('That failure is just missing configuration (e.g. a token / unreachable site) — fill it in and it will run.');
+        if (configError || inputNeeded) {
+            buildLog.push(inputNeeded
+                ? 'This workflow needs live input from its trigger (e.g. the webhook request body or the incoming message). It builds correctly and will run when triggered with real data.'
+                : 'That failure is just missing configuration (e.g. a token / unreachable site) — fill it in and it will run.');
             configStop = true;
             break;
         }
@@ -8527,7 +8550,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
             { role: 'user', content: `This workflow was just run and did not yet succeed. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args, or a missing step needed to meet the goal). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.${goalPrompt ? `\n\nThe user's ORIGINAL goal (the run must actually achieve this):\n${String(goalPrompt).slice(0, 800)}` : ''}${goalFix ? `\n\nGoal not met — required change: ${goalFix}` : ''}\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify(compactedWf)}${repairKeepNote}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
-            const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000 });
+            const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000, disableThinking: true });
             let raw = String(text || '').trim();
             const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
             const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
@@ -8627,6 +8650,43 @@ function parseBuilderSpec(raw) {
     } catch (_) { return null; }
 }
 
+// Extract a builder JSON object from a model's raw text the same way the build /
+// edit endpoints do (strip a ``` fence, then take the outermost { … }).
+function extractBuilderJson(text) {
+    let raw = String(text || '').trim();
+    if (!raw) return '';
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) raw = fence[1].trim();
+    const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
+    if (lo !== -1 && hi !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+    return raw;
+}
+
+// Generate a workflow spec from builder messages, robustly. Thinking is suppressed
+// (see requestModelCompletion) so a reasoning model can't spend the token budget on
+// chain-of-thought and truncate the JSON — the root cause of intermittent "no
+// recognizable nodes". We parse the CONTENT ONLY (never the reasoning trace, which
+// is not JSON) and retry a couple of times because generation is stochastic. With
+// thinking off a build emits ~150-400 tokens, so the budget is never the limit.
+async function generateBuilderSpec(messages, model, maxTokens = 8000) {
+    let lastReason = 'no output';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        let res;
+        try { res = await requestModelCompletion({ messages, model, temperature: 0.2, maxTokens, disableThinking: true }); }
+        catch (e) { lastReason = e.message; continue; }
+        const raw = extractBuilderJson(res.content);
+        if (!raw) { lastReason = `empty content (finish_reason=${res.finishReason})`; continue; }
+        const spec = parseBuilderSpec(raw);
+        if (spec && typeof spec === 'object' && Array.isArray(spec.nodes) && spec.nodes.length) {
+            if (attempt > 1) console.log(`[builder] spec generated on attempt ${attempt}`);
+            return spec;
+        }
+        lastReason = res.finishReason === 'length' ? 'output truncated' : 'no parseable workflow nodes';
+    }
+    console.warn(`[builder] spec generation failed after 3 attempts: ${lastReason}`);
+    return null;
+}
+
 // Turn a structured workflow diff into plain-English change-log lines. Used both
 // as the deterministic fallback summary and as context for the model summarizer.
 function diffToChangeLines(diff) {
@@ -8672,7 +8732,7 @@ async function summarizeAutomation({ isBuild, prompt, wf, diff, model }) {
         // clear the timer on the common (model-wins) path so it doesn't dangle.
         let summaryTimer;
         const text = await Promise.race([
-            runModelCompletion({ messages, model, temperature: 0.3, maxTokens: 160 }),
+            runModelCompletion({ messages, model, temperature: 0.3, maxTokens: 160, disableThinking: true }),
             new Promise((_, reject) => { summaryTimer = setTimeout(() => reject(new Error('summary timeout')), 10000); }),
         ]).finally(() => clearTimeout(summaryTimer));
         let s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^```[\s\S]*?\n?|```\s*$/g, '').trim();
@@ -8698,15 +8758,9 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         ];
         // No compaction here (unlike edit/repair): build generates a workflow from
         // scratch and never echoes an existing one back, so there's nothing large
-        // to round-trip. The wider maxTokens just gives a complex build more room.
-        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 6000 });
-        // Robustly extract the JSON object from the model output.
-        let raw = String(text || '').trim();
-        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        if (fence) raw = fence[1].trim();
-        const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
-        if (lo !== -1 && hi !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-        const spec = parseBuilderSpec(raw);
+        // to round-trip. generateBuilderSpec suppresses thinking + retries so the
+        // reasoning trace can't truncate the JSON (the old "no recognizable nodes").
+        const spec = await generateBuilderSpec(messages, model, 8000);
         if (!spec || typeof spec !== 'object') {
             return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your request.' });
         }
@@ -8781,13 +8835,19 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
             { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(compacted)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape).\n\nCRITICAL — node id discipline (this keeps the change log readable and the wiring correct):\n- KEEP every retained node's "id" BYTE-FOR-BYTE. Do NOT renumber: if you insert a node between n2 and n3, the existing n3, n4 … keep their ids — do NOT shift them up.\n- Give each genuinely NEW node a brand-new unused id (e.g. n7, n8). Never reuse or reassign an existing id to a different node.\n- Update every edge to reference these stable ids. Renumbering corrupts the diff (it reads as a cascade of phantom "type changed" entries) and can mis-wire the graph.\n- Preserve nodes the change does not touch exactly as they are.${keepNote}\n\nRespond with ONLY the JSON.` },
         ];
-        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000 });
-        let raw = String(text || '').trim();
-        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        if (fence) raw = fence[1].trim();
-        const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
-        if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-        const spec = parseBuilderSpec(raw);
+        // Thinking off + content-only + retry: a reasoning model would otherwise
+        // spend the budget on chain-of-thought and truncate the echoed-back
+        // workflow JSON (the bigger the workflow, the likelier). Parse content only.
+        let spec = null;
+        for (let attempt = 1; attempt <= 3 && !spec; attempt++) {
+            let res2;
+            try { res2 = await requestModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000, disableThinking: true }); }
+            catch (_) { continue; }
+            const raw = extractBuilderJson(res2.content);
+            if (!raw) continue;
+            const parsed = parseBuilderSpec(raw);
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.nodes) && parsed.nodes.length) spec = parsed;
+        }
         if (!spec || typeof spec !== 'object') {
             return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your change.' });
         }
@@ -9374,12 +9434,13 @@ app.post('/api/node-types/build', requireAuth, async (req, res) => {
         const baseMsg = (base && typeof base === 'object')
             ? `Here is an existing node-type as JSON:\n${JSON.stringify({ name: base.name, category: base.category, baseType: base.baseType, description: base.description, defaults: base.defaults, fields: base.fields, condition: base.condition }, null, 2)}\n\nApply this change and return the FULL updated node-type JSON:\n${String(prompt).trim()}`
             : `Create a node-type for:\n${String(prompt).trim()}`;
-        // /no_think suppresses reasoning on Qwen-family models (ignored as plain
-        // text elsewhere) so we get clean JSON; extraction below is robust anyway.
-        const userMsg = `/no_think\n${baseMsg}\n\nRespond with ONLY the JSON object.`;
+        // disableThinking suppresses the reasoning trace on Qwen-family models via
+        // chat_template_kwargs (the /no_think prefix is ignored by this MTP model)
+        // so the budget isn't burned on thinking and the JSON isn't truncated.
+        const userMsg = `${baseMsg}\n\nRespond with ONLY the JSON object.`;
         const text = await runModelCompletion({
             messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
-            model, temperature: 0.2, maxTokens: 3000,
+            model, temperature: 0.2, maxTokens: 3000, disableThinking: true,
         });
         const spec = extractNodeTypeJson(text);
         if (!spec) return res.status(422).json({ error: 'The model did not return a usable node-type. Try rephrasing.' });
@@ -9541,7 +9602,7 @@ app.post('/api/chips/build', requireAuth, async (req, res) => {
             { role: 'system', content: sys },
             { role: 'user', content: `Build a chip for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
         ];
-        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 800 });
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 800, disableThinking: true });
         let raw = String(text || '').trim();
         const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
         const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
@@ -20011,7 +20072,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 // from /api/complete (sglang/llama.cpp reject input+max_tokens > contextSize).
 //   opts: { messages:[{role,content}], model?, temperature?, maxTokens?, userId? }
 //   returns: the assistant text (string)
-async function runModelCompletion({ messages, model, temperature, maxTokens } = {}) {
+async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking } = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error('messages[] is required');
     }
@@ -20050,15 +20111,43 @@ async function runModelCompletion({ messages, model, temperature, maxTokens } = 
         max_tokens: safeMaxTokens,
         stop: DEFAULT_STOP_STRINGS
     };
+    // Suppress chain-of-thought for structured/utility calls (workflow build /
+    // edit / repair, summaries, classifiers). On a reasoning model the thinking
+    // trace otherwise consumes the max_tokens budget BEFORE the answer (content)
+    // is emitted → finish_reason "length", EMPTY content, and the caller falls
+    // back to reasoning prose → the intermittent "no recognizable nodes" build
+    // failures + garbage summaries. `chat_template_kwargs.enable_thinking=false`
+    // is the Qwen3 lever (the only one this MTP model honors — /no_think and
+    // reasoning_effort are ignored); harmless on templates that don't read it.
+    if (disableThinking) requestBody.chat_template_kwargs = { ...(requestBody.chat_template_kwargs || {}), enable_thinking: false };
 
-    const response = await axios.post(
-        `http://${targetHost}:${targetPort}/v1/chat/completions`,
-        requestBody,
-        { timeout: 300000 }
-    );
+    const post = (body) => axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, body, { timeout: 300000 });
+    let response;
+    try {
+        response = await post(requestBody);
+    } catch (err) {
+        // A backend that rejects the thinking-disable hint must not break the call.
+        if (disableThinking && err && err.response && err.response.status >= 400 && err.response.status < 500) {
+            const { chat_template_kwargs, ...rest } = requestBody;
+            response = await post(rest);
+        } else throw err;
+    }
     const choice = response.data && response.data.choices && response.data.choices[0];
     const msg = choice && choice.message;
-    return (msg && (msg.content || msg.reasoning_content)) || '';
+    return {
+        content: (msg && msg.content) || '',
+        reasoningContent: (msg && msg.reasoning_content) || '',
+        finishReason: (choice && choice.finish_reason) || null,
+    };
+}
+
+// String-returning wrapper — back-compat for every existing caller. Falls back to
+// the reasoning trace only when there is no content (some models put the whole
+// answer there); structured callers that must NOT accept reasoning prose use
+// requestModelCompletion + content directly (see generateBuilderSpec).
+async function runModelCompletion(opts = {}) {
+    const r = await requestModelCompletion(opts);
+    return r.content || r.reasoningContent || '';
 }
 
 // Simplified completion endpoint

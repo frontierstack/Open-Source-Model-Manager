@@ -1016,6 +1016,19 @@ async function runWorkflow(workflow, opts = {}) {
     const scope = { input, vars: {}, nodes: {}, last: input };
     const timeline = [];
 
+    // Serialize stateful SQLite nodes (db_store / track_changes). Two of them
+    // writing the SAME per-workflow SQLite file concurrently within one parallel
+    // wave (e.g. "watch these N pages" → N track_changes side by side) trips
+    // SQLITE_BUSY / "disk I/O error". A tiny promise-chain mutex runs them
+    // one-at-a-time without serializing the rest of the wave.
+    const STATEFUL_NODE_TYPES = new Set(['db_store', 'track_changes']);
+    let statefulTail = Promise.resolve();
+    const withStatefulLock = (fn) => {
+        const run = statefulTail.then(fn, fn);
+        statefulTail = run.then(() => {}, () => {}); // never let a failure poison the chain
+        return run;
+    };
+
     const isResolved = (e) => edgeState.get(edgeKey(e)) !== 'pending';
     const isActive = (e) => edgeState.get(edgeKey(e)) === 'active';
 
@@ -1105,7 +1118,9 @@ async function runWorkflow(workflow, opts = {}) {
                     .map(e => scope.nodes[e.source])
                     .filter(v => v !== undefined);
                 try {
-                    const output = await runNode(node, scope, deps, ctx, activeInputs);
+                    const output = STATEFUL_NODE_TYPES.has(node.type)
+                        ? await withStatefulLock(() => runNode(node, scope, deps, ctx, activeInputs))
+                        : await runNode(node, scope, deps, ctx, activeInputs);
                     return { node, entry, output, error: null };
                 } catch (err) {
                     return { node, entry, output: undefined, error: err };
@@ -1505,6 +1520,7 @@ function buildBuilderSystemPrompt() {
         '- A REPORT WITH GRAPHS/CHARTS IN A PDF: get the numbers (fetch_timeseries for stock/market data — args.symbol/period/interval, rows come back in .data; or http_request+parse_json for a JSON API), then chart_plot { "args": { "type":"line", "x":"{{nodes.<dataId>.data.*.date}}", "y":"{{nodes.<dataId>.data.*.close}}", "title":"..." } } to render a PNG into the workspace, then create_pdf whose markdown "content" embeds that image with an image tag: ![Chart]({{nodes.<chartId>.file}}) alongside the written analysis. create_pdf renders ![alt](path) images from /workspace (and /workspace/artifacts). Do NOT use render_chart for a PDF (it only makes an on-screen spec, not a file). Wire: fetch_timeseries → chart_plot → model (write the analysis) → create_pdf (embed ![Chart]({{nodes.<chartId>.file}}) + the analysis).',
         '- MULTI-DAY/MULTI-TIME SCHEDULES (e.g. "Mon and Wed at 9am AND Fri at 4:30pm"): use trigger.schedule with a "crons" ARRAY of 5-field cron lines, one per (days, time) group. Example: { "crons": ["0 9 * * 1,3", "30 16 * * 5"] }. NEVER set "cron" (singular) to an array — use "crons". For one-off future dates use { "runAt": ["2026-12-25T09:00:00Z", ...] } (ISO UTC). intervalMs and cron(s)/runAt are mutually exclusive; pick ONE form per schedule node and OMIT the others entirely — when you set crons/cron/runAt do NOT also include intervalMs (leaving a stray intervalMs is ignored at run time but is a footgun and clutters the change log).',
         '- COLLECTING/MONITORING DATA "over/throughout an hour": a single run is one point in time and cannot watch for an hour by itself. fetch_timeseries is DAILY/weekly/monthly only (no intraday), so for live intraday monitoring use a Schedule trigger at a short interval (e.g. every 5 minutes) that fetches the current value (http_request to the quote/price endpoint) and appends it to db_store; then a db_query (newest-N) feeds the chart/report from the rows collected across runs. If the user just wants a price trend, fetch_timeseries daily history over a period (e.g. 1mo) charted is the simple path.',
+        '- CREDENTIALS / SECRETS — LEAVE THEM BLANK: never invent or fill placeholder values for secret/account fields (botToken, chatId, channel, apiKey/api_key, webhookUrl, password, token, secret). Set each to an empty string "" or omit it entirely — the user fills these in the UI afterward. A placeholder like "<BOT_TOKEN>", "YOUR_TOKEN_HERE", or "123456:ABC-DEF" is WORSE than blank: the engine treats it as a real value, the test run actually calls the API with it, and it fails (e.g. Telegram HTTP 404). A blank field is correctly recognized as "needs configuration" and never causes a false failure. (Non-secret targeting fields the user gave you in the request — a chatId/channel they explicitly stated — may be filled; only invent NOTHING.)',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
