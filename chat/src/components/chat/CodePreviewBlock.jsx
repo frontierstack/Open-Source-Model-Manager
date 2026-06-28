@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { useChatStore } from '../../stores/useChatStore';
+import { injectSandboxPreview } from '../../utils/sandboxPreview';
 
 /**
  * CodePreviewBlock — wraps CodeBlock with a Run button for supported
@@ -365,8 +366,9 @@ function HtmlRunBlock({ code, displayCode, language, displayLang, defaultScripts
     // requests as the user — a full sandbox escape. Without same-origin the
     // frame runs at an opaque origin: event handlers, canvas, timers, fetch
     // to CORS-enabled hosts all work, but it cannot touch the parent app.
-    // (localStorage/sessionStorage throw under an opaque origin — an
-    // acceptable trade for untrusted code the user asked to sandbox.)
+    // (localStorage/sessionStorage throw under an opaque origin; we inject an
+    // in-memory shim via injectSandboxPreview so storage-using snippets run
+    // instead of crashing — see utils/sandboxPreview.js.)
     const sandboxAttr = allowScripts
         ? 'allow-scripts allow-pointer-lock'
         : '';
@@ -414,7 +416,11 @@ function HtmlRunBlock({ code, displayCode, language, displayLang, defaultScripts
                         key={`${allowScripts}-${iframeKey}`}  /* reload on toggle or explicit Reload */
                         title={`${label} preview`}
                         sandbox={sandboxAttr}
-                        srcDoc={code}
+                        /* Inject an in-memory localStorage/sessionStorage shim:
+                           the opaque-origin sandbox (no allow-same-origin) makes
+                           the real ones throw a SecurityError, crashing snippets
+                           that save state. The shim keeps the sandbox intact. */
+                        srcDoc={injectSandboxPreview(code)}
                         className="w-full h-[26rem] border-0"
                     />
                 </div>

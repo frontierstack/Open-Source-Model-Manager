@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Eye, Code, RefreshCw, Download, Share2, FileText, Maximize2, Minimize2, Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
+import { injectSandboxPreview } from '../../utils/sandboxPreview';
 
 /**
  * ArtifactsPanel — right-rail panel with Preview / Source / Diff tabs.
@@ -642,22 +643,41 @@ function FilePreviewBody({ active, fileSource }) {
     }
     const lang = active.language;
     if (lang === 'html') {
+        // Sandboxed at an OPAQUE origin: deliberately NO allow-same-origin. The
+        // artifact is served from the app's own origin, so allow-scripts +
+        // allow-same-origin together would let model-generated code reach the
+        // parent app, its cookies and storage (the browser even warns it "can
+        // escape its sandboxing"). With an opaque origin the page's scripts run
+        // (button handlers, canvas, timers) but cannot touch the app — the real
+        // security boundary that makes the relaxed artifact CSP safe.
+        // `allow-downloads` lets Ctrl+S / right-click-save work (Chrome blocks
+        // it otherwise); `allow-popups-to-escape-sandbox` opens links externally
+        // with their own origin (Leaflet/Mapbox tiles).
+        const htmlSandbox = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+        // Prefer rendering the FETCHED text via srcDoc so we can inject an
+        // in-memory localStorage/sessionStorage shim (the opaque origin makes
+        // the real ones throw a SecurityError, crashing snippets that save
+        // state — e.g. a game's high score) plus a <base href> so the page's
+        // relative URLs still resolve against where it was served. The fetch is
+        // capped at 500KB; if the text was truncated (or hasn't loaded yet) we
+        // fall back to src=url so the full artifact still renders.
+        const htmlText = fileSource && !fileSource.loading && !fileSource.error ? fileSource.text : null;
+        const usableText = (htmlText != null && htmlText.length < 500_000) ? htmlText : null;
+        if (usableText != null) {
+            return (
+                <iframe
+                    title={active.title || 'preview'}
+                    sandbox={htmlSandbox}
+                    srcDoc={injectSandboxPreview(usableText, { baseHref: active.url })}
+                    style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
+                />
+            );
+        }
         return (
             <iframe
                 src={active.url}
                 title={active.title || 'preview'}
-                // Sandboxed at an OPAQUE origin: deliberately NO allow-same-
-                // origin. The artifact is served from the app's own origin, so
-                // allow-scripts + allow-same-origin together would let model-
-                // generated code reach the parent app, its cookies and storage
-                // (the browser even warns it "can escape its sandboxing"). With
-                // an opaque origin the page's scripts run (button handlers,
-                // canvas, timers) but cannot touch the app — the real security
-                // boundary that makes the relaxed artifact CSP safe.
-                // `allow-downloads` lets Ctrl+S / right-click-save work (Chrome
-                // blocks it otherwise); `allow-popups-to-escape-sandbox` opens
-                // links externally with their own origin (Leaflet/Mapbox tiles).
-                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+                sandbox={htmlSandbox}
                 style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
             />
         );

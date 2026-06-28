@@ -18475,6 +18475,35 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             return { messages: copy, truncated };
         };
 
+        // Helper: enforce "exactly one system message, at index 0" before a
+        // request is serialized to the backend. Several layers legitimately
+        // APPEND a system message to the tail of the array — reasoning-loop /
+        // announced-action nudges (currentMessages = [...currentMessages, sys])
+        // and the forced-synthesis instruction — for recency. Most chat
+        // templates render a mid/tail `system` turn fine, but a STRICT template
+        // (Qwen-derived and others) hard-codes
+        // `raise_exception('System message must be at the beginning.')`, and
+        // llama.cpp's tool-call parser generation renders the template with our
+        // messages → the raise surfaces as a 400 "Unable to generate parser for
+        // this template". Demoting every non-leading system turn to `user`
+        // keeps its position (so the nudge stays recent) and content intact
+        // while satisfying the guard — a backend-agnostic fix for all models,
+        // not just the one that happens to enforce it. Index-0 system is left
+        // untouched; vision/array content + tool_calls are preserved (we only
+        // rewrite the role).
+        const normalizeSystemMessages = (msgs) => {
+            if (!Array.isArray(msgs) || msgs.length < 2) return msgs;
+            let changed = false;
+            const out = msgs.map((m, i) => {
+                if (i > 0 && m && m.role === 'system') {
+                    changed = true;
+                    return { ...m, role: 'user' };
+                }
+                return m;
+            });
+            return changed ? out : msgs;
+        };
+
         // Helper: stream one request to the model and return the finish_reason.
         // roundContentStart / roundReasoningStart let the loop detector measure
         // "progress within this round" instead of cumulative fullResponse
@@ -18540,6 +18569,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             console.log(`[Chat Stream] Last-resort fit: truncated ${fitted.truncated} oversized message(s) to guarantee a usable output budget`);
                         }
                     }
+
+                    // Strict-template guard: collapse any tail/mid-array system
+                    // turn (nudges, synthesis) down to a single leading system
+                    // message so a Qwen-style "System message must be at the
+                    // beginning" template can't 400 the request. Applied to the
+                    // final array so the token estimate below matches the bytes
+                    // actually sent.
+                    sendMessages = normalizeSystemMessages(sendMessages);
 
                     // Final-pass clamp: input == messages + tool catalog. The
                     // upstream responseReserve only counts message tokens, so a
