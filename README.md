@@ -2,7 +2,7 @@
 
 > **A Production-Ready MLOps Platform for Large Language Models**
 
-Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, an autonomous AI agent system, and a [Hermes Agent](https://hermes-agent.nousresearch.com) terminal agent that talks to it over the OpenAI-compatible endpoint.
+Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, an autonomous AI agent system, and a [Pi (pi.dev)](https://pi.dev) terminal coding agent that talks to it over the OpenAI-compatible endpoint.
 
 <p align="center">
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-24.0%2B-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
@@ -10,7 +10,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
   <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.9-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="https://hermes-agent.nousresearch.com"><img src="https://img.shields.io/badge/Hermes-Nous%20Research-8b5cf6?style=flat-square" alt="Hermes Agent"></a>
+  <a href="https://pi.dev"><img src="https://img.shields.io/badge/Pi-pi.dev-8b5cf6?style=flat-square" alt="Pi (pi.dev)"></a>
 </p>
 
 ---
@@ -100,18 +100,16 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
   <em>The model decides to call <code>web_search</code>, reads the results, and follows up with <code>scrapling_fetch</code> to pull a full page — each call appears as a clickable chip below the response.</em>
 </p>
 
-### Hermes Agent — Terminal UI
+### Pi (pi.dev) — Terminal UI
 
-The terminal experience for this project is **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research), an open-source autonomous agent — we don't ship our own TUI, we wire Hermes in. Run the installer once and any model loaded in **My Models** becomes a Hermes-driven agent backed by the 130+ skills the webapp already exposes.
+The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`), a third-party minimal coding harness — we don't ship our own TUI, we wire Pi in. Install Pi once, drop in the bundled extension, and any model loaded in **My Models** becomes a Pi-driven coding agent backed by the 130+ skills the webapp already exposes.
 
-- **Native OpenAI provider** — registered via the simple custom-provider model form (`model.provider=custom` + `base_url`/`api_key`/`default`) in `~/.hermes/config.yaml` pointing at `/v1`, with `OPENAI_BASE_URL`/`OPENAI_API_KEY` written to `~/.hermes/.env` so Hermes skips its first-run setup wizard and goes straight to the agent; no code needed for the model half (Hermes speaks OpenAI natively)
-- **Skills surface as MCP tools** — the bundled MCP server at `webapp/hermes-mcp/modelserver-mcp.mjs` exposes each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) over the Model Context Protocol and proxies execution to `/api/skills/:name/execute`
-- **Hermes handles the local FS** — read/write/bash/edit/grep run on the user's host via Hermes' built-ins, not on the server's `/workspace`; a host⇆workspace bridge (auto-upload + `workspace_get`) moves files for the sandbox skills that need them
-- **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Hermes' status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
-- **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Hermes turn instead of sitting at `0/max`
-- **Shared persona/experience memory** — the `/v1` passthrough injects the account's persona and records new experience from Hermes' tool use (bearer-only keys), so web chat and Hermes share one memory
-- **Bearer-mode API key required** — Hermes uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
-- **Auto-config in Docs tab** — the install one-liner, MCP server, and `config.yaml` merge are all pre-baked with your API key + endpoint; the one-liner downloads-then-checks the HTTP status (a wrong/non-bearer/inactive key surfaces a 401 instead of silently doing nothing), and the installer also pulls Hermes' `ripgrep` + `ffmpeg` tool deps and shows sectioned progress with a spinner
+- **Pi handles the local FS** — read/write/bash/edit/grep run on the user's `$PWD` via Pi's built-ins, not on the server's `/workspace`
+- **Skills surface as Pi tools** — the bundled extension at `webapp/pi-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
+- **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Pi's status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
+- **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Pi turn instead of sitting at `0/max`
+- **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
+- **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
 
 ### Automation — Workflow Engine
 
@@ -223,24 +221,25 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 
 > Tip: drag the left-nav items to reorder them — your layout is saved per user.
 
-### Hermes Agent — terminal agent
+### Pi (pi.dev) — terminal coding agent
 
 ```bash
-# Create a bearer-mode API key (API Keys tab, with the `agents` permission),
-# then run the one-shot installer. It installs Hermes Agent if missing, drops
-# the modelserver MCP server at ~/.hermes/mcp-servers/modelserver/, and merges
-# the provider + MCP config into ~/.hermes/config.yaml — all pre-baked with your
-# key + the local /v1 endpoint (full one-liner shown in the Docs tab → "Hermes setup").
-export MODELSERVER_API_KEY="<your-bearer-key>"
-curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
-  https://localhost:3001/api/hermes/install | bash
+# Install Pi (once) — https://pi.dev
+npm install -g @earendil-works/pi-coding-agent
+
+# Open the webapp Docs tab → "Pi setup" → copy the settings.json snippet
+# (it bakes in your API key + the local /v1 endpoint), drop it at:
+#   ~/.pi/agent/settings.json
+
+# Install the bundled skill-catalog extension (one-liner shown in Docs tab —
+# pulls webapp/pi-extension/modelserver.ts to ~/.pi/agent/extensions/modelserver/)
+curl -sk https://localhost:3001/api/pi/install | bash
 
 # Run from any project directory
-hermes          # classic CLI
-hermes --tui    # modern TUI (recommended)
+pi
 ```
 
-The MCP server auto-fetches the user's enabled skills on startup and exposes each as a Hermes tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Hermes handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
+The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
 
 ### API
 
@@ -298,7 +297,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           ┌───────────────┼──────────────┼──────────────┼───────────────┐
           │               ▼              ▼              ▼               │
           │  ┌────────────────────┐ ┌──────────┐ ┌───────────────┐     │
-          │  │   Webapp  :3001   │ │Chat :3002│ │ Hermes Agent  │     │
+          │  │   Webapp  :3001   │ │Chat :3002│ │  Pi  (pi.dev) │     │
           │  │                    │ │          │ │   Terminal UI │     │
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
@@ -340,7 +339,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 
 **Automation Engine:** The visual workflow engine runs **in-process** inside the webapp — no extra service or container. It's a branch-pruning DAG executor (`webapp/services/automationEngine.js`) over a `{ nodes, edges }` graph with `{{...}}` data templating, reusing the same auth, sandboxed skills, and locally-served models. Triggers fire **manually, on a schedule** (one 5s `setInterval` tick, epoch-aligned intervals + cron), **by webhook, on a system event, or from a Telegram/Slack poll**; independent nodes at the same depth execute in parallel. Stateful nodes (`Database: Store`, `Track Changes`) keep per-workflow SQLite in a sandbox `automation-<id>` workspace for dedup/change-tracking across runs. An LLM **Build/Edit** path assembles workflows from a plain-language prompt and can **test-run and self-repair** them — running the graph, inspecting each node's output (and re-running to verify "only new/changed" logic) until the goal is met. Workflows, run history, and node types persist to `/models/.modelserver/` as JSON — no database service required.
 
-**Knowledge Base (RAG):** A resident CPU embedding engine (`webapp/services/kb_engine.py`, spawned and supervised by `webapp/services/knowledgeBaseService.js`) loads `model2vec`/`potion-retrieval-32M` once and answers semantic queries over a loopback HTTP port — no GPU, no PyTorch, no extra container. Uploaded documents are extracted and chunked in Node, embedded by the engine, and stored as per-KB SQLite (chunk text + normalized vectors) under `/models/.modelserver/knowledge-bases/`; collection metadata lives in `knowledge-bases.json`. The chat model retrieves on demand through the `search_knowledge_base` native tool, which returns only top-k snippets so context stays small regardless of library size. (Note: the `/v1/*` passthrough does not inject the server tool catalog, so KB retrieval is automatic in the webapp/chat UI but not over raw `/v1` or Hermes — Hermes gets its tools from the MCP server instead.)
+**Knowledge Base (RAG):** A resident CPU embedding engine (`webapp/services/kb_engine.py`, spawned and supervised by `webapp/services/knowledgeBaseService.js`) loads `model2vec`/`potion-retrieval-32M` once and answers semantic queries over a loopback HTTP port — no GPU, no PyTorch, no extra container. Uploaded documents are extracted and chunked in Node, embedded by the engine, and stored as per-KB SQLite (chunk text + normalized vectors) under `/models/.modelserver/knowledge-bases/`; collection metadata lives in `knowledge-bases.json`. The chat model retrieves on demand through the `search_knowledge_base` native tool, which returns only top-k snippets so context stays small regardless of library size. (Note: the `/v1/*` passthrough does not inject the server tool catalog, so KB retrieval is automatic in the webapp/chat UI but not over raw `/v1` or Pi.)
 
 ---
 
@@ -388,7 +387,7 @@ MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) | [sglang](https://github.com/sgl-project/sglang) | [HuggingFace](https://huggingface.co/) | [Hermes Agent](https://hermes-agent.nousresearch.com) — terminal agent | [Model Context Protocol](https://modelcontextprotocol.io/) | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
+[llama.cpp](https://github.com/ggerganov/llama.cpp) | [sglang](https://github.com/sgl-project/sglang) | [HuggingFace](https://huggingface.co/) | [Pi (pi.dev)](https://pi.dev) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
 
 ---
 
