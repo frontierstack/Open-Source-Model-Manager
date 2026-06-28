@@ -310,6 +310,14 @@ function timingSafeCompare(a, b) {
     return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+// Admin-controlled (Apps tab) switch: when true, the SSRF private-network block
+// below is relaxed so web tools / fetch / http_request may reach internal hosts.
+// Default false (secure). Persisted in system-settings.json; loaded at boot and
+// updated by PUT /api/system-settings. The cloud-metadata range (169.254.0.0/16)
+// stays blocked even when this is on (credential-theft floor).
+let allowInternalNetworkFlag = false;
+function allowInternalNetwork() { return allowInternalNetworkFlag; }
+
 // SSRF protection: validate URLs against private IP ranges and dangerous protocols.
 // Returns null if the URL is allowed, or a descriptive error string if it's blocked.
 const PRIVATE_URL_MSG = 'URL points to a private/internal address — blocked for safety.';
@@ -321,13 +329,20 @@ function urlBlockReason(urlString) {
         return `Only http(s) URLs are accepted; got "${proto}://" — file://, javascript:, data:, etc. are not supported. To work with local files, use read_file / read_pdf instead of a fetch tool.`;
     }
     const hostname = parsed.hostname.toLowerCase();
-    if (['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'].includes(hostname)) return PRIVATE_URL_MSG;
     const parts = hostname.split('.').map(Number);
+    // Metadata floor — ALWAYS blocked (169.254.0.0/16), even when internal access
+    // is enabled, to prevent cloud credential theft via the metadata endpoint.
+    if (parts.length === 4 && parts.every(p => !isNaN(p)) && parts[0] === 169 && parts[1] === 254) {
+        return PRIVATE_URL_MSG;
+    }
+    // Admin opted into internal access → only the metadata floor + protocol check
+    // apply; private LAN / loopback / docker-host are permitted.
+    if (allowInternalNetwork()) return null;
+    if (['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'].includes(hostname)) return PRIVATE_URL_MSG;
     if (parts.length === 4 && parts.every(p => !isNaN(p))) {
         if (parts[0] === 10) return PRIVATE_URL_MSG; // 10.0.0.0/8
         if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return PRIVATE_URL_MSG; // 172.16.0.0/12
         if (parts[0] === 192 && parts[1] === 168) return PRIVATE_URL_MSG; // 192.168.0.0/16
-        if (parts[0] === 169 && parts[1] === 254) return PRIVATE_URL_MSG; // 169.254.0.0/16 (link-local/AWS metadata)
         if (parts[0] === 0) return PRIVATE_URL_MSG; // 0.0.0.0/8
     }
     return null;
@@ -2339,6 +2354,28 @@ const SYSTEM_PROMPTS_FILE = path.join(DATA_DIR, 'system-prompts.json');
 const MODEL_CONFIGS_FILE = path.join(DATA_DIR, 'model-configs.json');
 const API_KEYS_FILE = path.join(DATA_DIR, 'api-keys.json');
 const API_KEY_USAGE_STATS_FILE = path.join(DATA_DIR, 'api-key-usage-stats.json');
+const SYSTEM_SETTINGS_FILE = path.join(DATA_DIR, 'system-settings.json'); // admin-wide toggles (e.g. allowInternalNetwork)
+
+// Load persisted system settings at boot: hydrate the in-process
+// allowInternalNetworkFlag and push it to the egress proxy so BOTH enforcement
+// points (web-tool SSRF guard + sandbox egress) honor the same admin choice.
+async function loadSystemSettings() {
+    let settings = {};
+    try {
+        settings = JSON.parse(await fs.readFile(SYSTEM_SETTINGS_FILE, 'utf8')) || {};
+    } catch (e) {
+        if (e.code !== 'ENOENT') console.warn('[system-settings] read failed, using defaults:', e.message);
+    }
+    allowInternalNetworkFlag = settings.allowInternalNetwork === true;
+    try { require('./services/egressProxy').setAllowInternal(allowInternalNetworkFlag); } catch (_) {}
+    return { allowInternalNetwork: allowInternalNetworkFlag };
+}
+
+async function saveSystemSettings() {
+    const settings = { allowInternalNetwork: allowInternalNetworkFlag };
+    await fs.writeFile(SYSTEM_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+    return settings;
+}
 const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const SKILLS_FILE = path.join(DATA_DIR, 'skills.json');
 const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
@@ -20730,6 +20767,28 @@ function getHostIp() {
 }
 
 // List all manageable apps
+// System settings (admin-wide). Currently exposes the internal-network access
+// toggle. GET is admin-only (it reveals a security posture); PUT is admin-only.
+app.get('/api/system-settings', requireAdmin, async (req, res) => {
+    res.json({ allowInternalNetwork: allowInternalNetworkFlag });
+});
+
+app.put('/api/system-settings', requireAdmin, async (req, res) => {
+    try {
+        if (typeof req.body?.allowInternalNetwork === 'boolean') {
+            allowInternalNetworkFlag = req.body.allowInternalNetwork;
+            // Push to the sandbox egress proxy so both enforcement points agree.
+            try { require('./services/egressProxy').setAllowInternal(allowInternalNetworkFlag); } catch (_) {}
+            await saveSystemSettings();
+            console.log(`[system-settings] allowInternalNetwork set to ${allowInternalNetworkFlag} by ${req.user?.username || req.userId || 'admin'}`);
+        }
+        res.json({ allowInternalNetwork: allowInternalNetworkFlag });
+    } catch (err) {
+        console.error('[system-settings] update failed:', err);
+        res.status(500).json({ error: 'Failed to update system settings' });
+    }
+});
+
 app.get('/api/apps', requireAdmin, async (req, res) => {
 
     try {
@@ -26601,6 +26660,15 @@ server.listen(PORT, async () => {
         require('./services/egressProxy').start();
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
+    }
+
+    // Hydrate admin system settings (e.g. allowInternalNetwork) and push the
+    // internal-network choice into BOTH enforcement points (done inside).
+    try {
+        const s = await loadSystemSettings();
+        if (s.allowInternalNetwork) console.warn('[Startup] allowInternalNetwork is ON — internal/private network access is permitted (metadata IP still blocked).');
+    } catch (e) {
+        console.warn('[Startup] loadSystemSettings failed:', e.message);
     }
 
     // Warm up the Knowledge Base embedding engine in the background so the

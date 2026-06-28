@@ -32,7 +32,32 @@ const dnsPromises = dns.promises;
 // services (Docker bridge IPs, host-only nets, loopback, link-local, etc).
 // Applied to every request regardless of allowlist tightness; the model
 // should never reach the host's intranet via this proxy.
+//
+// An admin can opt INTO internal access via the Apps tab toggle
+// (allowInternalNetwork). When on, the private-network block below is relaxed
+// for THIS proxy too — EXCEPT the cloud-metadata range (169.254.0.0/16), which
+// stays blocked unconditionally (credential-theft floor). Default: off.
 // ---------------------------------------------------------------------------
+
+let allowInternal = false;
+function setAllowInternal(v) { allowInternal = !!v; }
+
+// Cloud-metadata / link-local floor — 169.254.0.0/16 (and its v4-mapped v6
+// form). NEVER reachable, even when allowInternal is on.
+function isMetadataIp(addr) {
+    if (net.isIP(addr) === 4) {
+        const p = addr.split('.').map(Number);
+        return p[0] === 169 && p[1] === 254;
+    }
+    if (net.isIP(addr) === 6) {
+        const lower = addr.toLowerCase();
+        if (lower.startsWith('::ffff:')) {
+            const v4 = lower.slice(7);
+            if (net.isIP(v4) === 4) return isMetadataIp(v4);
+        }
+    }
+    return false;
+}
 
 function isPrivateOrLocalIp(addr) {
     if (!addr) return true;
@@ -81,19 +106,28 @@ function isInternalLookingHost(host) {
     return false;
 }
 
-/** Resolve `host` and return true only if every resolved address is
- *  publicly routable. Literal IPs are checked directly. Failures (DNS
- *  error, no records) deny by default. */
+/** Resolve `host` and return true only if the destination is permitted.
+ *  By default that means every resolved address must be publicly routable.
+ *  When the admin has enabled allowInternal, private/internal addresses are
+ *  permitted too — EXCEPT the metadata range (isMetadataIp), which is always
+ *  denied. Literal IPs are checked directly; DNS failures deny by default. */
 async function resolvesPublicly(host) {
     host = String(host || '').toLowerCase().trim();
     if (!host) return false;
-    if (net.isIP(host)) return !isPrivateOrLocalIp(host);
-    if (isInternalLookingHost(host)) return false;
+    if (net.isIP(host)) {
+        if (isMetadataIp(host)) return false;          // metadata floor — always blocked
+        if (allowInternal) return true;                // admin opted into internal access
+        return !isPrivateOrLocalIp(host);
+    }
+    // Single-label / reserved-TLD hosts are internal-only; permit when the
+    // admin opted in, otherwise deny.
+    if (!allowInternal && isInternalLookingHost(host)) return false;
     try {
         const addrs = await dnsPromises.lookup(host, { all: true, verbatim: true });
         if (!addrs || addrs.length === 0) return false;
         for (const a of addrs) {
-            if (isPrivateOrLocalIp(a.address)) return false;
+            if (isMetadataIp(a.address)) return false;             // metadata floor
+            if (!allowInternal && isPrivateOrLocalIp(a.address)) return false;
         }
         return true;
     } catch {
@@ -422,6 +456,7 @@ function getStats() {
 
 module.exports = {
     start,
+    setAllowInternal,       // admin toggle: relax private-network block (metadata still blocked)
     issueGrant,
     revokeGrant,
     bindGrantToIp,
