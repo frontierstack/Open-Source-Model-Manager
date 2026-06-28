@@ -241,6 +241,10 @@ pi
 
 The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
 
+> **Set the env vars before `pi`.** The extension reads `MODELSERVER_API_KEY` (a **bearer-mode** key from the API Keys tab) and `MODELSERVER_BASE_URL` at startup — without the key it skips provider + skill registration. The installer appends `MODELSERVER_BASE_URL` to your shell rc, but keep `MODELSERVER_API_KEY` exported in your shell (don't commit it).
+>
+> **Troubleshooting — `401 "Invalid or inactive Bearer token"` on the model call** (but skills still work): you have a **stale extension** from an older install. Older copies registered the provider with `apiKey: "MODELSERVER_API_KEY"` (the env-var *name*), which current Pi sends as a literal token. The shipped extension uses `apiKey: "$MODELSERVER_API_KEY"` (leading `$` = env-var reference) — **re-run `curl -sk …/api/pi/install | bash` to refresh it.** Re-running the installer after any Pi upgrade is the general fix for a stale extension.
+
 ### API
 
 OpenAI-compatible endpoints work with any OpenAI SDK client:
