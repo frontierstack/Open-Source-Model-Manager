@@ -124,6 +124,29 @@ const HOST_FIRST_OVERRIDE =
     "any output with workspace_get(workspacePath, hostPath). The /workspace and " +
     "create_file mentions below are for the web chat UI only — ignore them here.\n\n";
 
+// Server-level guidance returned in the MCP `initialize` result. Unlike a tool
+// description (read only when the model inspects that one tool), the MCP client
+// surfaces `instructions` to the model as standing context for the WHOLE server
+// — so the agent learns host-first up front instead of drifting into doing all
+// its file/code work through sandbox skills. This is the global counterpart to
+// HOST_FIRST_DOCTRINE (which is also attached to workspace_get).
+const SERVER_INSTRUCTIONS =
+    "These tools come from a model server. They fall into TWO groups, and getting " +
+    "the group right is the most important thing:\n" +
+    "1. YOUR LOCAL HOST is your primary filesystem. For ALL ordinary file and code " +
+    "work — reading, writing, editing, listing, running shell commands, git — use " +
+    "your OWN built-in tools (read, write, edit, bash) plus the fast local helpers " +
+    "this server adds: code_search (locate), read_lines (bounded read), apply_patch " +
+    "(targeted edit). The user's files live on the host (the current directory, " +
+    "/mnt/c/..., etc.). Do this work on the host; do NOT route it through the server.\n" +
+    "2. The other skills (create_pdf, html_to_pdf, transform_image, read_pdf, " +
+    "read_xlsx, query_sqlite, transcribe_audio, download_video, …) run in a SEPARATE " +
+    "server-side SANDBOX with its own filesystem (/workspace). Use them only for what " +
+    "your local tools can't do (format conversion, rendering, media, OCR). Pass real " +
+    "HOST paths to them — host files are uploaded automatically — and retrieve any " +
+    "output with workspace_get('artifacts/<name>', '<hostPath>'). Never create, list, " +
+    "or depend on /workspace files yourself; that sandbox is not the user's machine.";
+
 const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
 const apiKey = process.env.MODELSERVER_API_KEY;
 
@@ -554,7 +577,7 @@ async function main() {
     }
     const server = new Server(
         { name: "modelserver", version: "0.1.0" },
-        { capabilities: { tools: {} } }
+        { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => {
