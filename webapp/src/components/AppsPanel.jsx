@@ -235,8 +235,7 @@ function NetworkAccessCard() {
                     style={{ background: allow ? '#f59e0b' : 'var(--border-color, rgba(255,255,255,0.2))' }}
                 >
                     <span
-                        className="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform"
-                        style={{ transform: allow ? 'translateX(22px)' : 'translateX(2px)' }}
+                        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${allow ? 'translate-x-[22px]' : 'translate-x-[2px]'}`}
                     />
                 </button>
             </div>
