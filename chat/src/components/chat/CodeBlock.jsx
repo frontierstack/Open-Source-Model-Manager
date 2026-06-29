@@ -24,10 +24,9 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
     // Collapse long blocks (> 20 lines) by default — INCLUDING while the
     // content is still streaming in, so a large generated file (e.g. a whole
     // HTML game) doesn't take over the chat as it generates. The collapse
-    // toggle stays hidden during streaming (see showCollapseToggle below;
-    // local state resets on each ReactMarkdown re-parse anyway), so the block
-    // stays collapsed until the stream ends, at which point the toggle appears
-    // and the user can expand it.
+    // toggle stays available during streaming (see showCollapseToggle below)
+    // so the user can choose to expand the block and watch it generate live,
+    // then collapse it again.
     const initialCollapsed = lineCount > 20;
     const [collapsed, setCollapsed] = useState(initialCollapsed);
 
@@ -59,9 +58,12 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
 
     const normalizedLanguage = languageMap[language?.toLowerCase()] || language?.toLowerCase() || 'text';
 
-    // During streaming, hide collapse toggle (content still arriving, and local
-    // state resets on each ReactMarkdown re-parse anyway).
-    const showCollapseToggle = !isStreaming;
+    // Always show the collapse toggle — including during streaming — so the
+    // user can expand a collapsed block to watch the code generate live, then
+    // collapse it again. (The block streams within a stable markdown position,
+    // so React preserves this component's expand/collapse state across token
+    // re-parses.)
+    const showCollapseToggle = true;
 
     return (
         <div className="code-block my-4">
