@@ -21,9 +21,14 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
     // Compute line count from the raw code
     const lineCount = (code || '').split('\n').length;
 
-    // During streaming: never auto-collapse (content is still arriving).
-    // After streaming: collapse blocks longer than 20 lines.
-    const initialCollapsed = !isStreaming && lineCount > 20;
+    // Collapse long blocks (> 20 lines) by default — INCLUDING while the
+    // content is still streaming in, so a large generated file (e.g. a whole
+    // HTML game) doesn't take over the chat as it generates. The collapse
+    // toggle stays hidden during streaming (see showCollapseToggle below;
+    // local state resets on each ReactMarkdown re-parse anyway), so the block
+    // stays collapsed until the stream ends, at which point the toggle appears
+    // and the user can expand it.
+    const initialCollapsed = lineCount > 20;
     const [collapsed, setCollapsed] = useState(initialCollapsed);
 
     const handleCopy = async () => {

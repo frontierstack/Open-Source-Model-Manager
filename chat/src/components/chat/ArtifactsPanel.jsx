@@ -634,15 +634,16 @@ function FilePreviewBody({ active, fileSource }) {
         const code = active.kind === 'file' ? (fileSource?.text || '') : (active.source || '');
         return <RunnablePreview code={code} language={active.language} />;
     }
-    if (active.kind !== 'file') {
-        return (
-            <div style={{ padding: '16px 18px 40px' }}>
-                <CodeBlock code={active.source} language={active.language} isStreaming={false} />
-            </div>
-        );
-    }
     const lang = active.language;
-    if (lang === 'html') {
+    // HTML preview — render in a sandboxed iframe. This runs for BOTH a fenced
+    // ```html code block (kind='code', the markup lives inline in `source`) and
+    // a written file (kind='file', bytes fetched into fileSource). Previously a
+    // code artifact took an early `kind !== 'file'` return straight to CodeBlock
+    // below, so a generated page (e.g. the "Tower Game") showed as SOURCE in the
+    // Preview tab instead of actually rendering — only file artifacts reached
+    // this branch. The early code-artifact return now sits AFTER this, so HTML
+    // renders regardless of kind and other languages still fall through to it.
+    if (lang === 'html' || lang === 'htm') {
         // Sandboxed at an OPAQUE origin: deliberately NO allow-same-origin. The
         // artifact is served from the app's own origin, so allow-scripts +
         // allow-same-origin together would let model-generated code reach the
@@ -654,15 +655,22 @@ function FilePreviewBody({ active, fileSource }) {
         // it otherwise); `allow-popups-to-escape-sandbox` opens links externally
         // with their own origin (Leaflet/Mapbox tiles).
         const htmlSandbox = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
-        // Prefer rendering the FETCHED text via srcDoc so we can inject an
-        // in-memory localStorage/sessionStorage shim (the opaque origin makes
-        // the real ones throw a SecurityError, crashing snippets that save
-        // state — e.g. a game's high score) plus a <base href> so the page's
-        // relative URLs still resolve against where it was served. The fetch is
-        // capped at 500KB; if the text was truncated (or hasn't loaded yet) we
-        // fall back to src=url so the full artifact still renders.
-        const htmlText = fileSource && !fileSource.loading && !fileSource.error ? fileSource.text : null;
-        const usableText = (htmlText != null && htmlText.length < 500_000) ? htmlText : null;
+        // Prefer rendering the markup via srcDoc so we can inject an in-memory
+        // localStorage/sessionStorage shim (the opaque origin makes the real
+        // ones throw a SecurityError, crashing snippets that save state — e.g. a
+        // game's high score) plus a <base href> so the page's relative URLs
+        // still resolve against where it was served. Code artifacts have the
+        // text inline; file artifacts fetch it (capped at 500KB) — when a file
+        // is truncated or hasn't loaded yet we fall back to src=url so the full
+        // artifact still renders.
+        let usableText;
+        if (active.kind === 'file') {
+            const htmlText = fileSource && !fileSource.loading && !fileSource.error ? fileSource.text : null;
+            usableText = (htmlText != null && htmlText.length < 500_000) ? htmlText : null;
+        } else {
+            const src = active.source || '';
+            usableText = src.length < 500_000 ? src : null;
+        }
         if (usableText != null) {
             return (
                 <iframe
@@ -673,13 +681,25 @@ function FilePreviewBody({ active, fileSource }) {
                 />
             );
         }
+        // File artifact too large to inline (or still loading) — point the
+        // iframe straight at the served bytes.
+        if (active.kind === 'file') {
+            return (
+                <iframe
+                    src={active.url}
+                    title={active.title || 'preview'}
+                    sandbox={htmlSandbox}
+                    style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
+                />
+            );
+        }
+        // Oversized inline code artifact — fall through to the source view below.
+    }
+    if (active.kind !== 'file') {
         return (
-            <iframe
-                src={active.url}
-                title={active.title || 'preview'}
-                sandbox={htmlSandbox}
-                style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
-            />
+            <div style={{ padding: '16px 18px 40px' }}>
+                <CodeBlock code={active.source} language={active.language} isStreaming={false} />
+            </div>
         );
     }
     if (lang === 'image') {
