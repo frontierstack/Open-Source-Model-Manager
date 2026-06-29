@@ -18651,6 +18651,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // catalog has something. Empty arrays confuse some
                         // backends; omitting the key is the safer default.
                         ...(toolCatalog.length ? { tools: toolCatalog } : {}),
+                        // forceNoThink: actually disable the model's reasoning
+                        // pass on the backend for this request (not just hide it
+                        // client-side as `disableThinking` does). On a reasoning-
+                        // ON MTP model the `/no_think` prefix is ignored, so a
+                        // forced-synthesis round would otherwise spend its whole
+                        // budget thinking and emit NO content. chat_template_kwargs
+                        // .enable_thinking=false is the lever the Qwen3-MTP
+                        // template honors (same as requestModelCompletion). A
+                        // template that doesn't read it ignores the kwarg; one
+                        // that 4xxs on it is retried without (see catch below).
+                        ...(options.forceNoThink ? { chat_template_kwargs: { enable_thinking: false } } : {}),
                     };
 
                     const response = await axios({
@@ -19741,7 +19752,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // verbs ("explain", "summarize", "know", "see") that
                     // appear in real conclusions.
                     const planSubject = /\b(?:let\s+me|i['’]?ll|i\s+will|next,?\s*i['’]?ll|i\s+should(?:\s+also)?|let['’]?s)\s+/i;
-                    const planVerb = /\b(?:dig|search(?:\s+for)?|fetch|look\s+(?:up|into|at|for)|check|grab|find|examine|investigate|review|gather|pull|retrieve|explore|verify|confirm|try|do)\b/i;
+                    const planVerb = /\b(?:dig|search(?:\s+for)?|fetch|look\s+(?:up|into|at|for)|check|grab|find|examine|investigate|review|gather|pull|retrieve|explore|verify|confirm|try|do|re-?read|read|inspect|trace|parse|scan|open|view|load|study|map|locate|understand\s+the)\b/i;
                     const isShort = trimmed.length < 800;
                     if (isShort && planSubject.test(tail) && planVerb.test(tail)) {
                         abandonedResearchRetried = true;
@@ -19777,7 +19788,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const trimmed = (fullResponse || '').trim();
                     const tail = trimmed.slice(-320);
                     const intent = /\b(?:let\s+me|let['’]?s|i['’]?ll|i\s+will|i\s+can|i\s+am\s+going\s+to|i['’]?m\s+going\s+to|i['’]?m\s+gonna|here['’]?s|now\s+i['’]?ll|now\s+let['’]?s)\b/i;
-                    const actionVerb = /\b(?:writ(?:e|ing)|creat(?:e|ing)|generat(?:e|ing)|build(?:ing)?|mak(?:e|ing)|plot(?:t(?:ed|ing))?|graph(?:ing)?|chart(?:ing)?|render(?:ing)?|draw(?:ing)?|produc(?:e|ing)|comput(?:e|ing)|calculat(?:e|ing)|pars(?:e|ing)|run(?:ning)?|execut(?:e|ing)|cod(?:e|ing)|extract(?:ing)?)\b/i;
+                    const actionVerb = /\b(?:writ(?:e|ing)|creat(?:e|ing)|generat(?:e|ing)|build(?:ing)?|mak(?:e|ing)|plot(?:t(?:ed|ing))?|graph(?:ing)?|chart(?:ing)?|render(?:ing)?|draw(?:ing)?|produc(?:e|ing)|comput(?:e|ing)|calculat(?:e|ing)|pars(?:e|ing)|run(?:ning)?|execut(?:e|ing)|cod(?:e|ing)|extract(?:ing)?|fix(?:ing)?|implement(?:ing)?|updat(?:e|ing)|edit(?:ing)?|modif(?:y|ying)|rewrit(?:e|ing)|refactor(?:ing)?|appl(?:y|ying)|add(?:ing)?)\b/i;
                     const target = /\b(chart|graph|plot|figure|visuali[sz]ation|diagram|file|code|script|python|table|spreadsheet|csv|pdf|image|document)\b/i;
                     const isShort = trimmed.length < 1400;
                     if (isShort && intent.test(tail) && actionVerb.test(tail) && target.test(tail)) {
@@ -19909,7 +19920,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 512,
                                 Math.min(initialMaxTokens, contextSize - synthInputTokens - 200)
                             );
-                            await streamOneRequest(synthesisMessages, synthMaxTokens);
+                            // Actually turn OFF the model's reasoning pass for the
+                            // synthesis (not just hide it). On a reasoning-ON Qwen3-
+                            // MTP model the synthesis would otherwise spend its whole
+                            // budget thinking and emit NO content — the exact failure
+                            // behind "did a bunch of work, produced nothing". The
+                            // kwarg is honored by the Qwen template; a backend that
+                            // 4xxs on it gets one retry without (mirrors
+                            // requestModelCompletion's enable_thinking fallback).
+                            const synthNoThink = modelSupportsNoThinkPrefix(targetModel);
+                            try {
+                                await streamOneRequest(synthesisMessages, synthMaxTokens, { forceNoThink: synthNoThink });
+                            } catch (noThinkErr) {
+                                const status = noThinkErr?.response?.status;
+                                if (synthNoThink && status >= 400 && status < 500 && !fullResponse.trim()) {
+                                    console.warn('[Chat Stream] Forced-synthesis enable_thinking kwarg rejected (' + status + ') — retrying without it');
+                                    await streamOneRequest(synthesisMessages, synthMaxTokens);
+                                } else {
+                                    throw noThinkErr;
+                                }
+                            }
                         } finally {
                             toolCatalog.length = 0;
                             toolCatalog.push(...savedCatalog);
@@ -19917,12 +19947,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     } catch (synthErr) {
                         console.warn('[Chat Stream] Forced synthesis failed:', synthErr.message);
                     }
-                    // Last-resort note: only if a loop persisted AND the forced
-                    // synthesis STILL produced nothing. Mutate fullResponse
-                    // unconditionally (so a backgrounded turn persists an
-                    // explanation rather than a blank bubble); gate only the SSE.
-                    if (reasoningLoopExhausted && !fullResponse.trim()) {
-                        const soft = '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_';
+                    // Last-resort note: if the forced synthesis STILL produced
+                    // nothing (ANY trigger, not just a persisted reasoning loop).
+                    // Without this the turn persists a BLANK assistant bubble, so
+                    // a follow-up "continue" has zero prior content to build on and
+                    // the model restarts from scratch — exactly the reported
+                    // "started over with no context". Writing a note guarantees the
+                    // saved conversation always carries something. Mutate
+                    // fullResponse unconditionally (covers backgrounded turns);
+                    // gate only the SSE on clientConnected.
+                    if (!fullResponse.trim()) {
+                        const soft = reasoningLoopExhausted
+                            ? '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_'
+                            : '_[I worked through this but did not produce a final answer — I may have spent the turn researching without writing the result. Try asking again (e.g. "write the full code now"), or break the request into smaller steps.]_';
                         fullResponse += soft;
                         if (streamingConversationId) {
                             const job = activeStreamingJobs.get(streamingConversationId);
