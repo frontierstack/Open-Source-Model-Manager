@@ -19073,6 +19073,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Python to parse the log and create the chart", "I'll generate a
             // graph" — but ends the turn with NO tool_call, on round 0 too).
             let announcedActionRetried = false;
+            // Set when a round streamed tool-call deltas we could NOT dispatch —
+            // almost always a tool call whose arguments were truncated by the
+            // round's max_tokens (e.g. search_replace_file / create_file carrying
+            // a whole large file). The backend often reports finish_reason 'stop'
+            // (not 'tool_calls'/'length') in this case. Without handling it the
+            // turn breaks and saves a mid-thought prose tail — the model appears
+            // to "stop" having done nothing. Forces synthesis below.
+            let toolCallArgsTruncated = false;
             // Hoisted out of the per-round body: skills don't change mid-turn,
             // so loading and indexing them once per request avoids re-walking
             // the (potentially large) skills file on every tool round.
@@ -19330,9 +19338,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // tool_calls would silently be discarded when the outer
                 // loop breaks at the bottom.
                 if (accumulatedToolCalls.length
-                    && (finishReason === 'tool_calls' || finishReason === 'length')) {
+                    && (finishReason === 'tool_calls' || finishReason === 'length' || finishReason === 'stop')) {
+                    // Include 'stop': Qwen3-MTP on llama.cpp streams a COMPLETE
+                    // tool call and then reports finish_reason 'stop' instead of
+                    // 'tool_calls'. The old gate skipped those, so a perfectly
+                    // good tool call never ran and the turn stalled.
                     const finalizedCalls = chatTools.finalizeToolCalls(accumulatedToolCalls);
-                    if (!finalizedCalls.length) break; // no valid calls — bail
+                    if (!finalizedCalls.length) {
+                        // Tool-call deltas were present but unfinalizable — the
+                        // args were truncated mid-JSON (a too-large edit). Don't
+                        // silently save a mid-thought tail; force synthesis so the
+                        // model writes the result (e.g. the full corrected code)
+                        // from context instead of via a tool call that can't fit.
+                        toolCallArgsTruncated = true;
+                        break;
+                    }
 
                     const toolNames = finalizedCalls.map(c => c?.function?.name || c?.name).filter(Boolean).join(', ');
                     logChatActivity(`→ ${finalizedCalls.length} tool${finalizedCalls.length === 1 ? '' : 's'}${toolNames ? `: ${toolNames}` : ''} (round ${toolCallRound + 1})`);
@@ -19851,9 +19871,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 && /[:;—–]\s*$/.test(trailing.slice(-4));
             const exitedMidThought = toolCallRound > 1 && endsMidThought
                 && accumulatedToolCalls.length === 0;
-            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted) {
+            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated) {
                 if (reasoningLoopExhausted) {
                     console.warn(`[Chat Stream] Reasoning loop exhausted — forcing tools+thinking-suppressed synthesis`);
+                } else if (toolCallArgsTruncated) {
+                    console.warn(`[Chat Stream] Tool-call arguments truncated (could not finalize/dispatch) — forcing synthesis so the model writes the result directly`);
                 } else if (hitIterationCap) {
                     console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached — forcing synthesis`);
                 } else if (exitedMidThought) {
@@ -19861,11 +19883,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 } else {
                     console.warn(`[Chat Stream] Tool loop exited with empty response after ${toolCallRound} tool call(s) — forcing synthesis`);
                 }
-                // Run synthesis when the client is connected OR when a loop
-                // exhausted — the latter must still generate (into fullResponse)
-                // for a BACKGROUND turn so it persists a real answer instead of
-                // a blank bubble. res.write calls inside self-guard on clientConnected.
-                if (clientConnected || reasoningLoopExhausted) {
+                // Run synthesis when the client is connected OR when the turn
+                // must still generate into fullResponse for a BACKGROUND turn so
+                // it persists a real answer instead of a blank/partial bubble
+                // (reasoning loop, or a truncated tool call that left only a
+                // mid-thought prose tail). res.write calls self-guard on
+                // clientConnected.
+                if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated) {
                     try {
                         if (clientConnected) {
                             try {
@@ -19873,6 +19897,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     type: 'status',
                                     message: reasoningLoopExhausted
                                         ? 'Model kept over-deliberating — forcing a direct answer'
+                                        : toolCallArgsTruncated
+                                        ? 'That edit was too large to apply in one step — writing the result directly'
                                         : 'Tool call budget exhausted — synthesizing from collected results',
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
@@ -19880,7 +19906,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // For an exhausted reasoning loop, prepend /no_think (when
                         // the model honors it) so the synthesis itself can't loop
                         // again, and tell it plainly to stop deliberating.
-                        const loopSynthPrefix = (reasoningLoopExhausted && modelSupportsNoThinkPrefix(targetModel)) ? '/no_think\n' : '';
+                        const loopSynthPrefix = ((reasoningLoopExhausted || toolCallArgsTruncated) && modelSupportsNoThinkPrefix(targetModel)) ? '/no_think\n' : '';
                         const synthesisMessages = [
                             ...currentMessages,
                             {
@@ -19890,6 +19916,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                       'You kept repeating your reasoning without ever answering. Stop deliberating completely. ' +
                                       'Write the best direct answer you can RIGHT NOW using what is already in this conversation. ' +
                                       'Do not call any tools and do not think out loud — just give the answer, even if brief or partial.'
+                                    : toolCallArgsTruncated
+                                    ? loopSynthPrefix +
+                                      'Your last tool call could NOT run: its arguments were too large and got cut off mid-way. ' +
+                                      'Do NOT call any tools now. Instead, deliver the result DIRECTLY to the user in this message. ' +
+                                      'If you were editing or writing a file, output the COMPLETE updated file content in a single ' +
+                                      'fenced code block (with the correct language tag) — do not abbreviate, do not use "// ... rest ' +
+                                      'unchanged" placeholders, include the whole thing. Use the file contents already in this ' +
+                                      'conversation as your starting point and apply the changes you intended.'
                                     : hitIterationCap
                                     ? 'You have reached the maximum number of tool calls allowed for this turn. ' +
                                       'Synthesize your final answer now from the tool results already in this conversation — ' +
