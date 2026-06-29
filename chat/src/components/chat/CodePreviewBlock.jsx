@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { useChatStore } from '../../stores/useChatStore';
-import { injectSandboxPreview } from '../../utils/sandboxPreview';
 
 /**
  * CodePreviewBlock — wraps CodeBlock with a Run button for supported
@@ -23,16 +22,8 @@ const RUNNABLE_PYTHON = new Set(['python', 'py', 'python3']);
 // Java is compiled + run server-side in the same gVisor sandbox as Python
 // (javac a single file in /tmp, then run it). See POST /api/sandbox/run-code.
 const RUNNABLE_JAVA = new Set(['java']);
-const RUNNABLE_HTML = new Set(['html', 'htm']);
-// JS snippets can render interactively by wrapping them in a minimal
-// HTML host — the model's canvas/p5/three/vanilla-JS code runs inside
-// the same sandboxed iframe the HTML path uses. This is the "real
-// interactive preview" path, since pygame under gVisor is
-// fundamentally headless.
-const RUNNABLE_JS = new Set(['javascript', 'js']);
-// CSS alone renders nothing; we wrap it with a sample DOM so the
-// user sees the style applied (nav, buttons, text, form controls).
-const RUNNABLE_CSS = new Set(['css']);
+// NOTE: HTML/JS/CSS are intentionally NOT inline-runnable in the chat anymore —
+// their interactive preview is the Artifacts panel's job. See CodePreviewBlock.
 
 export default function CodePreviewBlock({ code, language = 'text', isStreaming = false }) {
     const enabled = useChatStore(s => !!s.settings?.codePreviewEnabled);
@@ -40,144 +31,20 @@ export default function CodePreviewBlock({ code, language = 'text', isStreaming 
     const lang = (language || '').toLowerCase();
     const isPython = RUNNABLE_PYTHON.has(lang);
     const isJava = RUNNABLE_JAVA.has(lang);
-    const isHtml = RUNNABLE_HTML.has(lang);
-    const isJs = RUNNABLE_JS.has(lang);
-    const isCss = RUNNABLE_CSS.has(lang);
-    const runnable = enabled && !isStreaming && (isPython || isJava || isHtml || isJs || isCss);
+    // HTML/JS/CSS are NO LONGER rendered inline in the chat. The interactive
+    // preview lives in the Artifacts panel (its Preview tab renders the page in
+    // a sandboxed iframe), so the per-block "Render" button and "allow scripts"
+    // checkbox were removed as redundant — script execution is governed by the
+    // "Live code preview" setting and the artifacts iframe sandbox. The chat
+    // just shows the code. Python/Java keep their server-side Run output, which
+    // has no equivalent inline-output surface in the chat.
+    const runnable = enabled && !isStreaming && (isPython || isJava);
 
     if (!runnable) {
         return <CodeBlock code={code} language={language} isStreaming={isStreaming} />;
     }
 
-    if (isPython || isJava) {
-        return <ServerRunBlock code={code} language={language} serverLang={isJava ? 'java' : 'python'} />;
-    }
-    if (isJs) {
-        // Wrap the JS in a minimal HTML host with a visible canvas and a
-        // console mirror. Defaults to allow-scripts (otherwise there's
-        // no point) so the snippet can handle real input events.
-        const wrapped = buildJsHost(code);
-        return (
-            <HtmlRunBlock
-                code={wrapped}             // what renders in the iframe
-                displayCode={code}         // what shows in the CodeBlock
-                language="html"
-                displayLang="javascript"
-                defaultScripts={true}
-            />
-        );
-    }
-    if (isCss) {
-        // CSS alone renders nothing. Wrap with a small sample DOM so
-        // the user sees the rules applied to real elements.
-        const wrapped = buildCssHost(code);
-        return (
-            <HtmlRunBlock
-                code={wrapped}
-                displayCode={code}
-                language="html"
-                displayLang="css"
-                defaultScripts={false}
-            />
-        );
-    }
-    // Plain HTML: default scripts ON. A live preview whose whole point is
-    // to *run* the page (calculators, interactive widgets) is useless with
-    // scripts off — the page renders but every button is dead. The feature
-    // is already opt-in (codePreviewEnabled) and runs in an opaque-origin
-    // sandbox (see sandboxAttr below), so default-on is both expected and
-    // safe. Users can still untick "allow scripts" for a static render.
-    return <HtmlRunBlock code={code} language={language} defaultScripts={true} />;
-}
-
-// Minimal scaffold around a raw JS snippet so "interactive canvas"
-// demos work without the model having to write boilerplate. Gives
-// the snippet a full-size canvas (`canvas`), a 2d context (`ctx`),
-// width/height globals, and a <pre> that mirrors console.log so
-// users can see output without opening devtools.
-// Minimal sample DOM so CSS snippets have something visible to style.
-// Includes common elements (buttons, form fields, headings, a card layout,
-// nav, table) so the user can see how their rules apply across patterns.
-function buildCssHost(userCss) {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>
-/* reset-ish defaults so the user's CSS starts from a known baseline */
-html,body{margin:0;padding:24px;font-family:system-ui,-apple-system,sans-serif;background:#fff;color:#111;}
-.sample{display:grid;gap:24px;max-width:680px;margin:0 auto;}
-.sample > section{padding:16px;border:1px solid #e5e7eb;border-radius:8px;}
-hr{border:0;border-top:1px solid #e5e7eb;margin:16px 0;}
-/* === user CSS below === */
-${userCss}
-</style></head><body>
-<main class="sample">
-  <h1>Heading 1</h1>
-  <h2>Heading 2</h2>
-  <p>Paragraph text — the quick brown fox jumps over the lazy dog. <a href="#">An inline link</a>.</p>
-  <section>
-    <h3>Buttons</h3>
-    <button>Primary</button>
-    <button class="secondary">Secondary</button>
-    <button disabled>Disabled</button>
-  </section>
-  <section>
-    <h3>Form</h3>
-    <label>Label <input type="text" placeholder="Input"></label>
-    <label><input type="checkbox"> Checkbox</label>
-    <label>Select
-      <select><option>One</option><option>Two</option></select>
-    </label>
-    <textarea placeholder="Textarea"></textarea>
-  </section>
-  <section>
-    <h3>List</h3>
-    <ul><li>Item one</li><li>Item two</li><li>Item three</li></ul>
-  </section>
-  <section>
-    <h3>Table</h3>
-    <table>
-      <thead><tr><th>Name</th><th>Value</th></tr></thead>
-      <tbody>
-        <tr><td>alpha</td><td>1</td></tr>
-        <tr><td>beta</td><td>2</td></tr>
-      </tbody>
-    </table>
-  </section>
-  <nav><a href="#">Home</a> · <a href="#">Docs</a> · <a href="#">Contact</a></nav>
-</main>
-</body></html>`;
-}
-
-function buildJsHost(userCode) {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>
-html,body{margin:0;padding:0;background:#0b0d12;color:#eee;font-family:system-ui,sans-serif;height:100%;}
-#c{display:block;margin:0 auto;background:#111;}
-#log{position:fixed;left:0;right:0;bottom:0;max-height:40%;overflow:auto;
-  margin:0;padding:6px 10px;background:rgba(0,0,0,0.6);font:12px/1.4 ui-monospace,monospace;
-  color:#bbb;white-space:pre-wrap;border-top:1px solid #333;}
-#log:empty{display:none;}
-</style></head><body>
-<canvas id="c" width="640" height="400"></canvas>
-<pre id="log"></pre>
-<script>
-(function(){
-  const canvas = document.getElementById('c');
-  const ctx = canvas.getContext('2d');
-  const width = canvas.width, height = canvas.height;
-  const logEl = document.getElementById('log');
-  const origLog = console.log.bind(console);
-  console.log = function(...args){
-    try { logEl.textContent += args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\\n'; } catch(_){}
-    origLog.apply(console, args);
-  };
-  window.addEventListener('error', e => {
-    logEl.textContent += '[error] ' + (e.error && e.error.stack ? e.error.stack : e.message) + '\\n';
-  });
-  try {
-${userCode.split('\n').map(l => '    ' + l).join('\n')}
-  } catch (e) {
-    console.log('[uncaught]', e && e.stack ? e.stack : String(e));
-  }
-})();
-</script></body></html>`;
+    return <ServerRunBlock code={code} language={language} serverLang={isJava ? 'java' : 'python'} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,88 +210,3 @@ function formatBytes(n) {
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// ---------------------------------------------------------------------------
-// HTML previewer — iframe sandboxed at an opaque origin (no allow-same-origin)
-// so model-generated code runs but cannot reach the parent app. Scripts are
-// ON by default for HTML/JS (so the preview actually runs — calculators,
-// widgets, canvas demos); CSS-only previews default scripts off (they render
-// nothing). Users can flip scripts off via the toggle for a static render.
-// ---------------------------------------------------------------------------
-function HtmlRunBlock({ code, displayCode, language, displayLang, defaultScripts = false }) {
-    const [shown, setShown] = useState(false);
-    // `defaultScripts` is true for HTML and JS snippets (they can't work
-    // without scripts), false for CSS-only previews. Either way the frame is
-    // opaque-origin sandboxed, so default-on is safe.
-    const [allowScripts, setAllowScripts] = useState(defaultScripts);
-    const [iframeKey, setIframeKey] = useState(0);
-
-    // Build the sandbox attribute dynamically. Baseline denies everything.
-    // When scripts are on we grant `allow-scripts` but DELIBERATELY NOT
-    // `allow-same-origin`: a srcDoc iframe inherits the parent's origin, so
-    // allow-scripts + allow-same-origin would let model-generated code reach
-    // window.parent, read the app's localStorage, and make authenticated
-    // requests as the user — a full sandbox escape. Without same-origin the
-    // frame runs at an opaque origin: event handlers, canvas, timers, fetch
-    // to CORS-enabled hosts all work, but it cannot touch the parent app.
-    // (localStorage/sessionStorage throw under an opaque origin; we inject an
-    // in-memory shim via injectSandboxPreview so storage-using snippets run
-    // instead of crashing — see utils/sandboxPreview.js.)
-    const sandboxAttr = allowScripts
-        ? 'allow-scripts allow-pointer-lock'
-        : '';
-
-    const label = displayLang || language;
-
-    return (
-        <div className="my-3">
-            <div className="flex items-center justify-between mb-1.5 pl-1">
-                <span className="text-[11px] text-dark-400 font-mono">
-                    {label} · iframe
-                </span>
-                <div className="flex items-center gap-3">
-                    <label className="text-[10px] text-dark-400 inline-flex items-center gap-1 cursor-pointer">
-                        <input
-                            type="checkbox"
-                            checked={allowScripts}
-                            onChange={(e) => setAllowScripts(e.target.checked)}
-                            className="accent-primary-500"
-                        />
-                        allow scripts
-                    </label>
-                    {shown && (
-                        <button
-                            onClick={() => setIframeKey(k => k + 1)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-dark-800 hover:bg-dark-700 text-dark-300 border border-white/10 transition-colors"
-                            title="Reload the iframe — useful when the snippet has some internal state you want to reset"
-                        >
-                            Reload
-                        </button>
-                    )}
-                    <button
-                        onClick={() => setShown(s => !s)}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 transition-colors"
-                    >
-                        <Play className="w-2.5 h-2.5" strokeWidth={2.5} />
-                        {shown ? 'Hide' : 'Render'}
-                    </button>
-                </div>
-            </div>
-            <CodeBlock code={displayCode || code} language={displayLang || language} isStreaming={false} />
-            {shown && (
-                <div className="mt-1.5 rounded-md overflow-hidden border border-white/10 bg-white">
-                    <iframe
-                        key={`${allowScripts}-${iframeKey}`}  /* reload on toggle or explicit Reload */
-                        title={`${label} preview`}
-                        sandbox={sandboxAttr}
-                        /* Inject an in-memory localStorage/sessionStorage shim:
-                           the opaque-origin sandbox (no allow-same-origin) makes
-                           the real ones throw a SecurityError, crashing snippets
-                           that save state. The shim keeps the sandbox intact. */
-                        srcDoc={injectSandboxPreview(code)}
-                        className="w-full h-[26rem] border-0"
-                    />
-                </div>
-            )}
-        </div>
-    );
-}

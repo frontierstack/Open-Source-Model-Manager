@@ -129,7 +129,11 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
     // corner. All geometry persists to localStorage so it survives reloads.
     const [docW, setDocW] = useState(() => {
         const v = parseInt(localStorage.getItem('artifactsPanelWidth'), 10);
-        return Number.isFinite(v) ? Math.max(320, Math.min(v, 1200)) : 420;
+        // Default roomier (640) so an HTML/app preview fits without being cut
+        // off; cap generously (up to ~92% of the viewport) so the panel can
+        // expand to fill the display when the user drags it wider.
+        const cap = Math.max(640, Math.round(window.innerWidth * 0.92));
+        return Number.isFinite(v) ? Math.max(320, Math.min(v, cap)) : 640;
     });
     const [detached, setDetached] = useState(() => localStorage.getItem('artifactsPanelDetached') === '1');
     const [winPos, setWinPos] = useState(() => {
@@ -173,7 +177,10 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
         const startW = docW;
         // Handle sits on the LEFT edge → dragging left (dx<0) widens.
         startDrag(e, (dx) => {
-            const w = Math.max(320, Math.min(startW - dx, Math.min(1200, window.innerWidth - 260)));
+            // Let the panel expand to fill the display (leave a slim 120px of
+            // chat). The old min(1200, innerWidth-260) cap kept wide app
+            // previews cut off on big screens.
+            const w = Math.max(320, Math.min(startW - dx, window.innerWidth - 120));
             setDocW(w);
         }, 'col-resize');
     };
@@ -907,9 +914,9 @@ function ArtifactList({ artifacts, activeId, onSelect }) {
                                 {isLatest && (
                                     <span style={{
                                         flexShrink: 0,
-                                        fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4,
+                                        fontSize: 8, fontWeight: 600, letterSpacing: 0.3,
                                         textTransform: 'uppercase',
-                                        padding: '1px 6px', borderRadius: 999,
+                                        padding: '0 4px', lineHeight: '13px', borderRadius: 4,
                                         background: 'var(--accent)', color: 'var(--accent-ink)',
                                     }}>
                                         Latest

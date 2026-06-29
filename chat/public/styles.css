@@ -1218,9 +1218,6 @@ body.font-size-large .markdown-content,
 .h-\[15px\]{
   height: 15px;
 }
-.h-\[26rem\]{
-  height: 26rem;
-}
 .h-\[350px\]{
   height: 350px;
 }
@@ -1635,9 +1632,6 @@ body.font-size-large .markdown-content,
 }
 .border{
   border-width: 1px;
-}
-.border-0{
-  border-width: 0px;
 }
 .border-2{
   border-width: 2px;
@@ -2141,9 +2135,6 @@ body.font-size-large .markdown-content,
 .placeholder-dark-500::placeholder{
   --tw-placeholder-opacity: 1;
   color: rgb(113 113 122 / var(--tw-placeholder-opacity, 1));
-}
-.accent-primary-500{
-  accent-color: var(--accent-primary);
 }
 .opacity-0{
   opacity: 0;
