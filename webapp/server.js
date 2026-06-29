@@ -19890,6 +19890,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // mid-thought prose tail). res.write calls self-guard on
                 // clientConnected.
                 if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated) {
+                    // Snapshot the content BEFORE synthesis so we can tell whether
+                    // the synthesis actually produced anything NEW. The pre-synth
+                    // fullResponse is just the mid-thought narration / partial tail
+                    // that triggered synthesis in the first place, so "synthesis
+                    // added nothing" must drive the soft-note fallback — gating it
+                    // on `!fullResponse.trim()` (old behavior) missed the common
+                    // case where the model left narration but no real answer.
+                    const preSynthLen = fullResponse.length;
                     try {
                         if (clientConnected) {
                             try {
@@ -19906,7 +19914,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // For an exhausted reasoning loop, prepend /no_think (when
                         // the model honors it) so the synthesis itself can't loop
                         // again, and tell it plainly to stop deliberating.
-                        const loopSynthPrefix = ((reasoningLoopExhausted || toolCallArgsTruncated) && modelSupportsNoThinkPrefix(targetModel)) ? '/no_think\n' : '';
+                        // /no_think on EVERY forced-synthesis path (not just the
+                        // loop/truncation ones): a reasoning-ON model that reached
+                        // synthesis must produce a direct answer, not think again.
+                        // Belt-and-braces with the forceNoThink kwarg below.
+                        const loopSynthPrefix = modelSupportsNoThinkPrefix(targetModel) ? '/no_think\n' : '';
                         const synthesisMessages = [
                             ...currentMessages,
                             {
@@ -19929,11 +19941,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                       'Synthesize your final answer now from the tool results already in this conversation — ' +
                                       'do not request any more tools. If some information is missing, state that clearly ' +
                                       'and summarize what you did find.'
-                                    : 'You have called several tools and now must write your actual answer. ' +
-                                      'Do not call any more tools. Respond directly to the original question using the ' +
-                                      'tool results already in this conversation. If you need more information to be ' +
-                                      'fully confident, state that clearly and summarize what you did find — but you ' +
-                                      'must write an answer now.',
+                                    : loopSynthPrefix +
+                                      'You have called several tools and now must write your actual answer — STOP planning ' +
+                                      'and DELIVER it in THIS message. Do not call any more tools and do not say "let me…". ' +
+                                      'If the task was to write or edit code or a file, output the COMPLETE result now in a ' +
+                                      'single fenced code block (correct language tag, the whole file/section, no "// ... rest ' +
+                                      'unchanged" placeholders), using the file/tool contents already in this conversation. ' +
+                                      'Otherwise answer the original question directly from the tool results. You MUST produce ' +
+                                      'the answer now.',
                             },
                         ];
                         // Suppress the tools catalog for this last round so
@@ -19950,9 +19965,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             const synthInputTokens = synthesisMessages.reduce(
                                 (sum, m) => sum + estimateTokens(m.content), 0
                             );
+                            // Allow synthesis to use real context headroom (up to
+                            // 32k) so it can emit a LARGE deliverable — a full
+                            // rewritten file. initialMaxTokens is often the client's
+                            // prose max_tokens (e.g. 8192), far too small to fit a
+                            // whole file, so the code block would truncate mid-way.
+                            const synthHeadroom = contextSize - synthInputTokens - 200;
                             const synthMaxTokens = Math.max(
                                 512,
-                                Math.min(initialMaxTokens, contextSize - synthInputTokens - 200)
+                                Math.min(Math.max(initialMaxTokens, 32768), synthHeadroom)
                             );
                             // Actually turn OFF the model's reasoning pass for the
                             // synthesis (not just hide it). On a reasoning-ON Qwen3-
@@ -19990,10 +20011,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // saved conversation always carries something. Mutate
                     // fullResponse unconditionally (covers backgrounded turns);
                     // gate only the SSE on clientConnected.
-                    if (!fullResponse.trim()) {
+                    const synthAddedContent = fullResponse.length > preSynthLen;
+                    if (!synthAddedContent) {
                         const soft = reasoningLoopExhausted
                             ? '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_'
-                            : '_[I worked through this but did not produce a final answer — I may have spent the turn researching without writing the result. Try asking again (e.g. "write the full code now"), or break the request into smaller steps.]_';
+                            : '_[I worked through this but did not produce a final answer — I may have spent the turn researching or planning without writing the result. Try asking again (e.g. "write the full updated file now"), or break the request into smaller steps.]_';
                         fullResponse += soft;
                         if (streamingConversationId) {
                             const job = activeStreamingJobs.get(streamingConversationId);
