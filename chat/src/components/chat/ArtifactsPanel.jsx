@@ -42,6 +42,9 @@ export function extractArtifacts(messages = []) {
     const artifacts = [];
     messages.forEach((msg, msgIdx) => {
         if (msg.role !== 'assistant') return;
+        // Timestamp of the message this artifact came from — used in the list
+        // to show when each was produced and to flag the most recent one.
+        const createdAt = msg.timestamp || null;
         // Fenced code blocks in prose ----------------------------------
         const content = msg.content || '';
         const fenceRegex = /```(\w+)?\s*(?:\[([^\]]+)\])?\n([\s\S]*?)```/g;
@@ -60,6 +63,7 @@ export function extractArtifacts(messages = []) {
                 language: lang,
                 source,
                 messageIdx: msgIdx,
+                createdAt,
                 kind: 'code',
             });
             blockIdx++;
@@ -83,6 +87,7 @@ export function extractArtifacts(messages = []) {
                     fileSize: typeof a.size === 'number' ? a.size : undefined,
                     fileName: a.name,
                     messageIdx: msgIdx,
+                    createdAt,
                     kind: 'file',
                 });
             });
@@ -96,6 +101,22 @@ function fmtBytes(b) {
     if (b < 1024) return `${b} B`;
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
     return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Compact "when" label for an artifact: "just now" / "5m ago" / "2h ago" for
+// recent items, falling back to an absolute date+time for older ones. Returns
+// '' when the source message had no usable timestamp.
+function fmtWhen(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const t = d.getTime();
+    if (!Number.isFinite(t)) return '';
+    const diff = Date.now() - t;
+    if (diff < 0) return 'just now';
+    if (diff < 60_000) return 'just now';
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelect, onClose }) {
@@ -428,9 +449,10 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                 </button>
                 <span style={version}>
                     {active
-                        ? (active.kind === 'file'
+                        ? ((active.kind === 'file'
                             ? `${active.language || 'file'}${active.fileSize ? ' · ' + fmtBytes(active.fileSize) : ''}`
                             : `${active.language || 'text'} · ${(active.source || '').split('\n').length} lines`)
+                            + (fmtWhen(active.createdAt) ? ` · ${fmtWhen(active.createdAt)}` : ''))
                         : ''}
                 </span>
             </div>
@@ -830,51 +852,82 @@ function EmptyState() {
 
 function ArtifactList({ artifacts, activeId, onSelect }) {
     if (!artifacts.length) return <EmptyState />;
+    // Artifacts are extracted in chronological order (messages in order, blocks
+    // within a message in order), so the LAST one is the most recent.
+    const mostRecentId = artifacts[artifacts.length - 1].id;
     return (
         <div style={{ padding: '10px 10px 30px' }}>
-            {artifacts.map(a => (
-                <button
-                    key={a.id}
-                    onClick={() => onSelect(a.id)}
-                    style={{
-                        display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                        padding: '10px 12px', marginBottom: 4,
-                        background: a.id === activeId ? 'var(--accent-soft)' : 'transparent',
-                        border: '1px solid var(--rule)',
-                        borderRadius: 8,
-                        textAlign: 'left', cursor: 'pointer',
-                        color: 'var(--ink)',
-                        transition: 'background .1s, border-color .1s',
-                    }}
-                    onMouseEnter={(e) => {
-                        if (a.id !== activeId) e.currentTarget.style.background = 'var(--surface)';
-                    }}
-                    onMouseLeave={(e) => {
-                        if (a.id !== activeId) e.currentTarget.style.background = 'transparent';
-                    }}
-                >
-                    <div style={{
-                        width: 28, height: 28, borderRadius: 6,
-                        background: a.id === activeId ? 'var(--accent)' : 'var(--bg-2)',
-                        color: a.id === activeId ? 'var(--accent-ink)' : 'var(--ink-3)',
-                        display: 'grid', placeItems: 'center',
-                        flexShrink: 0,
-                    }}>
-                        <Code style={{ width: 14, height: 14 }} strokeWidth={1.75} />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+            {artifacts.map(a => {
+                const isLatest = a.id === mostRecentId;
+                const when = fmtWhen(a.createdAt);
+                const meta = a.kind === 'file'
+                    ? `${a.language}${a.fileSize ? ' · ' + fmtBytes(a.fileSize) : ''}`
+                    : `${a.language} · ${(a.source || '').split('\n').length} lines`;
+                return (
+                    <button
+                        key={a.id}
+                        onClick={() => onSelect(a.id)}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                            padding: '10px 12px', marginBottom: 4,
+                            background: a.id === activeId ? 'var(--accent-soft)' : 'transparent',
+                            border: isLatest && a.id !== activeId
+                                ? '1px solid var(--accent)'
+                                : '1px solid var(--rule)',
+                            borderRadius: 8,
+                            textAlign: 'left', cursor: 'pointer',
+                            color: 'var(--ink)',
+                            transition: 'background .1s, border-color .1s',
+                        }}
+                        onMouseEnter={(e) => {
+                            if (a.id !== activeId) e.currentTarget.style.background = 'var(--surface)';
+                        }}
+                        onMouseLeave={(e) => {
+                            if (a.id !== activeId) e.currentTarget.style.background = 'transparent';
+                        }}
+                    >
                         <div style={{
-                            fontSize: 12.5, fontWeight: 500, color: 'var(--ink)',
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            width: 28, height: 28, borderRadius: 6,
+                            background: a.id === activeId ? 'var(--accent)' : 'var(--bg-2)',
+                            color: a.id === activeId ? 'var(--accent-ink)' : 'var(--ink-3)',
+                            display: 'grid', placeItems: 'center',
+                            flexShrink: 0,
                         }}>
-                            {a.title}
+                            <Code style={{ width: 14, height: 14 }} strokeWidth={1.75} />
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
-                            {a.language} · {a.source.split('\n').length} lines
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{
+                                    fontSize: 12.5, fontWeight: 500, color: 'var(--ink)',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    minWidth: 0,
+                                }}>
+                                    {a.title}
+                                </span>
+                                {isLatest && (
+                                    <span style={{
+                                        flexShrink: 0,
+                                        fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4,
+                                        textTransform: 'uppercase',
+                                        padding: '1px 6px', borderRadius: 999,
+                                        background: 'var(--accent)', color: 'var(--accent-ink)',
+                                    }}>
+                                        Latest
+                                    </span>
+                                )}
+                            </div>
+                            <div style={{
+                                fontSize: 11, color: 'var(--ink-3)', marginTop: 2,
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                                <span>{meta}</span>
+                                {when && <span style={{ color: 'var(--ink-4)' }}>· {when}</span>}
+                            </div>
                         </div>
-                    </div>
-                </button>
-            ))}
+                    </button>
+                );
+            })}
         </div>
     );
 }
