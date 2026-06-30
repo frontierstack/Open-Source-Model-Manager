@@ -1130,7 +1130,7 @@ function buildChatRuntimePrelude() {
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
-        `Files the user should be able to download (HTML, PDF, image, archive, dataset, generated script, etc.) MUST be written under /workspace/artifacts/ — the chat UI auto-surfaces that directory as download chips. Files written elsewhere in /workspace are NOT downloadable. After producing such a file you may also call make_downloadable to publish it.`,
+        `Files the user should be able to download (HTML, PDF, image, archive, dataset, generated script, edited source file, etc.) MUST be written under /workspace/ and surfaced with make_downloadable — the chat UI renders a download chip. When the user asks you to "output", "show", or "give me" a file you have ALREADY written or edited in /workspace this conversation, call make_downloadable with that file's path INSTEAD of reading it back and pasting its contents inline: the download is faster, always complete, and avoids the output-token limit that truncates large pasted files. Only paste a file inline when it is small or the user explicitly asks to see it in the chat. NEVER try to rewrite a large existing file by pasting its entire new contents into a single tool-call argument — that argument truncates; make small targeted edits (replace_lines / search_replace_file on one section at a time) or write chunks via create_file + append_to_file.`,
     ].join('\n');
     _preludeCache = { day, text };
     return text;
@@ -19081,6 +19081,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // turn breaks and saves a mid-thought prose tail — the model appears
             // to "stop" having done nothing. Forces synthesis below.
             let toolCallArgsTruncated = false;
+            // Per-target truncation counter. The common non-terminating turn is
+            // NOT the empty-finalize case above — it is a giant
+            // search_replace_file/create_file whose args truncate mid-JSON: the
+            // call DOES finalize+dispatch, executeToolCall returns
+            // {error:'arguments_truncated'} with a "split it up" hint, and this
+            // small model just RE-EMITS the same oversized call every round,
+            // grinding to MAX_TOOL_ITERATIONS (50) over several minutes. We count
+            // truncations per target file and, after MAX_EDIT_TRUNCATIONS for the
+            // same target, stop the loop and deliver directly (download the
+            // already-written file, else force synthesis). Env-tunable.
+            const truncatedTargetCounts = new Map();
+            let largeEditTruncationExhausted = false;
+            let largeEditTargetPath = null;
+            // Default 1: bail on the FIRST truncation of a large write. A
+            // targeted edit (replace_lines / small search_replace_file) fits the
+            // round budget and never truncates, so this only fires on the
+            // pathological whole-file/large-section rewrite — exactly the call we
+            // want to stop retrying. The on-disk file already reflects every
+            // SUCCESSFUL edit, so we deliver that immediately instead of grinding.
+            const MAX_EDIT_TRUNCATIONS = parseInt(process.env.MAX_EDIT_TRUNCATIONS || '1', 10);
             // Hoisted out of the per-round body: skills don't change mid-turn,
             // so loading and indexing them once per request avoids re-walking
             // the (potentially large) skills file on every tool round.
@@ -19620,6 +19640,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             if (toolCallHistory.length > 40) toolCallHistory.shift();
                         } catch (_) { /* */ }
                         toolResultMessages.push(resultMsg);
+                        // Bound large-edit truncation loops (see truncatedTargetCounts
+                        // above). When this dispatched call returned
+                        // {error:'arguments_truncated'}, count it per TARGET FILE.
+                        // The args are truncated JSON so JSON.parse fails — pull the
+                        // path field by regex (it is early in the object, before the
+                        // truncation point). After MAX_EDIT_TRUNCATIONS on one target,
+                        // flag exhaustion so the outer loop breaks to direct delivery.
+                        try {
+                            const wasTruncated = (typeof resultMsg.content === 'string') && resultMsg.content.includes('arguments_truncated');
+                            if (wasTruncated) {
+                                const rawA = call.function.arguments || '';
+                                const mPath = rawA.match(/"(?:filePath|path|outputPath|destPath)"\s*:\s*"([^"]+)"/);
+                                const tgt = mPath ? mPath[1] : call.function.name;
+                                const c = (truncatedTargetCounts.get(tgt) || 0) + 1;
+                                truncatedTargetCounts.set(tgt, c);
+                                console.warn(`[Chat Stream] arguments_truncated for "${tgt}" (attempt ${c}/${MAX_EDIT_TRUNCATIONS})`);
+                                if (c >= MAX_EDIT_TRUNCATIONS) {
+                                    largeEditTruncationExhausted = true;
+                                    if (mPath) largeEditTargetPath = tgt;
+                                }
+                            }
+                        } catch (_) { /* best-effort */ }
                         // Accumulate a chip record for the background-save path
                         // (mirrors the client's buildNativeChipEntries). Runs
                         // regardless of clientConnected so a turn that finishes
@@ -19731,6 +19773,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         ...toolResultMessages,
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
                     ];
+                    // Bound the truncation grind: the same target file truncated
+                    // MAX_EDIT_TRUNCATIONS times. Stop retrying the oversized call
+                    // and break to the direct-delivery / forced-synthesis block
+                    // (currentMessages above already carries the full context).
+                    if (largeEditTruncationExhausted) {
+                        console.warn(`[Chat Stream] Large-edit truncation limit hit (target "${largeEditTargetPath || '?'}") after ${toolCallRound + 1} round(s) — stopping tool loop, delivering directly`);
+                        break; // exits the while → forced-synthesis / artifact-delivery block
+                    }
                     toolCallRound++;
                     continuationCount = 0; // fresh length budget for next turn
                     continue;
@@ -19871,9 +19921,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 && /[:;—–]\s*$/.test(trailing.slice(-4));
             const exitedMidThought = toolCallRound > 1 && endsMidThought
                 && accumulatedToolCalls.length === 0;
-            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated) {
+            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted) {
                 if (reasoningLoopExhausted) {
                     console.warn(`[Chat Stream] Reasoning loop exhausted — forcing tools+thinking-suppressed synthesis`);
+                } else if (largeEditTruncationExhausted) {
+                    console.warn(`[Chat Stream] Large-edit truncation exhausted — delivering already-written file / forcing synthesis`);
                 } else if (toolCallArgsTruncated) {
                     console.warn(`[Chat Stream] Tool-call arguments truncated (could not finalize/dispatch) — forcing synthesis so the model writes the result directly`);
                 } else if (hitIterationCap) {
@@ -19889,7 +19941,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // (reasoning loop, or a truncated tool call that left only a
                 // mid-thought prose tail). res.write calls self-guard on
                 // clientConnected.
-                if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated) {
+                if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted) {
                     // Snapshot the content BEFORE synthesis so we can tell whether
                     // the synthesis actually produced anything NEW. The pre-synth
                     // fullResponse is just the mid-thought narration / partial tail
@@ -19898,6 +19950,51 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // on `!fullResponse.trim()` (old behavior) missed the common
                     // case where the model left narration but no real answer.
                     const preSynthLen = fullResponse.length;
+                    // Direct artifact delivery: we bailed because a large file edit
+                    // kept truncating, but the file is ALREADY written in this
+                    // conversation's workspace. Surface it as a download chip
+                    // instead of forcing the model to echo ~20k tokens (slow +
+                    // truncation-prone). Best-effort — on any failure we fall
+                    // through to inline synthesis so the turn still delivers.
+                    let deliveredViaArtifact = false;
+                    if (largeEditTruncationExhausted && largeEditTargetPath) {
+                        try {
+                            const dlCall = {
+                                id: `call_dl_${toolCallRound}_${fullResponse.length}`,
+                                type: 'function',
+                                function: { name: 'make_downloadable', arguments: JSON.stringify({ sourcePath: largeEditTargetPath }) },
+                            };
+                            if (clientConnected) {
+                                try { res.write(`data: ${JSON.stringify({ type: 'tool_executing', tool_call_id: dlCall.id, name: 'make_downloadable', arguments: dlCall.function.arguments, sandboxed: true, source: 'skill' })}\n\n`); } catch (_) { clientConnected = false; }
+                            }
+                            const dlResult = await chatTools.executeToolCall(dlCall, toolCtx);
+                            let dlParsed = null;
+                            try { dlParsed = JSON.parse(dlResult.content || '{}'); } catch (_) { /* */ }
+                            if (dlParsed && dlParsed.success) {
+                                const arts = Array.isArray(dlParsed._artifacts)
+                                    ? dlParsed._artifacts.filter(a => a && a.url && a.name).map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
+                                    : null;
+                                persistedToolChips.push({
+                                    type: 'native_tool_call',
+                                    label: 'make_downloadable',
+                                    query: `sourcePath: ${largeEditTargetPath}`,
+                                    args: { sourcePath: largeEditTargetPath },
+                                    status: 'success',
+                                    preview: String(dlResult.content || '').slice(0, 240),
+                                    artifacts: (arts && arts.length) ? arts : undefined,
+                                    sandboxed: true,
+                                    sandboxSource: 'skill',
+                                });
+                                if (clientConnected) {
+                                    try { res.write(`data: ${JSON.stringify({ type: 'tool_result', tool_call_id: dlCall.id, name: 'make_downloadable', preview: String(dlResult.content || '').slice(0, 240), sandboxed: true, source: 'skill', result: dlParsed })}\n\n`); } catch (_) { clientConnected = false; }
+                                }
+                                deliveredViaArtifact = true;
+                                console.log(`[Chat Stream] Delivered "${largeEditTargetPath}" as a download artifact instead of echoing it inline`);
+                            }
+                        } catch (e) {
+                            console.warn('[Chat Stream] Artifact delivery failed, falling back to inline synthesis:', e.message);
+                        }
+                    }
                     try {
                         if (clientConnected) {
                             try {
@@ -19905,7 +20002,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     type: 'status',
                                     message: reasoningLoopExhausted
                                         ? 'Model kept over-deliberating — forcing a direct answer'
-                                        : toolCallArgsTruncated
+                                        : deliveredViaArtifact
+                                        ? 'The edit was too large to paste — attaching the updated file as a download'
+                                        : (toolCallArgsTruncated || largeEditTruncationExhausted)
                                         ? 'That edit was too large to apply in one step — writing the result directly'
                                         : 'Tool call budget exhausted — synthesizing from collected results',
                                 })}\n\n`);
@@ -19923,12 +20022,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             ...currentMessages,
                             {
                                 role: 'user',
-                                content: reasoningLoopExhausted
+                                content: deliveredViaArtifact
+                                    ? loopSynthPrefix +
+                                      'The complete updated file has ALREADY been attached to this conversation as a downloadable file ' +
+                                      '(it was too large to paste inline). Do NOT paste the file contents and do NOT call any tools. ' +
+                                      'In 2-4 short sentences, tell the user the updated file is available as a download below and ' +
+                                      'summarize the specific edits you applied.'
+                                    : reasoningLoopExhausted
                                     ? loopSynthPrefix +
                                       'You kept repeating your reasoning without ever answering. Stop deliberating completely. ' +
                                       'Write the best direct answer you can RIGHT NOW using what is already in this conversation. ' +
                                       'Do not call any tools and do not think out loud — just give the answer, even if brief or partial.'
-                                    : toolCallArgsTruncated
+                                    : (toolCallArgsTruncated || largeEditTruncationExhausted)
                                     ? loopSynthPrefix +
                                       'Your last tool call could NOT run: its arguments were too large and got cut off mid-way. ' +
                                       'Do NOT call any tools now. Instead, deliver the result DIRECTLY to the user in this message. ' +
@@ -19971,10 +20076,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             // prose max_tokens (e.g. 8192), far too small to fit a
                             // whole file, so the code block would truncate mid-way.
                             const synthHeadroom = contextSize - synthInputTokens - 200;
-                            const synthMaxTokens = Math.max(
-                                512,
-                                Math.min(Math.max(initialMaxTokens, 32768), synthHeadroom)
-                            );
+                            // Artifact delivery only needs a short prose summary; an
+                            // inline deliverable needs real headroom (up to 32k) so a
+                            // full file fits instead of truncating mid-code-block.
+                            const synthMaxTokens = deliveredViaArtifact
+                                ? Math.max(512, Math.min(2048, synthHeadroom))
+                                : Math.max(512, Math.min(Math.max(initialMaxTokens, 32768), synthHeadroom));
                             // Actually turn OFF the model's reasoning pass for the
                             // synthesis (not just hide it). On a reasoning-ON Qwen3-
                             // MTP model the synthesis would otherwise spend its whole
@@ -19984,16 +20091,41 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             // 4xxs on it gets one retry without (mirrors
                             // requestModelCompletion's enable_thinking fallback).
                             const synthNoThink = modelSupportsNoThinkPrefix(targetModel);
+                            let synthFinish = 'stop';
                             try {
-                                await streamOneRequest(synthesisMessages, synthMaxTokens, { forceNoThink: synthNoThink });
+                                synthFinish = await streamOneRequest(synthesisMessages, synthMaxTokens, { forceNoThink: synthNoThink });
                             } catch (noThinkErr) {
                                 const status = noThinkErr?.response?.status;
                                 if (synthNoThink && status >= 400 && status < 500 && !fullResponse.trim()) {
                                     console.warn('[Chat Stream] Forced-synthesis enable_thinking kwarg rejected (' + status + ') — retrying without it');
-                                    await streamOneRequest(synthesisMessages, synthMaxTokens);
+                                    synthFinish = await streamOneRequest(synthesisMessages, synthMaxTokens);
                                 } else {
                                     throw noThinkErr;
                                 }
+                            }
+                            // Continue an INLINE deliverable that hit the token cap
+                            // mid-code-block (synthesis is a single streamOneRequest
+                            // with no auto-continuation of its own). Bounded by
+                            // MAX_AUTO_CONTINUATIONS; skipped for artifact delivery
+                            // (its 2-4 sentence summary never needs continuing).
+                            let synthCont = 0;
+                            while (!deliveredViaArtifact && synthFinish === 'length' && synthCont < MAX_AUTO_CONTINUATIONS) {
+                                synthCont++;
+                                const sysMsg = synthesisMessages.find(m => m.role === 'system');
+                                const contMsgs = [];
+                                if (sysMsg) contMsgs.push(sysMsg);
+                                contMsgs.push({ role: 'assistant', content: fullResponse.slice(-CONTINUATION_CONTEXT_CHARS) });
+                                contMsgs.push({ role: 'user', content: (loopSynthPrefix || '') + 'Continue the output from EXACTLY where you left off — do not repeat any earlier text and do not add commentary. Just continue the file/code, and end with the closing ``` fence when it is complete.' });
+                                const contIn = contMsgs.reduce((s, m) => s + estimateTokens(m.content), 0);
+                                const contBudget = Math.max(512, Math.min(32768, contextSize - contIn - 200));
+                                try { synthFinish = await streamOneRequest(contMsgs, contBudget, { forceNoThink: synthNoThink }); }
+                                catch (e) { console.warn('[Chat Stream] Synthesis continuation failed:', e.message); break; }
+                            }
+                            if (!deliveredViaArtifact && synthFinish === 'length') {
+                                const note = '\n\n_[The output above may be cut off at the length limit — ask me to "continue from where you left off", or ask for it as a downloadable file.]_';
+                                fullResponse += note;
+                                if (streamingConversationId) { const job = activeStreamingJobs.get(streamingConversationId); if (job) job.content = fullResponse; }
+                                if (clientConnected) { try { res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: note }, index: 0 }] })}\n\n`); } catch (_) { clientConnected = false; } }
                             }
                         } finally {
                             toolCatalog.length = 0;
