@@ -1,5 +1,5 @@
 import React from 'react';
-import { Terminal as TerminalIcon, X as ClearIcon, Search as SearchIcon } from 'lucide-react';
+import { Terminal as TerminalIcon, X as ClearIcon, Search as SearchIcon, Eye as EyeIcon, EyeOff as EyeOffIcon } from 'lucide-react';
 import SystemResourceMonitor from './SystemResourceMonitor';
 import { usePreferencesStore } from '../stores/usePreferencesStore';
 
@@ -211,35 +211,71 @@ function formatMessageInline(msg, isLight = false) {
     return parts;
 }
 
-function LogRow({ entry, isLight }) {
-    let message = typeof entry === 'string' ? entry : entry.message;
-    const level = typeof entry === 'string' ? 'info' : (entry.level || 'info');
+// Model-container lines arrive as
+//   "[<long model name>] 931.20.557.923 I srv slot_update: ..."
+// — a llama.cpp relative timestamp + a level letter + a subsystem-tagged
+// debug line. Those internal lines (srv/slot/print_timing/statistics/
+// reasoning-budget) are pure engine noise that floods the feed and buries
+// the curated [Chat]/[Sandbox] activity lines. This classifier splits off
+// the model badge, strips the relative timestamp, and flags the low-value
+// engine-internal lines so the panel can hide them behind a toggle.
+const ENGINE_BODY_RE = /^[IWED]\s+(srv|slot|statistics?|reasoning-budget|graph|sampler|kv-?cache|kv|main|loader|ggml|llama|server|common|init|context|batch)\b/i;
 
-    // Strip Docker container timestamps from message and capture them
-    // for the timestamp column. Same regex set as the legacy code.
-    let extractedTime = null;
-    const dockerTsMatch = message.match(/^(.{0,2}?)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s*/);
-    if (dockerTsMatch) {
-        extractedTime = new Date(dockerTsMatch[2]);
-        message = (dockerTsMatch[1] && /\w/.test(dockerTsMatch[1]) ? '' : '') + message.slice(dockerTsMatch[0].length);
+function analyzeLogLine(rawMessage) {
+    let msg = String(rawMessage);
+    // Strip any Docker container timestamps the server didn't (defensive;
+    // the model stream already removes them server-side).
+    msg = msg
+        .replace(/^(\[[^\]]+\])\s*.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/, '$1 ')
+        .replace(/^.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/, '');
+
+    let model = null;
+    const fullBadge = msg.match(/^\[([^\]]+)\]\s*/);
+    if (fullBadge) {
+        model = fullBadge[1];
+        msg = msg.slice(fullBadge[0].length);
+    } else {
+        // Docker multiplex chunk boundaries occasionally drop the opening
+        // "[" and leave a "…name] <reltime> I srv …" fragment.
+        const frag = msg.match(/^([^\[\]]{1,48})\]\s+(?=\d+\.\d+\.\d+\.\d+\s+[IWED]\s)/);
+        if (frag) {
+            model = '…' + frag[1].trim();
+            msg = msg.slice(frag[0].length);
+        }
     }
-    message = message.replace(/^(\[[^\]]+\])\s*.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/g, '$1 ');
-    message = message.replace(/.(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s*/g, ' ');
 
-    const timestamp = entry.timestamp ? new Date(entry.timestamp) : extractedTime;
+    // Drop the llama.cpp relative timestamp ("931.20.557.923").
+    const body = msg.replace(/^\d+\.\d+\.\d+\.\d+\s+/, '');
+    const isEngine = !!model && ENGINE_BODY_RE.test(body);
+    return { model, body, isEngine };
+}
+
+const MODELISH_RE = /gguf|llamacpp|sglang/i;
+function isModelContainer(model) {
+    return !!model && (MODELISH_RE.test(model) || model.length > 22 || model.startsWith('…'));
+}
+function shortModelLabel(model) {
+    return model.length <= 22 ? model : model.slice(0, 20) + '…';
+}
+
+function LogRow({ entry, level = 'info', meta, isLight }) {
+    const { model, body, isEngine } = meta || analyzeLogLine(typeof entry === 'string' ? entry : entry.message);
+
+    const timestamp = (entry && typeof entry === 'object' && entry.timestamp) ? new Date(entry.timestamp) : null;
     const timeStr = timestamp && !isNaN(timestamp.getTime())
         ? timestamp.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
         : '';
 
     const cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info;
-    const isStepMsg = /^Step \d+\/\d+:/i.test(message);
-    const isSeparator = /^={3,}/.test(message);
+    const isStepMsg = /^Step \d+\/\d+:/i.test(body);
+    const isSeparator = /^={3,}/.test(body);
     // Default text fades to off-white on dark surfaces and slate on the
     // light surface; the saturated error/success/warning hues read fine
     // on either.
     const baseTextColor = level === 'error' ? (isLight ? '#dc2626' : '#f87171')
         : level === 'success' ? (isLight ? '#15803d' : '#4ade80')
         : level === 'warning' ? (isLight ? '#b45309' : '#fbbf24')
+        : isEngine ? (isLight ? 'rgba(15,23,42,0.5)' : 'rgba(255,255,255,0.42)')
         : (isLight ? 'rgba(15,23,42,0.78)' : 'rgba(255,255,255,0.65)');
 
     const stepBg = isLight ? 'rgba(99,102,241,0.10)' : 'rgba(99,102,241,0.04)';
@@ -281,7 +317,25 @@ function LogRow({ entry, isLight }) {
                     lineHeight: 1.55,
                 }}
             >
-                {formatMessageInline(message, isLight)}
+                {model && (() => {
+                    const container = isModelContainer(model);
+                    return (
+                        <span
+                            title={container ? model : undefined}
+                            style={{
+                                color: container ? (isLight ? '#475569' : 'rgba(255,255,255,0.55)') : 'var(--accent-primary)',
+                                backgroundColor: container ? (isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.06)') : 'var(--accent-muted)',
+                                padding: '0 5px',
+                                borderRadius: 3,
+                                fontSize: '0.7rem',
+                                marginRight: 6,
+                            }}
+                        >
+                            {container ? shortModelLabel(model) : model}
+                        </span>
+                    );
+                })()}
+                {formatMessageInline(body, isLight)}
             </div>
         </div>
     );
@@ -307,16 +361,32 @@ export default function LogsPanel({
     const logSurfaceBg = isLight ? '#f8fafc' : '#0a0a0f';
     const logSurfaceBorder = isLight ? 'rgba(15,23,42,0.10)' : 'rgba(255,255,255,0.08)';
     const emptyTextColor = isLight ? 'rgba(15,23,42,0.45)' : 'rgba(255,255,255,0.25)';
+
+    // Engine-internal llama.cpp lines are hidden by default so the curated
+    // activity feed reads cleanly; toggle to bring the raw firehose back.
+    const [showVerbose, setShowVerbose] = React.useState(false);
+
+    // Decorate once: classify + clean each line, used by both counting and
+    // rendering so we don't run the regexes twice.
+    const decorated = logs.map((entry) => {
+        const message = typeof entry === 'string' ? entry : (entry.message || '');
+        const level = typeof entry === 'string' ? 'info' : (entry.level || 'info');
+        return { entry, message, level, meta: analyzeLogLine(message) };
+    });
+
     const logCounts = { all: logs.length, error: 0, warning: 0, success: 0, info: 0 };
-    for (const l of logs) {
-        const lv = (typeof l === 'string' ? 'info' : l.level) || 'info';
-        if (logCounts[lv] !== undefined) logCounts[lv]++;
+    for (const d of decorated) {
+        if (logCounts[d.level] !== undefined) logCounts[d.level]++;
     }
-    const filteredLogs = logs.filter((log) => {
-        const message = typeof log === 'string' ? log : log.message;
-        const level = typeof log === 'string' ? 'info' : log.level;
-        if (logFilter !== 'all' && level !== logFilter) return false;
-        if (logSearch && !message.toLowerCase().includes(logSearch.toLowerCase())) return false;
+    const engineHiddenCount = decorated.filter((d) => d.meta.isEngine && d.level === 'info').length;
+    // A search reveals everything (so engine lines stay findable); otherwise
+    // the toggle governs visibility. Errors/warnings are never hidden.
+    const hideEngine = !showVerbose && !logSearch;
+
+    const filteredLogs = decorated.filter((d) => {
+        if (hideEngine && d.meta.isEngine && d.level === 'info') return false;
+        if (logFilter !== 'all' && d.level !== logFilter) return false;
+        if (logSearch && !d.message.toLowerCase().includes(logSearch.toLowerCase())) return false;
         return true;
     });
 
@@ -386,6 +456,31 @@ export default function LogsPanel({
                             />
                         ))}
 
+                        {(engineHiddenCount > 0 || showVerbose) && (
+                            <button
+                                type="button"
+                                onClick={() => setShowVerbose((v) => !v)}
+                                title="Raw engine internals from the model server (srv/slot/print_timing/statistics/reasoning-budget). Hidden by default to keep the activity feed readable."
+                                className="inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[0.7rem] font-medium transition"
+                                style={
+                                    showVerbose
+                                        ? { color: 'var(--accent-primary)', backgroundColor: 'var(--accent-muted)', borderColor: 'var(--border-focus)' }
+                                        : { color: 'var(--text-tertiary)', backgroundColor: 'transparent', borderColor: 'var(--border-primary)' }
+                                }
+                            >
+                                {showVerbose ? <EyeIcon size={13} strokeWidth={2} /> : <EyeOffIcon size={13} strokeWidth={2} />}
+                                <span>Engine</span>
+                                {!showVerbose && engineHiddenCount > 0 && (
+                                    <span
+                                        className="rounded px-1 text-[0.6rem] font-semibold tabular-nums"
+                                        style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}
+                                    >
+                                        {engineHiddenCount}
+                                    </span>
+                                )}
+                            </button>
+                        )}
+
                         <div
                             className="ml-auto flex h-7 items-center gap-1.5 rounded-md border px-2"
                             style={{
@@ -421,9 +516,12 @@ export default function LogsPanel({
                     </div>
 
                     {/* Showing count */}
-                    {(logFilter !== 'all' || logSearch) && (
+                    {(logFilter !== 'all' || logSearch || (hideEngine && engineHiddenCount > 0)) && (
                         <div className="mb-1 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
                             Showing {filteredLogs.length} of {logs.length} entries
+                            {hideEngine && engineHiddenCount > 0 && (
+                                <span style={{ color: 'var(--text-muted)' }}> · {engineHiddenCount} engine line{engineHiddenCount === 1 ? '' : 's'} hidden</span>
+                            )}
                         </div>
                     )}
 
@@ -454,8 +552,8 @@ export default function LogsPanel({
                                 </span>
                             </div>
                         ) : (
-                            filteredLogs.map((entry, index) => (
-                                <LogRow key={index} entry={entry} isLight={isLight} />
+                            filteredLogs.map((d, index) => (
+                                <LogRow key={index} entry={d.entry} level={d.level} meta={d.meta} isLight={isLight} />
                             ))
                         )}
                         <div ref={logsEndRef} />
