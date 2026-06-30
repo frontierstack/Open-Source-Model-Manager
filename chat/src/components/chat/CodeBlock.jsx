@@ -21,13 +21,12 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
     // Compute line count from the raw code
     const lineCount = (code || '').split('\n').length;
 
-    // Collapse long blocks (> 20 lines) by default — INCLUDING while the
-    // content is still streaming in, so a large generated file (e.g. a whole
-    // HTML game) doesn't take over the chat as it generates. The collapse
-    // toggle stays available during streaming (see showCollapseToggle below)
-    // so the user can choose to expand the block and watch it generate live,
-    // then collapse it again.
-    const initialCollapsed = lineCount > 20;
+    // While STREAMING: stay expanded so the user watches the code generate live
+    // in the chat (the Artifacts panel also mirrors it live). Once streaming
+    // ENDS: auto-collapse long blocks (> 20 lines) so a finished large file
+    // doesn't take over the chat. The toggle is always available (below) to
+    // expand/collapse either way.
+    const initialCollapsed = !isStreaming && lineCount > 20;
     const [collapsed, setCollapsed] = useState(initialCollapsed);
 
     const handleCopy = async () => {

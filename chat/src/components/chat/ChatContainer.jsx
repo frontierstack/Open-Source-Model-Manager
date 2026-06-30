@@ -391,6 +391,57 @@ function summarizeToolResult(toolName, result) {
 }
 
 /**
+ * LiveArtifacts — owns the Artifacts side panel AND the live-streaming artifact
+ * extraction. It subscribes to `streamingContent` itself (per token) so ONLY
+ * this small subtree re-renders as code streams — ChatContainer stays off the
+ * per-frame path (the smooth-reveal pump is built to avoid re-rendering it).
+ * While a fenced code block is still being written, its (unclosed) source is
+ * extracted as a `streaming:true` artifact and the panel auto-opens once, so
+ * the user watches the code build live with the Preview tab — without having to
+ * open the panel manually. The streaming artifact's id matches the id the same
+ * block gets once it commits to `messages`, so the panel transitions seamlessly.
+ */
+function LiveArtifacts({ messages, open, setOpen, activeId, onSelect }) {
+    const streamingContent = useChatStore(s => s.streamingContent);
+    const isStreaming = useChatStore(s => s.isStreaming);
+    // Committed artifacts recompute only when messages change (not per token).
+    const committed = useMemo(() => extractArtifacts(messages), [messages]);
+    // The in-progress streaming block is extracted on its OWN (cheap) per token,
+    // with startIndex = messages.length so its id matches the committed id later.
+    const artifacts = useMemo(() => {
+        if (isStreaming && typeof streamingContent === 'string' && streamingContent.includes('```')) {
+            const live = extractArtifacts(
+                [{ role: 'assistant', content: streamingContent, timestamp: null }],
+                messages.length
+            );
+            if (live.length) return [...committed, ...live];
+        }
+        return committed;
+    }, [committed, isStreaming, streamingContent, messages.length]);
+    // Auto-open the panel once when streaming code first appears. seenRef stays
+    // true for the rest of the stream so a user who closes it isn't fought; it
+    // resets after the streaming block is gone (committed), ready for next time.
+    const seenRef = useRef(false);
+    useEffect(() => {
+        const hasStreamingCode = artifacts.some(a => a.streaming);
+        if (hasStreamingCode) {
+            if (!seenRef.current) { seenRef.current = true; setOpen(true); }
+        } else {
+            seenRef.current = false;
+        }
+    }, [artifacts, setOpen]);
+    return (
+        <ArtifactsPanel
+            open={open && artifacts.length > 0}
+            artifacts={artifacts}
+            activeId={activeId}
+            onSelect={onSelect}
+            onClose={() => setOpen(false)}
+        />
+    );
+}
+
+/**
  * ChatContainer - Main chat interface container with Tailwind styling
  */
 export default function ChatContainer({
@@ -2785,13 +2836,14 @@ export default function ChatContainer({
                 )}
             </div>
 
-            {/* Artifacts side panel */}
-            <ArtifactsPanel
-                open={artifactsOpen && artifacts.length > 0}
-                artifacts={artifacts}
+            {/* Artifacts side panel — LiveArtifacts adds in-progress streaming
+                code and auto-opens, isolating the per-token re-render. */}
+            <LiveArtifacts
+                messages={messages}
+                open={artifactsOpen}
+                setOpen={setArtifactsOpen}
                 activeId={activeArtifactId}
                 onSelect={setActiveArtifactId}
-                onClose={() => setArtifactsOpen(false)}
             />
 
             {/* Settings drawer */}

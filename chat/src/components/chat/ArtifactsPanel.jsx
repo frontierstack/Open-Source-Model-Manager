@@ -38,9 +38,14 @@ function langFromName(name) {
     return FILE_LANG_BY_EXT[ext] || 'text';
 }
 
-export function extractArtifacts(messages = []) {
+// `startIndex` offsets the message index used to build artifact ids. The live
+// streaming message is extracted on its own (startIndex = committed length) so
+// per-token re-extraction stays cheap AND its id matches the id the same block
+// will get once it commits into `messages` at that index.
+export function extractArtifacts(messages = [], startIndex = 0) {
     const artifacts = [];
-    messages.forEach((msg, msgIdx) => {
+    messages.forEach((msg, i) => {
+        const msgIdx = startIndex + i;
         if (msg.role !== 'assistant') return;
         // Timestamp of the message this artifact came from — used in the list
         // to show when each was produced and to flag the most recent one.
@@ -67,6 +72,33 @@ export function extractArtifacts(messages = []) {
                 kind: 'code',
             });
             blockIdx++;
+        }
+
+        // Streaming: capture a trailing UNCLOSED fenced block — code still being
+        // written THIS turn (the closed-fence regex above can't match it because
+        // there is no closing ```). This makes the in-progress code show LIVE in
+        // the Artifacts panel as it streams. When the block finally closes, the
+        // regex above matches it instead (same id, same blockIdx position), so
+        // the artifact transitions seamlessly from streaming to final.
+        const tail = content.slice(fenceRegex.lastIndex);
+        const openFence = /```([A-Za-z0-9_+#.-]*)[^\n]*\n([\s\S]*)$/.exec(tail);
+        if (openFence && tail.indexOf('```', openFence.index + 3) === -1) {
+            const lang = openFence[1] || 'text';
+            const source = openFence[2].trimEnd();
+            if (source.trim().length > 0) {
+                const firstLine = source.split('\n').find(l => l.trim().length > 0) || '';
+                artifacts.push({
+                    id: `m${msgIdx}_b${blockIdx}`,
+                    title: firstLine.length > 0 ? firstLine.slice(0, 60) : `${lang} snippet`,
+                    language: lang,
+                    source,
+                    messageIdx: msgIdx,
+                    createdAt,
+                    kind: 'code',
+                    streaming: true,
+                });
+                blockIdx++;
+            }
         }
 
         // Tool-call artifacts (files written by skills) ----------------
