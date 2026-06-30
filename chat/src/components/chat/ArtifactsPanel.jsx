@@ -238,6 +238,21 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
         return artifacts.find(a => a.id === activeId) || artifacts[artifacts.length - 1];
     }, [artifacts, activeId]);
 
+    // While the active artifact is still STREAMING, show the Source tab so the
+    // user watches the code build; the moment it finishes, flip to Preview.
+    // Keyed on the streaming→done transition, so a manual tab click in between
+    // is respected until the next transition.
+    const prevStreamingRef = useRef(false);
+    useEffect(() => {
+        const streaming = !!active?.streaming;
+        if (streaming && !prevStreamingRef.current) {
+            setTab('source');
+        } else if (!streaming && prevStreamingRef.current) {
+            setTab('preview');
+        }
+        prevStreamingRef.current = streaming;
+    }, [active?.streaming]);
+
     // Source fetch for file artifacts. The active artifact carries only
     // a URL (the bytes live on the server); pull them on demand and
     // memoise per artifact id so switching tabs / artifacts is cheap and

@@ -232,7 +232,17 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
                 : line
         )).join('\n')
         : content;
-    const processed = escapeCurrency(repairedTables.replace(/<br\s*\/?>/gi, '  \n'));
+    // Normalize a ``` fence that the model glued onto the end of a prose line
+    // (e.g. "Here's the code:```python\n…" or "…return x;```\nDone"). Markdown
+    // only treats ``` as a code fence when it starts a line, so a glued fence
+    // makes the whole code block render as PLAIN TEXT. Break it onto its own
+    // line — but ONLY when the ``` is followed by an optional language tag and a
+    // newline (the fence opener/closer shape), so explanatory prose like
+    // "use ``` to start a block" is left untouched.
+    const fenced = repairedTables.includes('```')
+        ? repairedTables.replace(/([^\n`])(```[A-Za-z0-9_+#.-]*\n)/g, '$1\n$2')
+        : repairedTables;
+    const processed = escapeCurrency(fenced.replace(/<br\s*\/?>/gi, '  \n'));
     return (
         <div className="markdown-content">
             <ReactMarkdown

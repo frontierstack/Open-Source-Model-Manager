@@ -19317,9 +19317,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     role: 'assistant',
                     content: responseTail
                 });
+                // Fence-aware continuation: if the response was cut off INSIDE a
+                // fenced code block (an odd number of ``` markers so far → an
+                // opening fence with no close), the model must continue the code
+                // RAW — re-opening a new ```lang fence here mismatches the merged
+                // fences and the remainder renders as PLAIN TEXT in the chat
+                // (the "code not displaying in a code block" bug on large /
+                // continued responses). Tell it to continue inside the block.
+                const openFences = (fullResponse.match(/```/g) || []).length;
+                const insideCodeBlock = (openFences % 2) === 1;
                 continuationMessages.push({
                     role: 'user',
-                    content: 'Continue from where you left off. Do not repeat what you already said, just continue directly.'
+                    content: insideCodeBlock
+                        ? 'Continue from where you left off. Your previous text stopped in the MIDDLE of a code block (there is an opening ``` that has not been closed yet). Continue the code DIRECTLY from the exact character it stopped at — do NOT write a new ``` fence, do NOT repeat any earlier lines, and do NOT add any prose or explanation. Output only the remaining code, then add a single closing ``` once the code is complete.'
+                        : 'Continue from where you left off. Do not repeat what you already said, just continue directly.'
                 });
 
                 // Calculate available tokens for this continuation

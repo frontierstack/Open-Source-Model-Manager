@@ -391,6 +391,20 @@ function summarizeToolResult(toolName, result) {
 }
 
 /**
+ * Join a continuation onto the original content. When the original stopped
+ * INSIDE a fenced code block (an odd number of ``` markers so far), continue
+ * with NO blank-line separator so the code block stays intact — a '\n\n' here
+ * would inject blank lines mid-code and, combined with a continuation that
+ * re-opens its own fence, render the rest as plain text. Otherwise use a normal
+ * paragraph break. (The server's continuation prompt is fence-aware too.)
+ */
+function joinContinuation(original, cont) {
+    if (!original) return cont || '';
+    const insideCode = ((original.match(/```/g) || []).length % 2) === 1;
+    return insideCode ? original + (cont || '') : original + '\n\n' + (cont || '');
+}
+
+/**
  * LiveArtifacts — owns the Artifacts side panel AND the live-streaming artifact
  * extraction. It subscribes to `streamingContent` itself (per token) so ONLY
  * this small subtree re-renders as code streams — ChatContainer stays off the
@@ -2504,7 +2518,7 @@ export default function ChatContainer({
                                     assistantReasoning = '';
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {
-                                        setStreamingContent(originalContent + '\n\n' + assistantContent);
+                                        setStreamingContent(joinContinuation(originalContent, assistantContent));
                                         setStreamingReasoning(originalReasoning || '');
                                     }
                                     continue;
@@ -2520,7 +2534,7 @@ export default function ChatContainer({
                                         ? (thinkParsed.content || '').replace(REASONING_TAG_RE, '')
                                         : thinkParsed.content;
                                     if (currentActiveId === conversationId) {
-                                        setStreamingContent(originalContent + '\n\n' + visibleContent);
+                                        setStreamingContent(joinContinuation(originalContent, visibleContent));
                                         if (thinkParsed.reasoning && !reasoningDisabled) {
                                             assistantReasoning = thinkParsed.reasoning;
                                             const combinedReasoning = originalReasoning
@@ -2598,7 +2612,7 @@ export default function ChatContainer({
             const mergedMsg = {
                 ...originalMsg,
                 content: finalContent.trim()
-                    ? originalContent + '\n\n' + finalContent
+                    ? joinContinuation(originalContent, finalContent)
                     : originalContent,
                 reasoning: finalReasoning
                     ? (originalReasoning ? originalReasoning + '\n\n' + finalReasoning : finalReasoning)
