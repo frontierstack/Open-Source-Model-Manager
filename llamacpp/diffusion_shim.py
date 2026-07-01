@@ -37,6 +37,12 @@ BIN        = os.environ.get("LLAMA_DIFFUSION_BIN", "llama-diffusion-cli")
 # considered wedged and respawned. Generous (diffusion is slow) but finite, so a
 # stalled/desynced CLI or an aborted request can NEVER block the model forever.
 GEN_TIMEOUT = float(os.environ.get("LLAMA_DIFFUSION_TIMEOUT", "300"))
+# Physical per-turn batch capacity: block-diffusion holds the WHOLE [prompt|canvas]
+# in one compute batch (n_ubatch). The CLI derives only n_predict+2048 (=4096) from
+# -n, which is too small for real tool results (a fetched article). The CLI keeps
+# the LARGER of the derived value and an explicit -ub, so raise it here. Must stay
+# in sync with the webapp's LLAMA_DIFFUSION_UBATCH budget default.
+UBATCH = os.environ.get("LLAMA_DIFFUSION_UBATCH", "6144")
 # Thinking OFF by default: the channel-thought reasoning is the dominant latency cost, so
 # skip it for responsiveness. Enabled by either the diffusion-specific override
 # (LLAMA_DIFFUSION_THINKING) or the UI's general reasoning toggle (LLAMA_REASONING=on);
@@ -65,7 +71,8 @@ def _log(msg):
 def start_engine():
     """Spawn the resident engine and block until it prints READY (model loaded)."""
     global _proc, _ready
-    cmd = [BIN, "-m", MODEL_PATH, "-ngl", str(NGL), "-n", str(N_PREDICT), "--temp", str(TEMP)]
+    cmd = [BIN, "-m", MODEL_PATH, "-ngl", str(NGL), "-n", str(N_PREDICT), "--temp", str(TEMP),
+           "-ub", str(UBATCH), "-b", str(UBATCH)]
     if CTX_SIZE:
         cmd += ["-c", str(CTX_SIZE)]
     if EB_MAX_STEPS:
@@ -158,17 +165,67 @@ def _readline_until_deadline(stream, deadline):
             return bytes(buf)
 
 
+def _clean_messages(messages):
+    """Rebuild the message list in strict OpenAI shape for the CLI's
+    common_chat_msgs_parse_oaicompat: PRESERVE assistant tool_calls and
+    role:'tool' results (the chat template needs them to render the native
+    <|tool_call>/<|tool_response> blocks — without them the model never sees
+    that it already called a tool, and re-issues the same call every round).
+    Flatten content-part arrays to text; DROP reasoning_content from history
+    (per DiffusionGemma guidance: never include prior hidden thoughts)."""
+    clean = []
+    call_names = {}   # tool_call id -> function name (to label tool results)
+    for m in (messages or []):
+        role = str(m.get("role", "user"))
+        cm = {"role": role}
+        c = m.get("content", None)
+        if c is None or isinstance(c, str):
+            cm["content"] = c
+        else:
+            cm["content"] = _flatten_content(c)
+        tcs = m.get("tool_calls")
+        if role == "assistant" and isinstance(tcs, list) and tcs:
+            out = []
+            for t in tcs:
+                fn = (t or {}).get("function") or {}
+                args = fn.get("arguments")
+                if not isinstance(args, str):
+                    try:
+                        args = json.dumps(args or {})
+                    except Exception:
+                        args = "{}"
+                tc = {"id": str(t.get("id") or "call_%d" % len(call_names)),
+                      "type": "function",
+                      "function": {"name": str(fn.get("name") or ""), "arguments": args}}
+                out.append(tc)
+                call_names[tc["id"]] = tc["function"]["name"]
+            cm["tool_calls"] = out
+        if role == "tool":
+            tcid = m.get("tool_call_id")
+            if tcid:
+                cm["tool_call_id"] = str(tcid)
+            name = m.get("name") or call_names.get(tcid)
+            if name:
+                cm["name"] = str(name)
+            if cm["content"] is None:
+                cm["content"] = ""
+        clean.append(cm)
+    return clean
+
+
 def generate(messages, tools=None):
     """Run one stateless turn through the resident engine. Thread-safe.
-    `tools` (OpenAI function schemas, already compacted by the server-side tool
-    router) are forwarded so the CLI template declares them and the model can
-    emit tool calls. tools=None/empty -> byte-identical to the no-tools protocol.
+    Messages go over as FULL OpenAI-shape JSON (tool_calls / tool results
+    preserved) so the CLI's chat template renders the model's native tool
+    blocks; `tools` (already compacted by the server-side tool router) are
+    declared to the template so the model can emit tool calls.
 
     Robust against a wedged/desynced engine: the request is built as ONE buffer
     and written atomically (no partial write can desync the length-prefixed
     protocol), and the response read is bounded by GEN_TIMEOUT — on any
     timeout/IO error the engine is respawned so a stalled or user-aborted request
     can NEVER permanently block the model."""
+    msgs_bytes = json.dumps(_clean_messages(messages)).encode("utf-8")
     tools_bytes = b""
     if tools:
         try:
@@ -176,13 +233,9 @@ def generate(messages, tools=None):
         except Exception:
             tools_bytes = b""
     # Build the whole request up-front so the write is a single, atomic flush.
-    parts = [b"REQ %d %d\n" % (len(messages), len(tools_bytes))]
-    for m in messages:
-        role = str(m.get("role", "user")).replace(" ", "_")
-        body = _flatten_content(m.get("content", "")).encode("utf-8")
-        parts.append(("%s %d\n" % (role, len(body))).encode("utf-8"))
-        parts.append(body)
-        parts.append(b"\n")
+    parts = [b"REQJ %d %d\n" % (len(msgs_bytes), len(tools_bytes))]
+    parts.append(msgs_bytes)
+    parts.append(b"\n")
     if tools_bytes:
         parts.append(tools_bytes)
         parts.append(b"\n")

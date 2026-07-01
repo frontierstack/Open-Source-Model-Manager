@@ -16279,12 +16279,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
         // from container discovery WITHOUT that detection — so fall back to the model
         // name and persist it on the instance (the tool router reads it later too).
+        // Block-diffusion's real per-turn limit is its COMPUTE BATCH (n_ubatch): the
+        // whole [prompt|canvas] must fit in one batch. The shim launches the CLI with
+        // -ub LLAMA_DIFFUSION_UBATCH (default 6144 — keep both defaults in sync), so
+        // budget prompts against that physical capacity, not the loaded KV ctx.
         if (targetInstance && (targetInstance.isDiffusion ||
                 /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
             targetInstance.isDiffusion = true;
-            const nPredict = targetInstance.diffusionNPredict || Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048);
-            targetInstance.diffusionNPredict = nPredict;
-            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || (nPredict + 2048);
+            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || 6144;
             contextSize = Math.min(contextSize, ubatch);
         }
         const contextShift = targetInstance.config?.contextShift || false;
@@ -16811,12 +16813,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
         // from container discovery WITHOUT that detection — so fall back to the model
         // name and persist it on the instance (the tool router reads it later too).
+        // Block-diffusion's real per-turn limit is its COMPUTE BATCH (n_ubatch): the
+        // whole [prompt|canvas] must fit in one batch. The shim launches the CLI with
+        // -ub LLAMA_DIFFUSION_UBATCH (default 6144 — keep both defaults in sync), so
+        // budget prompts against that physical capacity, not the loaded KV ctx.
         if (targetInstance && (targetInstance.isDiffusion ||
                 /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
             targetInstance.isDiffusion = true;
-            const nPredict = targetInstance.diffusionNPredict || Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048);
-            targetInstance.diffusionNPredict = nPredict;
-            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || (nPredict + 2048);
+            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || 6144;
             contextSize = Math.min(contextSize, ubatch);
         }
         const contextShift = targetInstance.config?.contextShift || false;

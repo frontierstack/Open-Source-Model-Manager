@@ -4,10 +4,15 @@
 # 16 GB model reloading per request. Idempotent: bails if the marker is already present.
 #
 # Protocol (length-prefixed, newline-safe):
-#   Request  : "REQ <n_msgs>\n" then per message "<role> <byte_len>\n<content bytes>\n"
+#   Request  : "REQJ <msgs_json_len> <tools_json_len>\n<msgs bytes>\n[<tools bytes>\n]"
+#              msgs = FULL OpenAI-shape messages JSON (assistant tool_calls and
+#              role:"tool" results preserved), parsed C++-side with
+#              common_chat_msgs_parse_oaicompat so the chat template renders the
+#              native <|tool_call>/<|tool_response> blocks. tools = OpenAI function
+#              schemas (0 len = none).
 #   Response : "RESP <byte_len>\n<content bytes>\n"   (flushed)
 # The engine prints "READY\n" on stdout once the model is loaded; all model/log noise
-# goes to stderr. Generation reuses the file's existing run_turn/apply_template/make_msg.
+# goes to stderr. Generation reuses the file's existing run_turn/apply_template.
 import sys
 
 PATH = sys.argv[1] if len(sys.argv) > 1 else "examples/diffusion/diffusion-cli.cpp"
@@ -82,37 +87,30 @@ SERVE_BLOCK = r'''    // ---- Resident serve-stdio mode (ModelServer OpenAI shim
         fflush(stdout);
         std::string line;
         while (std::getline(std::cin, line)) {
-            if (line.rfind("REQ ", 0) != 0) {
+            // REQJ <msgs_json_len> <tools_json_len>\n<msgs bytes>\n[<tools bytes>\n]
+            // Messages arrive as FULL OpenAI-shape JSON (assistant tool_calls +
+            // role:"tool" results preserved) and are parsed with
+            // common_chat_msgs_parse_oaicompat, so the chat template renders the
+            // native <|tool_call>/<|tool_response> blocks. Without this the model
+            // never sees its prior calls or their results (the template skips bare
+            // role:"tool" messages entirely) and re-issues the same call each round.
+            if (line.rfind("REQJ ", 0) != 0) {
                 continue;
             }
-            const int n_msgs = atoi(line.c_str() + 4);
-            // Optional 2nd int on the REQ line = tools-frame byte length (0/absent
-            // when the shim sends no tools -> byte-identical to the old protocol).
+            long msgs_len = 0;
             long tools_len = 0;
             {
-                const char * p = line.c_str() + 4;
+                const char * p = line.c_str() + 5;
                 char * endp = nullptr;
-                strtol(p, &endp, 10);              // n_msgs (already parsed)
+                msgs_len = strtol(p, &endp, 10);
                 if (endp) tools_len = strtol(endp, nullptr, 10);
             }
-            std::vector<common_chat_msg> messages;
-            bool ok = true;
-            for (int i = 0; i < n_msgs; i++) {
-                std::string hdr;
-                if (!std::getline(std::cin, hdr)) { ok = false; break; }
-                const size_t sp = hdr.rfind(' ');
-                if (sp == std::string::npos) { ok = false; break; }
-                const std::string role = hdr.substr(0, sp);
-                const long len = strtol(hdr.c_str() + sp + 1, nullptr, 10);
-                std::string content;
-                if (len > 0) {
-                    content.resize((size_t) len);
-                    std::cin.read(&content[0], len);
-                }
-                std::cin.get();  // consume the trailing newline
-                messages.push_back(make_msg(role, content));
+            std::string msgs_json;
+            if (msgs_len > 0) {
+                msgs_json.resize((size_t) msgs_len);
+                std::cin.read(&msgs_json[0], msgs_len);
             }
-            if (!ok) { break; }
+            std::cin.get();  // consume the trailing newline
             g_serve_tools_json.clear();
             if (tools_len > 0) {
                 g_serve_tools_json.resize((size_t) tools_len);
@@ -121,7 +119,12 @@ SERVE_BLOCK = r'''    // ---- Resident serve-stdio mode (ModelServer OpenAI shim
             }
             std::string response;
             try {
+                std::vector<common_chat_msg> messages =
+                    common_chat_msgs_parse_oaicompat(nlohmann::ordered_json::parse(msgs_json));
                 response = run_turn(apply_template(messages));
+            } catch (const std::exception & e) {
+                fprintf(stderr, "serve-stdio: request failed: %s\n", e.what());
+                response = "";
             } catch (...) {
                 response = "";
             }
