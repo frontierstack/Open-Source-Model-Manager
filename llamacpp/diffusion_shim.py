@@ -340,10 +340,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _sse_open(self):
+        # CLOSE the connection after streaming (not keep-alive). The SSE body has no
+        # Content-Length, so the consumer (the webapp's streamOneRequest) only
+        # resolves on the socket 'end' event — which fires when the connection
+        # closes. With keep-alive the connection stayed open after [DONE], so a
+        # streamed turn (esp. a tool-call turn with no visible content) hung the
+        # server forever. close_connection=True makes BaseHTTPRequestHandler drop
+        # the socket after this response.
+        self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
         self.end_headers()
 
     def _sse(self, obj):
