@@ -16268,7 +16268,25 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Get context size configuration
-        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
+        let contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
+        // Block-diffusion (DiffusionGemma) processes the WHOLE prompt in one compute
+        // batch (~ubatch), not the full KV context. Its real per-turn prompt limit is
+        // the ubatch (~= n_predict + 2048), NOT the loaded ctx (e.g. 131072). If we
+        // budget against the loaded ctx, a large round-1 tool result (a fetched
+        // article) is never trimmed, overflows the ubatch, the model can't answer,
+        // and it LOOPS re-calling the tool. Cap the effective context to the ubatch
+        // so history/tool-results are trimmed to fit and the model actually responds.
+        // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
+        // from container discovery WITHOUT that detection — so fall back to the model
+        // name and persist it on the instance (the tool router reads it later too).
+        if (targetInstance && (targetInstance.isDiffusion ||
+                /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
+            targetInstance.isDiffusion = true;
+            const nPredict = targetInstance.diffusionNPredict || Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048);
+            targetInstance.diffusionNPredict = nPredict;
+            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || (nPredict + 2048);
+            contextSize = Math.min(contextSize, ubatch);
+        }
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
@@ -16782,7 +16800,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // Get context size configuration
-        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
+        let contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
+        // Block-diffusion (DiffusionGemma) processes the WHOLE prompt in one compute
+        // batch (~ubatch), not the full KV context. Its real per-turn prompt limit is
+        // the ubatch (~= n_predict + 2048), NOT the loaded ctx (e.g. 131072). If we
+        // budget against the loaded ctx, a large round-1 tool result (a fetched
+        // article) is never trimmed, overflows the ubatch, the model can't answer,
+        // and it LOOPS re-calling the tool. Cap the effective context to the ubatch
+        // so history/tool-results are trimmed to fit and the model actually responds.
+        // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
+        // from container discovery WITHOUT that detection — so fall back to the model
+        // name and persist it on the instance (the tool router reads it later too).
+        if (targetInstance && (targetInstance.isDiffusion ||
+                /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
+            targetInstance.isDiffusion = true;
+            const nPredict = targetInstance.diffusionNPredict || Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048);
+            targetInstance.diffusionNPredict = nPredict;
+            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || (nPredict + 2048);
+            contextSize = Math.min(contextSize, ubatch);
+        }
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
