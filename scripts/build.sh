@@ -156,8 +156,14 @@ while [[ $# -gt 0 ]]; do
             echo "  GIT_SSL_NO_VERIFY             Set to true to skip git SSL verification"
             echo "  PIP_TRUSTED_HOST              pip trusted hosts"
             echo ""
+            echo "Build tuning:"
+            echo "  DIFFUSION_CUDA_ARCHS          GPU archs for the DiffusionGemma runner"
+            echo "                                (semicolon list, e.g. 120). Narrower = faster"
+            echo "                                llamacpp build. Unset = all archs (portable)."
+            echo ""
             echo "Example:"
             echo "  HTTP_PROXY=http://proxy:8080 ./build.sh"
+            echo "  DIFFUSION_CUDA_ARCHS=120 ./build.sh   # RTX 50-series only, faster"
             exit 0
             ;;
         *)
@@ -180,18 +186,34 @@ get_checksum() {
     fi
 }
 
+# Checksum EVERY build-input file in a component dir (Dockerfile + shell + python), not
+# just the Dockerfile. These files are COPYed into the image (llamacpp/entrypoint.sh,
+# diffusion_shim.py, inject-diffusion-serve.py; sglang/entrypoint.sh), so editing one must
+# trigger a rebuild — hashing the Dockerfile alone silently missed those changes.
+get_component_checksum() {
+    local component=$1
+    local dir="$PROJECT_DIR/${component}"
+    if [ ! -d "$dir" ]; then
+        echo "missing"
+        return
+    fi
+    find "$dir" -maxdepth 1 -type f \( -name 'Dockerfile' -o -name '*.sh' -o -name '*.py' \) -print0 2>/dev/null \
+        | sort -z \
+        | xargs -0 md5sum 2>/dev/null \
+        | md5sum | awk '{print $1}'
+}
+
 # Check if build state is valid
 is_build_complete() {
     local component=$1
     local state_file="$BUILD_STATE_DIR/${component}.state"
-    local dockerfile="$PROJECT_DIR/${component}/Dockerfile"
 
     if [ ! -f "$state_file" ]; then
         return 1
     fi
 
     local saved_checksum=$(cat "$state_file" 2>/dev/null || echo "")
-    local current_checksum=$(get_checksum "$dockerfile")
+    local current_checksum=$(get_component_checksum "$component")
 
     if [ "$saved_checksum" != "$current_checksum" ]; then
         return 1
@@ -203,8 +225,7 @@ is_build_complete() {
 # Mark build as complete
 mark_build_complete() {
     local component=$1
-    local dockerfile="$PROJECT_DIR/${component}/Dockerfile"
-    local checksum=$(get_checksum "$dockerfile")
+    local checksum=$(get_component_checksum "$component")
     echo "$checksum" > "$BUILD_STATE_DIR/${component}.state"
 }
 
@@ -230,6 +251,14 @@ build_image() {
     [ -n "$GIT_SSL_NO_VERIFY" ]            && build_args+=(--build-arg "GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY")
     [ -n "$PIP_TRUSTED_HOST" ]             && build_args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
     [ -n "$PIP_CERT" ]                     && build_args+=(--build-arg "PIP_CERT=$PIP_CERT")
+
+    # llamacpp bundles a second CUDA build (the DiffusionGemma runner, llama-diffusion-cli).
+    # It defaults to the full GPU-arch matrix for portability; set DIFFUSION_CUDA_ARCHS to a
+    # narrower semicolon list (e.g. "120" for RTX 50-series only) to cut build time on a
+    # known deployment. Unset -> Dockerfile default (all archs).
+    if [ "$component" = "llamacpp" ] && [ -n "$DIFFUSION_CUDA_ARCHS" ]; then
+        build_args+=(--build-arg "DIFFUSION_CUDA_ARCHS=$DIFFUSION_CUDA_ARCHS")
+    fi
 
     local -a no_cache_args=()
     [ "$NO_CACHE" = true ] && no_cache_args=(--no-cache)
@@ -753,7 +782,7 @@ analyze_component() {
 
     if ! is_build_complete "$component"; then
         eval "BUILD_$(echo $component | tr '[:lower:]' '[:upper:]')=true"
-        BUILD_REASON[$component]="Dockerfile changed"
+        BUILD_REASON[$component]="build inputs changed"
         return
     fi
 
@@ -774,7 +803,7 @@ elif [[ -z $(docker images -q "modelserver-sandbox-python:latest" 2>/dev/null) ]
     BUILD_REASON[sandbox-runtime]="image not found"
 elif ! is_build_complete "sandbox-runtime"; then
     BUILD_SANDBOX=true
-    BUILD_REASON[sandbox-runtime]="Dockerfile changed"
+    BUILD_REASON[sandbox-runtime]="build inputs changed"
 else
     BUILD_REASON[sandbox-runtime]="up to date"
 fi
@@ -883,7 +912,7 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_SGLANG" = true ]; then
         # Sequential builds
         if [ "$BUILD_LLAMACPP" = true ]; then
             > "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null || true
-            start_build_spinner "Building llamacpp (~20–30 min)" "$BUILD_STATE_DIR/llamacpp.log"
+            start_build_spinner "Building llamacpp (~25–40 min; +DiffusionGemma runner)" "$BUILD_STATE_DIR/llamacpp.log"
             if build_image "llamacpp" "modelserver-llamacpp:latest"; then
                 stop_build_spinner
                 local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")

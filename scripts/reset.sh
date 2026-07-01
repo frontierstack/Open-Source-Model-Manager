@@ -182,7 +182,11 @@ if [ "$REBUILD_IMAGES" = true ]; then
     section "Rebuild Images"
     log_step "This may take 20–30 minutes"
     echo ""
-    docker compose --profile build-only build llamacpp --no-cache 2>&1 | tail -3
+    # DIFFUSION_CUDA_ARCHS (optional) narrows the DiffusionGemma runner's CUDA build;
+    # unset -> all archs (portable). See build.sh --help.
+    llamacpp_build_args=()
+    [ -n "$DIFFUSION_CUDA_ARCHS" ] && llamacpp_build_args=(--build-arg "DIFFUSION_CUDA_ARCHS=$DIFFUSION_CUDA_ARCHS")
+    docker compose --profile build-only build "${llamacpp_build_args[@]}" llamacpp --no-cache 2>&1 | tail -3
     log_success "llamacpp rebuilt"
     docker compose --profile build-only build sglang --no-cache 2>&1 | tail -3
     log_success "sglang rebuilt"
