@@ -102,6 +102,8 @@ const knowledgeBaseService = require('./services/knowledgeBaseService');
 // extraction heuristics live in this file.
 const memoryService = require('./services/memoryService');
 const memoryIndex = require('./services/memoryIndex');
+const toolRouter = require('./services/toolRouter');
+const toolIndex = require('./services/toolIndex');
 
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
@@ -4839,6 +4841,12 @@ async function createLlamacppInstance(modelName, modelPath, config) {
 
         await container.start();
 
+        // DiffusionGemma is served by the shim (llama-diffusion-cli), not
+        // llama-server: it needs the aggressive tool-router profile (whole prompt
+        // must fit one ~ctx-sized compute batch) and shim tool delivery. Detect
+        // by model name (diffusion GGUFs are named *diffusion*); the entrypoint's
+        // GGUF-arch check is the authoritative runtime gate.
+        const isDiffusion = /diffusion/i.test(modelName);
         modelInstances.set(modelName, {
             containerId: container.id,
             containerName,
@@ -4846,7 +4854,9 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             internalPort,
             status: 'starting',
             config,
-            backend: 'llamacpp'
+            backend: 'llamacpp',
+            isDiffusion,
+            diffusionNPredict: isDiffusion ? Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048) : undefined,
         });
         startSystemMonitoring();
 
@@ -18225,6 +18235,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         } catch (e) {
             console.warn('[Chat Stream] tool catalog build failed:', e.message);
         }
+        // --- Tool router state (see webapp/services/toolRouter.js) -----------
+        // The FULL catalog is the source of truth for schemas + name-based
+        // dispatch. The router reduces what is ADVERTISED to the model per turn;
+        // find_tools + name dispatch keep every dropped tool reachable. Any
+        // failure below leaves toolCatalog = the full catalog (fail open).
+        const fullToolCatalog = toolCatalog.slice();
+        const fullByName = new Map(fullToolCatalog.map(d => [d.function?.name, d]));
+        toolCtx.fullToolCatalog = fullToolCatalog;
+        toolCtx._forcedToolNames = new Set();      // find_tools pushes discovered names here
+        const preflightForcedTools = new Set();    // pre-flights that NAME a tool force-include it
+        let advertisedNames = new Set(fullByName.keys());  // grows across rounds
+        let routeCompactLevel = null;   // set when routing is active; used to rebuild on grow
+        // Doc-analysis pre-step (agentic/follow-up) instructs the model to call
+        // query_document / read_document_chunk — force-include them so routing
+        // can't drop a tool the server just told the model to use.
+        if (toolCtx.activeDocumentId) {
+            preflightForcedTools.add('query_document');
+            preflightForcedTools.add('read_document_chunk');
+        }
         // Memoize the catalog's JSON + token estimate ONCE per turn — it's stable
         // across every tool round (built here, never rebuilt), but was re-
         // JSON.stringify'd (40-60KB) 2-3x per round in the hot loop. The forced-
@@ -18233,8 +18262,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // these memoized values only when tools are actually attached — i.e. ''/0
         // during synthesis. `estimateTokens` is the chat-stream-local estimator,
         // matching the original call sites exactly.
-        const toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
-        const toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
+        // `let` — recomputed after routing (below) and on each grow-only round.
+        let toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+        let toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
         // Accumulator is reset at the start of every model turn (outer loop).
         let accumulatedToolCalls = [];
         let toolCallRound = 0;
@@ -18284,7 +18314,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // mostly-printable UTF-8.
         const base64Detector = require('./services/base64Detector');
         const b64PreflightEncoded = new Set();
-        const b64CatalogExposed = toolCatalog.some(t => t?.function?.name === 'base64_decode');
+        const b64CatalogExposed = fullToolCatalog.some(t => t?.function?.name === 'base64_decode');
         if (b64CatalogExposed) {
             try {
                 let userText = '';
@@ -18298,6 +18328,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 }
                 const found = userMsgIdx >= 0 ? base64Detector.findBase64InText(userText) : [];
                 if (found.length > 0) {
+                    preflightForcedTools.add('base64_decode');
                     const callId = `call_auto_b64_in_${Date.now()}`;
                     const result = {
                         success: true,
@@ -18387,7 +18418,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // up-front note steering the model straight to search_knowledge_base.
         // Skipped silently when the tool isn't in the catalog or no KB filename
         // is referenced.
-        if (toolCatalog.some(t => t?.function?.name === 'search_knowledge_base')) {
+        if (fullToolCatalog.some(t => t?.function?.name === 'search_knowledge_base')) {
             try {
                 let userText = '';
                 let userMsgIdx = -1;
@@ -18416,6 +18447,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                     }
                     if (hits.length) {
+                        preflightForcedTools.add('search_knowledge_base');
                         const lines = hits.map(h => `- "${h.filename}" is in the knowledge base "${h.kb}".`);
                         const note = [
                             '[SERVER NOTE: The file(s) named below live ONLY in the knowledge base, NOT on the sandbox filesystem. To read their contents call search_knowledge_base (optionally with the knowledge_base name); do NOT call read_pdf / read_file / list_directory on a /workspace path for them — that will fail.]',
@@ -18439,6 +18471,50 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             } catch (e) {
                 console.warn('[Chat Stream] KB pre-flight failed:', e.message);
             }
+        }
+
+        // --- Tool router: reduce the ADVERTISED catalog to a relevant subset -
+        // Runs AFTER the deterministic pre-flights (which force-include any tool
+        // they named). Fails OPEN to the full catalog on any error. Only the
+        // advertised `tools` array changes; registry/dispatch are untouched.
+        try {
+            const routeProfile = toolRouter.resolveProfile({
+                instance: targetInstance,
+                contextSize,
+                fullCatalogTokens: toolCatalogTokens,
+                reqOverride: req.body?.toolRouter,
+            });
+            if (routeProfile !== 'off' && fullToolCatalog.length) {
+                const isDiff = !!targetInstance?.isDiffusion;
+                let hardCeil = null;
+                if (isDiff) {
+                    const nPredict = targetInstance?.diffusionNPredict || 2048;
+                    const estMsgs = estimateTokens(JSON.stringify(chatMessages || []));
+                    hardCeil = Math.max(256, contextSize - nPredict - estMsgs - 256);
+                }
+                const sel = await toolRouter.selectForTurn({
+                    fullCatalog: fullToolCatalog,
+                    query: latestUserText,
+                    contextSize,
+                    profile: routeProfile,
+                    isDiffusion: isDiff,
+                    stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
+                    forcedNames: preflightForcedTools,
+                    hardCeilingTok: hardCeil,
+                });
+                toolCatalog = sel.tools;
+                advertisedNames = sel.advertisedNames;
+                routeCompactLevel = routeProfile === 'aggressive' ? 'aggressive' : 'light';
+                toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
+                logChatActivity(`Tool router [${routeProfile}/${sel.mode}]: ${toolCatalog.length}/${fullToolCatalog.length} tools ~${toolCatalogTokens} tok (dropped ${sel.droppedCount})`);
+                console.log(`[Chat Stream] Tool router [${routeProfile}/${sel.mode}]: advertised ${toolCatalog.length}/${fullToolCatalog.length} tools (~${toolCatalogTokens} tok, dropped ${sel.droppedCount})`);
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] tool router failed (fail open to full catalog):', e.message);
+            toolCatalog = fullToolCatalog.slice();
+            toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+            toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
         }
 
         // Job was registered at the top of the handler so refresh / switch-back
@@ -19140,6 +19216,31 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 return result;
             };
             while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS) {
+                // --- Tool router grow-only expansion (before reset) ----------
+                // A tool the model just used, or discovered via find_tools, is
+                // advertised on the NEXT round. The advertised set only GROWS
+                // mid-turn (never drops a tool mid-use). Reads the PREVIOUS
+                // round's accumulatedToolCalls (reset just below). Fail-safe:
+                // any error leaves the current catalog unchanged.
+                if (routeCompactLevel && advertisedNames && advertisedNames.size < fullByName.size) {
+                    try {
+                        let grew = false;
+                        const addName = (n) => { if (n && fullByName.has(n) && !advertisedNames.has(n)) { advertisedNames.add(n); grew = true; } };
+                        for (const c of (accumulatedToolCalls || [])) addName(c?.function?.name);
+                        if (toolCtx._forcedToolNames) toolCtx._forcedToolNames.forEach(addName);
+                        if (grew) {
+                            const rebuilt = [];
+                            for (const n of advertisedNames) {
+                                if (n === 'find_tools') { rebuilt.push(toolRouter.compactSchema(toolRouter.findToolsDef, routeCompactLevel)); continue; }
+                                const def = fullByName.get(n);
+                                if (def) rebuilt.push(toolRouter.compactSchema(def, routeCompactLevel));
+                            }
+                            toolCatalog = rebuilt;
+                            toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                            toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
+                        }
+                    } catch (e) { /* keep current catalog */ }
+                }
                 // Reset per-round state. fullResponse is cumulative for the
                 // client stream; roundStart marks where THIS turn's text began
                 // so we can feed only this turn's content back as the assistant
@@ -19558,6 +19659,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             };
                         }
                         const k = dispatchKey(call);
+                        // Sticky: remember the tool this conversation used (by its
+                        // effective inner op for `web`) so the router keeps it
+                        // advertised on later turns.
+                        try { toolRouter.recordConversationToolUse(streamingConversationId, webEffectiveName(call.function.name, call.function.arguments)); } catch (_) {}
                         let p = dispatchCache.get(k);
                         if (!p) {
                             p = chatTools.executeToolCall(call, toolCtx);
@@ -26618,6 +26723,12 @@ app.use((req, res) => {
             }
         },
     });
+
+    // find_tools — the router's discovery meta-tool. build()->null so it's HIDDEN
+    // from the normal catalog (routing-OFF stays byte-identical), but registered
+    // so executeToolCall dispatches it by name; selectForTurn injects its def
+    // directly when routing is active.
+    tools.registerTool(toolRouter.findToolsTool);
 
     tools.setDynamicToolProvider(async (ctx) => {
         try {

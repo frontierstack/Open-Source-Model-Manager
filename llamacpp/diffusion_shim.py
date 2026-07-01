@@ -15,6 +15,7 @@ stdlib only (no pip). Requests are serialized through the single engine process.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -31,6 +32,20 @@ TEMP       = os.environ.get("LLAMA_TEMP", "0.7")
 CTX_SIZE   = os.environ.get("LLAMA_CTX_SIZE", "")
 MODEL_ID   = os.environ.get("LLAMA_MODEL_ID") or os.path.basename(MODEL_PATH)
 BIN        = os.environ.get("LLAMA_DIFFUSION_BIN", "llama-diffusion-cli")
+# Thinking OFF by default: the channel-thought reasoning is the dominant latency cost, so
+# skip it for responsiveness. Enabled by either the diffusion-specific override
+# (LLAMA_DIFFUSION_THINKING) or the UI's general reasoning toggle (LLAMA_REASONING=on);
+# 'auto'/'off'/unset -> off, so the UI "reasoning" switch controls this model too.
+def _thinking_enabled():
+    d = os.environ.get("LLAMA_DIFFUSION_THINKING", "").strip().lower()
+    if d in ("1", "on", "true", "yes"):
+        return True
+    if d in ("0", "off", "false", "no"):
+        return False
+    return os.environ.get("LLAMA_REASONING", "").strip().lower() in ("1", "on", "true", "yes")
+THINKING   = _thinking_enabled()
+# Optional latency knob: fewer denoising steps = faster, lower quality (default is the model's 48).
+EB_MAX_STEPS = os.environ.get("LLAMA_DIFFUSION_EB_MAX_STEPS", "")
 
 _proc = None
 _lock = threading.Lock()   # serialize engine transactions
@@ -48,8 +63,12 @@ def start_engine():
     cmd = [BIN, "-m", MODEL_PATH, "-ngl", str(NGL), "-n", str(N_PREDICT), "--temp", str(TEMP)]
     if CTX_SIZE:
         cmd += ["-c", str(CTX_SIZE)]
+    if EB_MAX_STEPS:
+        cmd += ["--diffusion-eb-max-steps", str(EB_MAX_STEPS)]
     env = dict(os.environ)
     env["DIFFUSION_SERVE_STDIO"] = "1"
+    if THINKING:
+        env["DIFFUSION_ENABLE_THINKING"] = "1"
     _log("launching: %s" % " ".join(cmd))
     # stderr=None -> engine's load/timing logs stream straight to container logs.
     _proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -82,18 +101,31 @@ def _flatten_content(content):
     return str(content)
 
 
-def generate(messages):
-    """Run one stateless turn through the resident engine. Thread-safe."""
+def generate(messages, tools=None):
+    """Run one stateless turn through the resident engine. Thread-safe.
+    `tools` (OpenAI function schemas, already compacted by the server-side tool
+    router) are forwarded so the CLI template declares them and the model can
+    emit tool calls. tools=None/empty -> byte-identical to the no-tools protocol.
+    The shim + CLI always ship in the same image, so the protocol never desyncs."""
     if _proc is None or _proc.poll() is not None:
         raise RuntimeError("diffusion engine is not running")
+    tools_bytes = b""
+    if tools:
+        try:
+            tools_bytes = json.dumps(tools).encode("utf-8")
+        except Exception:
+            tools_bytes = b""
     with _lock:
         stdin = _proc.stdin
-        stdin.write(b"REQ %d\n" % len(messages))
+        stdin.write(b"REQ %d %d\n" % (len(messages), len(tools_bytes)))
         for m in messages:
             role = str(m.get("role", "user"))
             body = _flatten_content(m.get("content", "")).encode("utf-8")
             stdin.write(("%s %d\n" % (role, len(body))).encode("utf-8"))
             stdin.write(body)
+            stdin.write(b"\n")
+        if tools_bytes:
+            stdin.write(tools_bytes)
             stdin.write(b"\n")
         stdin.flush()
         # Read stdout until the RESP header (tolerate any stray noise before it).
@@ -142,6 +174,91 @@ def _split_channels(text):
     if text.lstrip().startswith(_THOUGHT_OPEN_ALT):
         return text, ""  # incomplete thought block — surface as-is rather than blanking the reply
     return text, ""
+
+
+# DiffusionGemma tool-call format (from the GGUF chat template):
+#   <|tool_call>call:<name>{key:value,...}<tool_call|>
+# with string values wrapped in <|"|>...<|"|>, booleans/numbers bare, nested {}/[] supported.
+_STR_TOK = '<|"|>'
+_RE_TOOLCALL = re.compile(r'<\|tool_call>call:([A-Za-z0-9_.\-]+)\{(.*?)\}<tool_call\|>', re.DOTALL)
+# Strip residual special markers: the pipe-bearing family (real HTML like <div> is untouched
+# because it has no '|'), plus the known Gemma/EOS tokens that don't carry a pipe.
+_RE_STRIP_SPECIAL = re.compile(r'<\|[^<>]*>|<[^<>]*\|>')
+_KNOWN_SPECIALS = ('<end_of_turn>', '<start_of_turn>', '<eos>', '<bos>', '<pad>',
+                   '<unk>', '</s>', '<s>')
+
+
+def _strip_specials(s):
+    s = _RE_STRIP_SPECIAL.sub("", s)
+    for t in _KNOWN_SPECIALS:
+        s = s.replace(t, "")
+    return s
+
+
+def _args_to_json(body):
+    """Convert the template's arg encoding to a JSON object string."""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        if body.startswith(_STR_TOK, i):
+            j = body.find(_STR_TOK, i + len(_STR_TOK))
+            if j < 0:
+                out.append(json.dumps(body[i + len(_STR_TOK):])); i = n
+            else:
+                out.append(json.dumps(body[i + len(_STR_TOK):j])); i = j + len(_STR_TOK)
+        elif body[i] in '{}[]:,':
+            out.append(body[i]); i += 1
+        elif body[i] == ' ':
+            i += 1
+        else:
+            j = i
+            while j < n and body[j] not in '{}[]:, ' and not body.startswith(_STR_TOK, j):
+                j += 1
+            tok = body[i:j].strip()
+            i = j
+            k = i
+            while k < n and body[k] == ' ':
+                k += 1
+            if k < n and body[k] == ':':          # bare key
+                out.append(json.dumps(tok))
+            elif tok in ('true', 'false', 'null'):  # bare literal
+                out.append(tok)
+            else:
+                try:
+                    float(tok); out.append(tok)     # number
+                except ValueError:
+                    out.append(json.dumps(tok) if tok else '""')  # unquoted string
+    return '{' + ''.join(out) + '}'
+
+
+def _parse_tool_calls(text):
+    """Extract tool calls -> [{name, arguments(JSON str)}]; return (calls, text_without_calls)."""
+    calls = []
+
+    def repl(m):
+        name, body = m.group(1), m.group(2)
+        try:
+            args = _args_to_json(body)
+            json.loads(args)  # validate
+        except Exception:
+            args = json.dumps({"_raw": body})
+        calls.append({"name": name, "arguments": args})
+        return ""
+
+    return calls, _RE_TOOLCALL.sub(repl, text)
+
+
+def _parse_output(raw):
+    """Split raw serve-mode output into (content, reasoning, tool_calls)."""
+    content, reasoning = _split_channels(raw)
+    tool_calls, content = _parse_tool_calls(content)
+    # a tool call may also appear inside the thought section on some turns — pull those too
+    if reasoning:
+        r_calls, reasoning = _parse_tool_calls(reasoning)
+        tool_calls.extend(r_calls)
+    content = _strip_specials(content).strip()
+    reasoning = _strip_specials(reasoning).strip()
+    return content, reasoning, tool_calls
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -210,28 +327,35 @@ class Handler(BaseHTTPRequestHandler):
         messages = req.get("messages", [])
         stream = bool(req.get("stream", False))
         model = req.get("model", MODEL_ID)
+        tools = req.get("tools") or None   # compacted by the server-side tool router
         try:
-            raw = generate(messages)
+            raw = generate(messages, tools)
         except Exception as e:
             self._send_json({"error": {"message": str(e), "type": "diffusion_engine_error"}}, status=500)
             return
-        text, reasoning = _split_channels(raw)
+        text, reasoning, tool_calls = _parse_output(raw)
+        oai_calls = [{"id": "call_diff_%d" % i, "type": "function",
+                      "function": {"name": c["name"], "arguments": c["arguments"]}}
+                     for i, c in enumerate(tool_calls)]
+        finish = "tool_calls" if oai_calls else "stop"
         created = int(time.time())
         cmpl_id = "chatcmpl-diff-%d" % created
         ptoks = sum(_approx_tokens(_flatten_content(m.get("content", ""))) for m in messages)
         ctoks = _approx_tokens(text)
         if not stream:
-            msg = {"role": "assistant", "content": text}
+            msg = {"role": "assistant", "content": text or None}
             if reasoning:
                 msg["reasoning_content"] = reasoning
+            if oai_calls:
+                msg["tool_calls"] = oai_calls
             self._send_json({
                 "id": cmpl_id, "object": "chat.completion", "created": created, "model": model,
-                "choices": [{"index": 0, "message": msg, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
                 "usage": {"prompt_tokens": ptoks, "completion_tokens": ctoks,
                           "total_tokens": ptoks + ctoks},
             })
             return
-        # streaming: whole answer is produced at once; chunk it for smooth reveal.
+        # streaming: the whole answer is produced at once; chunk it for smooth reveal.
         self._sse_open()
         self._sse({"id": cmpl_id, "object": "chat.completion.chunk", "created": created,
                    "model": model,
@@ -248,9 +372,18 @@ class Handler(BaseHTTPRequestHandler):
                        "model": model,
                        "choices": [{"index": 0, "delta": {"content": text[i:i + step]},
                                     "finish_reason": None}]})
+        # tool calls -> emit each as a full delta (name + arguments) for the client to dispatch
+        for idx, c in enumerate(oai_calls):
+            self._sse({"id": cmpl_id, "object": "chat.completion.chunk", "created": created,
+                       "model": model,
+                       "choices": [{"index": 0, "delta": {"tool_calls": [{
+                           "index": idx, "id": c["id"], "type": "function",
+                           "function": {"name": c["function"]["name"],
+                                        "arguments": c["function"]["arguments"]}}]},
+                                    "finish_reason": None}]})
         self._sse({"id": cmpl_id, "object": "chat.completion.chunk", "created": created,
                    "model": model,
-                   "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                   "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
                    "usage": {"prompt_tokens": ptoks, "completion_tokens": ctoks,
                              "total_tokens": ptoks + ctoks}})
         self.wfile.write(b"data: [DONE]\n\n")
@@ -268,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": {"message": str(e), "type": "diffusion_engine_error"}}, status=500)
             return
-        text, _ = _split_channels(raw)
+        text, _, _ = _parse_output(raw)
         created = int(time.time())
         cmpl_id = "cmpl-diff-%d" % created
         if not stream:
