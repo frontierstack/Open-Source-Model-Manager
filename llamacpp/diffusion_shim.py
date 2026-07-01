@@ -16,6 +16,7 @@ stdlib only (no pip). Requests are serialized through the single engine process.
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import threading
@@ -32,6 +33,10 @@ TEMP       = os.environ.get("LLAMA_TEMP", "0.7")
 CTX_SIZE   = os.environ.get("LLAMA_CTX_SIZE", "")
 MODEL_ID   = os.environ.get("LLAMA_MODEL_ID") or os.path.basename(MODEL_PATH)
 BIN        = os.environ.get("LLAMA_DIFFUSION_BIN", "llama-diffusion-cli")
+# Hard ceiling on how long a single generation may take before the engine is
+# considered wedged and respawned. Generous (diffusion is slow) but finite, so a
+# stalled/desynced CLI or an aborted request can NEVER block the model forever.
+GEN_TIMEOUT = float(os.environ.get("LLAMA_DIFFUSION_TIMEOUT", "300"))
 # Thinking OFF by default: the channel-thought reasoning is the dominant latency cost, so
 # skip it for responsiveness. Enabled by either the diffusion-specific override
 # (LLAMA_DIFFUSION_THINKING) or the UI's general reasoning toggle (LLAMA_REASONING=on);
@@ -101,48 +106,106 @@ def _flatten_content(content):
     return str(content)
 
 
+def _respawn(reason):
+    """Kill and reload the engine so the next request starts from a clean, in-sync
+    stream. Called under _lock after a stall/error. Reloads the model (~30s)."""
+    global _proc, _ready
+    _log("respawning engine (%s)" % reason)
+    _ready = False
+    try:
+        if _proc:
+            _proc.kill()
+            _proc.wait(timeout=10)
+    except Exception:
+        pass
+    _proc = None
+    start_engine()   # blocks until READY
+
+
+def _read_until_deadline(stream, n, deadline):
+    """Read exactly n bytes from stream, or raise TimeoutError past the deadline."""
+    buf = bytearray()
+    while len(buf) < n:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("read timeout")
+        r, _, _ = select.select([stream], [], [], remaining)
+        if not r:
+            raise TimeoutError("read timeout")
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            raise RuntimeError("engine closed the stream")
+        buf += chunk
+    return bytes(buf)
+
+
+def _readline_until_deadline(stream, deadline):
+    """Read one line, or raise TimeoutError past the deadline. (Unbuffered stdout,
+    so byte-at-a-time; the RESP header is short.)"""
+    buf = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("read timeout")
+        r, _, _ = select.select([stream], [], [], remaining)
+        if not r:
+            raise TimeoutError("read timeout")
+        ch = stream.read(1)
+        if not ch:
+            raise RuntimeError("engine closed the stream")
+        buf += ch
+        if ch == b"\n":
+            return bytes(buf)
+
+
 def generate(messages, tools=None):
     """Run one stateless turn through the resident engine. Thread-safe.
     `tools` (OpenAI function schemas, already compacted by the server-side tool
     router) are forwarded so the CLI template declares them and the model can
     emit tool calls. tools=None/empty -> byte-identical to the no-tools protocol.
-    The shim + CLI always ship in the same image, so the protocol never desyncs."""
-    if _proc is None or _proc.poll() is not None:
-        raise RuntimeError("diffusion engine is not running")
+
+    Robust against a wedged/desynced engine: the request is built as ONE buffer
+    and written atomically (no partial write can desync the length-prefixed
+    protocol), and the response read is bounded by GEN_TIMEOUT — on any
+    timeout/IO error the engine is respawned so a stalled or user-aborted request
+    can NEVER permanently block the model."""
     tools_bytes = b""
     if tools:
         try:
             tools_bytes = json.dumps(tools).encode("utf-8")
         except Exception:
             tools_bytes = b""
+    # Build the whole request up-front so the write is a single, atomic flush.
+    parts = [b"REQ %d %d\n" % (len(messages), len(tools_bytes))]
+    for m in messages:
+        role = str(m.get("role", "user")).replace(" ", "_")
+        body = _flatten_content(m.get("content", "")).encode("utf-8")
+        parts.append(("%s %d\n" % (role, len(body))).encode("utf-8"))
+        parts.append(body)
+        parts.append(b"\n")
+    if tools_bytes:
+        parts.append(tools_bytes)
+        parts.append(b"\n")
+    request = b"".join(parts)
+
     with _lock:
-        stdin = _proc.stdin
-        stdin.write(b"REQ %d %d\n" % (len(messages), len(tools_bytes)))
-        for m in messages:
-            role = str(m.get("role", "user"))
-            body = _flatten_content(m.get("content", "")).encode("utf-8")
-            stdin.write(("%s %d\n" % (role, len(body))).encode("utf-8"))
-            stdin.write(body)
-            stdin.write(b"\n")
-        if tools_bytes:
-            stdin.write(tools_bytes)
-            stdin.write(b"\n")
-        stdin.flush()
-        # Read stdout until the RESP header (tolerate any stray noise before it).
-        while True:
-            line = _proc.stdout.readline()
-            if not line:
-                raise RuntimeError("diffusion engine closed the stream")
-            if line.startswith(b"RESP "):
-                n = int(line[5:].strip())
-                buf = bytearray()
-                while len(buf) < n:
-                    chunk = _proc.stdout.read(n - len(buf))
-                    if not chunk:
-                        break
-                    buf += chunk
-                _proc.stdout.readline()  # trailing newline
-                return buf.decode("utf-8", "replace")
+        if _proc is None or _proc.poll() is not None:
+            _respawn("engine not running")
+        deadline = time.monotonic() + GEN_TIMEOUT
+        try:
+            _proc.stdin.write(request)
+            _proc.stdin.flush()
+            # Read stdout until the RESP header (tolerate stray noise before it).
+            while True:
+                line = _readline_until_deadline(_proc.stdout, deadline)
+                if line.startswith(b"RESP "):
+                    n = int(line[5:].strip())
+                    data = _read_until_deadline(_proc.stdout, n, deadline) if n > 0 else b""
+                    _readline_until_deadline(_proc.stdout, deadline)  # trailing newline
+                    return data.decode("utf-8", "replace")
+        except (TimeoutError, RuntimeError, BrokenPipeError, OSError, ValueError) as e:
+            _respawn("generate failed: %s" % e)
+            raise RuntimeError("diffusion engine stalled and was restarted; please retry")
 
 
 def _approx_tokens(text):
@@ -333,7 +396,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": {"message": str(e), "type": "diffusion_engine_error"}}, status=500)
             return
+        # Block-diffusion occasionally denoises to an empty canvas (stochastic at
+        # temp>0) -> an empty bubble. Retry ONCE on a fully-empty generation.
+        if not raw.strip():
+            _log("empty generation; retrying once")
+            try:
+                raw = generate(messages, tools)
+            except Exception:
+                pass
         text, reasoning, tool_calls = _parse_output(raw)
+        if not text and not tool_calls:
+            _log("empty content after parse; raw=%r" % (raw[:400],))
         oai_calls = [{"id": "call_diff_%d" % i, "type": "function",
                       "function": {"name": c["name"], "arguments": c["arguments"]}}
                      for i, c in enumerate(tool_calls)]
