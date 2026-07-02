@@ -18361,7 +18361,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // instructions, repeating them on every subsequent call wastes
         // tokens for no gain.
         const injectedSkillPrompts = new Set();
-        const SKILL_PROMPT_CHAR_CAP = 1500;
+        const SKILL_PROMPT_CHAR_CAP = 2000;
 
         // --- Auto-invoke base64_decode on input ---------------------------
         // Models inconsistently pick base64_decode out of a 70+ tool catalog
@@ -19762,7 +19762,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 if (skill && typeof skill.systemPrompt === 'string' && skill.systemPrompt.trim()) {
                                     let prompt = skill.systemPrompt.trim();
                                     if (prompt.length > SKILL_PROMPT_CHAR_CAP) {
-                                        prompt = prompt.slice(0, SKILL_PROMPT_CHAR_CAP) + '…';
+                                        // Truncate at a sentence/paragraph boundary so the model
+                                        // never sees a rule cut off mid-thought (the old mid-word
+                                        // slice silently dropped create_pdf's later markdown rules).
+                                        const cut = prompt.slice(0, SKILL_PROMPT_CHAR_CAP);
+                                        const bnd = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('.\n'), cut.lastIndexOf('\n\n'));
+                                        prompt = (bnd > SKILL_PROMPT_CHAR_CAP * 0.6 ? cut.slice(0, bnd + 1) : cut) + ' …';
+                                        console.warn(`[Chat Stream] systemPrompt for "${skill.name}" exceeds ${SKILL_PROMPT_CHAR_CAP} chars (${skill.systemPrompt.length}) — truncated at sentence boundary`);
                                     }
                                     pendingSkillPrompts.push({ name: skill.name, prompt });
                                     injectedSkillPrompts.add(callName);
@@ -25563,7 +25569,8 @@ app.use((req, res) => {
                 function: {
                     name: 'sniff_media_streams',
                     description:
-                        'USE WHEN a web page plays a video/audio stream but the link is NOT in the page HTML — modern players (live TV, sports, embedded players, many news/streaming sites) load the real media over the network as an HLS playlist (.m3u8), a DASH manifest (.mpd), or a dynamically-fetched .mp4. ' +
+                        'USE WHEN a page plays video/audio but the stream URL is NOT in the page HTML — captures HLS (.m3u8) / DASH (.mpd) / .mp4 URLs from browser network traffic. ' +
+                        'Modern players (live TV, sports, embedded players, many news/streaming sites) load the real media over the network at play time. ' +
                         'This opens the page in a REAL browser, presses play, and watches the NETWORK TRAFFIC to capture those streaming URLs for you (it does what a human opening DevTools → Network would do). ' +
                         'It returns the media URLs it observed (manifests first, then direct files). To DISPLAY one inline in the chat, pass it to find_video in `urls` — a .m3u8 plays via the built-in HLS player. ' +
                         'Reach for this when find_video could not extract a video from a page, or when the user explicitly wants the underlying stream link. Give it the actual watch/player page (not a search-results page). One page per call; rejects private addresses.',
@@ -26880,7 +26887,16 @@ app.use((req, res) => {
                         .replace(/\bin (?:your |the )?workspace[^.]*\./gi, '')
                         .trim();
                     const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || '';
-                    if (firstSentence && firstSentence.length <= 150 - desc.length - 3) {
+                    // Skip augmentation when the systemPrompt's first sentence is a
+                    // near-duplicate of the description — it used to produce noise
+                    // like "Create a new file with specified content — create new files."
+                    const wordsOf = (t) => new Set(t.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+                    const dw = wordsOf(desc);
+                    const fw = wordsOf(firstSentence);
+                    let shared = 0;
+                    for (const w of fw) if (dw.has(w)) shared++;
+                    const nearDup = fw.size > 0 && shared / fw.size >= 0.6;
+                    if (!nearDup && firstSentence && firstSentence.length <= 150 - desc.length - 3) {
                         desc = `${desc} — ${firstSentence}`;
                     }
                 }
