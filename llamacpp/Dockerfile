@@ -61,58 +61,20 @@ RUN cmake -B build \
     -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined" \
     && cmake --build build --config Release -j$(nproc) --target llama-server
 
-# Stage 1b: Build llama-diffusion-cli from the DiffusionGemma PR (#24423) fork.
-# Kept as a SEPARATE clone/build so the diffusion-gemma architecture (unmerged upstream)
-# never changes the llama-server used for every other model. Only diffusion-gemma GGUFs
-# route to this binary (via the shim); all other models keep the master llama-server above.
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS diffusion-builder
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY=localhost,127.0.0.1
-ENV HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} NO_PROXY=${NO_PROXY}
-ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY} no_proxy=${NO_PROXY}
-# Narrow to the GPU archs you deploy on to cut build time; full list for portability.
-# Override for a fast single-arch build: --build-arg DIFFUSION_CUDA_ARCHS=120
-ARG DIFFUSION_CUDA_ARCHS="52;60;70;75;80;86;89;90;120"
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git ca-certificates python3 && rm -rf /var/lib/apt/lists/*
-WORKDIR /build
-RUN git clone --depth 1 --branch diffusion-visual-updates \
-    https://github.com/danielhanchen/llama.cpp.git
-WORKDIR /build/llama.cpp
-# Patch in the resident serve-stdio protocol the shim drives (idempotent).
-COPY inject-diffusion-serve.py /tmp/inject-diffusion-serve.py
-RUN python3 /tmp/inject-diffusion-serve.py examples/diffusion/diffusion-cli.cpp
-ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH
-ENV LDFLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined"
-RUN cmake -B build \
-    -DGGML_CUDA=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="${DIFFUSION_CUDA_ARCHS}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DLLAMA_CURL=OFF \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined" \
-    && cmake --build build --config Release -j$(nproc) --target llama-diffusion-cli
-
 # Stage 2: Runtime image (smaller footprint)
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
-# Install runtime dependencies (python3 drives the DiffusionGemma shim; stdlib only)
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     curl \
-    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built static binaries: llama-server (all models) + llama-diffusion-cli (diffusion-gemma)
+# Copy the built static binary
 COPY --from=builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
-COPY --from=diffusion-builder /build/llama.cpp/build/bin/llama-diffusion-cli /usr/local/bin/llama-diffusion-cli
 
-# The resident OpenAI-compatible shim for diffusion-gemma
-COPY diffusion_shim.py /diffusion_shim.py
-
-# Ensure binaries are executable
-RUN chmod +x /usr/local/bin/llama-server /usr/local/bin/llama-diffusion-cli
+# Ensure binary is executable
+RUN chmod +x /usr/local/bin/llama-server
 
 # Create models directory
 RUN mkdir -p /models

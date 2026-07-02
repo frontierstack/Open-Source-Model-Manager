@@ -156,14 +156,8 @@ while [[ $# -gt 0 ]]; do
             echo "  GIT_SSL_NO_VERIFY             Set to true to skip git SSL verification"
             echo "  PIP_TRUSTED_HOST              pip trusted hosts"
             echo ""
-            echo "Build tuning:"
-            echo "  DIFFUSION_CUDA_ARCHS          GPU archs for the DiffusionGemma runner"
-            echo "                                (semicolon list, e.g. 120). Narrower = faster"
-            echo "                                llamacpp build. Unset = all archs (portable)."
-            echo ""
             echo "Example:"
             echo "  HTTP_PROXY=http://proxy:8080 ./build.sh"
-            echo "  DIFFUSION_CUDA_ARCHS=120 ./build.sh   # RTX 50-series only, faster"
             exit 0
             ;;
         *)
@@ -188,8 +182,8 @@ get_checksum() {
 
 # Checksum EVERY build-input file in a component dir (Dockerfile + shell + python), not
 # just the Dockerfile. These files are COPYed into the image (llamacpp/entrypoint.sh,
-# diffusion_shim.py, inject-diffusion-serve.py; sglang/entrypoint.sh), so editing one must
-# trigger a rebuild — hashing the Dockerfile alone silently missed those changes.
+# sglang/entrypoint.sh), so editing one must trigger a rebuild — hashing the
+# Dockerfile alone silently missed those changes.
 get_component_checksum() {
     local component=$1
     local dir="$PROJECT_DIR/${component}"
@@ -251,14 +245,6 @@ build_image() {
     [ -n "$GIT_SSL_NO_VERIFY" ]            && build_args+=(--build-arg "GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY")
     [ -n "$PIP_TRUSTED_HOST" ]             && build_args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
     [ -n "$PIP_CERT" ]                     && build_args+=(--build-arg "PIP_CERT=$PIP_CERT")
-
-    # llamacpp bundles a second CUDA build (the DiffusionGemma runner, llama-diffusion-cli).
-    # It defaults to the full GPU-arch matrix for portability; set DIFFUSION_CUDA_ARCHS to a
-    # narrower semicolon list (e.g. "120" for RTX 50-series only) to cut build time on a
-    # known deployment. Unset -> Dockerfile default (all archs).
-    if [ "$component" = "llamacpp" ] && [ -n "$DIFFUSION_CUDA_ARCHS" ]; then
-        build_args+=(--build-arg "DIFFUSION_CUDA_ARCHS=$DIFFUSION_CUDA_ARCHS")
-    fi
 
     local -a no_cache_args=()
     [ "$NO_CACHE" = true ] && no_cache_args=(--no-cache)
@@ -912,7 +898,7 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_SGLANG" = true ]; then
         # Sequential builds
         if [ "$BUILD_LLAMACPP" = true ]; then
             > "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null || true
-            start_build_spinner "Building llamacpp (~25–40 min; +DiffusionGemma runner)" "$BUILD_STATE_DIR/llamacpp.log"
+            start_build_spinner "Building llamacpp (~20–30 min)" "$BUILD_STATE_DIR/llamacpp.log"
             if build_image "llamacpp" "modelserver-llamacpp:latest"; then
                 stop_build_spinner
                 local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")

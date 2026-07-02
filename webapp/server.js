@@ -4193,6 +4193,17 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Models permission required' });
     }
     const { modelName } = req.params;
+    // Block-diffusion (diffusion-gemma) checkpoints are NOT supported yet: the
+    // architecture is unmerged upstream (llama.cpp PRs #24423 / #24427) and needs
+    // a dedicated denoising decode loop that llama-server / sglang don't have.
+    // Reject up-front with a clear message instead of crash-looping the container.
+    if (/diffusion/i.test(modelName)) {
+        return res.status(400).json({
+            error: 'Diffusion language models (diffusion-gemma) are not supported yet — ' +
+                   'the architecture is experimental and unmerged in llama.cpp (PRs #24423/#24427). ' +
+                   'Load a standard autoregressive model instead.',
+        });
+    }
     // Backend defaults to llamacpp (works with older GPUs)
     const backend = req.body.backend || 'llamacpp';
 
@@ -4841,12 +4852,6 @@ async function createLlamacppInstance(modelName, modelPath, config) {
 
         await container.start();
 
-        // DiffusionGemma is served by the shim (llama-diffusion-cli), not
-        // llama-server: it needs the aggressive tool-router profile (whole prompt
-        // must fit one ~ctx-sized compute batch) and shim tool delivery. Detect
-        // by model name (diffusion GGUFs are named *diffusion*); the entrypoint's
-        // GGUF-arch check is the authoritative runtime gate.
-        const isDiffusion = /diffusion/i.test(modelName);
         modelInstances.set(modelName, {
             containerId: container.id,
             containerName,
@@ -4854,9 +4859,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             internalPort,
             status: 'starting',
             config,
-            backend: 'llamacpp',
-            isDiffusion,
-            diffusionNPredict: isDiffusion ? Number(process.env.LLAMA_DIFFUSION_N_PREDICT || 2048) : undefined,
+            backend: 'llamacpp'
         });
         startSystemMonitoring();
 
@@ -16268,27 +16271,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Get context size configuration
-        let contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
-        // Block-diffusion (DiffusionGemma) processes the WHOLE prompt in one compute
-        // batch (~ubatch), not the full KV context. Its real per-turn prompt limit is
-        // the ubatch (~= n_predict + 2048), NOT the loaded ctx (e.g. 131072). If we
-        // budget against the loaded ctx, a large round-1 tool result (a fetched
-        // article) is never trimmed, overflows the ubatch, the model can't answer,
-        // and it LOOPS re-calling the tool. Cap the effective context to the ubatch
-        // so history/tool-results are trimmed to fit and the model actually responds.
-        // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
-        // from container discovery WITHOUT that detection — so fall back to the model
-        // name and persist it on the instance (the tool router reads it later too).
-        // Block-diffusion's real per-turn limit is its COMPUTE BATCH (n_ubatch): the
-        // whole [prompt|canvas] must fit in one batch. The shim launches the CLI with
-        // -ub LLAMA_DIFFUSION_UBATCH (default 6144 — keep both defaults in sync), so
-        // budget prompts against that physical capacity, not the loaded KV ctx.
-        if (targetInstance && (targetInstance.isDiffusion ||
-                /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
-            targetInstance.isDiffusion = true;
-            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || 6144;
-            contextSize = Math.min(contextSize, ubatch);
-        }
+        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
@@ -16802,27 +16785,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // Get context size configuration
-        let contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
-        // Block-diffusion (DiffusionGemma) processes the WHOLE prompt in one compute
-        // batch (~ubatch), not the full KV context. Its real per-turn prompt limit is
-        // the ubatch (~= n_predict + 2048), NOT the loaded ctx (e.g. 131072). If we
-        // budget against the loaded ctx, a large round-1 tool result (a fetched
-        // article) is never trimmed, overflows the ubatch, the model can't answer,
-        // and it LOOPS re-calling the tool. Cap the effective context to the ubatch
-        // so history/tool-results are trimmed to fit and the model actually responds.
-        // isDiffusion is set at load, but a webapp restart rebuilds modelInstances
-        // from container discovery WITHOUT that detection — so fall back to the model
-        // name and persist it on the instance (the tool router reads it later too).
-        // Block-diffusion's real per-turn limit is its COMPUTE BATCH (n_ubatch): the
-        // whole [prompt|canvas] must fit in one batch. The shim launches the CLI with
-        // -ub LLAMA_DIFFUSION_UBATCH (default 6144 — keep both defaults in sync), so
-        // budget prompts against that physical capacity, not the loaded KV ctx.
-        if (targetInstance && (targetInstance.isDiffusion ||
-                /diffusion/i.test(targetInstance.modelName || targetModel || ''))) {
-            targetInstance.isDiffusion = true;
-            const ubatch = Number(process.env.LLAMA_DIFFUSION_UBATCH) || 6144;
-            contextSize = Math.min(contextSize, ubatch);
-        }
+        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
@@ -18525,22 +18488,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 reqOverride: req.body?.toolRouter,
             });
             if (routeProfile !== 'off' && fullToolCatalog.length) {
-                const isDiff = !!targetInstance?.isDiffusion;
-                let hardCeil = null;
-                if (isDiff) {
-                    const nPredict = targetInstance?.diffusionNPredict || 2048;
-                    const estMsgs = estimateTokens(JSON.stringify(chatMessages || []));
-                    hardCeil = Math.max(256, contextSize - nPredict - estMsgs - 256);
-                }
                 const sel = await toolRouter.selectForTurn({
                     fullCatalog: fullToolCatalog,
                     query: latestUserText,
                     contextSize,
                     profile: routeProfile,
-                    isDiffusion: isDiff,
                     stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
                     forcedNames: preflightForcedTools,
-                    hardCeilingTok: hardCeil,
                 });
                 toolCatalog = sel.tools;
                 advertisedNames = sel.advertisedNames;

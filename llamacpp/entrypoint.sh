@@ -69,23 +69,6 @@ SPEC_TYPE=${LLAMA_SPEC_TYPE:-none}
 SPEC_DRAFT_MODEL=${LLAMA_SPEC_DRAFT_MODEL:-}
 SPEC_DRAFT_N_MAX=${LLAMA_SPEC_DRAFT_N_MAX:-3}
 
-# --- DiffusionGemma handoff ---------------------------------------------------
-# The diffusion-gemma architecture (llama.cpp PR #24423, unmerged upstream) is NOT
-# served by llama-server — it has only llama-diffusion-cli. If the GGUF declares that
-# architecture, hand off to the resident diffusion shim, which loads the model once
-# and exposes the SAME OpenAI-compatible HTTP API on $PORT that the webapp expects.
-# Metadata sits near the head of the GGUF, so a bounded head-scan avoids reading 16 GB.
-if head -c 20000000 "$MODEL_PATH" 2>/dev/null | grep -qa 'diffusion-gemma'; then
-    echo ">>> Detected diffusion-gemma architecture"
-    echo ">>> Serving via llama-diffusion-cli shim (OpenAI-compatible) on port $PORT"
-    export LLAMA_MODEL_PATH="$MODEL_PATH"
-    export LLAMA_PORT="$PORT"
-    export LLAMA_N_GPU_LAYERS="$N_GPU_LAYERS"
-    export LLAMA_CTX_SIZE="$CTX_SIZE"
-    exec python3 /diffusion_shim.py
-fi
-# ------------------------------------------------------------------------------
-
 echo ">>> Starting llama.cpp server"
 echo "    Model: $MODEL_PATH"
 echo "    Port: $PORT"
