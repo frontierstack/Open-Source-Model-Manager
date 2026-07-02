@@ -19783,6 +19783,33 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             };
                             console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
                         }
+                        // Error-mentions-tool recovery: a failed tool result often NAMES
+                        // the companion tool to use ("write it first via create_file /
+                        // append_to_file"). Under the tool router that tool may not be
+                        // advertised this turn — the model then reasons "I don't have
+                        // create_file" and flails through the wrong tools (observed: 5
+                        // failed create_pdf/html_to_pdf calls on one turn). Scan failed
+                        // results for known tool names and force-advertise them next
+                        // round (same grow-only rebuild find_tools discoveries ride).
+                        if (toolCtx._forcedToolNames && typeof resultMsg.content === 'string') {
+                            const looksFailed = resultMsg.content.includes('"error"') || /"success"\s*:\s*false/.test(resultMsg.content);
+                            if (looksFailed) {
+                                try {
+                                    const errText = resultMsg.content.slice(0, 4000);
+                                    let forced = 0;
+                                    for (const def of fullToolCatalog) {
+                                        const n = def?.function?.name;
+                                        if (!n || n === call.function.name) continue;
+                                        if (errText.includes(n) && new RegExp(`\\b${n}\\b`).test(errText)) {
+                                            toolCtx._forcedToolNames.add(n);
+                                            if (++forced >= 3) break;
+                                        }
+                                    }
+                                    if (forced) console.log(`[toolRouter] failed ${call.function.name} result names ${forced} tool(s) — force-advertising next round`);
+                                } catch (_) { /* best effort */ }
+                            }
+                        }
+
                         // Record fingerprint + result hash for future loop checks.
                         try {
                             const rh = crypto.createHash('sha1')
@@ -21651,6 +21678,7 @@ async function addMissingDefaultSkills() {
                 added.push(t.name);
             } else if ((existing.code || '') !== (t.code || '')
                        || (existing.description || '') !== (t.description || '')
+                       || JSON.stringify(existing.parameters || {}) !== JSON.stringify(t.parameters || {})
                        || (t.systemPrompt !== undefined && (existing.systemPrompt || '') !== (t.systemPrompt || ''))
                        || (t.timeoutMs !== undefined && existing.timeoutMs !== t.timeoutMs)
                        || (t.memory !== undefined && existing.memory !== t.memory)
@@ -26492,14 +26520,23 @@ app.use((req, res) => {
     // Skills store their parameter list as a flat map
     //   { paramName: 'string' | 'number' | 'boolean' | 'array' | 'object' }
     // Convert to a JSON Schema object that OpenAI tool-calling understands.
-    // Every listed param is treated as required — skill implementations
-    // generally throw on missing arguments, so this matches their
-    // runtime contract. Unknown type hints fall back to "string".
+    // A trailing '?' on the type hint ('string?') marks the param OPTIONAL —
+    // it is omitted from `required`. This matters for either/or params
+    // (create_pdf content|contentFile, html_to_pdf htmlPath|content): marking
+    // ALL params required forced the model to FABRICATE a value for the
+    // alternate it wasn't using (an invented /workspace/x.md path) and then
+    // fail on it — observed burning 5+ tool calls on a single create_pdf.
+    // Un-suffixed params stay required — skill implementations generally
+    // throw on missing arguments. Unknown type hints fall back to "string".
     function paramsToJsonSchema(params) {
         const properties = {};
         const required = [];
         if (params && typeof params === 'object') {
-            for (const [k, v] of Object.entries(params)) {
+            for (const [k, rawHint] of Object.entries(params)) {
+                let hintStr = String(rawHint || '');
+                const optional = hintStr.endsWith('?');
+                if (optional) hintStr = hintStr.slice(0, -1);
+                const v = hintStr;
                 const hint = String(v || '').toLowerCase();
                 let type = 'string';
                 if (hint === 'number' || hint === 'integer' || hint === 'float') type = 'number';
@@ -26509,7 +26546,7 @@ app.use((req, res) => {
                 properties[k] = type === 'array'
                     ? { type: 'array', items: { type: 'string' } }
                     : { type };
-                required.push(k);
+                if (!optional) required.push(k);
             }
         }
         return {
