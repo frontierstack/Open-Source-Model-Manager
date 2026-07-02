@@ -173,6 +173,42 @@ def op_ingest(body):
     return {'ok': True, 'chunkCount': len(chunks)}
 
 
+def op_ingest_bulk(body):
+    """Ingest MANY docs in one call: docs=[{docId, filename?, chunks:[...]}, ...].
+    One batched embed + one transaction/commit. Motivation: the tool router's
+    index build did 133 individual /ingest calls (per-call HTTP + commit fsync
+    under _write_lock) taking ~10s; bulk does the same work in well under 1s.
+    Additive op — existing ops unchanged."""
+    kb_dir = body['kbDir']
+    docs = []
+    for d in (body.get('docs') or []):
+        chunks = [c for c in (d.get('chunks') or []) if isinstance(c, str) and c.strip()]
+        if chunks and d.get('docId') is not None:
+            docs.append((str(d['docId']), str(d.get('filename') or ''), chunks))
+    if not docs:
+        return {'ok': True, 'docCount': 0, 'chunkCount': 0}
+    flat = [c for (_d, _f, chunks) in docs for c in chunks]
+    embs = _embed(flat)
+    rows = []
+    k = 0
+    for (doc_id, filename, chunks) in docs:
+        for i, c in enumerate(chunks):
+            rows.append((doc_id, filename, i, c, embs[k].tobytes()))
+            k += 1
+    with _write_lock:
+        conn = _connect(kb_dir)
+        try:
+            conn.executemany(
+                'INSERT INTO chunks (doc_id, filename, ord, text, emb) VALUES (?,?,?,?,?)',
+                rows,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    _invalidate(kb_dir)
+    return {'ok': True, 'docCount': len(docs), 'chunkCount': len(rows)}
+
+
 def op_search(body):
     kb_dir = body['kbDir']
     query = str(body.get('query') or '').strip()
@@ -267,8 +303,8 @@ def op_get_doc(body):
             'charCount': len(text), 'truncated': truncated, 'text': text}
 
 
-OPS = {'/ingest': op_ingest, '/search': op_search, '/delete_doc': op_delete_doc,
-       '/stats': op_stats, '/get_doc': op_get_doc}
+OPS = {'/ingest': op_ingest, '/ingest_bulk': op_ingest_bulk, '/search': op_search,
+       '/delete_doc': op_delete_doc, '/stats': op_stats, '/get_doc': op_get_doc}
 
 
 # ---------------------------------------------------------------------------

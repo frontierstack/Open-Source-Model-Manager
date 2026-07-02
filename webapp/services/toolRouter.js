@@ -187,6 +187,38 @@ function recordConversationToolUse(convId, name) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-conversation selection stability (prompt-cache friendliness).
+//
+// llama.cpp reuses the KV cache for the LONGEST COMMON PREFIX of consecutive
+// requests on a slot. The tool schemas render into the chat-template prefix
+// (before the history), so a per-turn re-selection that changes even ONE tool
+// (or their order) invalidates the whole cache and forces a full prompt
+// re-eval — measured 2,842 tokens / 10.4s of dead "Thinking..." time on a
+// 2-turn Qwen-35B conversation. To keep the prefix byte-identical across
+// turns, a conversation REUSES its previous advertised array verbatim while
+// it still covers the new turn's needs, and otherwise GROWS it append-only
+// (old order preserved, new tools at the end) so the prefix diverges as late
+// as possible. Falls back to a fresh selection when the union would blow the
+// budget (accepting one re-eval).
+// ---------------------------------------------------------------------------
+function getSelectionCache(convId) {
+    const e = convId && sticky.get(convId);
+    return (e && e.lastSel) || null;
+}
+function setSelectionCache(convId, sel, level) {
+    if (!convId) return;
+    let e = sticky.get(convId);
+    if (!e) { e = { names: new Set(), at: 0 }; sticky.set(convId, e); }
+    e.at = Date.now();
+    e.lastSel = {
+        level,
+        names: sel.tools.map(t => t.function.name),
+        tools: sel.tools.slice(),
+        advertisedNames: new Set(sel.advertisedNames),
+    };
+}
+
 /** Sticky names for a conversation, SEEDED from inbound history tool_calls so a
  *  fresh process / background turn / reconnect still preserves in-use tools. */
 function getSticky(convId, chatMessages) {
@@ -239,10 +271,14 @@ async function selectForTurn(opts) {
     const {
         fullCatalog = [], query = '', contextSize = 4096, profile = 'balanced',
         isDiffusion = false, stickyNames = new Set(), forcedNames = new Set(),
-        hardCeilingTok = null,
+        hardCeilingTok = null, convId = null,
     } = opts || {};
 
-    const present = new Map(fullCatalog.map(d => [d.function.name, d]));
+    // Defensive: drop malformed defs (no .function.name) instead of throwing —
+    // a single bad entry would otherwise trip the seam's fail-open and silently
+    // disable routing for the whole turn.
+    const validCatalog = fullCatalog.filter(d => d && d.function && d.function.name);
+    const present = new Map(validCatalog.map(d => [d.function.name, d]));
     const level = profile === 'aggressive' ? 'aggressive' : (profile === 'balanced' ? 'light' : 'off');
 
     // budget
@@ -323,12 +359,61 @@ async function selectForTurn(opts) {
         chosenSet.add('find_tools');
     }
 
-    return {
+    // 7) Per-conversation prompt-cache stability (see getSelectionCache): reuse
+    // the previous turn's array VERBATIM when it still covers this turn's picks;
+    // otherwise grow it append-only. A byte-identical tools block keeps the
+    // rendered prompt prefix identical -> llama.cpp reuses the KV cache instead
+    // of re-evaluating the whole history (measured ~10s/turn on a 35B model).
+    if (convId) {
+        const cached = getSelectionCache(convId);
+        if (cached && cached.level === level) {
+            const stale = cached.names.some(n => n !== 'find_tools' && !present.has(n));
+            if (!stale) {
+                const cachedSet = new Set(cached.names);
+                // Coverage = what this turn genuinely NEEDS: the mandatory tiers
+                // (forced/core/sticky/intent) + STRONG semantic picks. The
+                // borderline KEEP/FLOOR tail differs on every query — chasing it
+                // would grow (and invalidate) the block every turn, and a full
+                // prompt re-eval (~10s on a 35B) costs far more than the tail is
+                // worth; find_tools + name-dispatch + grow-on-use recover it.
+                const needed = [...new Set([...mandatory, ...strong])].filter(n => present.has(n));
+                const missing = needed.filter(n => !cachedSet.has(n));
+                if (!missing.length) {
+                    // full coverage -> byte-identical reuse
+                    return {
+                        tools: cached.tools.slice(),
+                        advertisedNames: new Set(cached.advertisedNames),
+                        mode: mode + '+stable',
+                        droppedCount: fullCatalog.length - cached.names.length,
+                    };
+                }
+                // append-only grow, bounded so a long conversation can't bloat the block
+                const grownCount = cached.names.length + missing.length;
+                const grownTools = [...cached.tools, ...missing.map(n => compactOf.get(n) || compactSchema(present.get(n), level))];
+                const grownCost = estTokens(JSON.stringify(grownTools));
+                if (grownCount <= Math.ceil(kmax * 1.5) && grownCost <= Math.min(budget * 1.5, hardCeil)) {
+                    const grown = {
+                        tools: grownTools,
+                        advertisedNames: new Set([...cached.advertisedNames, ...missing]),
+                        mode: mode + '+grown',
+                        droppedCount: fullCatalog.length - grownCount,
+                    };
+                    setSelectionCache(convId, grown, level);
+                    return grown;
+                }
+                // fall through: union too big -> fresh selection (one re-eval)
+            }
+        }
+    }
+
+    const fresh = {
         tools: outTools.slice(),   // plain mutable array (forced-synthesis length=0/push restore still works)
         advertisedNames: chosenSet,
         mode,
         droppedCount: fullCatalog.length - chosen.length,
     };
+    if (convId) setSelectionCache(convId, fresh, level);
+    return fresh;
 }
 
 module.exports = {

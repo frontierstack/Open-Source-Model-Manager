@@ -12702,6 +12702,34 @@ async function fetchUrlAsFile(url, options = {}) {
 
 // Helper function to fetch content from a URL with timeout
 // Uses direct file download → Scrapling → Playwright (with XHR interception) → axios fallback chain
+// Per-host escalation memory: which cascade layer actually served this host
+// last time. Benchmarked cost of NOT knowing: vuejs.org spent 11.2s failing
+// through axios (shell) -> Scrapling (still a shell) before its own warm
+// Playwright pool returned the page in ~2s; yahoo/nytimes burned ~3-6s on
+// axios before Scrapling served them. Remembering the working layer for a few
+// hours skips the doomed cheaper layers on repeat visits (a chat turn usually
+// hits the same host several times: search result + article + follow-ups).
+// axios successes CLEAR the memo, so a host that becomes cheap again recovers;
+// entries expire after HOST_MEMO_TTL_MS and the map is size-capped.
+const hostFetchMemo = new Map();   // host -> { layer: 'scrapling'|'playwright', at }
+const HOST_MEMO_TTL_MS = 6 * 3600 * 1000;
+const HOST_MEMO_CAP = 500;
+function hostOf(url) { try { return new URL(url).hostname; } catch (_) { return null; } }
+function getHostMemo(url) {
+    const h = hostOf(url);
+    const e = h && hostFetchMemo.get(h);
+    if (!e) return null;
+    if (Date.now() - e.at > HOST_MEMO_TTL_MS) { hostFetchMemo.delete(h); return null; }
+    return e.layer;
+}
+function setHostMemo(url, layer) {
+    const h = hostOf(url);
+    if (!h) return;
+    if (layer === null) { hostFetchMemo.delete(h); return; }
+    hostFetchMemo.set(h, { layer, at: Date.now() });
+    while (hostFetchMemo.size > HOST_MEMO_CAP) hostFetchMemo.delete(hostFetchMemo.keys().next().value);
+}
+
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
     const maxLength = options.maxLength || 12000;
@@ -12710,6 +12738,9 @@ async function fetchUrlContent(url, options = {}) {
     // This avoids wasting time on Scrapling/Playwright for binary files
     const fileResult = await fetchUrlAsFile(url, { timeout, maxLength });
     if (fileResult) return fileResult;
+
+    // Escalation memory: start at the layer that served this host last time.
+    const memoLayer = getHostMemo(url);
 
     // ---- Axios fast path -------------------------------------------------
     // A cheap HTTP GET first. The Scrapling-first cascade below launches a
@@ -12725,8 +12756,8 @@ async function fetchUrlContent(url, options = {}) {
     // browser even if a later stage (Scrapling) returns a short-but->500 shell —
     // Scrapling is a stealth FETCHER, not a full JS engine, so a pure client-
     // rendered app (e.g. vuejs.org) otherwise dead-ends at a ~700-char nav shell.
-    let forceBrowser = false;
-    if (!options.includeLinks) {
+    let forceBrowser = memoLayer === 'playwright';
+    if (!options.includeLinks && !memoLayer) {
         try {
             const ax = await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true });
             if (ax && ax.success) {
@@ -12735,6 +12766,7 @@ async function fetchUrlContent(url, options = {}) {
                 // out of the extracted text, so the text-only scan never saw it.
                 const challenged = looksLikeChallenge(ax.rawHtml || ax.content || '');
                 if (ax.content && !tooThin && !challenged) {
+                    setHostMemo(url, null);   // host is cheap — clear any stale escalation
                     return {
                         success: true,
                         url,
@@ -12752,8 +12784,10 @@ async function fetchUrlContent(url, options = {}) {
         } catch (_) { /* fall through to the Scrapling → Playwright cascade */ }
     }
 
-    // Try Scrapling first if available (best CAPTCHA evasion)
-    if (scraplingService) {
+    // Try Scrapling first if available (best CAPTCHA evasion). Skipped when the
+    // memo says this host needed a real browser last time — Scrapling is a
+    // stealth fetcher, not a JS engine, and re-proving that costs seconds.
+    if (scraplingService && memoLayer !== 'playwright') {
         try {
             const scraplingResult = await scraplingService.fetchUrl(url, {
                 timeout,
@@ -12770,6 +12804,7 @@ async function fetchUrlContent(url, options = {}) {
             // result means Scrapling didn't render the app either; go to Playwright.
             const stillShell = forceBrowser && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
             if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell) {
+                setHostMemo(url, 'scrapling');   // skip the axios probe for this host next time
                 return {
                     success: true,
                     url,
@@ -12799,6 +12834,7 @@ async function fetchUrlContent(url, options = {}) {
             });
 
             if (result.success) {
+                setHostMemo(url, 'playwright');   // go straight to the browser for this host next time
                 return { ...result, source: 'playwright' };
             }
 
@@ -18495,6 +18531,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     profile: routeProfile,
                     stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
                     forcedNames: preflightForcedTools,
+                    convId: streamingConversationId,   // prompt-cache-stable selection per conversation
                 });
                 toolCatalog = sel.tools;
                 advertisedNames = sel.advertisedNames;
