@@ -24774,6 +24774,18 @@ app.use((req, res) => {
             };
         },
         async execute(args, ctx) {
+            // Serialize find_image calls within one turn: the model often
+            // emits several calls in ONE round and the stream handler
+            // dispatches them in parallel — without this lock, call 2's
+            // duplicate check runs before call 1 registers what it displayed
+            // (a race that re-renders the same picture). The lock lives on the
+            // per-turn toolCtx, so separate turns never block each other.
+            const prev = (ctx && ctx._findImageLock) || Promise.resolve();
+            const run = prev.catch(() => {}).then(() => this._executeInner(args, ctx));
+            if (ctx) ctx._findImageLock = run.catch(() => {});
+            return run;
+        },
+        async _executeInner(args, ctx) {
             const query = String(args?.query || '').trim();
             const count = Math.min(8, Math.max(1, parseInt(args?.count || 4, 10)));
             const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -24887,15 +24899,61 @@ app.use((req, res) => {
             const normKey = (u) => (typeof u === 'string'
                 ? u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '').toLowerCase()
                 : '');
+            // Same-file fingerprint: host + filename stem. Catches the SAME
+            // picture reached through two different paths/renditions of one
+            // CDN (a listing photo passed as .../bigphoto/788/7056788_0.jpg in
+            // one call and a size-variant directory in the next). Guarded to
+            // specific-looking stems so two unrelated /image.jpg files on one
+            // host never collapse; query strings are ignored here (size params
+            // vary per rendition of the same file — normKey still keeps them
+            // for the exact-URL key, so query-addressed CDNs stay distinct).
+            const GENERIC_STEM = /^(?:image|img|photo|picture|default|thumb|thumbnail|preview|large|medium|small|original|full|main|index|file|download|media|content|asset|banner|header|cover)$/i;
+            const fpKey = (u) => {
+                try {
+                    const p = new URL(u);
+                    const stem = decodeURIComponent(p.pathname.split('/').pop() || '').replace(/\.[a-z0-9]{2,5}$/i, '');
+                    if (!stem || stem.length < 6 || GENERIC_STEM.test(stem)) return '';
+                    return `fp:${p.hostname.replace(/^www\./i, '').toLowerCase()}/${stem.toLowerCase()}`;
+                } catch (_) { return ''; }
+            };
+            // Every identity key for an image (source url, thumbnail url,
+            // filename fingerprints) — treat it as a duplicate if ANY key
+            // matches an image already displayed.
+            const imageKeys = (im) => {
+                const keys = new Set();
+                for (const u of [im && im.url, im && im.thumbnail]) {
+                    if (!u || typeof u !== 'string' || /^data:/i.test(u)) continue;
+                    const nk = normKey(u); if (nk) keys.add(`u:${nk}`);
+                    const fk = fpKey(u); if (fk) keys.add(fk);
+                }
+                return [...keys];
+            };
+            // Cross-call dedup: the model often calls find_image SEVERAL times
+            // in one reply (batches of listing photos, a retry after finding
+            // more URLs) — each call deduped internally, but the same picture
+            // slipped through ACROSS calls and rendered in multiple grids.
+            // toolCtx lives for the whole turn, so a Set stashed on it tracks
+            // everything already displayed in THIS reply; scoped to the turn
+            // (not the conversation) so "show me those again" next turn works.
+            const shownThisTurn = ctx ? (ctx._shownImageKeys || (ctx._shownImageKeys = new Set())) : null;
+            let dupSkipped = 0;
             const finalize = async (imgs, source) => {
-                // Pass 1: drop exact-duplicate SOURCE urls before probing — the
-                // model often lists the same image twice and providers return
+                // Pass 1: drop images already displayed earlier in this reply,
+                // then exact/same-file duplicates within this batch — the model
+                // often lists the same image twice and providers return
                 // repeats, so we'd otherwise probe + render the same picture in
                 // multiple tiles.
                 const seenSrc = new Set();
                 const candidates = (imgs || [])
                     .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
-                    .filter(im => { const k = normKey(im.url); if (!k || seenSrc.has(k)) return false; seenSrc.add(k); return true; })
+                    .filter(im => {
+                        const keys = imageKeys(im);
+                        if (!keys.length) return false;
+                        if (shownThisTurn && keys.some(k => shownThisTurn.has(k))) { dupSkipped++; return false; }
+                        if (keys.some(k => seenSrc.has(k))) return false;
+                        keys.forEach(k => seenSrc.add(k));
+                        return true;
+                    })
                     // Probe ~1.5x the needed count (+4 floor for dead-result
                     // tolerance) instead of 3x — every extra candidate pays a
                     // liveness probe + capture; 1.5x amply covers the dead-URL drop
@@ -24934,8 +24992,17 @@ app.use((req, res) => {
                     clean.push(im);
                     if (clean.length >= count) break;
                 }
+                // Register what we're about to display so a later find_image
+                // call in this same reply can't render it again.
+                if (shownThisTurn) for (const im of clean) imageKeys(im).forEach(k => shownThisTurn.add(k));
                 return clean.length
-                    ? { imageSpec: { query, images: clean }, count: clean.length, source }
+                    ? {
+                        imageSpec: { query, images: clean }, count: clean.length, source,
+                        ...(dupSkipped ? {
+                            duplicatesSkipped: dupSkipped,
+                            note: `${dupSkipped} image(s) were already displayed earlier in this reply and were skipped — do not re-send or re-display them.`,
+                        } : {}),
+                    }
                     : null;
             };
 
@@ -24999,6 +25066,15 @@ app.use((req, res) => {
 
                 const out = await finalize(images, pageUrls.length ? 'page-extract' : 'provided');
                 if (out) return out;
+                // Every provided image is already displayed earlier in this
+                // reply — succeed with a note instead of falling through to the
+                // built-in search (which would fetch unrelated pictures).
+                if (dupSkipped > 0) {
+                    return {
+                        alreadyDisplayed: dupSkipped,
+                        note: 'All of these images are already displayed earlier in this reply — they were not repeated. Do not re-send these URLs; move on to the rest of your answer.',
+                    };
+                }
                 // nothing valid provided → fall through to search
             }
 
@@ -25123,6 +25199,12 @@ app.use((req, res) => {
                 if (out) return out;
             } catch (_) { /* fall through to error */ }
 
+            if (dupSkipped > 0) {
+                return {
+                    alreadyDisplayed: dupSkipped,
+                    note: 'The images found for this query are already displayed earlier in this reply — they were not repeated. Move on to the rest of your answer.',
+                };
+            }
             return {
                 error: `No images found for "${query}" via the built-in image search.`,
                 query,

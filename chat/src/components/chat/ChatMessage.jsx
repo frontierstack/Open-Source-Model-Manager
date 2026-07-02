@@ -157,6 +157,39 @@ export default React.memo(function ChatMessage({
     const displayContent = isStreaming ? streamingContent : content;
     const displayReasoning = isStreaming ? streamingReasoning : reasoning;
 
+    // Deduped image grids for the bubble. The server now dedups find_image
+    // results across calls within one reply, but this stays as the display
+    // safety net: (1) already-saved messages from before that fix, and (2) the
+    // model repeating a grid image as its own markdown ![](url) in the prose —
+    // the prose copy keeps the model's caption/layout, so the GRID tile is the
+    // one suppressed. A spec whose images all dedup away is dropped entirely.
+    const bubbleImageSpecs = React.useMemo(() => {
+        if (isUser || !Array.isArray(toolCalls)) return [];
+        const specs = toolCalls.filter(tc => tc?.imageSpec && Array.isArray(tc.imageSpec.images)).map(tc => tc.imageSpec);
+        if (!specs.length) return [];
+        const norm = (u) => (typeof u === 'string' && !/^data:/i.test(u)
+            ? u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '').toLowerCase()
+            : '');
+        const seen = new Set();
+        // Images the model already embedded in the prose as markdown.
+        const md = typeof displayContent === 'string' ? displayContent : '';
+        const mdImg = /!\[[^\]]*\]\(\s*<?([^)\s>]+)/g;
+        let m;
+        while ((m = mdImg.exec(md))) { const k = norm(m[1]); if (k) seen.add(k); }
+        const out = [];
+        for (const spec of specs) {
+            const images = spec.images.filter(im => {
+                const keys = [norm(im?.thumbnail), norm(im?.url)].filter(Boolean);
+                if (!keys.length) return true; // data-url-only capture — can't key it, keep it
+                if (keys.some(k => seen.has(k))) return false;
+                keys.forEach(k => seen.add(k));
+                return true;
+            });
+            if (images.length) out.push(images.length === spec.images.length ? spec : { ...spec, images });
+        }
+        return out;
+    }, [isUser, toolCalls, displayContent]);
+
     const handleToggleReasoning = (e) => {
         e.stopPropagation();
         setReasoningExpanded(!reasoningExpanded);
@@ -544,10 +577,10 @@ export default React.memo(function ChatMessage({
                         grid in the main response body, same first-class treatment
                         as charts. The picture is what the user asked for, so it
                         belongs in the reply, not buried in the tool chip. */}
-                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.some(tc => tc?.imageSpec) && (
+                    {!isUser && !bodyCollapsed && bubbleImageSpecs.length > 0 && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: displayContent ? 12 : 0 }}>
-                            {toolCalls.filter(tc => tc?.imageSpec).map((tc, idx) => (
-                                <ImageBlock key={`bubble-image-${idx}`} spec={tc.imageSpec} />
+                            {bubbleImageSpecs.map((spec, idx) => (
+                                <ImageBlock key={`bubble-image-${idx}`} spec={spec} />
                             ))}
                         </div>
                     )}
