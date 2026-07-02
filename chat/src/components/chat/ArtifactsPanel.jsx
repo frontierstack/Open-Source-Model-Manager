@@ -693,7 +693,42 @@ function RunnablePreview({ code, language }) {
     );
 }
 
+// Chrome refuses "background" download requests to a self-signed-cert HTTPS
+// origin — the built-in PDF viewer's toolbar download button re-fetches the
+// URL out-of-page, hits the cert wall, and silently fails ("Network issue"),
+// even though the page itself loads fine under the user's cert exception.
+// Fetching the bytes in-page and handing the viewer a blob: URL makes the
+// in-preview download button save from memory instead of re-fetching.
+function useBlobPreviewUrl(active, enabled) {
+    const [blobUrl, setBlobUrl] = useState(null);
+    useEffect(() => {
+        setBlobUrl(null);
+        if (!enabled || !active?.url) return undefined;
+        let cancelled = false;
+        let objectUrl = null;
+        fetch(active.url, { credentials: 'include' })
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+            .then(blob => {
+                if (cancelled) { return; }
+                objectUrl = URL.createObjectURL(blob);
+                setBlobUrl(objectUrl);
+            })
+            .catch(() => { /* keep the direct URL fallback */ });
+        return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [active?.id, active?.url, enabled]);
+    return blobUrl;
+}
+
 function FilePreviewBody({ active, fileSource }) {
+    // Hook must run unconditionally (before the early returns below). Blob
+    // preview only for PDF/audio — video stays on the direct URL so large
+    // files stream instead of buffering fully into memory (its reliable
+    // download path is the panel-header button).
+    const wantsBlobPreview = active.kind === 'file' && !!active.url && ['pdf', 'audio'].includes(active.language);
+    const mediaBlobUrl = useBlobPreviewUrl(active, wantsBlobPreview);
     // Runnable languages (Python / Java) get a Run button right in the
     // Preview tab — executed server-side in the gVisor sandbox, with stdout
     // and any image artifacts (matplotlib PNGs, etc.) rendered inline here.
@@ -798,15 +833,14 @@ function FilePreviewBody({ active, fileSource }) {
         // sandbox attribute here — Chrome's built-in PDF viewer is an
         // internal extension that does not initialize in a sandboxed
         // iframe even with allow-same-origin / allow-scripts, and the
-        // frame falls back to chrome-error://chromewebdata/. Downloads
-        // from this preview are expected to go through the Download
-        // button in the panel header (native <a href download>), not
-        // the PDF viewer's own toolbar — that path is reliable while
-        // the in-PDF-viewer download button is subject to Chrome's
-        // sandboxed-iframe download policy.
+        // frame falls back to chrome-error://chromewebdata/. For PDF and
+        // audio the iframe swaps to a blob: URL once the bytes are
+        // fetched in-page (see useBlobPreviewUrl) so the viewer's own
+        // toolbar download button works despite the self-signed cert;
+        // video streams from the direct URL (header button downloads it).
         return (
             <iframe
-                src={active.url}
+                src={mediaBlobUrl || active.url}
                 title={active.title || 'preview'}
                 style={{ width: '100%', height: '100%', border: 0, background: 'var(--bg-2)' }}
             />
