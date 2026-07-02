@@ -24825,6 +24825,22 @@ app.use((req, res) => {
                     { timeout: 8000 },
                     (err, stdout) => resolve(err ? '' : String(stdout || '').trim().toLowerCase()));
             });
+            // Status probe: http code + content-type. Distinguishes an image
+            // that EXISTS but refuses non-browser clients (403/429 → worth the
+            // browser-capture escalation) from one that plain does not exist
+            // (404/410 → the model GUESSED the URL; skip capture entirely and
+            // tell it to stop enumerating).
+            const probeStatus = (url) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve({ code: '', ct: '' });
+                execFile('curl', ['-s', '-L', '-o', '/dev/null', '--max-time', '6', '-A', UA,
+                    '-w', '%{http_code} %{content_type}', '-r', '0-0', url],
+                    { timeout: 8000 },
+                    (err, stdout) => {
+                        if (err) return resolve({ code: '', ct: '' });
+                        const parts = String(stdout || '').trim().split(/\s+/);
+                        resolve({ code: parts[0] || '', ct: parts.slice(1).join(' ').toLowerCase() });
+                    });
+            });
             // The chats are served over HTTPS, so an http:// <img src> is blocked
             // as mixed content (broken-tile icon) even when curl can fetch it —
             // the render URL MUST be https. Most hosts serve the same path over
@@ -24859,30 +24875,52 @@ app.use((req, res) => {
             };
             const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;   // don't pull huge originals
             const MAX_RAW_EMBED_BYTES = 1.5 * 1024 * 1024; // cap for the no-reencode path
-            // Pull the bytes (prefer the full original, fall back to the thumbnail),
-            // confirm they're really an image, then downscale/re-encode via Jimp to
-            // keep the embedded data URL small. Formats Jimp can't decode (webp/svg)
-            // embed raw if under the cap. Returns a data: URL or null.
+            // Confirm bytes are really an image, then downscale/re-encode via
+            // Jimp to keep the embedded data URL small. Formats Jimp can't
+            // decode (webp/svg) embed raw if under the cap. dataURL or null.
+            const encodeImageBuf = async (buf) => {
+                if (!buf || !buf.length || buf.length > MAX_CAPTURE_BYTES) return null;
+                const mime = sniffImageMime(buf);
+                if (!mime) return null; // not an image (HTML 404 / error page)
+                try {
+                    const { Jimp } = require('jimp');
+                    const image = await Jimp.read(buf);
+                    if (image.bitmap.width > 1024) image.resize({ w: 1024 });
+                    const out = await image.getBuffer('image/jpeg', { quality: 78 });
+                    return `data:image/jpeg;base64,${out.toString('base64')}`;
+                } catch (_) {
+                    // Jimp can't decode this format (webp/svg/animated) — embed
+                    // the raw bytes if they're small enough; the browser renders
+                    // webp/svg data URLs natively.
+                    if (buf.length <= MAX_RAW_EMBED_BYTES) {
+                        return `data:${mime};base64,${buf.toString('base64')}`;
+                    }
+                    return null;
+                }
+            };
+            // "Save image as": pull the raw bytes server-side (prefer the full
+            // original, fall back to the thumbnail). curl first — no browser
+            // Referer/CSP/mixed-content constraints. If curl is refused too
+            // (TLS-fingerprinting bot protection 403s axios AND curl — the
+            // d545cd8 lesson, e.g. Akamai CDNs), escalate to the REAL browser:
+            // playwrightService.downloadFile navigates to the image and takes
+            // the response body — a genuine right-click "save image as".
             const captureAsDataUrl = async (im) => {
                 for (const src of [im.url, im.thumbnail]) {
                     if (!src || !/^https?:\/\//i.test(src)) continue;
-                    const buf = await curlBytes(src, im.sourceUrl || src);
-                    if (!buf || buf.length > MAX_CAPTURE_BYTES) continue;
-                    const mime = sniffImageMime(buf);
-                    if (!mime) continue; // not an image (HTML 404 / error page)
-                    try {
-                        const { Jimp } = require('jimp');
-                        const image = await Jimp.read(buf);
-                        if (image.bitmap.width > 1024) image.resize({ w: 1024 });
-                        const out = await image.getBuffer('image/jpeg', { quality: 78 });
-                        return `data:image/jpeg;base64,${out.toString('base64')}`;
-                    } catch (_) {
-                        // Jimp can't decode this format (webp/svg/animated) — embed
-                        // the raw bytes if they're small enough; the browser renders
-                        // webp/svg data URLs natively.
-                        if (buf.length <= MAX_RAW_EMBED_BYTES) {
-                            return `data:${mime};base64,${buf.toString('base64')}`;
-                        }
+                    const dataUrl = await encodeImageBuf(await curlBytes(src, im.sourceUrl || src));
+                    if (dataUrl) return dataUrl;
+                }
+                if (playwrightEnabled && playwrightService && typeof playwrightService.downloadFile === 'function') {
+                    for (const src of [im.url, im.thumbnail]) {
+                        if (!src || !/^https?:\/\//i.test(src)) continue;
+                        try {
+                            const dl = await playwrightService.downloadFile(toHttps(src), { timeout: 20000, maxBytes: MAX_CAPTURE_BYTES });
+                            if (dl && dl.success && dl.buffer) {
+                                const dataUrl = await encodeImageBuf(dl.buffer);
+                                if (dataUrl) return dataUrl;
+                            }
+                        } catch (_) { /* browser capture is best-effort */ }
                     }
                 }
                 return null;
@@ -24937,6 +24975,11 @@ app.use((req, res) => {
             // (not the conversation) so "show me those again" next turn works.
             const shownThisTurn = ctx ? (ctx._shownImageKeys || (ctx._shownImageKeys = new Set())) : null;
             let dupSkipped = 0;
+            const urlsProvided = Array.isArray(args?.urls) && args.urls.length > 0;
+            // Provided URLs the origin says do not exist (404/410) — the model
+            // guessed/enumerated them (gallery filenames are NOT sequential).
+            // Reported back so it stops fabricating and reads a real page.
+            const deadUrls = [];
             const finalize = async (imgs, source) => {
                 // Pass 1: drop images already displayed earlier in this reply,
                 // then exact/same-file duplicates within this batch — the model
@@ -24970,10 +25013,16 @@ app.use((req, res) => {
                     for (const t of renderTries) {
                         if (await probe(t)) return { ...im, thumbnail: t, url: toHttps(im.url) };
                     }
-                    // No URL hotlinks (404 / 403 / referer-gated / mixed-content).
+                    // Probes failed. If the origin says the file plainly does
+                    // not exist, skip the capture/browser escalation — no
+                    // client can fetch a 404 — and record it for the model.
+                    const st = await probeStatus(toHttps(im.url));
+                    if (/^4(?:04|10)$/.test(st.code)) { deadUrls.push(im.url); return null; }
+                    // No URL hotlinks (403 / referer-gated / mixed-content).
                     // Rather than drop the picture and leave the model with only a
-                    // dead link, "save image as": fetch the bytes server-side and
-                    // embed them as a data URL so it still renders inline.
+                    // dead link, "save image as": fetch the bytes server-side
+                    // (curl, then the real browser) and embed them as a data URL
+                    // so it still renders inline.
                     const dataUrl = await captureAsDataUrl(im);
                     if (dataUrl) return { ...im, thumbnail: dataUrl, url: toHttps(im.url), captured: true };
                     return null;
@@ -24995,12 +25044,17 @@ app.use((req, res) => {
                 // Register what we're about to display so a later find_image
                 // call in this same reply can't render it again.
                 if (shownThisTurn) for (const im of clean) imageKeys(im).forEach(k => shownThisTurn.add(k));
+                console.log(`[find_image] ${source}: displayed ${clean.length} of ${(imgs || []).length} candidate(s) (${dupSkipped} already shown, ${deadUrls.length} dead 404)`);
                 return clean.length
                     ? {
                         imageSpec: { query, images: clean }, count: clean.length, source,
                         ...(dupSkipped ? {
                             duplicatesSkipped: dupSkipped,
                             note: `${dupSkipped} image(s) were already displayed earlier in this reply and were skipped — do not re-send or re-display them.`,
+                        } : {}),
+                        ...(urlsProvided && deadUrls.length ? {
+                            deadSkipped: deadUrls.length,
+                            deadNote: `${deadUrls.length} provided URL(s) returned 404 — they do not exist. Do NOT guess or enumerate image URLs (gallery filenames are not sequential); only pass URLs you actually saw on a page, or pass the page URL itself and its rendered photos will be extracted.`,
                         } : {}),
                     }
                     : null;
@@ -25072,13 +25126,26 @@ app.use((req, res) => {
                 if (dupSkipped > 0) {
                     return {
                         alreadyDisplayed: dupSkipped,
-                        note: 'All of these images are already displayed earlier in this reply — they were not repeated. Do not re-send these URLs; move on to the rest of your answer.',
+                        ...(deadUrls.length ? { deadSkipped: deadUrls.length, deadUrls: deadUrls.slice(0, 12) } : {}),
+                        note: `${dupSkipped} of these image(s) are already displayed earlier in this reply — they were not repeated.${deadUrls.length ? ` ${deadUrls.length} other URL(s) returned 404 (they do not exist — do not guess/enumerate image URLs; pass the page URL instead).` : ''} Move on to the rest of your answer.`,
                     };
                 }
                 // nothing valid provided → fall through to search
             }
 
-            if (!query) return { error: 'Provide a `query` to search for, or `urls` to display.' };
+            if (!query) {
+                // urls were provided but none survived — say WHY instead of a
+                // generic "provide a query" (which sent the model into a loop
+                // of enumerating more fabricated gallery URLs).
+                if (urlsProvided) {
+                    return {
+                        error: `None of the ${args.urls.length} provided URL(s) yielded a displayable image${deadUrls.length ? ` — ${deadUrls.length} returned 404 (they do not exist; they were guessed, not found)` : ''}.`,
+                        ...(deadUrls.length ? { deadUrls: deadUrls.slice(0, 12) } : {}),
+                        hint: 'Do NOT guess or enumerate image URLs — gallery filenames are not sequential and guessed URLs 404. Pass the PAGE URL of the listing/gallery/article itself in `urls`: it is opened in a real browser and the rendered photos are extracted and saved server-side ("save image as"). Only pass direct image URLs you actually saw on a page you read.',
+                    };
+                }
+                return { error: 'Provide a `query` to search for, or `urls` to display.' };
+            }
 
             // --- Web-search-first gate ---------------------------------------
             // User preference: the model should source images via the web-search
