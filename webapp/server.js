@@ -19779,6 +19779,35 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             }
                         }
 
+                        // find_image results can embed captured pictures as
+                        // data: URLs (page screenshots, hotlink-blocked "save
+                        // image as" captures). Megabytes of base64 are useless
+                        // to the MODEL — and the char cap below would garble
+                        // the JSON, so the client never saw the imageSpec and
+                        // no tiles rendered. Split the payload: the full spec
+                        // (data URLs intact) rides the SSE + chip record for
+                        // rendering; the model-facing content gets a tiny
+                        // placeholder per captured thumbnail.
+                        let parsedFullSpec = null;
+                        if (typeof resultMsg.content === 'string' && resultMsg.content.includes('"data:image/')) {
+                            try {
+                                const full = JSON.parse(resultMsg.content);
+                                if (full && full.imageSpec && Array.isArray(full.imageSpec.images)) {
+                                    parsedFullSpec = full;
+                                    const lean = {
+                                        ...full,
+                                        imageSpec: {
+                                            ...full.imageSpec,
+                                            images: full.imageSpec.images.map(im => (im && typeof im.thumbnail === 'string' && im.thumbnail.startsWith('data:'))
+                                                ? { ...im, thumbnail: '[image bytes captured server-side — already displayed to the user inline]' }
+                                                : im),
+                                        },
+                                    };
+                                    resultMsg = { ...resultMsg, content: JSON.stringify(lean) };
+                                }
+                            } catch (_) { /* not JSON — leave as-is */ }
+                        }
+
                         // Per-tool-result size cap.
                         if (typeof resultMsg.content === 'string' && resultMsg.content.length > TOOL_RESULT_CHAR_CAP) {
                             const original = resultMsg.content.length;
@@ -19907,6 +19936,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 preview: String(resultMsg.content || '').slice(0, 240),
                                 chartSpec: (parsedForChip && parsedForChip.chartSpec) || undefined,
                                 chartSummary: (parsedForChip && typeof parsedForChip.summary === 'string') ? parsedForChip.summary : undefined,
+                                // full spec (real data URLs), not the model-facing lean copy
+                                imageSpec: ((parsedFullSpec && parsedFullSpec.imageSpec) || (parsedForChip && parsedForChip.imageSpec)) || undefined,
+                                videoSpec: (parsedForChip && parsedForChip.videoSpec) || undefined,
                                 artifacts: (chipArtifacts && chipArtifacts.length) ? chipArtifacts : undefined,
                                 sandboxed: policy.sandboxed,
                                 sandboxSource: policy.source,
@@ -19916,13 +19948,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         if (clientConnected) {
                             try {
                                 const preview = String(resultMsg.content || '').slice(0, 240);
-                                let parsedResult = null;
-                                if (resultMsg.content && typeof resultMsg.content === 'string') {
+                                // Prefer the pre-split full spec (captured data
+                                // URLs intact) — resultMsg.content now holds the
+                                // model-facing lean copy with placeholders.
+                                let parsedResult = parsedFullSpec;
+                                if (!parsedResult && resultMsg.content && typeof resultMsg.content === 'string') {
                                     try { parsedResult = JSON.parse(resultMsg.content); } catch { /* */ }
                                 }
                                 const RESULT_SIZE_CAP = 32 * 1024;
                                 const isChartTool = call?.function?.name === 'render_chart';
-                                const resultPayload = parsedResult && (isChartTool || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
+                                // imageSpec/videoSpec payloads are what the UI
+                                // renders from — exempt them from the size cap
+                                // like charts (a captured/screenshot thumbnail
+                                // is a data URL well past 32k by nature).
+                                const isSpecPayload = !!(parsedResult && (parsedResult.imageSpec || parsedResult.videoSpec));
+                                const resultPayload = parsedResult && (isChartTool || isSpecPayload || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
                                     ? parsedResult
                                     : undefined;
                                 res.write(`data: ${JSON.stringify({
@@ -24745,7 +24785,8 @@ app.use((req, res) => {
                 function: {
                     name: 'find_image',
                     description:
-                        'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
+                        'USE WHEN the user asks to find / show / display / extract / screenshot a picture, photo, or image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
+                        'To EXTRACT the image(s) FROM a specific page, pass the page URL in `urls` — it is opened in a real browser and the rendered images are pulled out. To SCREENSHOT a page (user explicitly asks for a screenshot/snapshot), pass the page URL in `urls` AND set screenshot:true — the rendered page itself is captured and displayed. ' +
                         'PREFERRED FLOW: FIRST use the `web` tool (search the web, or read a page with want:"images") to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The `web` tool sees the live web and finds the most relevant, current images. ' +
                         'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
                         'Pass EVERY image URL you find here even if you suspect the site blocks hotlinking — when a URL will not load directly the tool saves the picture server-side (like "save image as") and embeds the bytes so it still renders. NEVER fall back to printing the image URL as a text link. ' +
@@ -24765,6 +24806,10 @@ app.use((req, res) => {
                             retryDirect: {
                                 type: 'boolean',
                                 description: 'Set true ONLY after a web search surfaced no usable image URL, to run the built-in image search as a last resort.',
+                            },
+                            screenshot: {
+                                type: 'boolean',
+                                description: 'Set true when the user asks to SCREENSHOT/snapshot a page: each page URL in `urls` is rendered in a real browser and captured as a full-page screenshot (displayed inline) instead of extracting its images. Requires `urls`.',
                             },
                         },
                         required: [],
@@ -25140,9 +25185,53 @@ app.use((req, res) => {
                 }
 
                 let images = [...directImages];
+                // The screenshot flag rides on the args — but under the tool
+                // router the model only sees the description's first sentence,
+                // so it reliably passes the page URL yet misses the flag. The
+                // USER's ask is the ground truth: if they said screenshot/
+                // snapshot, capture the page — don't depend on the model
+                // relaying the parameter.
+                const askedForScreenshot = /screen ?shot|snapshot/i.test(String((ctx && ctx.latestUserText) || ''));
+                const wantScreenshot = args?.screenshot === true || args?.screenshot === 'true'
+                    || (askedForScreenshot && pageUrls.length > 0);
+                // Explicit screenshot request: capture the rendered PAGE itself
+                // (full-page, height-capped) instead of extracting its images.
+                // Challenge walls abort service-side; flat frames are dropped.
+                if (wantScreenshot && pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.screenshotPageImages === 'function') {
+                    for (const pg of pageUrls.slice(0, 2)) {
+                        try {
+                            const snap = await playwrightService.screenshotPageImages(pg.url, { mode: 'fullpage' });
+                            if (!snap || !snap.success) {
+                                if (snap && snap.aborted) console.log(`[find_image] page screenshot aborted (${snap.aborted}): ${String(pg.url).slice(0, 120)}`);
+                                continue;
+                            }
+                            let shotIdx = 0;
+                            for (const s of (snap.shots || [])) {
+                                // No flatness guard here: the user explicitly
+                                // asked for THIS page, and a sparse/mostly-white
+                                // page is still the page (challenge walls were
+                                // already aborted service-side). The guard is
+                                // for element shots, where flat = junk canvas.
+                                if (!s.buffer) continue;
+                                const dataUrl = await encodeImageBuf(s.buffer);
+                                if (!dataUrl) continue;
+                                images.push({
+                                    url: `${pg.url}#screenshot-${shotIdx++}`,
+                                    thumbnail: dataUrl,
+                                    title: snap.title || query || 'screenshot',
+                                    source: 'screenshot',
+                                    sourceUrl: pg.url,
+                                    license: null,
+                                    attribution: null,
+                                });
+                            }
+                            console.log(`[find_image] full-page screenshot: ${shotIdx} shot(s) of ${String(pg.url).slice(0, 120)}`);
+                        } catch (_) { /* best-effort per page */ }
+                    }
+                }
                 // Extract rendered images from any page URLs via Playwright
                 // (bounded — the pool is small). Largest images first.
-                if (pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.extractPageImages === 'function') {
+                else if (pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.extractPageImages === 'function') {
                     const perPage = Math.max(4, count * 2);
                     const targets = pageUrls.slice(0, 4);
                     // Render the gallery pages in PARALLEL (matches find_video's
@@ -25204,7 +25293,7 @@ app.use((req, res) => {
                     }
                 }
 
-                const out = await finalize(images, pageUrls.length ? 'page-extract' : 'provided');
+                const out = await finalize(images, pageUrls.length ? (wantScreenshot ? 'screenshot' : 'page-extract') : 'provided');
                 if (out) return out;
                 // Every provided image is already displayed earlier in this
                 // reply — succeed with a note instead of falling through to the
@@ -25219,6 +25308,14 @@ app.use((req, res) => {
                 // nothing valid provided → fall through to search
             }
 
+            // screenshot:true without urls can't capture anything — say
+            // exactly what is needed instead of wandering into search.
+            if ((args?.screenshot === true || args?.screenshot === 'true') && !urlsProvided) {
+                return {
+                    error: 'screenshot:true requires the page URL(s) in `urls`.',
+                    hint: 'Find the page URL first (web tool), then call find_image again with urls:["<page url>"] and screenshot:true to capture and display it.',
+                };
+            }
             if (!query) {
                 // urls were provided but none survived — say WHY instead of a
                 // generic "provide a query" (which sent the model into a loop
@@ -25227,7 +25324,7 @@ app.use((req, res) => {
                     return {
                         error: `None of the ${args.urls.length} provided URL(s) yielded a displayable image${deadUrls.length ? ` — ${deadUrls.length} returned 404 (they do not exist; they were guessed, not found)` : ''}.`,
                         ...(deadUrls.length ? { deadUrls: deadUrls.slice(0, 12) } : {}),
-                        hint: 'Do NOT guess or enumerate image URLs — gallery filenames are not sequential and guessed URLs 404. Pass the PAGE URL of the listing/gallery/article itself in `urls`: it is opened in a real browser and the rendered photos are extracted and saved server-side ("save image as"). Only pass direct image URLs you actually saw on a page you read.',
+                        hint: 'Do NOT guess or enumerate image URLs — gallery filenames are not sequential and guessed URLs 404. Pass the PAGE URL of the listing/gallery/article itself in `urls`: it is opened in a real browser and the rendered photos are extracted and saved server-side ("save image as"). Only pass direct image URLs you actually saw on a page you read. To capture the PAGE itself instead, call again with the page URL and screenshot:true.',
                     };
                 }
                 return { error: 'Provide a `query` to search for, or `urls` to display.' };
@@ -25363,6 +25460,22 @@ app.use((req, res) => {
                 query,
                 hint: 'Try a simpler, more visual query (the subject only). If it still finds nothing, use the `web` tool (search the web, or read a page with want:"images") to locate a real image URL on a relevant page, then call find_image again with that URL in `urls` to display it.',
             };
+        },
+    });
+
+    // Hidden alias: models asked for a screenshot sometimes invent a
+    // `screenshot` tool call (observed live) — catch it and route to
+    // find_image's screenshot mode instead of erroring with "unknown tool".
+    // Hidden (build → null) so the advertised path stays find_image.
+    tools.registerTool({
+        name: 'screenshot',
+        build() { return null; },
+        async execute(args, ctx) {
+            const urls = Array.isArray(args?.urls) ? args.urls
+                : (typeof args?.url === 'string' && args.url ? [args.url]
+                    : (typeof args?.page === 'string' && args.page ? [args.page] : []));
+            const findImage = tools.toolRegistry.get('find_image');
+            return findImage.execute({ ...args, urls, screenshot: true }, ctx);
         },
     });
 

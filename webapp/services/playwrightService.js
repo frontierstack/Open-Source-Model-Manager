@@ -1911,6 +1911,15 @@ async function extractPageImages(url, options = {}) {
 
         // Keep substantial images (by natural size) plus og:image/srcset entries
         // whose dimensions the DOM didn't expose; drop decorative assets.
+        // og:image/twitter:image is the page's DECLARED main image but carries
+        // no dimensions, so a plain area sort ranked it LAST — behind ad-sized
+        // page furniture (observed: a news article's "main image" came back as
+        // a 300×250 cross-promo tile). Give meta entries a synthetic area that
+        // beats ad formats (≤728×90/300×600) but loses to a genuinely larger
+        // rendered hero image.
+        const rankArea = (im) => ((im.source === 'meta' && !(im.width * im.height))
+            ? 480000
+            : (im.width * im.height));
         const images = raw
             .filter((im) => !ASSET.test(im.url))
             .filter((im) => {
@@ -1924,7 +1933,7 @@ async function extractPageImages(url, options = {}) {
                 if ((im.width === 0 || im.height === 0) && /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)(?:[?#]|$)/i.test(im.url)) return true;
                 return false;
             })
-            .sort((a, b) => (b.width * b.height) - (a.width * a.height))
+            .sort((a, b) => rankArea(b) - rankArea(a))
             .slice(0, maxResults);
 
         return { success: true, url, finalUrl, title, images };
@@ -2026,8 +2035,8 @@ async function screenshotPageImages(url, options = {}) {
             return { success: true, title, finalUrl, url, shots: [{ buffer, ...dims, kind: 'image-document', srcHint: url }] };
         }
 
-        // mode 'page' — scroll to force lazy content in (same walk as
-        // extractPageImages), then rank candidate content-image elements.
+        // modes 'page'/'fullpage' — scroll to force lazy content in (same walk
+        // as extractPageImages) so below-the-fold images are painted.
         try {
             await page.evaluate(async () => {
                 await new Promise((resolve) => {
@@ -2043,6 +2052,23 @@ async function screenshotPageImages(url, options = {}) {
             });
             await page.waitForTimeout(700);
         } catch (_) {}
+
+        if (mode === 'fullpage') {
+            // Explicit user-requested page screenshot — the one case where
+            // capturing the page itself IS the relevant item. Height-capped
+            // so a mile-long feed doesn't become a useless 1:20 strip.
+            const maxFullHeight = options.maxFullHeight || 2600;
+            const vp = page.viewportSize() || { width: 1280, height: 720 };
+            const pageH = await page.evaluate(() => Math.max(
+                document.body ? document.body.scrollHeight : 0,
+                document.documentElement ? document.documentElement.scrollHeight : 0,
+            )).catch(() => vp.height);
+            const capH = Math.min(Math.max(pageH || vp.height, vp.height), maxFullHeight);
+            const buffer = capH < pageH
+                ? await page.screenshot({ clip: { x: 0, y: 0, width: vp.width, height: capH }, timeout: 15000 })
+                : await page.screenshot({ fullPage: true, timeout: 15000 });
+            return { success: true, title, finalUrl, url, shots: [{ buffer, width: vp.width, height: capH, kind: 'fullpage', srcHint: url }] };
+        }
 
         const candidates = await page.evaluate((opts) => {
             const { minWidth, minHeight, maxShots } = opts;

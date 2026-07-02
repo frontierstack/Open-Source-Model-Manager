@@ -72,6 +72,12 @@ const INTENT_RULES = [
     [/\bbase ?64\b|decode this/i, ['base64_decode']],
     [/\b(graph|chart|plot|visuali[sz]e|bar chart|line chart|pie chart|scatter)\b/i, ['render_chart']],
     [/\b(picture|image|photo|drawing|logo|icon) of\b|show me (a|an) (picture|image|photo)/i, ['find_image']],
+    // Image EXTRACTION from a page ("extract/grab the main image from <url>")
+    // and screenshot asks — without these the model flails with generic
+    // web/parse_html loops and never reaches find_image's browser extraction
+    // (observed: 15 tool calls, no image, on a "extract the main image" ask).
+    [/\b(extract|grab|pull|capture|fetch|scrape|display|show|save)\b[^.\n]{0,60}\b(main |hero |lead |og:?|cover )?(image|picture|photo|img|thumbnail)s?\b|\b(image|picture|photo)s?\b[^.\n]{0,40}\bfrom (this|that|the|a) (page|site|url|link|article|listing)/i, ['find_image']],
+    [/\bscreen ?shot|\bsnapshot of\b/i, ['find_image']],
     [/\b(video|clip|movie|footage|trailer)\b|play (me )?a|watch a/i, ['find_video']],
     [/\.(xlsx|xls|csv)\b|spreadsheet|excel/i, ['read_xlsx', 'create_xlsx']],
     [/\btranscri|\.(mp3|wav|m4a|flac|ogg)\b|audio (file|clip)/i, ['transcribe_audio']],
