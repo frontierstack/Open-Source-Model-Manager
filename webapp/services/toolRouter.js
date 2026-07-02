@@ -80,7 +80,14 @@ const INTENT_RULES = [
     [/\b(xor|hex ?dump|hex ?convert|extract strings|carve|entropy|magic bytes)\b/i, ['xor_bytes', 'hex_dump', 'extract_strings']],
     [/\b(stock|ticker|share price|time ?series|ohlc|market data)\b|\$[A-Z]{1,5}\b/i, ['fetch_timeseries']],
     [/\b(remember|note that|keep in mind|i prefer|from now on)\b/i, ['record_learning']],
-    [/\b(download|save (this|it) as|export (to|as)) (a )?(pdf|csv|file|xlsx)\b/i, ['make_downloadable', 'create_file']],
+    [/\b(download|save (this|it) as|export (to|as)) (a )?(pdf|csv|file|xlsx)\b/i, ['make_downloadable', 'create_file', 'download_file']],
+    // Document CREATION — "give me this as a pdf report", "make a docx", "turn this
+    // into a pdf". The creator tools MUST ride along whenever a document format is
+    // named with a creation-ish verb: make_downloadable is core-always but can only
+    // PUBLISH an existing file, and a catalog with the publisher but no creator
+    // strands the model (observed: 4 failed make_downloadable calls on a nonexistent
+    // .html, 20 web loops, then "I don't have a create_file tool" — no PDF delivered).
+    [/\b(make|create|generate|write|produce|prepare|give|format|turn|convert|export|save|download|render|compile)\b[\s\S]{0,80}?\b(pdf|docx|word document)\b|\bpdf\b[\s\S]{0,40}?\b(report|version|file|document|copy)\b/i, ['create_pdf', 'html_to_pdf', 'create_docx', 'create_file', 'append_to_file']],
     [/\b(my|the) (documents?|notes?|files?|knowledge ?base|kb)\b/i, ['search_knowledge_base']],
 ];
 

@@ -19677,6 +19677,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
                             } else if (webTools.has(loopingToolName)) {
                                 nudgeText = `You've already searched for this with the same query. Try different keywords, or stop and answer with what you have.`;
+                            } else if (loopingToolName === 'make_downloadable') {
+                                nudgeText = `You've already tried to publish this exact file and it failed — the source file does not exist, and re-calling make_downloadable will NEVER create it. Create the document first: create_pdf for a PDF (markdown content, stages the download itself), create_docx for Word, or create_file + append_to_file for any other file — then publish only if it isn't already auto-surfaced.`;
                             } else {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments. Either change the arguments or stop calling tools and write your answer now.`;
                             }
