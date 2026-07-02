@@ -24898,13 +24898,41 @@ app.use((req, res) => {
                     return null;
                 }
             };
+            // A screenshot that came out essentially one flat color is junk —
+            // a black WebGL canvas (preserveDrawingBuffer=false), an empty
+            // placeholder box — never a picture worth showing. Sample a
+            // coarse grid and require some tonal variance before accepting.
+            const isFlatImage = async (buf) => {
+                try {
+                    const { Jimp } = require('jimp');
+                    const image = await Jimp.read(buf);
+                    const { width, height } = image.bitmap;
+                    if (!width || !height) return true;
+                    const tones = new Set();
+                    for (let gy = 0; gy < 8; gy++) {
+                        for (let gx = 0; gx < 8; gx++) {
+                            const c = image.getPixelColor(
+                                Math.min(width - 1, Math.floor((gx + 0.5) * width / 8)),
+                                Math.min(height - 1, Math.floor((gy + 0.5) * height / 8)));
+                            // quantize to 16-level luma so JPEG noise doesn't count as variance
+                            const r = (c >>> 24) & 0xff, g = (c >>> 16) & 0xff, b = (c >>> 8) & 0xff;
+                            tones.add(Math.round((0.299 * r + 0.587 * g + 0.114 * b) / 16));
+                        }
+                    }
+                    return tones.size <= 2;
+                } catch (_) { return false; } // can't decode → let encodeImageBuf decide
+            };
             // "Save image as": pull the raw bytes server-side (prefer the full
             // original, fall back to the thumbnail). curl first — no browser
             // Referer/CSP/mixed-content constraints. If curl is refused too
             // (TLS-fingerprinting bot protection 403s axios AND curl — the
             // d545cd8 lesson, e.g. Akamai CDNs), escalate to the REAL browser:
             // playwrightService.downloadFile navigates to the image and takes
-            // the response body — a genuine right-click "save image as".
+            // the response body — a genuine right-click "save image as". Last
+            // resort: RENDER the image document in the browser and screenshot
+            // the <img> element itself (screenshotPageImages mode:'image' —
+            // it aborts unless the URL really decoded as a picture, so an
+            // HTML wall never gets screenshotted).
             const captureAsDataUrl = async (im) => {
                 for (const src of [im.url, im.thumbnail]) {
                     if (!src || !/^https?:\/\//i.test(src)) continue;
@@ -24922,6 +24950,19 @@ app.use((req, res) => {
                             }
                         } catch (_) { /* browser capture is best-effort */ }
                     }
+                }
+                if (playwrightEnabled && playwrightService && typeof playwrightService.screenshotPageImages === 'function') {
+                    try {
+                        const snap = await playwrightService.screenshotPageImages(toHttps(im.url), { mode: 'image', timeout: 20000 });
+                        const shot = snap && snap.success && snap.shots && snap.shots[0];
+                        if (shot && shot.buffer && !(await isFlatImage(shot.buffer))) {
+                            const dataUrl = await encodeImageBuf(shot.buffer);
+                            if (dataUrl) {
+                                console.log(`[find_image] screenshot-captured image document: ${String(im.url).slice(0, 120)}`);
+                                return dataUrl;
+                            }
+                        }
+                    } catch (_) { /* screenshot is best-effort */ }
                 }
                 return null;
             };
@@ -25003,6 +25044,11 @@ app.use((req, res) => {
                     // rate while cutting wasted probes/bandwidth and tail latency.
                     .slice(0, Math.max(Math.ceil(count * 1.5), count + 4));
                 const vetted = await Promise.all(candidates.map(async (im) => {
+                    // Already captured upstream (page screenshot fallback) —
+                    // the thumbnail IS the picture bytes; nothing to probe.
+                    if (im.thumbnail && /^data:image\//i.test(im.thumbnail)) {
+                        return { ...im, url: toHttps(im.url), captured: true };
+                    }
                     const renderTries = [];
                     for (const cand of [im.thumbnail, im.url]) {
                         if (cand && /^https?:\/\//i.test(cand)) {
@@ -25114,6 +25160,46 @@ app.use((req, res) => {
                             for (const im of res.images.slice(0, perPage)) {
                                 images.push(mk(pg.meta, im.url, { source: 'page', sourceUrl: pg.url }));
                             }
+                        }
+                    }
+                    // Screenshot fallback — ONLY for pages whose extraction
+                    // yielded zero fetchable images (canvas/blob:-rendered
+                    // viewers, protected galleries with no <img> URLs). The
+                    // service side is picky about WHAT it shoots (content-sized
+                    // elements, ad/nav/challenge filtering, no full-viewport
+                    // shots) and the flatness guard drops blank/black frames,
+                    // so a wall or a placeholder never becomes a tile. Bounded
+                    // to 2 pages — each costs a full browser render.
+                    const emptyPages = perPageResults
+                        .filter(({ res }) => !(res && res.success && Array.isArray(res.images) && res.images.length))
+                        .map(({ pg }) => pg);
+                    if (emptyPages.length && typeof playwrightService.screenshotPageImages === 'function') {
+                        for (const pg of emptyPages.slice(0, 2)) {
+                            try {
+                                const snap = await playwrightService.screenshotPageImages(pg.url, { mode: 'page', maxShots: Math.min(4, count) });
+                                if (!snap || !snap.success || !Array.isArray(snap.shots)) {
+                                    if (snap && snap.aborted) console.log(`[find_image] screenshot fallback aborted (${snap.aborted}): ${String(pg.url).slice(0, 120)}`);
+                                    continue;
+                                }
+                                let shotIdx = 0;
+                                for (const s of snap.shots) {
+                                    if (!s.buffer || (await isFlatImage(s.buffer))) continue;
+                                    const dataUrl = await encodeImageBuf(s.buffer);
+                                    if (!dataUrl) continue;
+                                    // fragment makes each shot's dedup key unique
+                                    // while still linking back to the source page
+                                    images.push({
+                                        url: `${pg.url}#shot-${shotIdx++}`,
+                                        thumbnail: dataUrl,
+                                        title: (pg.meta && pg.meta.title) || snap.title || query || '',
+                                        source: 'screenshot',
+                                        sourceUrl: pg.url,
+                                        license: null,
+                                        attribution: null,
+                                    });
+                                }
+                                if (shotIdx) console.log(`[find_image] screenshot fallback: ${shotIdx} shot(s) from ${String(pg.url).slice(0, 120)}`);
+                            } catch (_) { /* best-effort; the page simply yields nothing */ }
                         }
                     }
                 }

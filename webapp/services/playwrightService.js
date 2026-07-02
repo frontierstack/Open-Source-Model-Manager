@@ -1937,6 +1937,182 @@ async function extractPageImages(url, options = {}) {
     }
 }
 
+// Screenshot the dominant CONTENT-image element(s) on a page — the capture
+// layer of LAST resort, for pictures whose bytes are unreachable by every
+// other means: canvas/blob:-rendered galleries and protected viewers (no
+// fetchable URL exists at all), or a direct image URL whose origin refuses
+// every non-browser client even for the response body.
+//
+// Deliberately conservative — a screenshot of the wrong thing is worse than
+// no image, so this NEVER "just grabs the viewport":
+//  • challenge/error pages (Cloudflare "Just a moment", captcha, access
+//    denied) are detected and ABORTED after one resolve-wait — no screenshot;
+//  • mode 'image' (url IS an image document): screenshots the <img> only
+//    when document.contentType is image/* AND the picture actually decoded
+//    (naturalWidth ≥ 64) — an HTML page in disguise aborts;
+//  • mode 'page': only elements that look like content pictures qualify —
+//    rendered box ≥ minWidth×minHeight, sane aspect ratio, not matching the
+//    decorative/ad denylist (sprite/icon/logo/avatar/banner/promo), not
+//    inside nav/header/footer/aside or ad-marked containers, iframes never
+//    (that's where ads live); overlapping candidates collapse to the
+//    largest; ranked by rendered area, top maxShots only.
+//
+// @returns { success, shots: [{ buffer(PNG), width, height, kind, srcHint }],
+//            title, finalUrl } or { success:false, error, aborted? }
+async function screenshotPageImages(url, options = {}) {
+    const {
+        mode = 'page',
+        timeout = 22000,
+        settleMs = 2000,
+        maxShots = 4,
+        minWidth = 200,
+        minHeight = 150,
+    } = options;
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        page = await context.newPage();
+        await applyStealthPatches(page);
+
+        await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
+        await page.waitForTimeout(settleMs);
+
+        // Challenge/error wall? Give an auto-resolving challenge (Cloudflare
+        // JS check) one grace wait, then abort rather than screenshot a wall.
+        const CHALLENGE = /just a moment|checking your browser|verify you are human|are you a robot|attention required|access denied|request blocked|captcha|error 40[34]|too many requests/i;
+        const looksBlocked = async () => {
+            try {
+                return await page.evaluate((reSrc) => {
+                    const re = new RegExp(reSrc, 'i');
+                    const head = (document.title || '') + ' ' + (document.body ? (document.body.innerText || '').slice(0, 600) : '');
+                    return re.test(head);
+                }, CHALLENGE.source);
+            } catch (_) { return false; }
+        };
+        if (await looksBlocked()) {
+            await page.waitForTimeout(4500);
+            if (await looksBlocked()) {
+                return { success: false, aborted: 'challenge', error: 'Page is a bot-challenge/error wall — refusing to screenshot it', url };
+            }
+        }
+
+        const title = await page.title().catch(() => '');
+        const finalUrl = page.url();
+
+        if (mode === 'image') {
+            // Chromium renders a direct image URL as an "image document":
+            // contentType image/* with a single <img>. Anything else means the
+            // origin served HTML — not the picture — so abort.
+            const ok = await page.evaluate(() => {
+                const ct = document.contentType || '';
+                const img = document.images && document.images[0];
+                if (!/^image\//i.test(ct) || !img) return false;
+                if ((img.naturalWidth || 0) < 64 || (img.naturalHeight || 0) < 64) return false;
+                img.setAttribute('data-msshot', '0');
+                return true;
+            });
+            if (!ok) return { success: false, aborted: 'not-an-image-document', error: 'URL did not render as an image in the browser', url };
+            const buffer = await page.locator('[data-msshot="0"]').screenshot({ timeout: 8000 });
+            const dims = await page.evaluate(() => {
+                const img = document.images[0];
+                return { width: img.naturalWidth, height: img.naturalHeight };
+            }).catch(() => ({ width: 0, height: 0 }));
+            return { success: true, title, finalUrl, url, shots: [{ buffer, ...dims, kind: 'image-document', srcHint: url }] };
+        }
+
+        // mode 'page' — scroll to force lazy content in (same walk as
+        // extractPageImages), then rank candidate content-image elements.
+        try {
+            await page.evaluate(async () => {
+                await new Promise((resolve) => {
+                    let total = 0;
+                    const step = () => {
+                        window.scrollBy(0, window.innerHeight);
+                        total += window.innerHeight;
+                        if (total < document.body.scrollHeight && total < 25000) setTimeout(step, 140);
+                        else { window.scrollTo(0, 0); resolve(); }
+                    };
+                    step();
+                });
+            });
+            await page.waitForTimeout(700);
+        } catch (_) {}
+
+        const candidates = await page.evaluate((opts) => {
+            const { minWidth, minHeight, maxShots } = opts;
+            const DENY = /sprite|favicon|(^|[-_/])icons?([-_./]|$)|(^|[-_/])logos?([-_./]|$)|avatar|placeholder|spinner|loading|1x1|blank\.|pixel\.|spacer|(^|[-_ ])(ads?|advert\w*|banner|promo|sponsor)([-_ ]|$)/i;
+            const CHROME_ANCESTOR = /(^|[-_ ])(nav|menu|header|footer|sidebar|toolbar|breadcrumb|ads?|advert\w*|promo|sponsor|cookie|consent)([-_ ]|$)/i;
+            const inChrome = (el) => {
+                for (let n = el, depth = 0; n && depth < 6; n = n.parentElement, depth++) {
+                    const tag = (n.tagName || '').toLowerCase();
+                    if (['nav', 'header', 'footer', 'aside'].includes(tag)) return true;
+                    const marker = `${n.id || ''} ${typeof n.className === 'string' ? n.className : ''}`;
+                    if (CHROME_ANCESTOR.test(marker)) return true;
+                }
+                return false;
+            };
+            const found = [];
+            const consider = (el, kind, srcHint) => {
+                const r = el.getBoundingClientRect();
+                const w = Math.round(r.width), h = Math.round(r.height);
+                if (w < minWidth || h < minHeight) return;
+                const aspect = w / h;
+                if (aspect < 0.25 || aspect > 4.5) return; // skinny strips = banners/rules
+                const style = getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.05) return;
+                if (DENY.test(srcHint || '') || DENY.test(`${el.id || ''} ${typeof el.className === 'string' ? el.className : ''} ${el.getAttribute('alt') || ''}`)) return;
+                if (inChrome(el)) return;
+                found.push({ el, kind, srcHint: (srcHint || '').slice(0, 300), area: w * h, w, h, top: r.top + window.scrollY, left: r.left + window.scrollX });
+            };
+            document.querySelectorAll('img').forEach((img) => consider(img, 'img', img.currentSrc || img.src || ''));
+            document.querySelectorAll('canvas').forEach((c) => consider(c, 'canvas', 'canvas'));
+            document.querySelectorAll('div,section,figure,a,span').forEach((el) => {
+                const bg = getComputedStyle(el).backgroundImage;
+                if (bg && bg.indexOf('url(') === 0 && el.childElementCount <= 3) {
+                    const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+                    if (m) consider(el, 'bg', m[1]);
+                }
+            });
+            // Collapse overlapping candidates (img inside a bg-styled figure
+            // etc.): if two boxes overlap heavily, keep the larger.
+            found.sort((a, b) => b.area - a.area);
+            const kept = [];
+            for (const c of found) {
+                const dup = kept.some((k) => {
+                    const ox = Math.max(0, Math.min(k.left + k.w, c.left + c.w) - Math.max(k.left, c.left));
+                    const oy = Math.max(0, Math.min(k.top + k.h, c.top + c.h) - Math.max(k.top, c.top));
+                    return (ox * oy) / c.area > 0.7;
+                });
+                if (!dup) kept.push(c);
+                if (kept.length >= maxShots) break;
+            }
+            kept.forEach((c, i) => c.el.setAttribute('data-msshot', String(i)));
+            return kept.map((c, i) => ({ idx: i, kind: c.kind, srcHint: c.srcHint, width: c.w, height: c.h }));
+        }, { minWidth, minHeight, maxShots });
+
+        const shots = [];
+        for (const c of candidates) {
+            try {
+                const buffer = await page.locator(`[data-msshot="${c.idx}"]`).screenshot({ timeout: 8000 });
+                if (buffer && buffer.length) shots.push({ buffer, width: c.width, height: c.height, kind: c.kind, srcHint: c.srcHint });
+            } catch (_) { /* element vanished/detached — skip it */ }
+        }
+        return { success: true, title, finalUrl, url, shots };
+    } catch (error) {
+        return { success: false, error: error.message, url };
+    } finally {
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
@@ -1946,6 +2122,7 @@ module.exports = {
     crawlPages,
     sniffMediaStreams,
     extractPageImages,
+    screenshotPageImages,
     cleanup,
     getPoolStatus
 };
