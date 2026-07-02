@@ -4047,6 +4047,7 @@ app.get('/api/models', requireAuth, async (req, res) => {
             port: info.port,
             config: info.config,
             status: info.status,
+            lastExitCode: info.lastExitCode,
             backend: info.backend || 'llamacpp'
         }));
 
@@ -4121,6 +4122,12 @@ app.get('/api/models', requireAuth, async (req, res) => {
                     // Show correct backend name based on what's actually running
                     const backendName = instance.backend === 'sglang' ? 'sglang' : 'llama.cpp';
                     status = `Loaded in ${backendName}`;
+                } else if (instance.status === 'stopped' || instance.status === 'oom_killed') {
+                    // Crashed container kept in the map by the die-event listener
+                    // so the UI can surface the failure; still loadable.
+                    status = instance.status === 'oom_killed'
+                        ? 'Crashed (out of memory) — reload to retry'
+                        : `Crashed${instance.lastExitCode != null ? ` (exit ${instance.lastExitCode})` : ''} — reload to retry`;
                 } else {
                     status = `Instance: ${instance.status}`;
                 }

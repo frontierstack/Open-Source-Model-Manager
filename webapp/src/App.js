@@ -10009,7 +10009,10 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                 <Grid container spacing={2} sx={{ mt: 1 }}>
                                                     {models.map((model) => {
                                                         const paramSize = extractParameterSize(model.name);
-                                                        const isRunning = model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp';
+                                                        // A crashed container stays in modelInstances (status stopped/oom_killed)
+                                                        // so the UI can show it died — it must still be loadable from here.
+                                                        const isCrashed = model.instanceStatus === 'stopped' || model.instanceStatus === 'oom_killed';
+                                                        const isRunning = !isCrashed && (model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp');
                                                         const isLoading = model.status.includes('Starting') || model.status.includes('Loading');
                                                         return (
                                                             <Grid item xs={12} sm={6} md={4} key={model.name}>
@@ -10080,6 +10083,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                                 size="small"
                                                                                 color={
                                                                                     isRunning ? 'success' :
+                                                                                    isCrashed ? 'error' :
                                                                                     isLoading ? 'info' :
                                                                                     model.status.includes('Slow') ? 'warning' :
                                                                                     'default'
