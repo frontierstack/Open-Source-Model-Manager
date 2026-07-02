@@ -1292,6 +1292,99 @@ async function interactAndFetch(url, actions = [], options = {}) {
 }
 
 /**
+ * Download a file URL through the real browser.
+ *
+ * Bot-protection layers (Akamai/Cloudflare) fingerprint the TLS/HTTP stack and
+ * 403 axios AND curl even with full browser headers — the real Chromium is the
+ * only client they let through. But headless Chromium can't render a PDF:
+ * page.goto throws "Download is starting" instead. This captures that download
+ * event and returns the raw bytes so the caller can parse them (pdf-parse etc.).
+ *
+ * @returns {Object} { success, buffer, filename, contentType, via } or { success:false, error }
+ */
+async function downloadFile(url, options = {}) {
+    const { timeout = 30000, maxBytes = 50 * 1024 * 1024 } = options;
+    const fs = require('fs');
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext({
+            ...getStealthContextOptions(),
+            acceptDownloads: true,
+        });
+        page = await context.newPage();
+        await applyStealthPatches(page);
+
+        // Listen BEFORE goto — the download event fires while goto is throwing.
+        const downloadPromise = page.waitForEvent('download', { timeout }).catch(() => null);
+
+        let response = null;
+        let navTriggeredDownload = false;
+        try {
+            response = await page.goto(url, { timeout, waitUntil: 'load' });
+        } catch (e) {
+            const msg = e?.message || String(e);
+            if (!/Download is starting|net::ERR_ABORTED/i.test(msg)) throw e;
+            navTriggeredDownload = true;
+        }
+
+        if (navTriggeredDownload) {
+            const download = await downloadPromise;
+            if (!download) throw new Error('Navigation triggered a download but none was captured');
+            const failure = await download.failure();
+            if (failure) throw new Error(`Download failed: ${failure}`);
+            const filePath = await download.path();
+            const size = fs.statSync(filePath).size;
+            if (size > maxBytes) {
+                await download.delete().catch(() => {});
+                throw new Error(`Download too large (${size} bytes > ${maxBytes} limit)`);
+            }
+            const buffer = fs.readFileSync(filePath);
+            await download.delete().catch(() => {});
+            return {
+                success: true,
+                buffer,
+                filename: download.suggestedFilename() || url.split('?')[0].split('/').pop() || 'download',
+                contentType: null,
+                via: 'download-event',
+                url,
+            };
+        }
+
+        // Navigation completed normally — a non-HTML response (inline PDF, raw
+        // text/JSON served with a permissive content-disposition) can be taken
+        // straight from the response body.
+        if (response && response.ok()) {
+            const ct = (response.headers()['content-type'] || '').toLowerCase();
+            if (ct && !ct.includes('text/html')) {
+                const buffer = await response.body();
+                if (buffer.length > maxBytes) throw new Error(`Response too large (${buffer.length} bytes > ${maxBytes} limit)`);
+                return {
+                    success: true,
+                    buffer,
+                    filename: url.split('?')[0].split('/').pop() || 'download',
+                    contentType: ct,
+                    via: 'response-body',
+                    url,
+                };
+            }
+            throw new Error(`URL served an HTML page (content-type: ${ct || 'unknown'}), not a file`);
+        }
+        throw new Error(`HTTP ${response?.status() || 'no response'}`);
+    } catch (error) {
+        return { success: false, error: error.message, url };
+    } finally {
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
+/**
  * Cleanup all browsers in pool
  */
 async function cleanup() {
@@ -1849,6 +1942,7 @@ module.exports = {
     fetchMultipleUrls,
     searchAndFetch,
     interactAndFetch,
+    downloadFile,
     crawlPages,
     sniffMediaStreams,
     extractPageImages,

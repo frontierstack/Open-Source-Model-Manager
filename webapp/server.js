@@ -12619,20 +12619,39 @@ async function fetchUrlAsFile(url, options = {}) {
 
     try {
         // Download the file as binary
-        const response = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-            },
-            timeout,
-            maxRedirects: 5,
-            responseType: 'arraybuffer',
-            validateStatus: (status) => status < 400,
-            maxContentLength: 50 * 1024 * 1024, // 50MB limit
-        });
-
-        const contentType = (response.headers['content-type'] || '').toLowerCase();
-        const buffer = Buffer.from(response.data);
+        let buffer, contentType;
+        try {
+            const response = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                },
+                timeout,
+                maxRedirects: 5,
+                responseType: 'arraybuffer',
+                validateStatus: (status) => status < 400,
+                maxContentLength: 50 * 1024 * 1024, // 50MB limit
+            });
+            contentType = (response.headers['content-type'] || '').toLowerCase();
+            buffer = Buffer.from(response.data);
+        } catch (axiosError) {
+            // Bot-protection layers (Akamai/Cloudflare) TLS-fingerprint the client
+            // and 403 axios even with full browser headers, for PUBLIC files (e.g.
+            // cdse.edu PDFs). The real Chromium is the only client they let through,
+            // but headless page.goto on a file URL throws "Download is starting" —
+            // downloadFile() captures that download event and returns the bytes.
+            if (!(playwrightEnabled && playwrightService)) throw axiosError;
+            const status = axiosError.response?.status;
+            console.log(`[fetchUrlAsFile] axios download failed (${status || axiosError.message}) — escalating to browser download`);
+            const dl = await playwrightService.downloadFile(url, { timeout: Math.max(timeout, 30000) });
+            if (!dl.success) {
+                console.log(`[fetchUrlAsFile] Browser download also failed: ${dl.error}`);
+                throw axiosError; // report the original cause; outer catch → null → HTML cascade
+            }
+            buffer = dl.buffer;
+            contentType = (dl.contentType || DIRECT_DOWNLOAD_EXTENSIONS[ext] || '').toLowerCase();
+            console.log(`[fetchUrlAsFile] Browser download succeeded via ${dl.via} (${buffer.length} bytes)`);
+        }
 
         // If response is HTML but we expected a file (from query params or HEAD),
         // the server returned an error/login page instead — fall through to HTML scraping
@@ -24530,12 +24549,23 @@ app.use((req, res) => {
 
             // ---- READ (single or batch) ----
             const want = a.want || 'text';
+            // A binary document URL DOWNLOADS in a real browser instead of rendering,
+            // so the stealth/browser/interact/crawl paths can never read it (page.goto
+            // throws "Download is starting"). Whatever mode the model picked — including
+            // its retries after a failure — route it through fetch_url, whose direct-
+            // download path parses the file and self-escalates to a browser download
+            // capture when the host 403s non-browser clients (Akamai/Cloudflare).
+            const isBinaryDocUrl = (url) => /\.(pdf|docx?|xlsx?)(?:[?#]|$)/i.test(String(url || '').split('?')[0]);
             const readOne = (url) => {
+                if (isBinaryDocUrl(url)) return run('fetch_url', { url, maxLength: a.maxLength });
                 if (mode === 'stealth') return run('scrapling_fetch', { url, maxLength: a.maxLength, timeout: a.timeout });
                 if (mode === 'browser' || want === 'images') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true });
                 if (want === 'links') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true, includeLinks: true });
                 return run('fetch_url', { url, maxLength: a.maxLength });
             };
+            if (a.url && isBinaryDocUrl(a.url) && (mode === 'interact' || mode === 'crawl')) {
+                return { mode: 'read', ...(await readOne(a.url)) };
+            }
             if (mode === 'interact') {
                 if (!a.url) return { error: 'web mode:"interact" requires a url and an actions[] array' };
                 return { mode: 'interact', ...(await run('playwright_interact', { url: a.url, actions: a.actions || [], timeout: a.timeout, maxLength: a.maxLength })) };
