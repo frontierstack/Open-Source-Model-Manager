@@ -14218,7 +14218,7 @@ function classifyTurnActivity({ toolLabels = [], userText = '', attachmentKinds 
 // turn's activity from the SUCCESSFUL tool path. Failed/exploratory calls are
 // excluded, so even a fumbling cold run produces a CLEAN recipe the warm run
 // follows directly. Atomic + activity-keyed in the service.
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, steps }) {
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
@@ -14240,18 +14240,22 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const counts = {};
         for (const l of toolLabels) { counts[l] = (counts[l] || 0) + 1; if (!seq.includes(l)) seq.push(l); }
         const pathStr = seq.join(' → ');
-        // A tool repeated several times in one turn is usually avoidable
-        // repetition (per-subtopic KB searches, list_directory loops, narrow
-        // re-reads). Record an ACTIONABLE consolidation directive — name the
-        // over-called tool, its count, and the fix (do it in as few calls as
-        // possible, ideally one broad/comprehensive call). The old note ("avoid
-        // over-calling X — go straight to the file you need") wasn't actionable
-        // and read oddly for search tools, so the warm run didn't actually use
-        // fewer calls; this phrasing measurably reduces repeat calls. Threshold
-        // 3 (was 4) to catch moderate repetition too.
-        const flail = seq.filter(l => counts[l] >= 3);
-        const flailNote = flail.length
-            ? ` EFFICIENCY: last time ${flail.map(l => `${l} was called ${counts[l]}×`).join('; ')} — that repetition was avoidable. Do this in as FEW ${flail.length === 1 ? 'calls' : 'calls per tool'} as possible: prefer ONE broad/comprehensive call that covers everything you need over many narrow repeats, then only make an extra call if something specific is genuinely missing.`
+        // Recipe quality signals (see upsertActivityMemory): total = every
+        // successful call, unique = distinct tools (completeness), flail =
+        // redundant repeat calls (wasted effort). The cleanest+most-complete run
+        // is kept as the best recipe.
+        const totalCalls = toolLabels.length;
+        const uniqueCalls = seq.length;
+        const flailCount = totalCalls - uniqueCalls;
+        // Flag AVOIDABLE repetition only — a narrow-scope read/search/list tool
+        // called many times is usually consolidatable into one broad call. But
+        // EXECUTION tools (run/terminal/bash/write/edit/query/chart) legitimately
+        // fire many times in real agentic work; calling that "avoidable" gave the
+        // model wrong advice and read oddly, so those are excluded from the note.
+        const EXEC_TOOL = /terminal|bash|shell|\bsh\b|\brun\b|run_|exec|_code|\bnode\b|python|write|create|update|\bedit\b|replace_lines|make_downloadable|render_chart|query|db_store|\btest\b|install|compile|build/i;
+        const flailTools = seq.filter(l => counts[l] >= 3 && !EXEC_TOOL.test(l));
+        const flailNote = flailTools.length
+            ? ` EFFICIENCY: last time ${flailTools.map(l => `${l} was called ${counts[l]}×`).join('; ')} — that narrow repetition was avoidable. Prefer ONE broad/comprehensive call over many narrow repeats, then only make an extra call if something specific is genuinely missing.`
             : '';
         const fileNote = attachmentKinds.size ? ` Input: ${[...attachmentKinds].join('/')}.` : '';
         const text = pathStr
@@ -14263,10 +14267,11 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const res = await memoryService.upsertActivityMemory(userId, {
             activity: act.activity, text, keywords,
             impact: 'medium', source: 'auto', sourceConvId: conversationId,
-            // efficiency of this run — keeps the leanest recipe. Callers may pass
-            // steps:null (e.g. /v1 in-progress recording) to reinforce + refresh
-            // the recipe without the bestSteps comparison.
-            steps: (steps === undefined ? okChips.length : steps),
+            // Quality of THIS run. `steps` (total calls) is kept for logging/min-
+            // tracking; `flail`/`unique` drive which recipe is kept as the best.
+            // Computed from the chips, so an in-progress /v1 snapshot is compared
+            // on cleanliness (not raw length) and can't clobber a clean recipe.
+            steps: totalCalls, flail: flailCount, unique: uniqueCalls,
         });
         logUserActivity(userId,
             `Memory: ${res.updated ? `updated existing experience (${res.keptRecipe ? 'reinforced' : 'refined'})` : 'created new experience'} [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
@@ -14725,11 +14730,12 @@ async function recordV1TurnActivity(userId, apiKeyData, messages) {
         const userText = typeof uc === 'string' ? uc
             : (Array.isArray(uc) ? uc.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
         // Pi resolves tools client-side; we only see results, so treat them as
-        // successful. steps:null → reinforce + refresh the recipe to the current
-        // (fuller) task path WITHOUT the bestSteps comparison (an in-progress
-        // snapshot must not masquerade as a leaner "best" recipe and clobber one).
+        // successful. recordTurnActivity computes the recipe-quality signals
+        // (flail/unique) from these chips, so an in-progress snapshot is kept only
+        // if it's CLEANER than the stored recipe — it can't clobber a clean recipe
+        // just because it's the latest (the old steps:null path did exactly that).
         const okChips = toolLabels.map(l => ({ status: 'success', label: l }));
-        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [], steps: null });
+        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [] });
         await memoryService.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
         console.warn('[Pi/Memory] activity record failed:', e.message);

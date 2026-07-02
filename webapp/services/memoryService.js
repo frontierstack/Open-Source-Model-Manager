@@ -414,6 +414,11 @@ function normalizeRecord(input) {
     };
     if (input.textSource) rec.textSource = input.textSource;
     if (Number.isFinite(input.bestSteps)) rec.bestSteps = input.bestSteps;
+    // Experience "best recipe" quality signals: flail = redundant repeat tool
+    // calls (lower = cleaner), unique = distinct tools (higher = more complete).
+    // Persisted so the leanest+cleanest recipe is kept across turns/reloads.
+    if (Number.isFinite(input.flail)) rec.flail = input.flail;
+    if (Number.isFinite(input.unique)) rec.unique = input.unique;
     return rec;
 }
 
@@ -1121,19 +1126,34 @@ async function upsertActivityMemory(userId, input) {
             // Keep the BEST recipe — don't let a mediocre later run degrade it.
             //  • A model-authored recipe (the model's own articulated lesson) is
             //    authoritative and is only overwritten by another model write.
-            //  • An auto-observed recipe is replaced only by a strictly-or-equally
-            //    EFFICIENT later run (fewer/equal successful tool steps).
+            //  • An auto-observed recipe is replaced by a CLEANER run: least
+            //    wasteful repetition (flail = redundant repeat calls), tie-broken
+            //    by the more COMPLETE path (more distinct tools). This is the
+            //    scale-invariant "best" — it protects a clean recipe from being
+            //    clobbered by a long/flaily agentic run (the old raw-step rule let
+            //    an in-progress snapshot with steps=null always overwrite, and
+            //    preferred an incomplete 1-tool snapshot over the real approach).
             const existingFromModel = target.textSource === 'model';
+            const newFlail = Number.isFinite(input.flail) ? input.flail : 0;
+            const newUnique = Number.isFinite(input.unique) ? input.unique : (steps ?? 0);
+            // A pre-existing recipe from before quality tracking has no flail/unique.
+            // Treat it as REPLACEABLE (Infinity) so its next occurrence refreshes it
+            // with real metrics — this self-heals the old "latest-wins" recipes
+            // (count/depth is preserved; only the recipe text + metrics refresh).
+            const curFlail = Number.isFinite(target.flail) ? target.flail : Infinity;
+            const curUnique = Number.isFinite(target.unique) ? target.unique : -1;
             let updateText = false;
             if (source === 'model') updateText = true;
             else if (!existingFromModel) {
-                updateText = (steps == null || target.bestSteps == null || steps <= target.bestSteps);
+                updateText = (newFlail < curFlail) || (newFlail === curFlail && newUnique > curUnique);
             }
             if (updateText && text.trim()) {
                 target.text = text;
                 if (keywords.length) target.keywords = keywords;
                 target.tokens = tokens;
                 target.textSource = source;
+                target.flail = newFlail;
+                target.unique = newUnique;
                 target.title = deriveMemoryTitle(target);
             }
             if (steps != null) target.bestSteps = (target.bestSteps == null) ? steps : Math.min(target.bestSteps, steps);
@@ -1150,6 +1170,8 @@ async function upsertActivityMemory(userId, input) {
         });
         rec.textSource = source;
         rec.bestSteps = steps;
+        rec.flail = Number.isFinite(input.flail) ? input.flail : 0;
+        rec.unique = Number.isFinite(input.unique) ? input.unique : (steps ?? 0);
         list.push(rec);
         dropped = pruneUser(list, userId);
         embedRec = rec;
