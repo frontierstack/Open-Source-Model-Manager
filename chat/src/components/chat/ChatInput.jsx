@@ -18,6 +18,7 @@ import {
     Sparkles,
     Circle,
     Eye,
+    Clock,
 } from 'lucide-react';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 
@@ -61,6 +62,9 @@ export default function ChatInput({
     models = [],
     selectedModel,
     onModelChange,
+    queuedMessages = [],
+    onQueueMessage,
+    onRemoveQueued,
 }) {
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
@@ -170,14 +174,20 @@ export default function ChatInput({
     const selectedPrompt = systemPrompts.find(p => p.id === selectedSystemPromptId);
 
     const handleSend = useCallback(() => {
-        if ((message.trim() || attachments.length > 0) && !isStreaming && !disabled) {
+        if (!(message.trim() || attachments.length > 0) || disabled) return;
+        if (isStreaming) {
+            // Model is mid-response: queue instead of dropping the send. The
+            // container dispatches the queue when the current stream finishes.
+            if (!onQueueMessage) return;
+            onQueueMessage(message.trim(), attachments);
+        } else {
             onSend(message.trim(), attachments);
-            setMessage('');
-            if (textareaRef.current) {
-                textareaRef.current.style.height = 'auto';
-            }
         }
-    }, [message, attachments, isStreaming, disabled, onSend]);
+        setMessage('');
+        if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+        }
+    }, [message, attachments, isStreaming, disabled, onSend, onQueueMessage]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -365,6 +375,7 @@ export default function ChatInput({
 
     const hasContent = message.trim() || attachments.length > 0;
     const canSend = hasContent && !isStreaming && !disabled;
+    const canQueue = hasContent && isStreaming && !disabled && !!onQueueMessage;
 
     // Style objects — use CSS variables so they respect the active theme
     const iconChip = {
@@ -495,6 +506,56 @@ export default function ChatInput({
                 (matches the design's `padding: 10px 28px 16px` and keeps
                 the input compact per the chat-input-compact memory). */}
             <div className="mx-auto w-full composer-wrapper" style={{ maxWidth: 720 }}>
+                {/* Queued messages — typed while the model was still responding;
+                    dispatched automatically when the current stream finishes. */}
+                {queuedMessages.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }} role="list" aria-label="Queued messages">
+                        {queuedMessages.map((q) => (
+                            <div
+                                key={q.id}
+                                role="listitem"
+                                className="animate-fade-in"
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: 8,
+                                    padding: '6px 10px', borderRadius: 10,
+                                    background: 'var(--bg-2)',
+                                    border: '1px dashed var(--rule-2)',
+                                    fontSize: 12.5, color: 'var(--ink-2)',
+                                }}
+                            >
+                                <Clock className="w-3.5 h-3.5" style={{ flexShrink: 0, color: 'var(--ink-4)' }} />
+                                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {q.content || '(attachments only)'}
+                                    {q.attachments?.length ? (
+                                        <span style={{ color: 'var(--ink-4)' }}>
+                                            {` · ${q.attachments.length} file${q.attachments.length !== 1 ? 's' : ''}`}
+                                        </span>
+                                    ) : null}
+                                </span>
+                                <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 500, color: 'var(--ink-4)' }}>
+                                    queued
+                                </span>
+                                {onRemoveQueued && (
+                                    <button
+                                        onClick={() => onRemoveQueued(q.id)}
+                                        aria-label="Remove queued message"
+                                        title="Remove — won't be sent"
+                                        style={{
+                                            flexShrink: 0, display: 'grid', placeItems: 'center',
+                                            width: 18, height: 18, borderRadius: 5,
+                                            border: 0, background: 'transparent',
+                                            color: 'var(--ink-4)', cursor: 'pointer',
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.background = 'var(--bg-3, var(--bg-2))'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--ink-4)'; e.currentTarget.style.background = 'transparent'; }}
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
                 {/* Attachment chips above the box */}
                 {(attachments.length > 0 || uploadingFiles.length > 0) && (
                     <div style={{ marginBottom: 8 }}>
@@ -647,7 +708,7 @@ export default function ChatInput({
                         onChange={(e) => setMessage(e.target.value)}
                         onKeyDown={handleKeyDown}
                         onPaste={handlePaste}
-                        placeholder={isDragOver ? 'Drop files…' : 'Ask anything, attach a file, or paste a paper…'}
+                        placeholder={isDragOver ? 'Drop files…' : (isStreaming && onQueueMessage) ? 'Type a follow-up — Enter queues it for when the response finishes…' : 'Ask anything, attach a file, or paste a paper…'}
                         disabled={disabled}
                         rows={1}
                         className="chat-composer-textarea"
@@ -816,17 +877,36 @@ export default function ChatInput({
                             )}
 
                             {isStreaming ? (
-                                <button
-                                    onClick={onStop}
-                                    style={stopBtn}
-                                    className="tap-feedback"
-                                    onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
-                                    onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                                    aria-label="Stop"
-                                    title="Stop"
-                                >
-                                    <Square className="w-3 h-3 fill-current" />
-                                </button>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {canQueue && (
+                                        <button
+                                            onClick={handleSend}
+                                            className="tap-feedback"
+                                            style={{
+                                                ...sendBtn,
+                                                background: 'var(--accent-soft)',
+                                                color: 'var(--accent)',
+                                            }}
+                                            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                                            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                                            aria-label="Queue message"
+                                            title="Queue — sends when the current response finishes"
+                                        >
+                                            <Send className="w-[15px] h-[15px]" strokeWidth={2} />
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={onStop}
+                                        style={stopBtn}
+                                        className="tap-feedback"
+                                        onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                                        onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                                        aria-label="Stop"
+                                        title="Stop"
+                                    >
+                                        <Square className="w-3 h-3 fill-current" />
+                                    </button>
+                                </div>
                             ) : (
                                 <button
                                     onClick={handleSend}

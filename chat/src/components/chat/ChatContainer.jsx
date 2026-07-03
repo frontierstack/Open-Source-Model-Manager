@@ -472,6 +472,8 @@ export default function ChatContainer({
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
     const [artifactsOpen, setArtifactsOpen] = useState(false);
     const [activeArtifactId, setActiveArtifactId] = useState(null);
+    const [queuedMessages, setQueuedMessages] = useState([]); // typed while streaming; auto-sent on completion
+    const queueDispatchRef = useRef(false); // guards against double-dispatch while a queued send is in flight
     const abortControllerRef = useRef(null);
     const switchingConversationRef = useRef(false); // Track if abort was due to conversation switch
     const streamingConversationRef = useRef(null); // Track which conversation is being streamed to
@@ -2333,6 +2335,49 @@ export default function ChatContainer({
         }
     };
 
+    // --- Queued messages ---------------------------------------------------
+    // While the model is streaming, the composer stays usable: a send queues
+    // the message instead of dropping it, and the queue auto-dispatches when
+    // the current response finishes (complete, error, or stopped). In-memory
+    // only — a refresh clears the queue (the input is free again anyway).
+    const handleQueueMessage = (content, attachedFiles) => {
+        const convId = streamingConversationRef.current || activeConversationId;
+        if (!convId) return;
+        setQueuedMessages(prev => [...prev, {
+            id: crypto.randomUUID(),
+            conversationId: convId,
+            content,
+            attachments: attachedFiles,
+        }]);
+        clearAttachments();
+    };
+    const removeQueuedMessage = (id) => setQueuedMessages(prev => prev.filter(q => q.id !== id));
+
+    useEffect(() => {
+        if (isStreaming || isLoading) return;
+        if (queueDispatchRef.current) return;
+        const next = queuedMessages.find(q => q.conversationId === activeConversationId);
+        if (!next) return;
+        queueDispatchRef.current = true;
+        (async () => {
+            try {
+                // The global isStreaming flag can lag a background stream when
+                // switching back to this conversation (checkActiveStreaming is
+                // async) — the server job registry is authoritative. Still
+                // running → leave the item queued; this effect re-fires when
+                // the poll flips isStreaming true→false at completion.
+                try {
+                    const r = await fetch(`/api/conversations/${next.conversationId}/streaming`, { credentials: 'include' });
+                    if (r.ok && (await r.json()).streaming) return;
+                } catch { /* status check unreachable — let the send surface any real error */ }
+                setQueuedMessages(prev => prev.filter(q => q.id !== next.id));
+                await handleSendMessage(next.content, next.attachments);
+            } finally {
+                queueDispatchRef.current = false;
+            }
+        })();
+    }, [isStreaming, isLoading, queuedMessages, activeConversationId]);
+
     const handleStopGeneration = async () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
@@ -2793,6 +2838,9 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
+                                onQueueMessage={handleQueueMessage}
+                                onRemoveQueued={removeQueuedMessage}
                             />
                         </div>
                     </div>
@@ -2844,6 +2892,9 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
+                                onQueueMessage={handleQueueMessage}
+                                onRemoveQueued={removeQueuedMessage}
                             />
                         </div>
                     </>
