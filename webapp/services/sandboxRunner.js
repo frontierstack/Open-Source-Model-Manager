@@ -775,6 +775,111 @@ function workspaceOwnerDir(userId) {
     return userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
+// Dirs that add noise, not signal, to a workspace inventory.
+const WORKSPACE_SUMMARY_NOISE = new Set([
+    '.git', 'node_modules', '__pycache__', '.venv', 'venv',
+    'dist', 'build', '.cache', '.DS_Store',
+]);
+
+/** Read-only inventory of a conversation's workspace bucket, for follow-up-turn
+ *  context injection in the chat stream. Never creates the directory — owner/
+ *  bucket resolution must match ensureWorkspace exactly so we describe the
+ *  same bucket skills actually write to. Bounded (depth ≤ 2, ≤ maxEntries
+ *  listed; deeper subtrees summarized as file counts) so a big clone or
+ *  extracted archive can't stall the turn or flood the prompt. Repos under
+ *  gh-clones/ are summarized as origin URL + ref, never walked.
+ *  Returns null when the bucket doesn't exist or holds no files. */
+async function describeConversationWorkspace(userId, conversationId, { maxEntries = 20 } = {}) {
+    if (!conversationId) return null;
+    const owner = workspaceOwnerDir(userId);
+    const bucket = 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const base = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, bucket);
+
+    const readdirSafe = async (p) => {
+        try { return await fs.readdir(p, { withFileTypes: true }); } catch { return null; }
+    };
+    const top = await readdirSafe(base);
+    if (!top || !top.length) return null;
+
+    // Bounded recursive file count for subtrees we don't enumerate.
+    const COUNT_CAP = 500;
+    const countFiles = async (start) => {
+        let n = 0;
+        const stack = [start];
+        while (stack.length && n < COUNT_CAP) {
+            const dir = stack.pop();
+            const ents = await readdirSafe(dir);
+            if (!ents) continue;
+            for (const e of ents) {
+                if (WORKSPACE_SUMMARY_NOISE.has(e.name)) continue;
+                if (e.isDirectory()) stack.push(path.join(dir, e.name));
+                else n++;
+                if (n >= COUNT_CAP) break;
+            }
+        }
+        return n;
+    };
+
+    const repos = [];   // { path: 'gh-clones/<hash>', url, ref }
+    const files = [];   // { rel, size }
+    const dirs = [];    // { rel, fileCount, capped }
+    let truncated = false;
+    const budgetLeft = () => files.length + dirs.length < maxEntries;
+
+    for (const e of top) {
+        if (WORKSPACE_SUMMARY_NOISE.has(e.name)) continue;
+        const abs = path.join(base, e.name);
+
+        if (e.isDirectory() && e.name === 'gh-clones') {
+            for (const c of (await readdirSafe(abs)) || []) {
+                if (!c.isDirectory()) continue;
+                const repoDir = path.join(abs, c.name);
+                const info = { path: `gh-clones/${c.name}`, url: null, ref: null };
+                try {
+                    const cfg = await fs.readFile(path.join(repoDir, '.git', 'config'), 'utf8');
+                    const m = cfg.match(/\[remote "origin"\][\s\S]*?url\s*=\s*(\S+)/);
+                    if (m) info.url = m[1];
+                } catch { /* not a git dir or unreadable — still list the path */ }
+                try {
+                    const head = (await fs.readFile(path.join(repoDir, '.git', 'HEAD'), 'utf8')).trim();
+                    info.ref = head.startsWith('ref:')
+                        ? head.replace(/^ref:\s*refs\/heads\//, '')
+                        : head.slice(0, 12);
+                } catch { /* detached/absent HEAD */ }
+                repos.push(info);
+            }
+            continue;
+        }
+
+        if (e.isDirectory()) {
+            const children = (await readdirSafe(abs)) || [];
+            for (const c of children) {
+                if (WORKSPACE_SUMMARY_NOISE.has(c.name)) continue;
+                if (!budgetLeft()) { truncated = true; break; }
+                const childAbs = path.join(abs, c.name);
+                const rel = `${e.name}/${c.name}`;
+                if (c.isDirectory()) {
+                    const n = await countFiles(childAbs);
+                    if (n > 0) dirs.push({ rel, fileCount: n, capped: n >= COUNT_CAP });
+                } else {
+                    let size = null;
+                    try { size = (await fs.stat(childAbs)).size; } catch { /* race */ }
+                    files.push({ rel, size });
+                }
+            }
+            if (truncated) break;
+        } else if (e.isFile()) {
+            if (!budgetLeft()) { truncated = true; break; }
+            let size = null;
+            try { size = (await fs.stat(abs)).size; } catch { /* race */ }
+            files.push({ rel: e.name, size });
+        }
+    }
+
+    if (!repos.length && !files.length && !dirs.length) return null;
+    return { repos, files, dirs, truncated, bucket };
+}
+
 /** Classify a bucket dir name for the management UI. */
 function classifyBucket(name) {
     return name.startsWith('agent-') ? 'agent'
@@ -992,6 +1097,7 @@ module.exports = {
     cleanupRun,
     setHostBase,
     deleteConversationWorkspace,
+    describeConversationWorkspace,
     listWorkspaces,
     listAllWorkspaces,
     deleteWorkspaceBucket,

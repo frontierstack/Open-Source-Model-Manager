@@ -18544,6 +18544,63 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // --- Workspace persistence pre-flight --------------------------------
+        // Files a previous turn cloned/downloaded into this conversation's
+        // sandbox workspace persist on disk, but nothing in the replayed
+        // history says so — tool results are persisted as UI chips only and
+        // never re-sent to the model. So on a follow-up question the model
+        // re-clones the repo / re-downloads the files it already has, burning
+        // tool calls to redo finished work. Deterministically inventory the
+        // conv-<id> bucket (read-only; same owner/bucket resolution skills
+        // use) and prepend a note listing what's already there. Mirrors the
+        // follow-up-document and KB pre-flights above.
+        if (conversationId && latestUserMsgIdx >= 0) {
+            try {
+                const sbRunner = require('./services/sandboxRunner');
+                const ws = await sbRunner.describeConversationWorkspace(req.userId, conversationId);
+                if (ws) {
+                    const fmtSize = (n) => !Number.isFinite(n) ? ''
+                        : n >= 1048576 ? ` (${(n / 1048576).toFixed(1)} MB)`
+                        : n >= 1024 ? ` (${Math.round(n / 1024)} KB)`
+                        : ` (${n} B)`;
+                    const lines = [];
+                    for (const r of ws.repos) {
+                        lines.push(`  • git repo ${r.url || '(origin unknown)'}${r.ref ? ` @ ${r.ref}` : ''} — ALREADY CLONED at /workspace/${r.path}/ — do NOT git_clone_shallow it again; use grep_code / read_file / scan_source_files / list_directory on that path directly`);
+                    }
+                    for (const f of ws.files) {
+                        lines.push(`  • /workspace/${f.rel}${fmtSize(f.size)}`);
+                    }
+                    for (const d of ws.dirs) {
+                        lines.push(`  • /workspace/${d.rel}/ — ${d.fileCount}${d.capped ? '+' : ''} files (list_directory to browse)`);
+                    }
+                    if (ws.truncated) {
+                        lines.push('  • …more not listed — call list_directory(dirPath="/workspace", recursive=True) for the full inventory');
+                    }
+                    const wsNote =
+                        '[SYSTEM: This conversation\'s sandbox workspace (/workspace) still contains the files below, created in EARLIER turns. They persist across turns — reuse them directly with read_file / grep_code / list_directory' +
+                        (ws.repos.length ? ' / scan_source_files / git_log' : '') +
+                        ' instead of re-cloning or re-downloading, unless the user explicitly asks for a fresh copy.\n' +
+                        lines.join('\n') + ']\n\n';
+                    const um = chatMessages[latestUserMsgIdx];
+                    if (typeof um.content === 'string') {
+                        um.content = wsNote + um.content;
+                    } else if (Array.isArray(um.content)) {
+                        const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                        if (tIdx >= 0) um.content[tIdx].text = wsNote + um.content[tIdx].text;
+                        else um.content.unshift({ type: 'text', text: wsNote });
+                    }
+                    preflightForcedTools.add('read_file');
+                    preflightForcedTools.add('list_directory');
+                    preflightForcedTools.add('grep_code');
+                    if (ws.repos.length) preflightForcedTools.add('scan_source_files');
+                    logChatActivity(`Workspace pre-flight: surfaced ${ws.repos.length} repo(s) + ${ws.files.length + ws.dirs.length} path(s) persisting from earlier turns`);
+                    console.log(`[Chat Stream] Workspace pre-flight: ${ws.repos.length} repo(s) + ${ws.files.length} file(s) + ${ws.dirs.length} dir(s) surfaced for conv ${String(conversationId).slice(0, 12)}…${ws.truncated ? ' (truncated)' : ''}`);
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] workspace pre-flight failed:', e.message);
+            }
+        }
+
         // --- Tool router: reduce the ADVERTISED catalog to a relevant subset -
         // Runs AFTER the deterministic pre-flights (which force-include any tool
         // they named). Fails OPEN to the full catalog on any error. Only the
