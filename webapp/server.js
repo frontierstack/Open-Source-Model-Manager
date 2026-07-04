@@ -11017,12 +11017,44 @@ async function executeLegacySkill(skillName, params) {
                     const config = {
                         method: params.method,
                         url: params.url,
-                        timeout: 10000
+                        timeout: 10000,
+                        // Fetch raw bytes. With no responseType, axios decodes
+                        // the body as a UTF-8 string, which silently CORRUPTS
+                        // any binary payload (e.g. a .tgz npm tarball: gzip
+                        // magic 1f 8b came back as 1f fd). Decode text ourselves
+                        // based on content-type; never hand back mangled binary.
+                        responseType: 'arraybuffer',
+                        maxContentLength: 50 * 1024 * 1024,
+                        maxBodyLength: 50 * 1024 * 1024,
+                        validateStatus: () => true
                     };
                     if (params.headers) config.headers = params.headers;
                     if (params.body) config.data = params.body;
                     const response = await axios(config);
-                    result = { success: true, data: response.data, status: response.status };
+                    const ct = String(response.headers?.['content-type'] || '').toLowerCase();
+                    const buf = Buffer.from(response.data || []);
+                    const isText = /^(text\/|application\/(json|.*\+json|xml|.*\+xml|javascript|x-www-form-urlencoded|graphql|x-ndjson|yaml|x-yaml))/.test(ct)
+                        || (!ct && buf.slice(0, 512).every(b => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127) || b >= 128));
+                    if (isText) {
+                        let text = buf.toString('utf8');
+                        let data = text;
+                        if (/json/.test(ct) || (!ct && /^\s*[\[{]/.test(text))) {
+                            try { data = JSON.parse(text); } catch (_) { data = text; }
+                        }
+                        result = { success: response.status < 400, data, status: response.status, contentType: ct || undefined };
+                    } else {
+                        // Binary body — don't return a corrupted string. Steer the
+                        // caller to download_file (which preserves original bytes)
+                        // + extract_archive / read tools for files.
+                        result = {
+                            success: response.status < 400,
+                            status: response.status,
+                            contentType: ct || 'application/octet-stream',
+                            binary: true,
+                            bytes: buf.length,
+                            note: `Binary response (${buf.length} bytes, ${ct || 'unknown type'}) not returned as text — it would be corrupted. To save/analyze a binary file (archive, image, PDF, etc.) use download_file to write the original bytes to the workspace, then extract_archive (for .tgz/.zip/...) or the appropriate read tool.`
+                        };
+                    }
                 } catch (e) {
                     throw new Error('Request failed: ' + e.message );
                 }
@@ -16680,6 +16712,35 @@ async function materializeAttachmentsToWorkspace(workspaceUserId, attachmentOwne
     };
 }
 
+// Parse explicit tool prohibitions out of a user's system prompt so we can
+// HARD-remove those tools from the catalog (the model obeys "don't use X"
+// far more reliably when X simply isn't advertised than when it's told not
+// to). Scoped per clause so a negation ("do not use run_node or run_npm")
+// only disables tools named in the SAME clause. Short/generic names (e.g.
+// `web`) require an underscore or a tool-context word nearby to avoid
+// disabling on incidental prose ("don't browse the web casually").
+function parseProhibitedToolNames(text, knownNames) {
+    const prohibited = new Set();
+    if (!text || !Array.isArray(knownNames) || !knownNames.length) return prohibited;
+    const NEG = /\b(do not|do n't|don'?t|dont|never|avoid|refrain from|must ?n'?t|must not|stop using|no longer use|without using|not allowed to (?:use|call|run)|you (?:may|should|must|can) ?n'?t (?:use|call|run)|disable|do not (?:use|call|run)|don'?t (?:use|call|run))\b/i;
+    const clauses = String(text).split(/[.\n;!?]+/);
+    for (const raw of clauses) {
+        const clause = raw.toLowerCase();
+        if (!NEG.test(clause)) continue;
+        const hasToolWord = /\b(tool|skill|function|command|runner)\b/.test(clause);
+        for (const name of knownNames) {
+            if (!name) continue;
+            const specific = name.includes('_') || name.length >= 7;
+            if (!specific && !hasToolWord) continue;
+            const pat = name.toLowerCase().replace(/[^a-z0-9]+/g, '[_\\-\\s]?');
+            if (new RegExp('(^|[^a-z0-9])' + pat + '([^a-z0-9]|$)', 'i').test(clause)) {
+                prohibited.add(name);
+            }
+        }
+    }
+    return prohibited;
+}
+
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
@@ -18601,6 +18662,42 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // --- Honor explicit tool prohibitions in the user's system prompt ----
+        // e.g. a chat "system prompt" that says "do not use run_node or run_npm".
+        // Hard-remove the named tools from the catalog (so the router can never
+        // advertise them and the model can't see them) and record them on the
+        // toolCtx so a hallucinated call is refused at dispatch. Runs AFTER the
+        // pre-flights so anything they force-included is also stripped.
+        try {
+            const sysText = (Array.isArray(inputMessages) ? inputMessages : [])
+                .filter(m => m && m.role === 'system')
+                .map(m => typeof m.content === 'string' ? m.content
+                    : (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''))
+                .join('\n');
+            const prohibited = parseProhibitedToolNames(sysText, Array.from(fullByName.keys()));
+            if (prohibited.size) {
+                toolCtx._prohibitedTools = prohibited;
+                for (const n of prohibited) {
+                    fullByName.delete(n);
+                    advertisedNames.delete(n);
+                    preflightForcedTools.delete(n);
+                    toolCtx._forcedToolNames?.delete(n);
+                }
+                const before = fullToolCatalog.length;
+                for (let i = fullToolCatalog.length - 1; i >= 0; i--) {
+                    if (prohibited.has(fullToolCatalog[i]?.function?.name)) fullToolCatalog.splice(i, 1);
+                }
+                toolCatalog = toolCatalog.filter(d => !prohibited.has(d?.function?.name));
+                toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
+                const names = Array.from(prohibited).join(', ');
+                console.log(`[Chat Stream] System-prompt tool prohibition: removed ${before - fullToolCatalog.length} tool(s): ${names}`);
+                logChatActivity(`Honoring system prompt — disabled tool(s): ${names}`);
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] tool-prohibition parse failed:', e.message);
+        }
+
         // --- Tool router: reduce the ADVERTISED catalog to a relevant subset -
         // Runs AFTER the deterministic pre-flights (which force-include any tool
         // they named). Fails OPEN to the full catalog on any error. Only the
@@ -19779,6 +19876,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 name: call.function.name,
                                 content: JSON.stringify(nudge),
                             };
+                        }
+                        // Refuse a call to a tool the user's system prompt
+                        // prohibited (the model hallucinated a hidden tool name).
+                        if (toolCtx._prohibitedTools && toolCtx._prohibitedTools.size) {
+                            const effName = webEffectiveName(call.function.name, call.function.arguments);
+                            if (toolCtx._prohibitedTools.has(call.function.name) || toolCtx._prohibitedTools.has(effName)) {
+                                return {
+                                    tool_call_id: call.id,
+                                    role: 'tool',
+                                    name: call.function.name,
+                                    content: JSON.stringify({ success: false, error: `The "${call.function.name}" tool is disabled by your system prompt instructions. Do not call it — accomplish the task another way, or tell the user you cannot do it without that tool.` }),
+                                };
+                            }
                         }
                         const k = dispatchKey(call);
                         // Sticky: remember the tool this conversation used (by its

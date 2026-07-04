@@ -196,6 +196,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && javac --version && java --version
 
+# Common Node.js packages baked into a shared, read-only module dir so the
+# run_node / run_npm skills can `require()` them WITHOUT a slow call-time
+# `npm install` into each per-conversation /workspace (the registry fetch +
+# dependency resolution added seconds to every run and sometimes tripped the
+# sandbox timeout). NODE_PATH (set below) makes them resolvable from scripts
+# anywhere, including /workspace, while a script's own /workspace/node_modules
+# still takes precedence if the model installs a specific version.
+#
+# Curated for this sandbox's recurring jobs: npm-package security analysis
+# (tar/zip extraction of published tarballs, JS AST parsing/deobfuscation),
+# HTTP, and general data/format wrangling. All entries are pure-JS / no native
+# build, installed with --ignore-scripts (no postinstall trust needed at build
+# time). Added as a late layer so the heavy whisper/JDK layers stay cached.
+RUN mkdir -p /opt/sandbox-node && cd /opt/sandbox-node \
+    && printf '{"name":"sandbox-node","private":true}\n' > package.json \
+    && HOME=/tmp npm install --no-audit --no-fund --ignore-scripts --omit=dev \
+        tar cwd tar-stream \
+        adm-zip unzipper yauzl pako \
+        axios node-fetch form-data \
+        acorn acorn-walk @babel/parser @babel/traverse espree esprima escodegen astring \
+        cheerio node-html-parser js-yaml fast-xml-parser xml2js csv-parse csv-stringify papaparse ini \
+        lodash semver glob minimatch fast-glob uuid nanoid mime-types dayjs date-fns chalk dotenv \
+        commander minimist yargs crypto-js jsonwebtoken iconv-lite bytes pretty-bytes \
+    && rm -rf /tmp/.npm* /tmp/.npm-cache /root/.npm ~/.npm \
+    && chmod -R a+rX /opt/sandbox-node \
+    && NODE_PATH=/opt/sandbox-node/node_modules node -e "['tar','cwd','acorn','@babel/parser','cheerio','axios','lodash','semver','js-yaml','adm-zip','uuid','dayjs'].forEach(p=>require(p));console.log('sandbox-node deps OK')"
+# Resolve the baked packages from run_node scripts (and the run_npm skip
+# check) no matter their cwd. A per-workspace node_modules still wins over
+# this for version-specific installs.
+ENV NODE_PATH=/opt/sandbox-node/node_modules
+
 # matplotlib headless default — prevents "no display name" errors when
 # snippets forget plt.switch_backend('Agg').
 ENV MPLBACKEND=Agg
