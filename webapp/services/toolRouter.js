@@ -87,6 +87,17 @@ const INTENT_RULES = [
     [/\b(stock|ticker|share price|time ?series|ohlc|market data)\b|\$[A-Z]{1,5}\b/i, ['fetch_timeseries']],
     [/\b(remember|note that|keep in mind|i prefer|from now on)\b/i, ['record_learning']],
     [/\b(download|save (this|it) as|export (to|as)) (a )?(pdf|csv|file|xlsx)\b/i, ['make_downloadable', 'create_file', 'download_file']],
+    // Download of a remote FILE / package / tarball / archive / repo (not just
+    // doc formats) — download_file preserves original bytes; extract_archive
+    // unpacks it. Without this the model reaches for http_request/web on a .tgz,
+    // gets a binary descriptor telling it to "use download_file", and — if the
+    // router didn't advertise download_file — reasons "I don't have download_file"
+    // and dead-ends (observed on an npm-package malware review).
+    [/\b(download|fetch|grab|pull|retrieve|save|get)\b[\s\S]{0,40}?\b(tarball|\.tgz|\.tar\b|\.zip|\.gz|package|archive|repo|repositor|binary|dependenc|module|source|npm|pypi|gem|crate)\b|registry\.npmjs\.org|files\.pythonhosted\.org|codeload\.github|\.tgz(\b|$)/i, ['download_file', 'extract_archive']],
+    // Package / repo static-analysis & malware-review workflow: get the files,
+    // unpack, grep across them, read, decode base64. Forces the whole path so a
+    // "review this npm package for malware" turn never strands on a missing tool.
+    [/\bmalware|malicious|suspicious|payload|\bc2\b|postinstall|obfuscat|exfiltrat|backdoor|\b(analy[sz]e|review|inspect|audit|examine|scan)\b[\s\S]{0,40}?\b(npm|package|repo|repositor|tarball|library|module|dependenc|source ?code|codebase|files?)\b/i, ['download_file', 'extract_archive', 'grep_code', 'scan_source_files', 'read_file', 'base64_decode']],
     // Document CREATION — "give me this as a pdf report", "make a docx", "turn this
     // into a pdf". The creator tools MUST ride along whenever a document format is
     // named with a creation-ish verb: make_downloadable is core-always but can only
@@ -284,8 +295,14 @@ async function selectForTurn(opts) {
     const {
         fullCatalog = [], query = '', contextSize = 4096, profile = 'balanced',
         isDiffusion = false, stickyNames = new Set(), forcedNames = new Set(),
-        hardCeilingTok = null, convId = null,
+        hardCeilingTok = null, convId = null, intentText = null,
     } = opts || {};
+    // Intent rules match against the user query PLUS (optionally) the system
+    // prompt, so a persona ("you are to download a copy, then grep_code the
+    // files") reliably gets its capability tools every turn even when the
+    // per-turn user message is terse. Semantic search still uses `query` only
+    // (mixing the whole system prompt in would dilute the embedding).
+    const intentQuery = intentText ? (String(query) + '\n' + String(intentText)) : query;
 
     // Defensive: drop malformed defs (no .function.name) instead of throwing —
     // a single bad entry would otherwise trip the seam's fail-open and silently
@@ -313,7 +330,7 @@ async function selectForTurn(opts) {
     // 2) intent rules
     const intent = new Set();
     for (const [re, names] of INTENT_RULES) {
-        if (re.test(query)) names.forEach(n => present.has(n) && intent.add(n));
+        if (re.test(intentQuery)) names.forEach(n => present.has(n) && intent.add(n));
     }
 
     // 3) assemble mandatory tiers (bypass soft budget, honor hard ceiling)

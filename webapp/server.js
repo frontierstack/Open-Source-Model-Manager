@@ -18739,9 +18739,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 reqOverride: req.body?.toolRouter,
             });
             if (routeProfile !== 'off' && fullToolCatalog.length) {
+                // Feed the user's system prompt into intent matching (not the
+                // semantic embedding) so a persona's standing capabilities
+                // ("download a copy, then grep_code the files") get their tools
+                // every turn even when the per-turn message is terse.
+                const intentSystemText = (Array.isArray(inputMessages) ? inputMessages : [])
+                    .filter(m => m && m.role === 'system')
+                    .map(m => typeof m.content === 'string' ? m.content
+                        : (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''))
+                    .join('\n');
                 const sel = await toolRouter.selectForTurn({
                     fullCatalog: fullToolCatalog,
                     query: latestUserText,
+                    intentText: intentSystemText,
                     contextSize,
                     profile: routeProfile,
                     stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
@@ -20026,7 +20036,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // round (same grow-only rebuild find_tools discoveries ride).
                         if (toolCtx._forcedToolNames && typeof resultMsg.content === 'string') {
                             const looksFailed = resultMsg.content.includes('"error"') || /"success"\s*:\s*false/.test(resultMsg.content);
-                            if (looksFailed) {
+                            // Also self-heal a SUCCESS result that STEERS to another
+                            // tool via a note/hint ("use download_file", "then
+                            // extract_archive") — e.g. http_request's binary
+                            // descriptor. Without this the model is told to use a
+                            // tool the router didn't advertise and dead-ends
+                            // ("I don't have download_file"). Same grow-only ride.
+                            const hasSteer = /"(note|hint)"\s*:/.test(resultMsg.content) && /\b(use|instead|switch to|then (call|use)|with)\b/i.test(resultMsg.content);
+                            if (looksFailed || hasSteer) {
                                 try {
                                     const errText = resultMsg.content.slice(0, 4000);
                                     let forced = 0;
