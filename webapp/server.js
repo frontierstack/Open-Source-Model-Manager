@@ -16722,21 +16722,30 @@ async function materializeAttachmentsToWorkspace(workspaceUserId, attachmentOwne
 function parseProhibitedToolNames(text, knownNames) {
     const prohibited = new Set();
     if (!text || !Array.isArray(knownNames) || !knownNames.length) return prohibited;
-    const NEG = /\b(do not|do n't|don'?t|dont|never|avoid|refrain from|must ?n'?t|must not|stop using|no longer use|without using|not allowed to (?:use|call|run)|you (?:may|should|must|can) ?n'?t (?:use|call|run)|disable|do not (?:use|call|run)|don'?t (?:use|call|run))\b/i;
-    const clauses = String(text).split(/[.\n;!?]+/);
-    for (const raw of clauses) {
-        const clause = raw.toLowerCase();
-        if (!NEG.test(clause)) continue;
-        const hasToolWord = /\b(tool|skill|function|command|runner)\b/.test(clause);
-        for (const name of knownNames) {
-            if (!name) continue;
-            const specific = name.includes('_') || name.length >= 7;
-            if (!specific && !hasToolWord) continue;
-            const pat = name.toLowerCase().replace(/[^a-z0-9]+/g, '[_\\-\\s]?');
-            if (new RegExp('(^|[^a-z0-9])' + pat + '([^a-z0-9]|$)', 'i').test(clause)) {
-                prohibited.add(name);
-            }
+    const known = new Set(knownNames.filter(Boolean).map(n => n.toLowerCase()));
+    // PRECISION IS EVERYTHING HERE. We only ban a tool when the system prompt
+    // names it UNAMBIGUOUSLY: an explicit negation + optional verb immediately
+    // followed by a list of EXACT tool-name tokens, e.g. "do not use run_node
+    // or run_npm". We deliberately DO NOT fuzzy-match prose — "grep the code"
+    // must never disable grep_code, and "download the file" must never disable
+    // download_file (that over-match blocked a real malware-analysis workflow).
+    // The tool token must appear literally (with its underscore) and be
+    // specific enough (underscore or >=7 chars) so common words like `web`
+    // can't be tripped by incidental prose.
+    const NEG = "(?:do ?n[o']?t|do not|never|must ?n[o']?t|must not|may not|should ?n[o']?t|should not|shall not|avoid|refrain from(?: using)?|stop using)";
+    const VERB = "(?:ever\\s+)?(?:use|using|call|calling|run|running|invoke|invoking|execute|executing|touch)?";
+    const ITEM = "(?:the\\s+)?[a-z0-9_]+";
+    const SEP = "\\s*(?:,|/|\\bor\\b|\\band\\b)\\s*";
+    const re = new RegExp("\\b" + NEG + "\\b\\s*" + VERB + "\\s+" + ITEM + "(?:" + SEP + ITEM + ")*", "gi");
+    let m;
+    while ((m = re.exec(String(text))) !== null) {
+        const toks = (m[0].toLowerCase().match(/[a-z0-9_]+/g) || []);
+        for (const t of toks) {
+            if (!known.has(t)) continue;
+            if (!(t.includes('_') || t.length >= 7)) continue;   // reject short/generic
+            prohibited.add(knownNames.find(n => n.toLowerCase() === t) || t);
         }
+        if (re.lastIndex === m.index) re.lastIndex++;  // guard against zero-width
     }
     return prohibited;
 }
