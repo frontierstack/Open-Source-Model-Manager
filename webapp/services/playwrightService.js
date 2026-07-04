@@ -175,14 +175,24 @@ const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 let poolCleanupInterval = null;
 
 // Stealth configuration - rotated per request
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
-];
+// A coherent Windows-Chromium fingerprint. EVERY other signal we spoof — the
+// Sec-Ch-Ua client-hints, navigator.platform='Win32', vendor='Google Inc.',
+// window.chrome, the WebGL ANGLE/Direct3D renderer, and navigator.userAgentData —
+// is Windows-Chrome, so the UA pool must be too. A Firefox/Safari/Mac/Linux UA
+// paired with Chromium client-hints + Win32 platform (the previous mixed pool) is
+// an instant bot tell. A few recent majors keep rotation entropy; the client-hints
+// are DERIVED from the chosen UA (see getStealthContextOptions) so they never drift.
+// The stealth plugin rewrites navigator.userAgent to the REAL bundled Chromium
+// version, so a hardcoded UA major would disagree with the JS UA (and userAgentData)
+// — a header-vs-JS version mismatch that Cloudflare/DataDome cross-check. So the
+// major is detected from the launched browser at runtime (see getBrowser) and only
+// falls back to STEALTH_CHROME_MAJOR before the first launch.
+const STEALTH_CHROME_MAJOR = parseInt(process.env.STEALTH_CHROME_MAJOR, 10) || 131;
+let detectedChromeMajor = null;
+function stealthChromeMajor() { return detectedChromeMajor || String(STEALTH_CHROME_MAJOR); }
+function windowsChromeUA(major) {
+    return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
 
 const VIEWPORTS = [
     { width: 1920, height: 1080 },
@@ -192,8 +202,12 @@ const VIEWPORTS = [
     { width: 1280, height: 720 }
 ];
 
-const LOCALES = ['en-US', 'en-GB', 'en-CA', 'en-AU'];
-const TIMEZONES = ['America/New_York', 'America/Los_Angeles', 'America/Chicago', 'Europe/London', 'America/Denver'];
+// Pin to en-US so navigator.language, navigator.languages, and the hardcoded
+// Accept-Language header all agree (a rotating locale against a fixed en-US
+// Accept-Language is a mismatch). Timezones are US-only for the same reason —
+// Europe/London contradicted the en-US / US-Windows persona.
+const LOCALES = ['en-US'];
+const TIMEZONES = ['America/New_York', 'America/Los_Angeles', 'America/Chicago', 'America/Denver'];
 
 /**
  * Get a random element from an array
@@ -214,8 +228,14 @@ function randomDelay(min = 50, max = 200) {
  */
 function getStealthContextOptions() {
     const viewport = randomChoice(VIEWPORTS);
+    // Build the UA from the REAL browser major (detected at launch) so the HTTP-header
+    // UA, navigator.userAgent (stealth-plugin-corrected to the real version), the
+    // Sec-Ch-Ua client-hint, and userAgentData all report the SAME Windows-Chrome
+    // version — no header-vs-JS mismatch.
+    const chromeMajor = stealthChromeMajor();
+    const userAgent = windowsChromeUA(chromeMajor);
     const options = {
-        userAgent: randomChoice(USER_AGENTS),
+        userAgent: userAgent,
         viewport: viewport,
         screen: viewport,
         locale: randomChoice(LOCALES),
@@ -231,7 +251,7 @@ function getStealthContextOptions() {
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Upgrade-Insecure-Requests': '1',
-            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'Sec-Ch-Ua': `"Chromium";v="${chromeMajor}", "Not(A:Brand";v="24", "Google Chrome";v="${chromeMajor}"`,
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
             'Sec-Fetch-Dest': 'document',
@@ -309,6 +329,41 @@ async function applyStealthPatches(page) {
         Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
         Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
+        // userAgentData — align with the Windows-Chrome persona. Headless Chromium on
+        // a Linux host otherwise reports platform:'Linux' + the real engine major here,
+        // contradicting navigator.platform / Sec-Ch-Ua-Platform / the UA string. Derive
+        // everything from the (already-spoofed) UA so all client-hint surfaces agree.
+        try {
+            if (navigator.userAgentData) {
+                const _major = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '131';
+                const _brands = [
+                    { brand: 'Chromium', version: _major },
+                    { brand: 'Google Chrome', version: _major },
+                    { brand: 'Not(A:Brand', version: '24' },
+                ];
+                const _fullVersion = `${_major}.0.0.0`;
+                const _uaData = {
+                    brands: _brands,
+                    mobile: false,
+                    platform: 'Windows',
+                    getHighEntropyValues: (hints) => Promise.resolve({
+                        architecture: 'x86',
+                        bitness: '64',
+                        brands: _brands,
+                        fullVersionList: _brands.map(b => ({ brand: b.brand, version: b.brand === 'Not(A:Brand' ? '24.0.0.0' : _fullVersion })),
+                        mobile: false,
+                        model: '',
+                        platform: 'Windows',
+                        platformVersion: '15.0.0',
+                        uaFullVersion: _fullVersion,
+                        wow64: false,
+                    }),
+                    toJSON: function () { return { brands: this.brands, mobile: this.mobile, platform: this.platform }; },
+                };
+                Object.defineProperty(navigator, 'userAgentData', { get: () => _uaData, configurable: true });
+            }
+        } catch (e) { /* userAgentData unsupported — nothing to align */ }
+
         // Hardware concurrency (randomize slightly)
         Object.defineProperty(navigator, 'hardwareConcurrency', {
             get: () => 4 + Math.floor(Math.random() * 5)
@@ -318,10 +373,13 @@ async function applyStealthPatches(page) {
         Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 
         // WebGL vendor/renderer - randomize slightly
+        // Windows Chrome renders through ANGLE/Direct3D11 — the unmasked renderer is
+        // an "ANGLE (...Direct3D11...)" string, NOT the macOS-style "Intel Iris OpenGL
+        // Engine" (which contradicted the Windows persona and was itself a tell).
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) return 'Intel Inc.';
-            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+            if (parameter === 37445) return 'Google Inc. (Intel)';
+            if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
             return getParameter.apply(this, arguments);
         };
 
@@ -329,8 +387,8 @@ async function applyStealthPatches(page) {
         if (typeof WebGL2RenderingContext !== 'undefined') {
             const getParam2 = WebGL2RenderingContext.prototype.getParameter;
             WebGL2RenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) return 'Intel Inc.';
-                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
                 return getParam2.apply(this, arguments);
             };
         }
@@ -502,6 +560,13 @@ async function getBrowser() {
                 ...(useHeaded ? ['--disable-notifications', '--disable-popup-blocking'] : [])
             ]
         });
+
+        // Detect the REAL Chromium major so the spoofed UA/client-hints match the
+        // version the stealth plugin puts in navigator.userAgent (avoids a header-vs-JS
+        // version mismatch). browser.version() → e.g. "145.0.7632.6".
+        if (!detectedChromeMajor) {
+            try { const m = String(browser.version() || '').match(/(\d+)\./); if (m) detectedChromeMajor = m[1]; } catch (e) { /* keep fallback */ }
+        }
 
         const poolEntry = {
             browser,

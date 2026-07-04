@@ -11921,6 +11921,9 @@ app.get('/api/search', requireAuth, async (req, res) => {
 
         // Try DuckDuckGo first, fall back to Jina if CAPTCHA detected
         try {
+            // Skip DDG entirely while it's cooling down from a recent block — the
+            // catch below runs the Scrapling→Brave→Playwright fallback chain.
+            if (backendCoolingDown('ddg')) throw new Error('DDG_COOLING');
             const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(enhancedQuery)}${dateFilter}`;
             const response = await axios.get(searchUrl, {
                 headers: {
@@ -11971,7 +11974,14 @@ app.get('/api/search', requireAuth, async (req, res) => {
             if (results.length === 0) {
                 throw new Error('NO_RESULTS');
             }
+            noteBackendOk('ddg');
         } catch (ddgError) {
+            // Cool DDG on a genuine block (CAPTCHA / axios 403|429 / network throw),
+            // but NOT on NO_RESULTS (an empty parse may be a real empty query) or a
+            // skip because it was already cooling.
+            if (ddgError.message !== 'NO_RESULTS' && ddgError.message !== 'DDG_COOLING') {
+                noteBackendBlocked('ddg', parseRetryAfter(ddgError.response && ddgError.response.headers && ddgError.response.headers['retry-after']));
+            }
             // Try Scrapling first (anti-bot capabilities for CAPTCHA evasion)
             console.log(`DuckDuckGo failed (${ddgError.message}), trying Scrapling...`);
 
@@ -12143,13 +12153,19 @@ app.get('/api/search', requireAuth, async (req, res) => {
             source: searchSource
         };
 
-        // Cache the results
-        searchCache.set(cacheKey, {
-            data: resultData,
-            timestamp: Date.now()
-        });
-
-        res.json(resultData);
+        // Cache ONLY a non-empty result. An all-backends collapse (DDG CAPTCHA →
+        // Scrapling fail → Brave fail → Playwright fail) yields count:0 and must NOT
+        // be cached — otherwise the 1h TTL pins the empty verdict and every retry of
+        // that query is served the stale nothing. Signal it as retryable instead.
+        if (results.length > 0) {
+            searchCache.set(cacheKey, {
+                data: resultData,
+                timestamp: Date.now()
+            });
+            res.json(resultData);
+        } else {
+            res.json({ ...resultData, retryable: true, source: 'rate-limited' });
+        }
     } catch (error) {
         console.error('Search error:', error);
 
@@ -12270,6 +12286,28 @@ function extractTextFromHtml(html, maxLength = 5000) {
 }
 
 // Helper function to fetch content from a URL using axios (fallback)
+// Whitelisted response headers we inspect for WAF signatures / rate-limit hints.
+// Kept internal (opt-in via includeHeaders, like rawHtml) — never rides into a
+// tool result / API response.
+const WAF_HEADER_KEYS = ['server', 'cf-ray', 'cf-mitigated', 'x-datadome', 'set-cookie', 'x-iinfo', 'x-cdn', 'x-sucuri-id', 'x-akamai-transformed', 'retry-after'];
+function pickHeaders(h) {
+    const out = {};
+    if (!h) return out;
+    for (const k of WAF_HEADER_KEYS) {
+        const v = h[k] !== undefined ? h[k] : h[k.toLowerCase()];
+        if (v !== undefined) out[k] = v;
+    }
+    return out;
+}
+// Retry-After → ms. Handles both delta-seconds and an HTTP-date; null when absent/bad.
+function parseRetryAfter(raw) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const s = String(Array.isArray(raw) ? raw[0] : raw).trim();
+    if (/^\d+$/.test(s)) return parseInt(s, 10) * 1000;
+    const t = Date.parse(s);
+    if (!Number.isNaN(t)) { const d = t - Date.now(); return d > 0 ? d : 0; }
+    return null;
+}
 async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts = {}) {
     try {
         const response = await axios.get(url, {
@@ -12300,16 +12338,23 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts
         // 1MB+ body never rides downstream into tool results / API responses — the
         // other callers that spread this object don't request it.
         const rawHtml = opts.includeRawHtml && typeof response.data === 'string' ? response.data : '';
-        return { success: true, content, title, url, ...(rawHtml ? { rawHtml } : {}) };
+        return {
+            success: true, content, title, url,
+            ...(rawHtml ? { rawHtml } : {}),
+            ...(opts.includeHeaders ? { status: response.status, respHeaders: pickHeaders(response.headers) } : {}),
+        };
     } catch (error) {
         // Prefer a human-readable HTTP status over the raw axios code — the model
         // sees this string, and "ERR_BAD_REQUEST" reads as "my request was
         // malformed" (it retried variants); "HTTP 403" reads as "the site refused".
         const status = error.response && error.response.status;
+        const hdrs = error.response && error.response.headers;
+        const retryAfterMs = opts.includeHeaders ? parseRetryAfter(hdrs && hdrs['retry-after']) : null;
         return {
             success: false,
             error: status ? `HTTP ${status}` : (error.code || error.message || 'Fetch failed'),
-            url
+            url,
+            ...(opts.includeHeaders ? { status: status || 0, respHeaders: pickHeaders(hdrs), ...(retryAfterMs != null ? { retryAfterMs } : {}) } : {}),
         };
     }
 }
@@ -12378,17 +12423,55 @@ function isContentTooThin(content, url, rawHtml) {
 // a challenge body must escalate to Scrapling/Playwright, never short-circuit.
 // Module-scope (the IIFE-local CHALLENGE_MARKERS is out of scope here). Caps the
 // scan so a huge body doesn't pay a full regex sweep.
-const CHALLENGE_MARKERS = [
-    /just a moment/i, /checking your browser/i, /cf-challenge/i,
-    /cf-browser-verification/i, /__cf_chl_/i, /attention required/i,
-    /access denied/i, /captcha/i, /verifying you are human/i,
+// Two tiers off ONE source of truth. STRONG = unambiguous WAF/interstitial tokens
+// that don't appear in normal prose — these gate the ESCALATION and host-block
+// STRIKE decisions (a false positive there over-escalates a benign page into the
+// 15-25s cascade or fast-fails a working host). WEAK = generic/widget mentions a
+// security blog or checkout page legitimately contains ("captcha", "bot detection",
+// "enable cookies") — HINT-ONLY, never gate a strike or an escalation.
+const CHALLENGE_MARKERS_STRONG = [
+    /just a moment/i, /checking your browser/i, /cf-?challenge/i,
+    /cf-browser-verification/i, /challenge-platform/i, /__cf_chl_/i,
+    /attention required/i, /ddos protection by cloudflare/i, /ray id:/i,
+    /error 10(15|20)/i, /cf-turnstile/i, /perimeterx/i, /px-captcha/i,
+    /datadome/i, /captcha-delivery\.com/i, /geo\.captcha-delivery/i,
+    /imperva/i, /incapsula/i, /_incapsula_/i, /distil networks/i, /sucuri/i,
+    /pardon our interruption/i, /verifying you are human/i,
     /enable javascript and cookies to continue/i, /unusual traffic/i,
-    /pardon our interruption/i,
+    /needs to review the security of your connection/i,
 ];
-function looksLikeChallenge(text) {
+// Deliberately NOT a strike/escalation trigger: /distil networks/ is used above
+// instead of bare /distil/ because this repo is ML-heavy ("knowledge distillation").
+const CHALLENGE_MARKERS_WEAK = [
+    /\bcaptcha\b/i, /recaptcha/i, /hcaptcha/i, /h-captcha/i, /turnstile/i,
+    /access denied/i, /one more step/i, /enable cookies/i, /bot detection/i,
+    /are you a (?:robot|human)/i, /please verify you('| a)re human/i,
+];
+const CHALLENGE_MARKERS = [...CHALLENGE_MARKERS_STRONG, ...CHALLENGE_MARKERS_WEAK];
+// strongOnly scans only the high-precision tier — pass it for any escalation or
+// host-block-strike decision. Default (full scan) is for the model-facing hint,
+// where a false positive merely adds a "maybe retry with stealth" note.
+function looksLikeChallenge(text, { strongOnly = false } = {}) {
     if (!text) return false;
     const blob = String(text).slice(0, 8000);
-    return CHALLENGE_MARKERS.some((re) => re.test(blob));
+    return (strongOnly ? CHALLENGE_MARKERS_STRONG : CHALLENGE_MARKERS).some((re) => re.test(blob));
+}
+// WAF signature from HTTP status + response headers (localization/obfuscation-proof
+// where body markers fail). A vendor header's PRESENCE means "the site USES this WAF",
+// NOT "it blocked us" — so every vendor rule is gated on a block status; only an
+// explicit cf-mitigated:challenge header may fire on a 200.
+function challengeFromHeaders(status, h) {
+    h = h || {};
+    const server = String(h['server'] || '');
+    const sc = Array.isArray(h['set-cookie']) ? h['set-cookie'].join(';') : String(h['set-cookie'] || '');
+    if (String(h['cf-mitigated'] || '').toLowerCase() === 'challenge') return 'cloudflare';
+    if (![401, 403, 406, 429, 503].includes(status)) return null;
+    if (/cloudflare/i.test(server) || h['cf-ray']) return 'cloudflare';
+    if (h['x-datadome'] || /datadome/i.test(sc)) return 'datadome';
+    if (h['x-iinfo'] || /^visid_incap|incap_ses/i.test(sc) || /incapsula|imperva/i.test(server)) return 'incapsula';
+    if (/sucuri/i.test(server) || h['x-sucuri-id']) return 'sucuri';
+    if (h['x-akamai-transformed']) return 'akamai';
+    return null;
 }
 
 // The consolidated `web` chat tool routes to web_search / fetch_url / etc.
@@ -12802,32 +12885,83 @@ function setHostMemo(url, layer) {
 // HOST_BLOCK_STRIKES full-cascade bot walls, further requests to the host
 // fail INSTANTLY with a directive error steering the model to another source.
 // TTL-bounded so a transient wall recovers; env-tunable, no rebuild.
-const hostBlockMemo = new Map();   // host -> { strikes, firstAt, blockedUntil }
+const hostBlockMemo = new Map();   // host -> { strikes, firstAt, blockedUntil, anyHard, kind, waf, retryAfterMs }
 const HOST_BLOCK_TTL_MS = parseInt(process.env.HOST_BLOCK_TTL_MS, 10) || 10 * 60 * 1000;
+// A transient rate-limit (HTTP 429/503 with no WAF signature) should recover fast,
+// not sit under the full hard-block TTL. Honors Retry-After when the host sends it.
+const HOST_BLOCK_429_TTL_MS = parseInt(process.env.HOST_BLOCK_429_TTL_MS, 10) || 90 * 1000;
 const HOST_BLOCK_STRIKES = parseInt(process.env.HOST_BLOCK_STRIKES, 10) || 2;
+// hostBlockMemo is keyed on the APEX (www. stripped) so a www<->apex swap can't
+// dodge the fast-fail. hostFetchMemo (the per-host escalation-layer cache) stays on
+// the exact hostname — a working fetch layer can legitimately differ per subdomain.
+function hostKey(url) { const h = hostOf(url); return h ? h.replace(/^www\./i, '') : h; }
+function botDirective(host, kind, waf, retryAfterMs) {
+    if (kind === 'ratelimit') {
+        const secs = retryAfterMs ? ` (retry after ~${Math.round(retryAfterMs / 1000)}s)` : '';
+        return `${host} is rate-limiting automated requests${secs}. Pause and retry the SAME host shortly — ` +
+            `do NOT fan out URL variants, that only deepens the rate-limit.`;
+    }
+    return `${host} is blocking automated access${waf ? ` (${waf})` : ''} — bot protection defeated every fetch layer, ` +
+        `including the stealth browser. Do NOT retry ${host} URLs or URL variants; they will keep failing for the next few minutes. ` +
+        `Use a DIFFERENT website that has the same information, or ask the user for the data.`;
+}
 function hostBlockReason(url) {
-    const h = hostOf(url);
+    const h = hostKey(url);
     const e = h && hostBlockMemo.get(h);
     if (!e || !e.blockedUntil) return null;
     if (Date.now() > e.blockedUntil) { hostBlockMemo.delete(h); return null; }
-    return `${h} is blocking automated access (bot protection defeated every fetch layer, including the stealth browser). ` +
-        `Do NOT retry ${h} URLs or URL variants — they will keep failing for the next few minutes. ` +
-        `Use a DIFFERENT website that has the same information, or ask the user for the data.`;
+    return botDirective(h, e.kind, e.waf, e.retryAfterMs);
 }
-function noteHostBotWall(url, signal) {
-    const h = hostOf(url);
+function noteHostBotWall(url, signal, meta = {}) {
+    const h = hostKey(url);
     if (!h) return;
     const now = Date.now();
     let e = hostBlockMemo.get(h);
-    if (!e || now - e.firstAt > HOST_BLOCK_TTL_MS) e = { strikes: 0, firstAt: now, blockedUntil: 0 };
+    if (!e || now - e.firstAt > HOST_BLOCK_TTL_MS) e = { strikes: 0, firstAt: now, blockedUntil: 0, anyHard: false, kind: 'wall', waf: null, retryAfterMs: 0 };
     e.strikes++;
+    // A challenge / 401 / 403 / 406 is a hard wall; a bare 429/503 (no WAF signature)
+    // is a transient rate-limit. Any hard strike in the window pins the entry to 'wall'.
+    const isRateLimit = !meta.waf && (meta.status === 429 || meta.status === 503);
+    if (!isRateLimit) e.anyHard = true;
+    if (meta.waf) e.waf = meta.waf;
+    if (meta.retryAfterMs) e.retryAfterMs = meta.retryAfterMs;
+    e.kind = e.anyHard ? 'wall' : 'ratelimit';
     if (e.strikes >= HOST_BLOCK_STRIKES && !e.blockedUntil) {
-        e.blockedUntil = now + HOST_BLOCK_TTL_MS;
-        console.warn(`[fetchUrlContent] Host ${h} marked bot-blocked for ${Math.round(HOST_BLOCK_TTL_MS / 60000)} min after ${e.strikes} full-cascade bot walls (${signal})`);
+        let ttl = HOST_BLOCK_TTL_MS;
+        if (e.kind === 'ratelimit') ttl = e.retryAfterMs ? Math.min(Math.max(e.retryAfterMs, 5000), HOST_BLOCK_TTL_MS) : HOST_BLOCK_429_TTL_MS;
+        e.blockedUntil = now + ttl;
+        console.warn(`[fetchUrlContent] Host ${h} marked ${e.kind === 'ratelimit' ? 'rate-limited' : 'bot-blocked'} for ${Math.round(ttl / 1000)}s after ${e.strikes} strikes (${signal})`);
     }
     hostBlockMemo.set(h, e);
     while (hostBlockMemo.size > HOST_MEMO_CAP) hostBlockMemo.delete(hostBlockMemo.keys().next().value);
 }
+// A later genuine success clears accumulated (not-yet-blocking) strikes, so a host
+// that momentarily walled ONE path isn't fast-failed on the next fetch. Never
+// unsticks an actively-blocked host (guarded on !blockedUntil).
+function clearHostBotWall(url) {
+    const h = hostKey(url);
+    const e = h && hostBlockMemo.get(h);
+    if (e && !e.blockedUntil) hostBlockMemo.delete(h);
+}
+
+// Per-backend search cooldown. DDG/Brave/Scrapling rate-limit by our shared egress
+// IP, so backend health is GLOBAL (like hostBlockMemo, not per-user). Cool a backend
+// ONLY on a positive block signal (CAPTCHA/anomaly page, 403/429, network throw) —
+// NEVER on a 0-result parse, which can be regex drift or a genuinely empty query and
+// would falsely sideline a healthy backend for everyone.
+const searchBackendMemo = new Map();   // name -> coolingUntil (ms epoch)
+const SEARCH_BACKEND_COOLDOWN_MS = parseInt(process.env.SEARCH_BACKEND_COOLDOWN_MS, 10) || 120 * 1000;
+function backendCoolingDown(name) {
+    const until = searchBackendMemo.get(name);
+    if (!until) return false;
+    if (Date.now() > until) { searchBackendMemo.delete(name); return false; }
+    return true;
+}
+function noteBackendBlocked(name, retryAfterMs) {
+    const ms = (retryAfterMs && retryAfterMs > 0) ? Math.min(retryAfterMs, 15 * 60 * 1000) : SEARCH_BACKEND_COOLDOWN_MS;
+    searchBackendMemo.set(name, Date.now() + ms);
+}
+function noteBackendOk(name) { searchBackendMemo.delete(name); }
 
 // Final-resort axios fetch at the END of the cascade. By the time this runs,
 // Scrapling and/or Playwright already failed on this url — if plain axios ALSO
@@ -12836,20 +12970,30 @@ function noteHostBotWall(url, signal) {
 // return a DIRECTIVE error (the raw axios code, e.g. ERR_BAD_REQUEST, told the
 // model nothing and it kept retrying).
 async function axiosLastResort(url, timeout) {
-    const result = await fetchUrlContentAxios(url, timeout);
+    const result = await fetchUrlContentAxios(url, timeout, 12000, { includeRawHtml: true, includeHeaders: true });
     const statusMatch = String(result?.error || '').match(/HTTP (\d{3})/);
-    const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-    const botWall = (!result.success && [401, 403, 406, 429].includes(status))
-        || (result.success && looksLikeChallenge(result.content || ''));
-    if (!botWall) return result;
-    const h = hostOf(url);
-    noteHostBotWall(url, status ? `HTTP ${status}` : 'challenge page');
+    const status = result.status || (statusMatch ? parseInt(statusMatch[1], 10) : 0);
+    const waf = challengeFromHeaders(status, result.respHeaders);
+    const retryAfterMs = result.retryAfterMs;
+    // 503 joins the wall-status set (Cloudflare/Akamai under-attack pages), but a
+    // bare 503/429 with no WAF signature is treated as transient (rate-limit) below.
+    const botWall = !!waf
+        || (!result.success && [401, 403, 406, 429, 503].includes(status))
+        || (result.success && looksLikeChallenge(result.content || result.rawHtml || '', { strongOnly: true }));
+    // Internal-only fields must never ride upstream into a tool result / API response.
+    delete result.respHeaders; delete result.rawHtml; delete result.status; delete result.retryAfterMs;
+    if (!botWall) {
+        if (result.success) clearHostBotWall(url);
+        return result;
+    }
+    const h = hostKey(url);
+    noteHostBotWall(url, waf ? `WAF:${waf}` : (status ? `HTTP ${status}` : 'challenge page'), { status, waf, retryAfterMs });
+    const kind = (!waf && (status === 429 || status === 503)) ? 'ratelimit' : 'wall';
     return {
         success: false,
         url,
         error: 'bot_protected',
-        message: `${h} is blocking automated access (${status ? `HTTP ${status}` : 'bot-challenge page'} through every fetch layer, including the stealth browser). ` +
-            `Retrying ${h} URLs or URL variants will keep failing — use a DIFFERENT website that has the same information, or ask the user.`,
+        message: botDirective(h, kind, waf, retryAfterMs),
     };
 }
 
@@ -12893,10 +13037,14 @@ async function fetchUrlContent(url, options = {}) {
             if (ax && ax.success) {
                 const tooThin = isContentTooThin(ax.content || '', url, ax.rawHtml);
                 // Scan the RAW html — a cf-challenge / noscript interstitial is stripped
-                // out of the extracted text, so the text-only scan never saw it.
-                const challenged = looksLikeChallenge(ax.rawHtml || ax.content || '');
+                // out of the extracted text, so the text-only scan never saw it. STRONG
+                // only: a benign page that merely mentions "captcha"/"bot detection"
+                // (common on this user's security content) must NOT get force-escalated
+                // into the 15-25s cascade — real walls carry a strong vendor marker.
+                const challenged = looksLikeChallenge(ax.rawHtml || ax.content || '', { strongOnly: true });
                 if (ax.content && !tooThin && !challenged) {
                     setHostMemo(url, null);   // host is cheap — clear any stale escalation
+                    clearHostBotWall(url);    // a clean serve clears not-yet-blocking strikes
                     return {
                         success: true,
                         url,
@@ -12935,6 +13083,9 @@ async function fetchUrlContent(url, options = {}) {
             const stillShell = forceBrowser && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
             if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell) {
                 setHostMemo(url, 'scrapling');   // skip the axios probe for this host next time
+                // Guard the strike-clear: this path doesn't re-check for a challenge, so
+                // don't clear if the rendered body is itself a strong-marker wall.
+                if (!looksLikeChallenge(scraplingResult.content || '', { strongOnly: true })) clearHostBotWall(url);
                 return {
                     success: true,
                     url,
@@ -12965,6 +13116,7 @@ async function fetchUrlContent(url, options = {}) {
 
             if (result.success) {
                 setHostMemo(url, 'playwright');   // go straight to the browser for this host next time
+                if (!looksLikeChallenge(result.content || '', { strongOnly: true })) clearHostBotWall(url);
                 return { ...result, source: 'playwright' };
             }
 
@@ -24563,50 +24715,10 @@ app.use((req, res) => {
     // so it gives up. This helper inspects the result and returns an
     // escalation hint the tool payload can carry alongside the content.
     // Callers attach the hint when present; models that read it will
-    // retry via scrapling_fetch.
-    const CHALLENGE_MARKERS = [
-        /checking your browser/i,
-        /enable javascript and cookies to continue/i,
-        /cf-browser-verification/i,
-        /cf-challenge/i,
-        /challenge-platform/i,
-        /__cf_chl_/i,
-        /just a moment\.\.\./i,
-        /attention required/i,
-        /access denied/i,
-        /please verify you are a human/i,
-        /ddos protection by cloudflare/i,
-        /perimeterx/i,
-        /datadome/i,
-        /px-captcha/i,
-        /h-captcha/i,
-        /hcaptcha/i,
-        /recaptcha/i,
-        // Cloudflare Turnstile + newer wording
-        /turnstile/i,
-        /cf-turnstile/i,
-        /verifying you are human/i,
-        /needs to review the security of your connection/i,
-        /one more step/i,
-        /ray id:/i,
-        /error 10(15|20)/i,
-        // DataDome
-        /captcha-delivery\.com/i,
-        /geo\.captcha-delivery/i,
-        // Imperva / Incapsula / Distil
-        /pardon our interruption/i,
-        /imperva/i,
-        /incapsula/i,
-        /_incapsula_/i,
-        /distil/i,
-        // Akamai / Sucuri / generic
-        /sucuri/i,
-        /unusual traffic from your computer network/i,
-        /are you a (?:robot|human)/i,
-        /please verify you('| a)re human/i,
-        /bot detection/i,
-        /enable cookies/i,
-    ];
+    // retry via scrapling_fetch. Scans the module-scope tiered markers (strong +
+    // weak) — the divergent local copy that used to live here is gone (single
+    // source of truth). The HINT is intentionally broad; only the STRONG tier gates
+    // a host-block strike (see the noteHostBotWall call in fetch_url's execute).
     function detectBotChallenge({ title = '', content = '' } = {}) {
         const blob = `${title}\n${content}`.slice(0, 8000);
         const hit = CHALLENGE_MARKERS.find(rx => rx.test(blob));
@@ -24673,28 +24785,14 @@ app.use((req, res) => {
             cleanExpiredCache();
             if (searchCache.has(cacheKey)) { const c = searchCache.get(cacheKey); return { ...c.data, cached: true }; }
             const cacheReturn = (out) => { searchCache.set(cacheKey, { data: out, timestamp: Date.now() }); return out; };
-            try {
-                const resp = await axios.get(
-                    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
-                    {
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                            'Accept-Language': 'en-US,en;q=0.9',
-                        },
-                        // html.duckduckgo.com CAPTCHAs Node's axios on essentially every
-                        // hit, so fail FAST to the Brave/Scrapling fallbacks instead of
-                        // burning 8s on a layer that never succeeds.
-                        timeout: 3500,
-                    },
-                );
-                const html = resp.data || '';
-                if (html.includes('anomaly-modal')) {
-                    // DDG hit CAPTCHA — fall back through Brave FIRST, then Scrapling.
-                    // Brave is a cheap axios HTML GET that actually produces results
-                    // post-CAPTCHA (~10s). Scrapling here just re-fetches the SAME
-                    // already-CAPTCHA'd DDG endpoint via a plain Fetcher (no evasion
-                    // advantage in this block), so it's demoted below Brave and only
-                    // runs when Brave parses nothing — avoiding a redundant subprocess.
+            const retryAfterOf = (e) => parseRetryAfter(e && e.response && e.response.headers && e.response.headers['retry-after']);
+            const rateLimited = { error: 'search rate-limited; all search backends (DuckDuckGo, Brave, Scrapling) are temporarily blocked. Read the target page directly with a url, or try again shortly.', retryable: true, source: 'rate-limited', query: q };
+            // Brave FIRST (cheap axios HTML GET, produces results post-DDG-CAPTCHA),
+            // then Scrapling. Each backend is skipped while it's cooling down and only
+            // cooled on a THROW (403/429/network) — never on a 0-result parse, which
+            // can be a genuinely empty query or regex drift. Returns a result or null.
+            const ddgFallback = async () => {
+                if (!backendCoolingDown('brave')) {
                     try {
                         const braveResp = await axios.get(
                             `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
@@ -24708,7 +24806,6 @@ app.use((req, res) => {
                             },
                         );
                         const bhtml = braveResp.data || '';
-                        // Reuse the same Brave parsing /api/search uses.
                         const linkPattern = /<a\s+href="(https?:\/\/(?!(?:search\.)?brave\.com|cdn\.search\.brave\.com|imgs\.search\.brave\.com|tiles\.search\.brave\.com)[^"]+)"[^>]*target="_self"[^>]*class="[^"]*svelte[^"]*"[^>]*>/gi;
                         const titlePattern = /<span[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)<\/span>/gi;
                         const descPattern = /<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
@@ -24732,27 +24829,58 @@ app.use((req, res) => {
                             bResults.push({ title, url, snippet: bDescs[i] || '' });
                         }
                         if (bResults.length) {
-                            return cacheReturn({ query: q, source: 'brave', count: bResults.length, results: bResults });
+                            noteBackendOk('brave');
+                            return { query: q, source: 'brave', count: bResults.length, results: bResults };
                         }
-                    } catch (_) { /* fall through to Scrapling */ }
-                    if (scraplingService) {
-                        try {
-                            const sr = await scraplingService.search(q, limit);
-                            if (sr?.success && Array.isArray(sr.results) && sr.results.length) {
-                                return cacheReturn({
-                                    query: q,
-                                    source: 'scrapling',
-                                    count: sr.results.length,
-                                    results: sr.results.slice(0, limit).map(r => ({
-                                        title: r.title || 'No title',
-                                        url: r.url,
-                                        snippet: r.snippet || '',
-                                    })),
-                                });
-                            }
-                        } catch (_) { /* fall through to error */ }
-                    }
-                    return { error: 'search rate-limited; all search backends (DuckDuckGo, Brave, Scrapling) are temporarily blocked. Read the target page directly with a url, or try again shortly.', retryable: true, source: 'rate-limited', query: q };
+                    } catch (e) { noteBackendBlocked('brave', retryAfterOf(e)); }
+                }
+                if (scraplingService && !backendCoolingDown('scrapling')) {
+                    try {
+                        const sr = await scraplingService.search(q, limit);
+                        if (sr?.success && Array.isArray(sr.results) && sr.results.length) {
+                            noteBackendOk('scrapling');
+                            return {
+                                query: q,
+                                source: 'scrapling',
+                                count: sr.results.length,
+                                results: sr.results.slice(0, limit).map(r => ({
+                                    title: r.title || 'No title',
+                                    url: r.url,
+                                    snippet: r.snippet || '',
+                                })),
+                            };
+                        }
+                    } catch (_) { noteBackendBlocked('scrapling'); }
+                }
+                return null;
+            };
+            // DDG CAPTCHAs on nearly every hit AND throws on timeout/403/429 — so a
+            // throw must funnel into the SAME fallback chain a CAPTCHA does (the old
+            // code let a throw dead-end with no Brave/Scrapling). Skip DDG entirely
+            // while it's cooling down from a recent block.
+            if (backendCoolingDown('ddg')) {
+                const r = await ddgFallback();
+                return r ? cacheReturn(r) : rateLimited;
+            }
+            try {
+                const resp = await axios.get(
+                    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+                    {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                        },
+                        // html.duckduckgo.com CAPTCHAs Node's axios on essentially every
+                        // hit, so fail FAST to the Brave/Scrapling fallbacks instead of
+                        // burning 8s on a layer that never succeeds.
+                        timeout: 3500,
+                    },
+                );
+                const html = resp.data || '';
+                if (html.includes('anomaly-modal')) {
+                    noteBackendBlocked('ddg');
+                    const r = await ddgFallback();
+                    return r ? cacheReturn(r) : rateLimited;
                 }
                 const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
                 const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
@@ -24774,13 +24902,15 @@ app.use((req, res) => {
                         snippet: sm ? sm[1].replace(/<[^>]*>/g, '').trim() : '',
                     });
                 }
-                // Cache only a non-empty result set for the full TTL; a 0-result
-                // parse (often a transient block) is returned but NOT pinned for an
-                // hour — otherwise one bad parse poisons the query for 60 min.
-                return results.length ? cacheReturn({ query: q, count: results.length, results })
-                                      : { query: q, count: 0, results, retryable: true };
+                // Cache only a non-empty result set for the full TTL; a 0-result parse
+                // is returned but NOT pinned for an hour, and does NOT cool the backend
+                // (it may be a genuinely empty query, not a block).
+                if (results.length) { noteBackendOk('ddg'); return cacheReturn({ query: q, count: results.length, results }); }
+                return { query: q, count: 0, results, retryable: true };
             } catch (e) {
-                return { error: `search failed: ${e.message}`, query: q };
+                noteBackendBlocked('ddg', retryAfterOf(e));
+                const r = await ddgFallback();
+                return r ? cacheReturn(r) : rateLimited;
             }
         },
     });
@@ -24827,10 +24957,11 @@ app.use((req, res) => {
                 const title = result.title || '';
                 const hint = detectBotChallenge({ title, content }) || productPageHint(content);
                 // A "successful" fetch that is really a challenge wall counts toward
-                // the host's bot-block strikes too (same fail-fast as hard 403s).
-                // Marker-hit hint ONLY — the thin-content hint also mentions "bot"
-                // but thin pages are usually just JS-gated, not a bot wall.
-                if (hint && /^bot protection detected/.test(String(hint))) noteHostBotWall(url, 'challenge-content');
+                // the host's bot-block strikes too (same fail-fast as hard 403s). Gate
+                // the STRIKE on a STRONG marker only — a page that merely mentions
+                // "captcha"/"recaptcha"/"enable cookies" still gets the hint but must
+                // not false-block the host for 10 minutes. Thin-content hints never strike.
+                if (looksLikeChallenge(`${title}\n${content}`, { strongOnly: true })) noteHostBotWall(url, 'challenge-content');
                 return {
                     url,
                     success: true,
@@ -26471,6 +26602,9 @@ app.use((req, res) => {
                     return { url, success: false, error: result?.error || 'scrapling fetch failed', engine: 'scrapling' };
                 }
                 const content = typeof result.content === 'string' ? result.content.slice(0, maxLength) : '';
+                // A "successful" stealth fetch whose body is itself a strong WAF wall
+                // counts as a strike, so `web` mode:stealth also fast-fails the host.
+                if (looksLikeChallenge(`${result.title || ''}\n${content}`, { strongOnly: true })) noteHostBotWall(url, 'scrapling-challenge');
                 const hint = productPageHint(content);
                 return {
                     url,
@@ -26546,6 +26680,7 @@ app.use((req, res) => {
                 const result = await playwrightService.fetchUrlContent(url, {
                     timeout, waitForJS, includeLinks, maxLength,
                 });
+                if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'playwright-challenge');
                 const hint = result?.success
                     ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
                     : null;
@@ -26612,6 +26747,7 @@ app.use((req, res) => {
             const actions = Array.isArray(args?.actions) ? args.actions : [];
             try {
                 const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
+                if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'interact-challenge');
                 const hint = result?.success
                     ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
                     : null;
@@ -26742,6 +26878,7 @@ app.use((req, res) => {
                 const combinedContent = (result.pages || [])
                     .map(p => `=== Page ${p.index + 1}: ${p.title || '(no title)'} — ${p.url} ===\n${p.content}`)
                     .join('\n\n');
+                if (looksLikeChallenge(combinedContent, { strongOnly: true })) noteHostBotWall(url, 'crawl-challenge');
                 const hint = detectBotChallenge({ content: combinedContent });
                 return {
                     url,
