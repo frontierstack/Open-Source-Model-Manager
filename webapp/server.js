@@ -12302,9 +12302,13 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts
         const rawHtml = opts.includeRawHtml && typeof response.data === 'string' ? response.data : '';
         return { success: true, content, title, url, ...(rawHtml ? { rawHtml } : {}) };
     } catch (error) {
+        // Prefer a human-readable HTTP status over the raw axios code — the model
+        // sees this string, and "ERR_BAD_REQUEST" reads as "my request was
+        // malformed" (it retried variants); "HTTP 403" reads as "the site refused".
+        const status = error.response && error.response.status;
         return {
             success: false,
-            error: error.code || error.message || 'Fetch failed',
+            error: status ? `HTTP ${status}` : (error.code || error.message || 'Fetch failed'),
             url
         };
     }
@@ -12788,9 +12792,77 @@ function setHostMemo(url, layer) {
     while (hostFetchMemo.size > HOST_MEMO_CAP) hostFetchMemo.delete(hostFetchMemo.keys().next().value);
 }
 
+// Bot-blocked host memory. Some sites (zillow.com, realtor.com, redfin.com)
+// defeat EVERY fetch layer — axios, Scrapling, AND the stealth Playwright
+// browser — with 403/429/challenge walls. Observed failure mode without this:
+// the model retries URL VARIANTS on the same host (different filters/query
+// params), so the arg-repeat loop guard never fires, and each variant re-burns
+// the full 15-25s cascade (16 zillow.com 403s in one turn), then hammers the
+// search engines for alternates until ALL search backends rate-limit. After
+// HOST_BLOCK_STRIKES full-cascade bot walls, further requests to the host
+// fail INSTANTLY with a directive error steering the model to another source.
+// TTL-bounded so a transient wall recovers; env-tunable, no rebuild.
+const hostBlockMemo = new Map();   // host -> { strikes, firstAt, blockedUntil }
+const HOST_BLOCK_TTL_MS = parseInt(process.env.HOST_BLOCK_TTL_MS, 10) || 10 * 60 * 1000;
+const HOST_BLOCK_STRIKES = parseInt(process.env.HOST_BLOCK_STRIKES, 10) || 2;
+function hostBlockReason(url) {
+    const h = hostOf(url);
+    const e = h && hostBlockMemo.get(h);
+    if (!e || !e.blockedUntil) return null;
+    if (Date.now() > e.blockedUntil) { hostBlockMemo.delete(h); return null; }
+    return `${h} is blocking automated access (bot protection defeated every fetch layer, including the stealth browser). ` +
+        `Do NOT retry ${h} URLs or URL variants — they will keep failing for the next few minutes. ` +
+        `Use a DIFFERENT website that has the same information, or ask the user for the data.`;
+}
+function noteHostBotWall(url, signal) {
+    const h = hostOf(url);
+    if (!h) return;
+    const now = Date.now();
+    let e = hostBlockMemo.get(h);
+    if (!e || now - e.firstAt > HOST_BLOCK_TTL_MS) e = { strikes: 0, firstAt: now, blockedUntil: 0 };
+    e.strikes++;
+    if (e.strikes >= HOST_BLOCK_STRIKES && !e.blockedUntil) {
+        e.blockedUntil = now + HOST_BLOCK_TTL_MS;
+        console.warn(`[fetchUrlContent] Host ${h} marked bot-blocked for ${Math.round(HOST_BLOCK_TTL_MS / 60000)} min after ${e.strikes} full-cascade bot walls (${signal})`);
+    }
+    hostBlockMemo.set(h, e);
+    while (hostBlockMemo.size > HOST_MEMO_CAP) hostBlockMemo.delete(hostBlockMemo.keys().next().value);
+}
+
+// Final-resort axios fetch at the END of the cascade. By the time this runs,
+// Scrapling and/or Playwright already failed on this url — if plain axios ALSO
+// comes back with an auth-wall status (401/403/406/429) or a challenge page,
+// the host is actively bot-blocking every layer we have: record the strike and
+// return a DIRECTIVE error (the raw axios code, e.g. ERR_BAD_REQUEST, told the
+// model nothing and it kept retrying).
+async function axiosLastResort(url, timeout) {
+    const result = await fetchUrlContentAxios(url, timeout);
+    const statusMatch = String(result?.error || '').match(/HTTP (\d{3})/);
+    const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+    const botWall = (!result.success && [401, 403, 406, 429].includes(status))
+        || (result.success && looksLikeChallenge(result.content || ''));
+    if (!botWall) return result;
+    const h = hostOf(url);
+    noteHostBotWall(url, status ? `HTTP ${status}` : 'challenge page');
+    return {
+        success: false,
+        url,
+        error: 'bot_protected',
+        message: `${h} is blocking automated access (${status ? `HTTP ${status}` : 'bot-challenge page'} through every fetch layer, including the stealth browser). ` +
+            `Retrying ${h} URLs or URL variants will keep failing — use a DIFFERENT website that has the same information, or ask the user.`,
+    };
+}
+
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
     const maxLength = options.maxLength || 12000;
+
+    // Bot-blocked host fast-fail: this host defeated the ENTIRE cascade within
+    // the last few minutes — don't re-burn 15-25s proving it again.
+    const hostBlocked = hostBlockReason(url);
+    if (hostBlocked) {
+        return { success: false, url, error: 'bot_protected', message: hostBlocked, source: 'host-block-memo' };
+    }
 
     // Try direct file download first (PDF, DOCX, TXT, code files, etc.)
     // This avoids wasting time on Scrapling/Playwright for binary files
@@ -12898,15 +12970,15 @@ async function fetchUrlContent(url, options = {}) {
 
             // If Playwright fails, fall back to axios for simple HTML pages
             console.log(`Playwright fetch failed for ${url}, trying axios fallback`);
-            return await fetchUrlContentAxios(url, timeout);
+            return await axiosLastResort(url, timeout);
         } catch (error) {
             console.error(`Playwright error for ${url}:`, error.message);
-            return await fetchUrlContentAxios(url, timeout);
+            return await axiosLastResort(url, timeout);
         }
     }
 
     // Fallback to axios
-    return await fetchUrlContentAxios(url, timeout);
+    return await axiosLastResort(url, timeout);
 }
 
 // URL fetch endpoint for chat - fetches content from URLs in messages
@@ -12950,6 +13022,7 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
                             url,
                             success: false,
                             error: result.error || 'Fetch failed',
+                            ...(result.message ? { message: result.message } : {}),
                         };
                     }
                 } catch (error) {
@@ -24748,11 +24821,16 @@ app.use((req, res) => {
             try {
                 const result = await fetchUrlContent(url, { timeout: 20_000, maxLength, waitForJS: true });
                 if (!result.success) {
-                    return { url, success: false, error: result.error || 'fetch failed' };
+                    return { url, success: false, error: result.error || 'fetch failed', ...(result.message ? { message: result.message } : {}) };
                 }
                 const content = (result.content || '').slice(0, maxLength);
                 const title = result.title || '';
                 const hint = detectBotChallenge({ title, content }) || productPageHint(content);
+                // A "successful" fetch that is really a challenge wall counts toward
+                // the host's bot-block strikes too (same fail-fast as hard 403s).
+                // Marker-hit hint ONLY — the thin-content hint also mentions "bot"
+                // but thin pages are usually just JS-gated, not a bot wall.
+                if (hint && /^bot protection detected/.test(String(hint))) noteHostBotWall(url, 'challenge-content');
                 return {
                     url,
                     success: true,
@@ -26377,6 +26455,7 @@ app.use((req, res) => {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
             { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+            { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
             if (!scraplingService) {
                 return { success: false, error: 'Scrapling service not available on this host' };
             }
@@ -26450,6 +26529,7 @@ app.use((req, res) => {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
             { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+            { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 15000, 10)));
             const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
             const waitForJS = args?.waitForJS !== false;
@@ -26523,6 +26603,7 @@ app.use((req, res) => {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
             { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+            { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
             if (!playwrightEnabled || !playwrightService) {
                 return { success: false, error: 'Playwright not available — interaction requires browser automation' };
             }
@@ -26638,6 +26719,7 @@ app.use((req, res) => {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
             { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+            { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
             const mode = args?.mode || 'auto';
             const maxPages = Math.min(20, Math.max(1, parseInt(args?.maxPages || 5, 10)));
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 20000, 10)));
