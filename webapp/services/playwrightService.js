@@ -893,6 +893,39 @@ async function extractContent(page, options = {}) {
     }, { includeLinks, maxLength });
 }
 
+// A Cloudflare/Turnstile "managed challenge" returns a 403/503 (or a 200 "Just a
+// moment" interstitial) that its own JS AUTO-CLEARS for a sufficiently real browser
+// after a few seconds, then reloads to the real content. Our stealth context now
+// presents a coherent Windows-Chrome fingerprint, so waiting for that auto-solve
+// (instead of throwing on the challenge status immediately) recovers a large class
+// of pages the browser was giving up on. Interactive challenges that need a real
+// click never clear here and fall through to a hard failure (cascade / host-block).
+const CF_CHALLENGE_RE = /just a moment|checking your browser|verify(?:ing)? you are (?:human|a human)|attention required|cf-browser-verification|cf-challenge|challenge-platform|__cf_chl|enable javascript and cookies|ddos protection by cloudflare|please (?:wait|stand by) while|needs to review the security of your connection|www\.cloudflare\.com\/(?:5xx|learning)/i;
+const CF_CHALLENGE_WAIT_MS = parseInt(process.env.CF_CHALLENGE_WAIT_MS, 10) || 12000;
+
+async function pageLooksLikeChallenge(page) {
+    try {
+        const sig = await page.evaluate(() => (document.title + '\n' + (document.body ? document.body.innerText : '')).slice(0, 4000));
+        return CF_CHALLENGE_RE.test(sig);
+    } catch (_) { return false; }   // eval race during a challenge redirect — treat as "still working"
+}
+
+// Poll until the interstitial is gone AND real content is present, or the deadline
+// passes. Returns true if the challenge cleared. Exits early the moment content
+// appears so a fast auto-solve isn't penalised.
+async function waitForChallengeToClear(page, maxMs = CF_CHALLENGE_WAIT_MS) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        await page.waitForTimeout(1000);
+        try {
+            const [title, body] = await page.evaluate(() => [document.title, (document.body ? document.body.innerText : '')]);
+            const stillChallenge = CF_CHALLENGE_RE.test(title + '\n' + body.slice(0, 4000));
+            if (!stillChallenge && body.trim().length > 300) return true;
+        } catch (_) { /* execution context destroyed = Cloudflare is reloading the page; keep waiting */ }
+    }
+    return false;
+}
+
 /**
  * Fetch URL content with Playwright
  *
@@ -978,8 +1011,30 @@ async function fetchUrlContent(url, options = {}) {
             waitUntil: waitForJS ? 'load' : 'domcontentloaded'
         });
 
-        if (!response || response.status() >= 400) {
-            throw new Error(`HTTP ${response?.status() || 'no response'}`);
+        if (!response) {
+            throw new Error('HTTP no response');
+        }
+        // Distinguish a bot-CHALLENGE interstitial (wait for it to auto-clear) from a
+        // hard error status (real failure — throw so the cascade escalates / the
+        // host-block memo strikes). Only an actual Cloudflare/Turnstile interstitial
+        // gets the wait; a plain 403/429 error PAGE (no challenge markers) must NOT be
+        // mistaken for a "cleared challenge" just because it has some text.
+        const navStatus = response.status();
+        // cf-mitigated:challenge is Cloudflare's explicit "this is a challenge" flag —
+        // it catches a Turnstile challenge whose visible text doesn't match our markers
+        // (and is NOT set on a hard block, so it won't false-enter on g2/zillow-style walls).
+        let cfMitigated = '';
+        try { cfMitigated = String(response.headers()['cf-mitigated'] || '').toLowerCase(); } catch (_) { /* headers race */ }
+        const looksChallenge = cfMitigated === 'challenge' || (waitForJS && await pageLooksLikeChallenge(page));
+        if (looksChallenge) {
+            const cleared = await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
+            if (!cleared) {
+                throw new Error(`HTTP ${navStatus >= 400 ? navStatus : 403}`);
+            }
+            // Cleared — fall through to the normal JS-render wait + extraction, which
+            // now runs against the real content Cloudflare redirected us to.
+        } else if (navStatus >= 400) {
+            throw new Error(`HTTP ${navStatus}`);
         }
 
         // Wait for JS to render content
@@ -1272,6 +1327,12 @@ async function interactAndFetch(url, actions = [], options = {}) {
         await applyStealthPatches(page);
 
         await page.goto(url, { timeout, waitUntil: 'load' });
+
+        // Give a Cloudflare/Turnstile interstitial a chance to auto-clear before we
+        // start clicking/typing against what would otherwise be the challenge page.
+        if (await pageLooksLikeChallenge(page)) {
+            await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
+        }
 
         // Execute actions
         for (const action of actions) {
