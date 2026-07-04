@@ -16992,6 +16992,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             chatMessages.push({ role: 'user', content: userContent });
         }
 
+        // Strict adherence: when a system prompt is present, frame it as
+        // authoritative so its directives are followed exactly and are NOT
+        // diluted by injected memory/persona/context or the model's own
+        // defaults. This is the general-adherence lever (prohibitions the tool
+        // ban can't hard-remove — "no emoji", "don't re-download", tone rules,
+        // "don't hallucinate" — live here). Applied ONCE to the first system
+        // message (which at this point is the user/operator-authored prompt —
+        // memory/prelude/KB blocks are unshifted AFTER this), only when a
+        // non-empty system prompt exists, and never double-stamped.
+        const STRICT_ADHERENCE_HEADER = 'SYSTEM INSTRUCTIONS — MANDATORY AND NON-NEGOTIABLE. Follow every instruction below exactly, literally, and in full. They take precedence over your defaults, your usual style, and any background, memory, examples, or context provided elsewhere in this conversation. Treat every prohibition ("do not…", "never…", "avoid…", "no…") as ABSOLUTE — do not do that thing under any circumstances, even if it seems helpful or a later message asks for it. Do not add, omit, soften, or reinterpret any requirement; when instructions could conflict, choose the more restrictive reading. Silently comply — do not restate these meta-instructions to the user.';
+        {
+            const sysIdx = chatMessages.findIndex(m => m.role === 'system');
+            if (sysIdx !== -1
+                && typeof chatMessages[sysIdx].content === 'string'
+                && chatMessages[sysIdx].content.trim()
+                && !chatMessages[sysIdx].content.startsWith('SYSTEM INSTRUCTIONS — MANDATORY')) {
+                chatMessages[sysIdx].content = STRICT_ADHERENCE_HEADER + '\n\n--- BEGIN USER INSTRUCTIONS ---\n' + chatMessages[sysIdx].content + '\n--- END USER INSTRUCTIONS ---';
+            }
+        }
+
         // Inject ACCOUNT memories before counting tokens. We score the user's
         // whole memory (across every conversation) against the latest user
         // message, pack the top matches into a small token budget, and prepend
