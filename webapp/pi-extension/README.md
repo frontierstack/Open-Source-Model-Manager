@@ -4,8 +4,48 @@ A [Pi](https://pi.dev) extension that wires the local model-server install into 
 
 - registers an OpenAI-compatible provider named **modelserver** populated from `/v1/models`
 - pulls the user's skill catalog from `/api/skills` and exposes every enabled skill as a Pi tool that proxies to `/api/skills/:name/execute`
+- registers **interactive shell/SSH session tools** that keep a real terminal open across turns (see below)
 
 The 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, etc.) become callable from any Pi conversation without further configuration.
+
+## Interactive shell sessions
+
+Pi's built-in `bash` tool is one-shot — every call is a fresh process, so `cd`, environment variables, an SSH connection, or a REPL are all lost between calls. The model works around that by writing throwaway scripts, which is slow and brittle for anything interactive (a remote shell, a password prompt, a live console).
+
+This extension adds tools that hold a **persistent interactive process open across turns** and let the model drive it like a person at a terminal:
+
+| Tool | Purpose |
+|---|---|
+| `ssh_connect` | Open a persistent SSH session to a remote host (`ssh -tt` + keepalive; one connection reused for the whole task). Use for any "connect to / work on machine X" request. |
+| `shell_open` | Same mechanism for any long-lived local process — a login shell (default), `docker exec -it …`, a database/REPL client, a serial console. |
+| `shell_exec` | Type a command line into an open session and return its output once it settles. **State persists between calls** — cwd, env, the SSH connection, your place in a REPL. |
+| `shell_send` | Send raw keystrokes — password prompts, `y/n` confirmations, REPL input, or control keys (`ctrl-c`, `ctrl-d`, `esc`, `tab`, `enter`, `up`/`down`/`left`/`right`, …). |
+| `shell_read` | Poll a long-running or streaming command (build, download, `tail -f`, a live TUI) for new output without sending input. |
+| `shell_close` / `shell_list` | Close a session (SIGTERM→SIGKILL) / list open sessions (id, command, status, idle time, unread bytes). |
+
+**Typical flow** — connect, answer the password prompt, then navigate with state preserved:
+
+```
+ssh_connect { destination: "user@host" }        → surfaces the password: prompt
+shell_send  { text: "<password>" }               → logs in
+shell_exec  { command: "cd /var/log && tail -50 syslog" }
+shell_exec  { command: "pwd" }                    → still /var/log (cwd persisted)
+```
+
+**Live/interactive consoles** — launch, poll frames, interrupt:
+
+```
+shell_exec { command: "pihole -t" }   → launches the live DNS query log
+shell_read { timeoutMs: 7000 }        → returns new log lines as they stream in
+shell_send { key: "ctrl-c" }          → stops it, back at the prompt
+```
+
+Notes:
+
+- **No native modules.** On Linux/macOS the process is wrapped in `script`, which allocates a real pty — so remote programs see a terminal, prompts appear, and interactive tools behave. There's no `node-pty`, so the installer never needs a compiler toolchain. On platforms without `script` it falls back to plain pipes (SSH still works because `ssh_connect` always passes `-tt`).
+- **Local, not server-side.** These tools run in your Pi process on your machine (like Pi's own `bash`), not inside the webapp container — they're registered even when the model server is unreachable or `MODELSERVER_API_KEY` is unset.
+- Output is ANSI-stripped and carriage-return-resolved so the model reads clean text. Sessions are capped (8 concurrent), buffer-capped, and idle sessions are reaped after 30 minutes. `ssh_connect` rejects destinations containing shell metacharacters.
+- Every tool takes an optional `session` id; it defaults to the most recently used session, so single-session workflows never need to pass it.
 
 ## Quick start
 

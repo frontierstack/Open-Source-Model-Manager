@@ -32,6 +32,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // builder API and emitted JSON-Schema shape are identical for what we use.
 import { Type } from "typebox";
 import * as fs from "fs";
+import * as os from "os";
+import { spawn, type ChildProcess } from "child_process";
 import { basename, dirname } from "path";
 
 // Largest host file the auto-bridge will upload into the server workspace.
@@ -164,6 +166,12 @@ const HOST_FIRST_OVERRIDE =
 export default async function (pi: ExtensionAPI) {
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
     const apiKey = process.env.MODELSERVER_API_KEY;
+
+    // Interactive shell sessions (ssh_connect / shell_open / shell_exec /
+    // shell_send / shell_read / shell_close / shell_list). Purely local —
+    // register FIRST so they work even when the server is unreachable or
+    // the API key is missing.
+    registerInteractiveShellTools(pi);
 
     if (!apiKey) {
         console.warn("[modelserver] MODELSERVER_API_KEY not set; skill catalog and provider registration skipped.");
@@ -468,6 +476,429 @@ export default async function (pi: ExtensionAPI) {
         console.warn(`[modelserver] skipped ${skippedShadow} skill(s) that shadow Pi's local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);
     }
     void registered;
+}
+
+// ============================================================================
+// Interactive shell sessions
+// ============================================================================
+// Pi's built-in bash tool is one-shot: every call is a fresh process, so
+// state (cwd, env, an SSH connection, a REPL) is lost between calls and the
+// model compensates by writing throwaway scripts — slow and brittle. These
+// tools hold a PERSISTENT interactive process open across turns and let the
+// model drive it like a human at a terminal:
+//
+//   ssh_connect  – open a persistent SSH session (the dedicated remote-shell
+//                  path: ssh -tt + keepalive, one connection reused for the
+//                  whole task)
+//   shell_open   – same mechanism for any long-lived interactive process
+//                  (local bash, docker exec -it, mysql, python, a serial
+//                  console via picocom, …)
+//   shell_exec   – type a command line into the session and wait for the
+//                  output to settle (the fast path for navigation)
+//   shell_send   – raw keystrokes: password prompts, y/n confirmations,
+//                  REPL input, control keys (ctrl-c, arrows, tab, …)
+//   shell_read   – poll a long-running command for new output
+//   shell_close / shell_list
+//
+// PTY without native modules: on Linux/macOS the process is wrapped in
+// `script` (util-linux / BSD), which allocates a real pty — so remote
+// programs see a terminal, prompts appear, and interactive tools behave.
+// No node-pty, so the installer never needs a compiler toolchain. On
+// platforms without `script` we fall back to plain pipes (ssh still works
+// because ssh_connect always passes -tt).
+
+interface ShellSession {
+    id: string;
+    proc: ChildProcess;
+    command: string;
+    pending: string;          // unread output (post-ANSI-strip), capped
+    lastDataAt: number;       // ms timestamp of last output chunk
+    lastUsedAt: number;
+    alive: boolean;
+    exit: string | null;      // "exit 0" / "signal SIGKILL" once dead
+    truncated: boolean;       // pending overflowed and lost its head
+}
+
+const shellSessions = new Map<string, ShellSession>();
+let shellSessionSeq = 0;
+let lastShellSessionId: string | null = null;
+
+const SHELL_MAX_SESSIONS = 8;
+const SHELL_PENDING_CAP = 200_000;   // chars buffered per session
+const SHELL_RETURN_CAP = 12_000;     // chars returned per tool call (tail)
+const SHELL_IDLE_KILL_MS = 30 * 60_000;
+
+const SHELL_CONTROL_KEYS: Record<string, string> = {
+    "ctrl-c": "\x03", "ctrl-d": "\x04", "ctrl-z": "\x1a", "ctrl-l": "\x0c",
+    "ctrl-r": "\x12", "ctrl-u": "\x15",
+    "esc": "\x1b", "tab": "\t", "enter": "\r", "space": " ", "backspace": "\x7f",
+    "up": "\x1b[A", "down": "\x1b[B", "right": "\x1b[C", "left": "\x1b[D",
+};
+
+// Strip ANSI escapes and resolve carriage-return overwrites so the model
+// reads clean text instead of raw terminal control noise.
+function cleanTerminalOutput(s: string): string {
+    let out = s
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")       // OSC (title etc.)
+        .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")               // CSI
+        .replace(/\x1b[@-Z\\-_]/g, "")                            // 2-byte escapes
+        .replace(/\r\n/g, "\n")
+        .replace(/[\x00\x0b\x0c\x0e-\x1a\x1c-\x1f]/g, "");
+    // Progress bars redraw lines with bare \r — keep only the final draw.
+    out = out.split("\n").map((line) => {
+        const i = line.lastIndexOf("\r");
+        return i >= 0 ? line.slice(i + 1) : line;
+    }).join("\n");
+    return out;
+}
+
+// Spawn `command` under a pty when the platform allows it.
+function spawnInteractive(command: string, cwd?: string): ChildProcess {
+    const env = { ...process.env, TERM: "xterm-256color" };
+    const plat = os.platform();
+    try {
+        if (plat === "linux") {
+            // util-linux script: -q quiet, -e propagate exit code, -f flush,
+            // -c run command; log to /dev/null.
+            return spawn("script", ["-qefc", command, "/dev/null"], { cwd, env });
+        }
+        if (plat === "darwin") {
+            // BSD script: -q quiet, -F flush; command follows the log file.
+            return spawn("script", ["-qF", "/dev/null", "/bin/sh", "-c", command], { cwd, env });
+        }
+    } catch { /* fall through to pipes */ }
+    return spawn(command, { shell: true, cwd, env: { ...process.env, TERM: "dumb" } });
+}
+
+function openShellSession(command: string, cwd?: string): ShellSession | { error: string } {
+    // Reap dead sessions first so their slots free up.
+    for (const [id, s] of shellSessions) {
+        if (!s.alive && !s.pending) shellSessions.delete(id);
+    }
+    if (shellSessions.size >= SHELL_MAX_SESSIONS) {
+        return { error: `Session limit (${SHELL_MAX_SESSIONS}) reached — shell_close an old session first (see shell_list).` };
+    }
+    let proc: ChildProcess;
+    try {
+        proc = spawnInteractive(command, cwd);
+    } catch (e) {
+        return { error: `Failed to spawn: ${(e as Error).message}` };
+    }
+    const id = `s${++shellSessionSeq}`;
+    const sess: ShellSession = {
+        id, proc, command,
+        pending: "", lastDataAt: Date.now(), lastUsedAt: Date.now(),
+        alive: true, exit: null, truncated: false,
+    };
+    const onData = (chunk: Buffer) => {
+        sess.pending += cleanTerminalOutput(chunk.toString("utf8"));
+        sess.lastDataAt = Date.now();
+        if (sess.pending.length > SHELL_PENDING_CAP) {
+            sess.pending = sess.pending.slice(-SHELL_PENDING_CAP);
+            sess.truncated = true;
+        }
+    };
+    proc.stdout?.on("data", onData);
+    proc.stderr?.on("data", onData);
+    proc.on("error", (e) => {
+        sess.pending += `\n[spawn error: ${e.message}]`;
+        sess.alive = false;
+        sess.exit = sess.exit || "spawn-error";
+    });
+    proc.on("exit", (code, signal) => {
+        sess.alive = false;
+        sess.exit = signal ? `signal ${signal}` : `exit ${code}`;
+        sess.lastDataAt = Date.now();
+    });
+    shellSessions.set(id, sess);
+    lastShellSessionId = id;
+    return sess;
+}
+
+function getShellSession(idArg: unknown): ShellSession | { error: string } {
+    const id = (typeof idArg === "string" && idArg.trim()) ? idArg.trim() : lastShellSessionId;
+    if (!id) return { error: "No shell session open — call ssh_connect or shell_open first." };
+    const s = shellSessions.get(id);
+    if (!s) {
+        const open = [...shellSessions.keys()].join(", ") || "none";
+        return { error: `Unknown session '${id}'. Open sessions: ${open}.` };
+    }
+    s.lastUsedAt = Date.now();
+    lastShellSessionId = s.id;
+    return s;
+}
+
+// Collect output until it goes quiet (no new bytes for settleMs) or
+// timeoutMs elapses. Returns whatever accumulated either way.
+// silentAfterMs: give up on a command that produces NOTHING after this long
+// (e.g. a cd that prints nothing — though pty echo usually yields at least
+// the echoed command). shell_read overrides it to the full timeout so
+// polling a quiet long-running job actually waits for the first byte.
+async function waitForQuiet(sess: ShellSession, timeoutMs: number, settleMs: number, silentAfterMs?: number): Promise<void> {
+    const start = Date.now();
+    const silentCutoff = silentAfterMs ?? Math.max(settleMs * 4, 2000);
+    while (Date.now() - start < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (!sess.alive) return;
+        const sinceData = Date.now() - sess.lastDataAt;
+        if (sess.pending.length > 0 && sinceData >= settleMs) return;
+        if (sess.pending.length === 0 && Date.now() - start >= silentCutoff) return;
+    }
+}
+
+function takePending(sess: ShellSession): { output: string; note?: string } {
+    let out = sess.pending;
+    const wasTruncated = sess.truncated;
+    sess.pending = "";
+    sess.truncated = false;
+    let note: string | undefined;
+    if (out.length > SHELL_RETURN_CAP) {
+        out = "…[earlier output omitted — " + (out.length - SHELL_RETURN_CAP) + " chars]…\n" + out.slice(-SHELL_RETURN_CAP);
+    }
+    if (wasTruncated) note = "Output buffer overflowed; oldest output was dropped.";
+    return { output: out, note };
+}
+
+function shellResult(sess: ShellSession, extra?: Record<string, unknown>) {
+    const { output, note } = takePending(sess);
+    const status = sess.alive ? "running" : `ended (${sess.exit})`;
+    const details: Record<string, unknown> = {
+        session: sess.id, status, command: sess.command, ...(note ? { note } : {}), ...extra,
+    };
+    const head = `[session ${sess.id} — ${status}]`;
+    const hint = sess.alive && !output.trim()
+        ? "\n(no new output yet — a long-running command may still be working; call shell_read to poll, or shell_send a key if it is waiting at a prompt)"
+        : "";
+    return {
+        content: [{ type: "text", text: `${head}\n${output || ""}${hint}${note ? `\n[${note}]` : ""}` }],
+        details,
+    };
+}
+
+// Idle reaper — kill sessions nobody has touched in 30 minutes.
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, s] of shellSessions) {
+        if (s.alive && now - s.lastUsedAt > SHELL_IDLE_KILL_MS) {
+            try { s.proc.kill("SIGKILL"); } catch { /* ignore */ }
+            s.alive = false;
+            s.exit = s.exit || "idle-killed";
+        }
+        if (!s.alive && now - s.lastUsedAt > SHELL_IDLE_KILL_MS * 2) shellSessions.delete(id);
+    }
+}, 60_000).unref?.();
+
+// Make sure children die with Pi.
+process.on("exit", () => {
+    for (const s of shellSessions.values()) {
+        if (s.alive) { try { s.proc.kill("SIGKILL"); } catch { /* ignore */ } }
+    }
+});
+
+const SHELL_DOCTRINE =
+    "[INTERACTIVE SHELL SESSIONS] For remote/interactive shell work, do NOT write " +
+    "throwaway scripts and do NOT re-run ssh per command. Open ONE persistent session " +
+    "(ssh_connect for remote hosts, shell_open for local bash / docker exec / REPLs / " +
+    "consoles) and drive it: shell_exec runs a command line and returns its output with " +
+    "cwd/env/connection state preserved between calls; shell_send types raw keystrokes " +
+    "(passwords, y/n prompts, REPL input, ctrl-c); shell_read polls a long-running " +
+    "command. Sessions persist across your turns until shell_close.";
+
+function registerInteractiveShellTools(pi: ExtensionAPI): number {
+    let n = 0;
+    const reg = (def: any) => {
+        try { (pi as any).registerTool(def); n++; }
+        catch (e) { console.error(`[modelserver] failed to register ${def.name}:`, e); }
+    };
+
+    reg({
+        name: "ssh_connect",
+        label: "ssh_connect",
+        description:
+            "Open a PERSISTENT interactive SSH session to a remote host and keep it open across turns. " +
+            "Use this (not one-off ssh commands, not scripts) whenever the user asks you to connect to / " +
+            "work on a remote machine. Returns a session id — then run commands with shell_exec, answer " +
+            "prompts (passwords, y/n) with shell_send, poll long jobs with shell_read.",
+        promptSnippet: SHELL_DOCTRINE,
+        parameters: Type.Object({
+            destination: Type.String({ description: "SSH destination, e.g. user@host or a Host alias from ~/.ssh/config" }),
+            port: Type.Optional(Type.Number({ description: "SSH port (default 22)" })),
+            identityFile: Type.Optional(Type.String({ description: "Path to a private key file" })),
+            extraArgs: Type.Optional(Type.String({ description: "Extra ssh CLI arguments, e.g. '-J jumphost' or '-o ProxyCommand=…'" })),
+        }),
+        async execute(_id: string, a: any) {
+            const dest = String(a?.destination || a?.host || "").trim();
+            if (!dest) throw new Error("ssh_connect needs a destination (user@host)");
+            if (/[;|&`$<>\n]/.test(dest)) throw new Error("destination contains shell metacharacters");
+            const parts = ["ssh", "-tt",
+                "-o", "ServerAliveInterval=30",
+                "-o", "StrictHostKeyChecking=accept-new"];
+            if (a?.port) parts.push("-p", String(Math.floor(Number(a.port))));
+            if (a?.identityFile) parts.push("-i", String(a.identityFile));
+            const extra = String(a?.extraArgs || "").trim();
+            parts.push(dest);
+            const cmd = parts.map(shq).join(" ") + (extra ? ` ${extra}` : "");
+            const sess = openShellSession(cmd);
+            if ("error" in sess) throw new Error(sess.error);
+            // First connect can involve banner + auth prompt — wait generously.
+            await waitForQuiet(sess, 15_000, 900);
+            return shellResult(sess, { opened: true });
+        },
+    });
+
+    reg({
+        name: "shell_open",
+        label: "shell_open",
+        description:
+            "Open a persistent interactive terminal session for ANY long-lived process — a local shell " +
+            "(default: bash), 'docker exec -it …', a database/REPL client, a serial console — and keep it " +
+            "open across turns. Drive it with shell_exec / shell_send / shell_read. For SSH prefer ssh_connect.",
+        promptSnippet: SHELL_DOCTRINE,
+        parameters: Type.Object({
+            command: Type.Optional(Type.String({ description: "Process to run interactively (default: your login shell / bash)" })),
+            cwd: Type.Optional(Type.String({ description: "Working directory to start in" })),
+        }),
+        async execute(_id: string, a: any) {
+            const shell = process.env.SHELL || (os.platform() === "win32" ? "powershell" : "bash");
+            const command = String(a?.command || "").trim() || shell;
+            const cwd = a?.cwd ? String(a.cwd) : undefined;
+            const sess = openShellSession(command, cwd);
+            if ("error" in sess) throw new Error(sess.error);
+            await waitForQuiet(sess, 6_000, 600);
+            return shellResult(sess, { opened: true });
+        },
+    });
+
+    reg({
+        name: "shell_exec",
+        label: "shell_exec",
+        description:
+            "Type a command line into an open interactive session (from ssh_connect/shell_open) and return " +
+            "the output once it settles. State persists between calls — cd, env vars, the SSH connection, " +
+            "your place in a REPL. If output says the command is still running, poll with shell_read.",
+        parameters: Type.Object({
+            command: Type.String({ description: "The command line to run in the session" }),
+            session: Type.Optional(Type.String({ description: "Session id (default: most recently used)" })),
+            timeoutMs: Type.Optional(Type.Number({ description: "Max ms to wait for output to settle (default 15000)" })),
+        }),
+        async execute(_id: string, a: any) {
+            const sess = getShellSession(a?.session);
+            if ("error" in sess) throw new Error(sess.error);
+            if (!sess.alive) return shellResult(sess, { warning: "session already ended" });
+            sess.proc.stdin?.write(String(a?.command ?? "") + "\n");
+            const timeout = Math.min(Math.max(Number(a?.timeoutMs) || 15_000, 1_000), 120_000);
+            await waitForQuiet(sess, timeout, 700);
+            return shellResult(sess);
+        },
+    });
+
+    reg({
+        name: "shell_send",
+        label: "shell_send",
+        description:
+            "Send raw keystrokes to an open session — for password prompts, y/n confirmations, REPL input, " +
+            "menu navigation, or interrupting with ctrl-c. Text is sent as typed; set enter=false to omit " +
+            "the trailing newline; use key for control keys (ctrl-c, ctrl-d, esc, tab, enter, up, down, left, right).",
+        parameters: Type.Object({
+            text: Type.Optional(Type.String({ description: "Text to type (sent before 'key' if both given)" })),
+            key: Type.Optional(Type.String({ description: "Control key: ctrl-c|ctrl-d|ctrl-z|ctrl-l|ctrl-r|ctrl-u|esc|tab|enter|space|backspace|up|down|left|right" })),
+            enter: Type.Optional(Type.Boolean({ description: "Append newline after text (default true; ignored when only 'key' is sent)" })),
+            session: Type.Optional(Type.String({ description: "Session id (default: most recently used)" })),
+            timeoutMs: Type.Optional(Type.Number({ description: "Max ms to wait for resulting output (default 8000)" })),
+        }),
+        async execute(_id: string, a: any) {
+            const sess = getShellSession(a?.session);
+            if ("error" in sess) throw new Error(sess.error);
+            if (!sess.alive) return shellResult(sess, { warning: "session already ended" });
+            let payload = "";
+            if (typeof a?.text === "string" && a.text.length) {
+                payload += a.text + (a?.enter === false ? "" : "\n");
+            }
+            if (typeof a?.key === "string" && a.key.trim()) {
+                const seq = SHELL_CONTROL_KEYS[a.key.trim().toLowerCase()];
+                if (!seq) throw new Error(`Unknown key '${a.key}'. Valid: ${Object.keys(SHELL_CONTROL_KEYS).join(", ")}`);
+                payload += seq;
+            }
+            if (!payload) throw new Error("shell_send needs text and/or key");
+            sess.proc.stdin?.write(payload);
+            const timeout = Math.min(Math.max(Number(a?.timeoutMs) || 8_000, 500), 60_000);
+            await waitForQuiet(sess, timeout, 600);
+            return shellResult(sess);
+        },
+    });
+
+    reg({
+        name: "shell_read",
+        label: "shell_read",
+        description:
+            "Read any NEW output from an open session without sending input — poll a long-running command " +
+            "(build, download, deploy) or check whether a prompt appeared. Waits up to timeoutMs for output.",
+        parameters: Type.Object({
+            session: Type.Optional(Type.String({ description: "Session id (default: most recently used)" })),
+            timeoutMs: Type.Optional(Type.Number({ description: "Max ms to wait for new output (default 5000; 0 = return immediately)" })),
+        }),
+        async execute(_id: string, a: any) {
+            const sess = getShellSession(a?.session);
+            if ("error" in sess) throw new Error(sess.error);
+            const timeout = Math.min(Math.max(Number(a?.timeoutMs ?? 5_000), 0), 120_000);
+            if (timeout > 0 && !sess.pending) await waitForQuiet(sess, timeout, 500, timeout);
+            return shellResult(sess);
+        },
+    });
+
+    reg({
+        name: "shell_close",
+        label: "shell_close",
+        description: "Close an interactive session opened with ssh_connect/shell_open (sends SIGTERM, then SIGKILL).",
+        parameters: Type.Object({
+            session: Type.Optional(Type.String({ description: "Session id (default: most recently used)" })),
+        }),
+        async execute(_id: string, a: any) {
+            const sess = getShellSession(a?.session);
+            if ("error" in sess) throw new Error(sess.error);
+            if (sess.alive) {
+                try { sess.proc.kill("SIGTERM"); } catch { /* ignore */ }
+                setTimeout(() => { if (sess.alive) { try { sess.proc.kill("SIGKILL"); } catch { /* ignore */ } } }, 2_000).unref?.();
+            }
+            const { output } = takePending(sess);
+            shellSessions.delete(sess.id);
+            if (lastShellSessionId === sess.id) lastShellSessionId = null;
+            return {
+                content: [{ type: "text", text: `Closed session ${sess.id} (${sess.command}).${output.trim() ? `\nFinal output:\n${output.slice(-2000)}` : ""}` }],
+                details: { session: sess.id, closed: true },
+            };
+        },
+    });
+
+    reg({
+        name: "shell_list",
+        label: "shell_list",
+        description: "List open interactive shell sessions (id, command, status, idle time, unread output size).",
+        parameters: Type.Object({}),
+        async execute() {
+            const now = Date.now();
+            const rows = [...shellSessions.values()].map((s) =>
+                `${s.id}${s.id === lastShellSessionId ? "*" : ""}  ${s.alive ? "running" : `ended (${s.exit})`}  ` +
+                `idle ${Math.round((now - s.lastUsedAt) / 1000)}s  unread ${s.pending.length}B  ${s.command}`);
+            return {
+                content: [{ type: "text", text: rows.length ? rows.join("\n") : "No open sessions." }],
+                details: { sessions: rows.length },
+            };
+        },
+    });
+
+    return n;
+}
+
+// Shell-escape an arg for embedding in the command string handed to
+// `script -c` / `spawn(…, {shell:true})`. POSIX single-quoting on Unix;
+// conservative double-quoting on the Windows pipe-fallback path (cmd.exe
+// doesn't understand single quotes).
+function shq(s: string): string {
+    if (os.platform() === "win32") {
+        return /[ \t"^&|<>()%!]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s;
+    }
+    return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 // Self-hosted modelserver deployments typically use a self-signed cert.
