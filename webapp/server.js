@@ -20251,6 +20251,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 const sigs = new Set(recent.map(h => h.outcomeSig));
                                 if (sigs.size === 1 && recent.every(h => h.outcomeEmpty)) {
                                     unproductiveLoop = true;
+                                    // Exemption: a content-search tool that FLIPS its
+                                    // regex flag vs the ENTIRE empty streak is correcting
+                                    // a literal-vs-regex mistake (a -F literal search of
+                                    // 'a|b|c' or 'foo\.bar' matches nothing), not
+                                    // flailing — let the corrected attempt run once. If
+                                    // it is ALSO empty it joins the streak and the next
+                                    // repeat trips normally.
+                                    if (effName === 'grep_code' || effName === 'scan_source_files') {
+                                        let curRegex = null;
+                                        try { curRegex = !!JSON.parse(call.function.arguments || '{}').regex; } catch (_) { /* */ }
+                                        if (curRegex !== null &&
+                                            recent.every(h => h.regexFlag !== null && h.regexFlag !== curRegex)) {
+                                            unproductiveLoop = false;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -20625,6 +20640,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     readPath = a.filePath || a.path || a.email_path || null;
                                 } catch (_) { /* */ }
                             }
+                            // Record the regex flag on content-search tools so the
+                            // unproductive-loop guard can tell a genuine correction
+                            // (flipping regex false→true after a literal search of a
+                            // regex pattern found nothing) from mere flailing.
+                            let regexFlag = null;
+                            const SEARCH_TOOLS = new Set(['grep_code', 'scan_source_files']);
+                            if (SEARCH_TOOLS.has(call.function.name)) {
+                                try {
+                                    regexFlag = !!JSON.parse(call.function.arguments || '{}').regex;
+                                } catch (_) { /* */ }
+                            }
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
@@ -20635,6 +20661,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 outcomeEmpty,
                                 resolvedTarget,
                                 readPath,
+                                regexFlag,
                                 toolName: recName,
                                 searchBlocked,
                                 searchEngineHost,
