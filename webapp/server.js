@@ -10700,7 +10700,35 @@ async function executePythonSkill(skill, params, ctx = null) {
         ? skill.sandbox
         : !!skill.userId;
 
-    if (wantSandbox) {
+    // KILL-SWITCH for the "skill ran in-process but /workspace only exists in
+    // the sandbox" bug class (ocr_image on a pasted chat image was the
+    // reported case: the upload was materialized to /workspace/uploads/, the
+    // model passed exactly that path, and the skill ENOENT'd because the
+    // webapp container has no /workspace directory at all). Boot-time policy
+    // (WORKSPACE_SANDBOX_DEFAULTS + defaultSkillWantsWorkspace) flags
+    // path-taking skills up front; this catches whatever slips through —
+    // future skills, operator-edited records, path values under param names
+    // the heuristics don't recognize. Any in-process run handed a /workspace
+    // path is a guaranteed failure, so upgrading THIS RUN to the workspace
+    // sandbox can only help.
+    let forcedWorkspaceRun = false;
+    if (!wantSandbox) {
+        const touchesWorkspace = (v, depth = 0) => {
+            if (depth > 4 || v == null) return false;
+            if (typeof v === 'string') {
+                return v === '/workspace' || v.includes('/workspace/') || v.startsWith('workspace/');
+            }
+            if (Array.isArray(v)) return v.some(x => touchesWorkspace(x, depth + 1));
+            if (typeof v === 'object') return Object.values(v).some(x => touchesWorkspace(x, depth + 1));
+            return false;
+        };
+        forcedWorkspaceRun = touchesWorkspace(params);
+        if (forcedWorkspaceRun) {
+            console.log(`[executePythonSkill] "${skill.name}" is not sandboxed but was called with a /workspace path — auto-running in the workspace sandbox (in-process has no /workspace mount)`);
+        }
+    }
+
+    if (wantSandbox || forcedWorkspaceRun) {
         try {
             // Network policy from the skill definition.
             //   - User-created skills (have userId) default to public
@@ -10723,9 +10751,10 @@ async function executePythonSkill(skill, params, ctx = null) {
             // package not in the base image fails before it can run.
             // The persistent /workspace/.deps cache (PIP_TARGET) makes the
             // install cheap on subsequent calls.
-            const workspace = typeof skill.workspace === 'boolean'
-                ? skill.workspace
-                : isUserSkill;
+            const workspace = forcedWorkspaceRun ? true
+                : typeof skill.workspace === 'boolean'
+                    ? skill.workspace
+                    : isUserSkill;
             const run = await sandbox.runPythonSkill({
                 code: skill.code,
                 params,
@@ -22379,7 +22408,59 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // display the headless sandbox lacks, so it stays non-functional regardless;
     // this just fixes the path/mount half.)
     'convert_image', 'screenshot',
+    // 2026-07-07 sweep after ocr_image ENOENT'd on a pasted chat image: these
+    // seven all take a filesystem path but ran IN-PROCESS on the webapp
+    // container, where /workspace does not exist at all — so the very paths
+    // the chat teaches the model (/workspace/uploads/<file> markers, clone
+    // dirs under /workspace/gh-clones/) were guaranteed "file not found".
+    //   ocr_image      — imagePath; tesseract + pytesseract are baked into the
+    //                    sandbox image (webapp's own copies only served the
+    //                    legacy in-process path).
+    //   analyze_video  — videoPath/outputDir; ffmpeg/ffprobe live in the
+    //                    sandbox image; frames now land in /workspace/artifacts.
+    //   csv_describe   — path; pandas in the sandbox image; CSV uploads land
+    //                    in /workspace/uploads.
+    //   spreadsheet_query — path/path2; duckdb baked into the sandbox image
+    //                    (same pin as the webapp) for SQL over workspace files.
+    //   git_status / git_diff / git_branch — repoPath; every repo the chat
+    //                    knows about is a git_clone_shallow product under
+    //                    /workspace/gh-clones/, invisible in-process. Their
+    //                    template entries also carry pathNormalize:false like
+    //                    git_log (path args are repo-relative filters).
+    'ocr_image', 'analyze_video', 'csv_describe', 'spreadsheet_query',
+    'git_status', 'git_diff', 'git_branch',
 ]);
+
+// Host-scoped built-ins that legitimately run in-process against the webapp
+// container even though a param name looks path-like. disk_usage reports the
+// real models-disk capacity; the todo_* family keeps ONE global todo file
+// under /models/.modelserver/ that must survive across conversations (a
+// workspace todo file would silently scope the list per-conversation).
+// Exempt from the pathy-param auto-detection below — an explicit
+// WORKSPACE_SANDBOX_DEFAULTS entry still wins if one is ever added.
+const WORKSPACE_POLICY_OPTOUT = new Set([
+    'disk_usage', 'todo_add', 'todo_list', 'todo_done',
+]);
+
+// Param names that imply "this skill opens files by path". Any built-in whose
+// parameters match is opted into the workspace sandbox automatically — the
+// hand-curated WORKSPACE_SANDBOX_DEFAULTS list kept regressing one skill at a
+// time (get_file_metadata, read_email_file, create_docx's contentFile, then
+// the seven above), and each miss surfaces as the same user-facing bug: the
+// model passes the /workspace path the chat itself advertised and the skill
+// answers "No such file or directory". Matches path/path2/filePath/imagePath/
+// repoPath/file/contentFile/outputDir/dirPath/…; deliberately does NOT match
+// 'filename'/'outputName' (basenames, not paths) or 'output_format'.
+const WORKSPACE_PATHY_PARAM_RE = /(path|file|dir|directory|folder)s?\d*$/i;
+
+function defaultSkillWantsWorkspace(skill) {
+    if (!skill || !skill.name) return false;
+    if (WORKSPACE_SANDBOX_DEFAULTS.has(skill.name)) return true;
+    if (WORKSPACE_POLICY_OPTOUT.has(skill.name)) return false;
+    const params = skill.parameters;
+    if (!params || typeof params !== 'object') return false;
+    return Object.keys(params).some(k => WORKSPACE_PATHY_PARAM_RE.test(k));
+}
 
 // NETWORK-requiring default skills. These get sandboxed with an allowlist
 // so the model can still use them. Each entry declares the egress hostnames
@@ -22439,7 +22520,7 @@ async function migrateDefaultSkillsToSandbox() {
                 // want the network policy applied.
                 const spec = NETWORK_SANDBOX_DEFAULTS[s.name];
                 if (s.sandbox !== true) { s.sandbox = true; changed = true; }
-                if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name) && s.workspace !== true) {
+                if (defaultSkillWantsWorkspace(s) && s.workspace !== true) {
                     s.workspace = true; changed = true;
                 }
                 // Upgrade legacy network='none' to 'allowlist' so skills
@@ -22468,7 +22549,7 @@ async function migrateDefaultSkillsToSandbox() {
                         }
                     }
                 }
-            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name)) {
+            } else if (defaultSkillWantsWorkspace(s)) {
                 if (s.sandbox !== true)   { s.sandbox = true;   changed = true; }
                 if (s.workspace !== true) { s.workspace = true; changed = true; }
                 if (!s.network) { s.network = 'none'; changed = true; }
@@ -22507,8 +22588,8 @@ async function addMissingDefaultSkills() {
                 out.sandbox = true;
                 out.network = out.network || 'allowlist';
                 out.allowlist = out.allowlist || spec.allowlist;
-                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) out.workspace = true;
-            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                if (defaultSkillWantsWorkspace(out)) out.workspace = true;
+            } else if (defaultSkillWantsWorkspace(out)) {
                 out.sandbox = true;
                 out.workspace = true;
                 out.network = out.network || 'none';
@@ -22535,7 +22616,8 @@ async function addMissingDefaultSkills() {
                        || (t.systemPrompt !== undefined && (existing.systemPrompt || '') !== (t.systemPrompt || ''))
                        || (t.timeoutMs !== undefined && existing.timeoutMs !== t.timeoutMs)
                        || (t.memory !== undefined && existing.memory !== t.memory)
-                       || (t.cpus !== undefined && existing.cpus !== t.cpus)) {
+                       || (t.cpus !== undefined && existing.cpus !== t.cpus)
+                       || (t.pathNormalize !== undefined && existing.pathNormalize !== t.pathNormalize)) {
                 // The managed default's definition changed in the template —
                 // refresh it in place (preserve id/createdAt/userId/enabled).
                 // Default (no-userId) skills are an app-managed catalog; this is
@@ -22551,6 +22633,11 @@ async function addMissingDefaultSkills() {
                 if (t.timeoutMs !== undefined) existing.timeoutMs = t.timeoutMs;
                 if (t.memory !== undefined) existing.memory = t.memory;
                 if (t.cpus !== undefined) existing.cpus = t.cpus;
+                // pathNormalize opts a skill out of sandbox-side path
+                // rewriting (git_* skills — their path args are repo-relative
+                // filters). Synced from the template like timeoutMs so newly
+                // sandboxed git skills reach existing installs correctly.
+                if (t.pathNormalize !== undefined) existing.pathNormalize = t.pathNormalize;
                 existing.updatedAt = new Date().toISOString();
                 applyPolicy(existing);
                 updated.push(t.name);
@@ -22769,10 +22856,10 @@ async function initializeDefaultSkills() {
                 out.sandbox = true;
                 out.network = out.network || 'allowlist';
                 out.allowlist = out.allowlist || spec.allowlist;
-                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                if (defaultSkillWantsWorkspace(out)) {
                     out.workspace = true;
                 }
-            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+            } else if (defaultSkillWantsWorkspace(out)) {
                 out.sandbox = true;
                 out.workspace = true;
                 out.network = out.network || 'none';

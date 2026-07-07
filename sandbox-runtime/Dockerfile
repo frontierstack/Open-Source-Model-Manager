@@ -127,6 +127,11 @@ RUN pip install --no-cache-dir \
         PyPDF2==3.0.1 \
         extract-msg==0.48.5 \
         pyzbar==0.1.9 \
+        # DuckDB backs the spreadsheet_query skill (SQL over csv/xlsx/
+        # parquet/json files in the workspace). Pinned to the same version
+        # the webapp image ships so in-process and sandboxed runs of the
+        # skill behave identically.
+        duckdb==1.2.2 \
     && rm -rf /root/.cache
 
 # Audio transcription (faster-whisper, CTranslate2 backend). The small.en

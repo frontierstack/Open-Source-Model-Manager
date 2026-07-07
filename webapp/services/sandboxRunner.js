@@ -677,6 +677,18 @@ const PATH_ARG_NAMES = [
     // `/workspace/tmp/report.md` but create_pdf reads `/tmp/report.md` literally
     // and 404s ("contentFile not found"). Mirrors rowsFile above.
     'contentFile', 'content_file',
+    // Path params of skills migrated into the workspace sandbox after the
+    // ocr_image ENOENT incident (each ran in-process — where /workspace does
+    // not exist — because its name was missing from WORKSPACE_SANDBOX_DEFAULTS):
+    //   imagePath  — ocr_image;      videoPath/outputDir — analyze_video
+    //   emailPath  — read_email_file; mdPath — markdown_to_html
+    //   htmlPath   — html_to_pdf;     path2 — spreadsheet_query's second file
+    // Without these a bare filename ("image.png") is never rerouted under
+    // /workspace and the skill 404s even though the upload is right there.
+    // (git_* repoPath is deliberately NOT listed — those skills declare
+    // pathNormalize:false because their path args are repo-relative filters.)
+    'imagePath', 'videoPath', 'outputDir', 'emailPath', 'mdPath', 'htmlPath',
+    'path2',
 ];
 
 /** Create (if needed) + chmod the per-(user, conversation) workspace.
