@@ -19023,6 +19023,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let reasoningLoopRetries = 0;
         let reasoningLoopExhausted = false;
         let lastReasoningLoopReason = '';
+        // Turn-level loop-nudge budget. A single looping tool can be nudged
+        // every round; if the model IGNORES the nudge and keeps looping, the
+        // nudges themselves become the loop. After LOOP_NUDGE_HARD_CAP total
+        // loop_detected nudges this turn, stop and force synthesis (bounds a
+        // runaway to ~cap rounds instead of grinding to MAX_TOOL_ITERATIONS).
+        let loopNudgeCount = 0;
+        let loopNudgeExhausted = false;
+        const LOOP_NUDGE_HARD_CAP = parseInt(process.env.LOOP_NUDGE_HARD_CAP || '6', 10);
+        // General redundancy backstop — catches loop shapes the specific
+        // guards miss. If the turn has made many tool calls but the DISTINCT
+        // information gathered (unique outcome signatures) has stalled below a
+        // ratio, the model is spinning; force synthesis. A genuine wide read
+        // (N distinct files) has ratio ≈ 1 and never trips.
+        const LOOP_REDUNDANCY_MIN = parseInt(process.env.LOOP_REDUNDANCY_MIN || '22', 10);
+        const LOOP_REDUNDANCY_RATIO = parseFloat(process.env.LOOP_REDUNDANCY_RATIO || '0.4');
 
         // Floor on the per-request output budget. Below this, tool calls
         // reliably truncate mid-JSON. Shared by streamOneRequest's last-resort
@@ -20110,8 +20125,79 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 readRepeat = !mutatedSince;
                             }
                         }
+                        // Range-agnostic re-read cap: the model reads the SAME
+                        // file repeatedly with different byte-ranges/chunks
+                        // (each a distinct fp, so readRepeat above misses it) —
+                        // observed read_file ×36 on a ~4-file package. After
+                        // READ_PATH_CAP reads of one path (not mutated since),
+                        // it already has the content — stop.
+                        const READ_PATH_CAP = parseInt(process.env.LOOP_READ_PATH_CAP || '3', 10);
+                        let rereadPath = null;
+                        if (READONLY_PATH_TOOLS[call.function.name] && call.function.name !== 'list_directory') {
+                            let thisPath = null;
+                            try {
+                                thisPath = READONLY_PATH_TOOLS[call.function.name](
+                                    JSON.parse(call.function.arguments || '{}')) || null;
+                            } catch { /* */ }
+                            if (thisPath) {
+                                const priorReads = historySnapshot.filter(h => h.readPath === thisPath);
+                                if (priorReads.length >= READ_PATH_CAP) {
+                                    // Diversity gate: legit pagination through a
+                                    // large file returns a NEW content slice each
+                                    // read (many distinct outcomeSigs → allow). A
+                                    // loop re-reads the SAME content (few distinct
+                                    // sigs → clamp). Only fires when the prior
+                                    // reads are mostly redundant.
+                                    const distinctSlices = new Set(priorReads.map(h => h.outcomeSig)).size;
+                                    const redundant = distinctSlices <= Math.ceil(priorReads.length / 2);
+                                    // Not if the file was written/edited since the last read.
+                                    let lastReadIdx = -1;
+                                    historySnapshot.forEach((h, i) => { if (h.readPath === thisPath) lastReadIdx = i; });
+                                    const mutated = historySnapshot.slice(lastReadIdx + 1)
+                                        .some(h => typeof h.fp === 'string' && h.fp.includes(`:target=${thisPath}`));
+                                    if (redundant && !mutated) rereadPath = thisPath;
+                                }
+                            }
+                        }
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
+
+                        // ---- Args-agnostic loop detection (the "20+ loops before
+                        // detection" fix). The fp-keyed guards above miss a loop
+                        // whose ARGS vary every call (garbled paths, rotated
+                        // patterns) — each unique fp resets them. These two look
+                        // at the recorded OUTCOME instead, so they fire in 3-4
+                        // calls regardless of how the args mutate.
+                        const effName = webEffectiveName(call.function.name, call.function.arguments);
+                        const UNPROD_STREAK = parseInt(process.env.LOOP_UNPRODUCTIVE_STREAK || '3', 10);
+                        // (2a) Resolve-thrash: a path tool that keeps auto-resolving
+                        // DIFFERENT mistyped paths to the SAME real target — the
+                        // model is mangling a path we already know. We have the
+                        // correct path, so the nudge hands it over verbatim.
+                        let resolveThrashTarget = null;
+                        {
+                            const resolved = historySnapshot.filter(h => h.toolName === effName && h.resolvedTarget);
+                            if (resolved.length >= UNPROD_STREAK) {
+                                const recent = resolved.slice(-UNPROD_STREAK);
+                                const uniq = new Set(recent.map(h => h.resolvedTarget));
+                                if (uniq.size === 1) resolveThrashTarget = recent[0].resolvedTarget;
+                            }
+                        }
+                        // (2b) Unproductive-outcome loop: this tool's last
+                        // UNPROD_STREAK calls all produced ONE identical outcome
+                        // AND that outcome was empty/zero/error. Real progress
+                        // (distinct or non-empty outcomes) never trips this.
+                        let unproductiveLoop = false;
+                        {
+                            const sameTool = historySnapshot.filter(h => h.toolName === effName);
+                            if (sameTool.length >= UNPROD_STREAK) {
+                                const recent = sameTool.slice(-UNPROD_STREAK);
+                                const sigs = new Set(recent.map(h => h.outcomeSig));
+                                if (sigs.size === 1 && recent.every(h => h.outcomeEmpty)) {
+                                    unproductiveLoop = true;
+                                }
+                            }
+                        }
 
                         const callEffName = webEffectiveName(call.function.name, call.function.arguments);
                         const webSearchBlocked = callEffName === 'web_search' &&
@@ -20157,6 +20243,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 search_engine_scrapes: scraplingSearchCount,
                             };
                             console.warn(`[Chat Stream] ${nudge.error}: ${nudge.rate_limited_count} web_search blocks, ${nudge.search_engine_scrapes} search-engine scrapes`);
+                        } else if (resolveThrashTarget) {
+                            // We KNOW the right path — hand it over verbatim.
+                            nudge = {
+                                error: 'loop_detected',
+                                message: `You have called ${call.function.name} ${UNPROD_STREAK}+ times with mistyped paths that all auto-resolve to the SAME directory: ${resolveThrashTarget}. Stop retyping the path from memory — copy this EXACT path character-for-character in your next call: ${resolveThrashTarget}. If you already have the results you need from it, stop calling tools and answer the user.`,
+                                resolved_target: resolveThrashTarget,
+                            };
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (resolve-thrash → ${resolveThrashTarget}); short-circuited with nudge`);
+                        } else if (unproductiveLoop) {
+                            nudge = {
+                                error: 'loop_detected',
+                                message: `Your last ${UNPROD_STREAK} ${effName} calls all returned the SAME empty / zero / failed result — retrying with slightly different arguments is not producing new information. Stop this approach: verify the target actually exists (list_directory on the parent), broaden or fix your query, try a genuinely different tool, or stop calling tools and tell the user what you found (or that nothing matched).`,
+                                previous_call_count: historySnapshot.filter(h => h.toolName === effName).length,
+                            };
+                            console.warn(`[Chat Stream] Loop detected for ${effName} (unproductive-outcome ×${UNPROD_STREAK}); short-circuited with nudge`);
+                        } else if (rereadPath) {
+                            nudge = {
+                                error: 'loop_detected',
+                                message: `You have already read "${rereadPath}" ${READ_PATH_CAP}+ times this turn — its full content is in your context above and has not changed. Reading it again (even a different range) will not give you new information. Use what you already have to answer, or move to a DIFFERENT file / tool. If you have enough to answer the user, stop calling tools and write your response now.`,
+                                previous_call_count: historySnapshot.filter(h => h.readPath === rereadPath).length,
+                            };
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (reread-cap on ${rereadPath}); short-circuited with nudge`);
                         } else if (targetRepeat || argRepeat || readRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
@@ -20195,6 +20303,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                         return { call, policy, fp, nudge };
                     });
+
+                    // Tally loop_detected nudges this turn. When the model
+                    // keeps looping THROUGH the nudges (ignoring guidance), the
+                    // nudges become the loop — cap them and force synthesis.
+                    loopNudgeCount += perCall.filter(pc => pc.nudge && pc.nudge.error === 'loop_detected').length;
+                    if (loopNudgeCount >= LOOP_NUDGE_HARD_CAP && !loopNudgeExhausted) {
+                        loopNudgeExhausted = true;
+                        console.warn(`[Chat Stream] Loop-nudge hard cap (${LOOP_NUDGE_HARD_CAP}) reached — forcing synthesis`);
+                    }
 
                     // Same-round dedupe: collapse identical (name, args)
                     // calls so we only run the work once and share the result.
@@ -20395,16 +20512,73 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 } catch (_) { /* */ }
                             }
                             let recFailed = false;
+                            // Outcome signature — the KEY to catching loops whose
+                            // ARGS vary each call (garbled paths, rotated
+                            // patterns) but whose real RESULT never changes.
+                            // Strips echoed-back input + volatile fields so a
+                            // tool that keeps producing the SAME productive
+                            // payload under different args is detectable, and
+                            // flags whether that outcome was UNPRODUCTIVE
+                            // (empty/zero/error) — the only kind we auto-clamp on.
+                            let outcomeSig = rh;
+                            let outcomeEmpty = false;
+                            let resolvedTarget = null;
                             try {
                                 const parsedRes = JSON.parse(resultMsg.content || '{}');
                                 recFailed = !!(parsedRes && (parsedRes.error || parsedRes.success === false));
+                                if (parsedRes && typeof parsedRes === 'object') {
+                                    // Path tools echo the auto-resolved directory —
+                                    // record it so N garbled paths → one target is
+                                    // detectable as thrash.
+                                    if (parsedRes.resolvedFrom) {
+                                        resolvedTarget = parsedRes.directory || parsedRes.dirPath || parsedRes.path || null;
+                                    }
+                                    const VOLATILE = new Set(['directory', 'dirPath', 'path', 'filePath',
+                                        'requestedPath', 'resolvedFrom', 'resolvedPath', 'note', 'pattern',
+                                        'query', 'url', 'outputPath', 'dest', 'destPath', 'source']);
+                                    const sig = {};
+                                    for (const k of Object.keys(parsedRes).sort()) {
+                                        if (VOLATILE.has(k)) continue;
+                                        sig[k] = parsedRes[k];
+                                    }
+                                    outcomeSig = crypto.createHash('sha1')
+                                        .update(JSON.stringify(sig)).digest('hex').slice(0, 16);
+                                    // Unproductive = an error, or an explicit
+                                    // zero/empty result payload.
+                                    const emptyCount = (typeof parsedRes.count === 'number' && parsedRes.count === 0) ||
+                                        (typeof parsedRes.fileCount === 'number' && parsedRes.fileCount === 0) ||
+                                        (typeof parsedRes.filesScanned === 'number' && parsedRes.filesScanned === 0);
+                                    const emptyArr = (Array.isArray(parsedRes.hits) && parsedRes.hits.length === 0) ||
+                                        (Array.isArray(parsedRes.results) && parsedRes.results.length === 0) ||
+                                        (Array.isArray(parsedRes.files) && parsedRes.files.length === 0) ||
+                                        (Array.isArray(parsedRes.entries) && parsedRes.entries.length === 0) ||
+                                        (Array.isArray(parsedRes.matches) && parsedRes.matches.length === 0);
+                                    outcomeEmpty = recFailed || emptyCount || emptyArr;
+                                }
                             } catch (_) { /* non-JSON result — treat as success */ }
+                            // Path-only key for read-only tools so re-reading
+                            // the SAME file with different byte-ranges/chunks
+                            // (each a distinct fp) is still countable as a
+                            // re-read. Range-agnostic on purpose.
+                            let readPath = null;
+                            const READ_TOOLS = new Set(['read_file', 'head_file', 'tail_file',
+                                'outline_file', 'get_file_metadata', 'read_pdf', 'read_email_file']);
+                            if (READ_TOOLS.has(call.function.name)) {
+                                try {
+                                    const a = JSON.parse(call.function.arguments || '{}');
+                                    readPath = a.filePath || a.path || a.email_path || null;
+                                } catch (_) { /* */ }
+                            }
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
                                 argsHash: crypto.createHash('sha1')
                                     .update(call.function.arguments || '').digest('hex').slice(0, 16),
                                 failed: recFailed,
+                                outcomeSig,
+                                outcomeEmpty,
+                                resolvedTarget,
+                                readPath,
                                 toolName: recName,
                                 searchBlocked,
                                 searchEngineHost,
@@ -20564,6 +20738,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         console.warn(`[Chat Stream] Large-edit truncation limit hit (target "${largeEditTargetPath || '?'}") after ${toolCallRound + 1} round(s) — stopping tool loop, delivering directly`);
                         break; // exits the while → forced-synthesis / artifact-delivery block
                     }
+                    if (loopNudgeExhausted) {
+                        // The model looped through the nudge budget — stop
+                        // feeding it tools and synthesize an answer from what
+                        // it has (mirrors reasoningLoopExhausted).
+                        break; // exits the while → forced-synthesis block
+                    }
+                    // General redundancy backstop (unknown loop shapes).
+                    if (toolCallHistory.length >= LOOP_REDUNDANCY_MIN) {
+                        const distinctOutcomes = new Set(toolCallHistory.map(h => h.outcomeSig)).size;
+                        const ratio = distinctOutcomes / toolCallHistory.length;
+                        if (ratio < LOOP_REDUNDANCY_RATIO) {
+                            loopNudgeExhausted = true;
+                            console.warn(`[Chat Stream] Redundancy backstop — ${distinctOutcomes} distinct outcomes over ${toolCallHistory.length} recent calls (ratio ${ratio.toFixed(2)} < ${LOOP_REDUNDANCY_RATIO}) — forcing synthesis`);
+                            break;
+                        }
+                    }
                     toolCallRound++;
                     continuationCount = 0; // fresh length budget for next turn
                     continue;
@@ -20704,8 +20894,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 && /[:;—–]\s*$/.test(trailing.slice(-4));
             const exitedMidThought = toolCallRound > 1 && endsMidThought
                 && accumulatedToolCalls.length === 0;
-            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted) {
-                if (reasoningLoopExhausted) {
+            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted || loopNudgeExhausted) {
+                if (loopNudgeExhausted) {
+                    console.warn(`[Chat Stream] Loop-nudge budget exhausted (${loopNudgeCount} nudges) — forcing synthesis from what the model has`);
+                } else if (reasoningLoopExhausted) {
                     console.warn(`[Chat Stream] Reasoning loop exhausted — forcing tools+thinking-suppressed synthesis`);
                 } else if (largeEditTruncationExhausted) {
                     console.warn(`[Chat Stream] Large-edit truncation exhausted — delivering already-written file / forcing synthesis`);
@@ -20724,7 +20916,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // (reasoning loop, or a truncated tool call that left only a
                 // mid-thought prose tail). res.write calls self-guard on
                 // clientConnected.
-                if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted) {
+                if (clientConnected || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted || loopNudgeExhausted) {
                     // Snapshot the content BEFORE synthesis so we can tell whether
                     // the synthesis actually produced anything NEW. The pre-synth
                     // fullResponse is just the mid-thought narration / partial tail
@@ -21135,9 +21327,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // model's persona). Fire-and-forget — must never block the response.
         // Captures the successful tool path so the next similar task front-loads
         // what worked and skips re-exploration → fewer tool calls, faster.
-        // Skipped on an exhausted reasoning loop — its tool path is degenerate
-        // (the model never converged) and would poison the procedure store.
-        if (streamingConversationId && !streamAbortController.signal.aborted && !reasoningLoopExhausted) {
+        // Skipped on an exhausted reasoning loop OR an exhausted loop-nudge
+        // budget — the tool path is degenerate (the model never converged) and
+        // would poison the procedure store.
+        if (streamingConversationId && !streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
             recordTurnActivity({
                 userId: chatMemId,
                 conversationId: streamingConversationId,
@@ -27220,6 +27413,56 @@ app.use((req, res) => {
         return { buffer: buf, filename };
     }
 
+    // Fuzzy-match a garbled archiveId / path against the real candidates.
+    // Models cannot transcribe an opaque 32-hex id (or a long hashed
+    // filename) reliably — they drop, swap, or duplicate characters, and
+    // every mangled retry is a NEW string so the exact-match fallbacks all
+    // miss and the loop guard's fingerprint never repeats. This is the
+    // extract_archive analog of grep_code/list_directory's _auto_resolve_dir:
+    // pick the ONE candidate the garbled ref is unambiguously closest to.
+    // Returns the winning candidate string, or null when there is no clear
+    // winner (0 candidates, tie, or nothing close enough — caller then
+    // surfaces the full list so the model can copy an exact value).
+    function _closestArchiveRef(garbled, candidates) {
+        const g = String(garbled || '').toLowerCase().trim();
+        // Below 6 chars there is not enough signal to match without guessing
+        // (the auto-select-single-candidate path already covers the trivial
+        // "only one archive exists" case).
+        if (g.length < 6 || !Array.isArray(candidates) || !candidates.length) return null;
+        // Longest-common-subsequence length (order-preserving) — robust to
+        // dropped/inserted chars, which is exactly how hex ids get mangled.
+        const lcs = (a, b) => {
+            const n = a.length, m = b.length;
+            if (!n || !m) return 0;
+            let prev = new Array(m + 1).fill(0);
+            for (let i = 1; i <= n; i++) {
+                const cur = new Array(m + 1).fill(0);
+                const ai = a[i - 1];
+                for (let j = 1; j <= m; j++) {
+                    cur[j] = ai === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+                }
+                prev = cur;
+            }
+            return prev[m];
+        };
+        const scored = candidates.map(c => {
+            const cl = String(c).toLowerCase();
+            // Coverage = how much of what the model TYPED is an in-order
+            // subsequence of the candidate. Normalizing by the garbled length
+            // (not the longer string) means heavy truncation still scores high
+            // against the id it was truncated FROM — measured 0.89–0.97 for
+            // real garbles vs ≤0.60 for the closest of 5000 random hex ids.
+            const cov = lcs(g, cl) / g.length;
+            return { c, cov };
+        }).sort((a, b) => b.cov - a.cov);
+        // Require a strong best AND a clear margin over the runner-up so we
+        // never guess between two genuinely similar candidates.
+        const MIN_COV = 0.75, MARGIN = 0.2;
+        if (scored[0].cov < MIN_COV) return null;
+        if (scored.length >= 2 && scored[0].cov - scored[1].cov < MARGIN) return null;
+        return scored[0].c;
+    }
+
     tools.registerTool({
         name: 'extract_archive',
         build() {
@@ -27262,6 +27505,10 @@ app.use((req, res) => {
             let buffer, filename;
             let archiveId = String(args?.archiveId || '').trim();
             let wsPath = String(args?.path || '').trim();
+            // Set when a garbled id/path was fuzzy-resolved to a real archive —
+            // surfaced as a note on the result so the model learns the correct
+            // reference and stops mangling it on follow-up calls.
+            let archiveAutoResolvedFrom = null;
             // Model frequently calls extract_archive with no args or with a
             // FILENAME in the archiveId slot. Resolution order when archiveId
             // isn't a valid id: (1) explicit workspace path; (2) a filename
@@ -27281,6 +27528,20 @@ app.use((req, res) => {
                         || ws.files.find(f => f.toLowerCase() === archiveId.toLowerCase());
                     if (up) archiveId = up.archiveId;
                     else if (wf) wsPath = wf;
+                    else {
+                        // Garbled id/filename — fuzzy-resolve against the real
+                        // candidates so N mangled retries collapse to the one
+                        // archive the model means (see _closestArchiveRef).
+                        const idHit = _closestArchiveRef(archiveId, available.map(a => a.archiveId));
+                        if (idHit) { archiveId = idHit; archiveAutoResolvedFrom = args?.archiveId; }
+                        else {
+                            const pathHit = _closestArchiveRef(base, ws.files.map(f => f.split('/').pop()));
+                            if (pathHit) {
+                                wsPath = ws.files.find(f => f.split('/').pop() === pathHit);
+                                archiveAutoResolvedFrom = args?.archiveId;
+                            }
+                        }
+                    }
                 }
                 if (!/^[a-f0-9]{32}$/.test(archiveId) && !wsPath) {
                     const candidates = available.length + ws.files.length;
@@ -27295,7 +27556,7 @@ app.use((req, res) => {
                             ...available.map(a => `archiveId=${a.archiveId} (${a.filename})`),
                             ...ws.files.map(f => `path=${f}`),
                         ].join('; ');
-                        return { error: `Ambiguous or malformed archive reference. Pass one of: ${list}` };
+                        return { error: `Ambiguous or malformed archive reference — could not match "${archiveId}" to a known archive. Pass ONE of these EXACT values (copy character-for-character, do not retype from memory): ${list}` };
                     }
                 }
             }
@@ -27315,10 +27576,26 @@ app.use((req, res) => {
                     filename = resolved.filename;
                 } catch (e) {
                     const available = await listUserArchives(ctx?.userId).catch(() => []);
-                    const hint = available.length
-                        ? ` Available archiveIds: ${available.map(a => `${a.archiveId} (${a.filename})`).join('; ')}`
-                        : ' No uploaded archives are currently on disk for this user.';
-                    return { error: e.message + hint };
+                    // A 32-hex id that passed the format check but doesn't exist
+                    // is a garble that landed back at 32 chars — fuzzy-resolve it
+                    // against the real ids before erroring (same treatment the
+                    // non-hex branch gets), so it doesn't spiral either.
+                    const idHit = _closestArchiveRef(archiveId, available.map(a => a.archiveId));
+                    if (idHit && idHit !== archiveId) {
+                        try {
+                            const resolved = await resolveArchiveById(idHit, ctx?.userId);
+                            buffer = resolved.buffer;
+                            filename = resolved.filename;
+                            archiveAutoResolvedFrom = archiveId;
+                            archiveId = idHit;
+                        } catch (_) { /* fall through to error below */ }
+                    }
+                    if (!buffer) {
+                        const hint = available.length
+                            ? ` Pass ONE of these EXACT archiveIds (copy character-for-character, do not retype from memory): ${available.map(a => `${a.archiveId} (${a.filename})`).join('; ')}`
+                            : ' No uploaded archives are currently on disk for this user.';
+                        return { error: e.message + hint };
+                    }
                 }
             } else {
                 const b64 = String(args?.base64Data || '').trim();
@@ -27358,7 +27635,28 @@ app.use((req, res) => {
                 }
                 const fsp = require('fs').promises;
                 const pathMod = require('path');
-                const extractRoot = pathMod.join(workspace.localInContainer, 'archives', archiveId || crypto.randomBytes(8).toString('hex'));
+                // Extraction dir name: human-LEGIBLE (the archive's basename,
+                // sanitized) so the model can transcribe the extracted file
+                // paths reliably on follow-up read_file/grep_code calls. An
+                // opaque archiveId hash here was garbled every which way and
+                // sent the file tools spiraling (observed 39-51 calls, each a
+                // new mangle of /archives/<32hex>/package/...). Mirrors the
+                // legible-clone-dir fix in git_clone_shallow. A short hash
+                // suffix is appended only on a genuine name collision.
+                const legibleBase = (String(filename || 'archive')
+                    .replace(/\.(zip|7z|rar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar|gz|bz2|xz)$/i, '')
+                    .replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^[-.]+|[-.]+$/g, '')
+                    .slice(0, 60)) || 'archive';
+                const archivesDir = pathMod.join(workspace.localInContainer, 'archives');
+                await fsp.mkdir(archivesDir, { recursive: true });
+                let dirName = legibleBase;
+                // Disambiguate only on a real clash (a different archive already
+                // extracted under this name) — append a short id/random suffix.
+                if (await fsp.stat(pathMod.join(archivesDir, dirName)).then(() => true).catch(() => false)) {
+                    const suffix = (archiveId || crypto.randomBytes(4).toString('hex')).slice(0, 6);
+                    dirName = `${legibleBase}-${suffix}`;
+                }
+                const extractRoot = pathMod.join(archivesDir, dirName);
                 await fsp.mkdir(extractRoot, { recursive: true });
                 await fsp.chmod(extractRoot, 0o777);
                 const result = await archiveExtractor.extractArchive(buffer, filename, {
@@ -27368,7 +27666,14 @@ app.use((req, res) => {
                 return {
                     ...result,
                     workspaceRoot: workspace.containerMount,
+                    ...(archiveAutoResolvedFrom ? {
+                        resolvedFrom: archiveAutoResolvedFrom,
+                        resolvedTo: archiveId || filename,
+                    } : {}),
                     note: (result.note ? result.note + ' ' : '') +
+                        (archiveAutoResolvedFrom
+                            ? `NOTE: "${archiveAutoResolvedFrom}" did not match any archive; auto-resolved to ${archiveId ? `archiveId=${archiveId}` : `path=${filename}`}. Use that EXACT reference next time. `
+                            : '') +
                         `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`,
                 };
             } catch (e) {
