@@ -6355,6 +6355,46 @@ ${code.split('\n').map(l => '        ' + l).join('\n')}
 // successful tool call returns `_artifacts: [{ name, size, runId }]` so
 // the chat client can render download links via this endpoint.
 //
+// The sandbox staging dir is SCRATCH — a boot-registered sweeper deletes run
+// dirs after SANDBOX_ARTIFACT_TTL_MS (default 1h), which used to 404 every
+// artifact link in a saved conversation the moment the sweep fired. The
+// canonical bytes usually live on in the caller's workspace bucket
+// (workspaces/<owner>/<bucket>/artifacts/<name> — make_downloadable copies
+// there, and skills write /workspace/artifacts/ directly), so when the staged
+// copy is gone we re-resolve the filename there. Owner-scoped: only the
+// requesting user's own buckets are searched, so no cross-user access. A
+// `conv` query param (stamped into artifact URLs at creation time) pins the
+// exact conversation bucket; legacy URLs saved before the stamp scan every
+// bucket and the newest match wins.
+async function resolveWorkspaceArtifact(userId, safeName, conv) {
+    const ownerDir = path.join(
+        '/models/.modelserver/workspaces',
+        require('./services/sandboxRunner').workspaceOwnerDir(userId),
+    );
+    const tryBucket = async (bucket) => {
+        try {
+            const p = path.join(ownerDir, bucket, 'artifacts', safeName);
+            const stat = await fs.stat(p);
+            return stat.isFile() ? { path: p, stat } : null;
+        } catch (_) { return null; }
+    };
+    // Sanitize the conv hint EXACTLY like ensureWorkspace sanitizes the
+    // conversationId, so the bucket name matches what skills wrote to.
+    if (typeof conv === 'string' && conv.length > 0 && conv.length <= 128) {
+        const hit = await tryBucket('conv-' + conv.replace(/[^A-Za-z0-9_-]/g, '_'));
+        if (hit) return hit;
+    }
+    let buckets;
+    try { buckets = await fs.readdir(ownerDir, { withFileTypes: true }); } catch (_) { return null; }
+    let best = null;
+    for (const b of buckets) {
+        if (!b.isDirectory()) continue;
+        const hit = await tryBucket(b.name);
+        if (hit && (!best || hit.stat.mtimeMs > best.stat.mtimeMs)) best = hit;
+    }
+    return best;
+}
+
 // Security: runId is a crypto-random 24-hex string; unguessable per run.
 // We still require auth + validate the filename against path traversal.
 app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) => {
@@ -6369,10 +6409,19 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
     if (!safeName || safeName.startsWith('.') || safeName.includes('..')) {
         return res.status(400).json({ error: 'bad filename' });
     }
-    const filePath = path_.join('/models/.modelserver/sandbox', runId, 'artifacts', safeName);
+    let filePath = path_.join('/models/.modelserver/sandbox', runId, 'artifacts', safeName);
+    let st = null;
     try {
-        const st = await fs.stat(filePath);
-        if (!st.isFile()) return res.status(404).json({ error: 'not a file' });
+        const s = await fs.stat(filePath);
+        if (s.isFile()) st = s;
+    } catch (_) { /* staging copy swept — workspace fallback below */ }
+    if (!st) {
+        const resolved = await resolveWorkspaceArtifact(req.userId ?? null, safeName, req.query.conv);
+        if (!resolved) return res.status(404).json({ error: 'artifact not found' });
+        filePath = resolved.path;
+        st = resolved.stat;
+    }
+    try {
         // Set Content-Type from extension so the browser knows whether to
         // render inline (PDF, image), prompt download (zip, exe), or hand
         // off to a registered handler. Falls back to octet-stream which the
@@ -10723,11 +10772,18 @@ async function executePythonSkill(skill, params, ctx = null) {
             }
             if (run.result && typeof run.result === 'object') {
                 if (run.artifacts.length) {
+                    // Stamp the conversation onto the URL so the download
+                    // route can re-resolve the file from the conversation's
+                    // workspace bucket after the sandbox staging copy is
+                    // swept (SANDBOX_ARTIFACT_TTL_MS, default 1h).
+                    const convQ = (ctx && ctx.conversationId)
+                        ? '?conv=' + encodeURIComponent(String(ctx.conversationId))
+                        : '';
                     run.result._artifacts = run.artifacts.map(a => ({
                         name: a.name,
                         size: a.size,
                         runId: run.runId,
-                        url: `/api/tool-artifacts/${run.runId}/${encodeURIComponent(a.name)}`,
+                        url: `/api/tool-artifacts/${run.runId}/${encodeURIComponent(a.name)}${convQ}`,
                     }));
                 }
                 return run.result;

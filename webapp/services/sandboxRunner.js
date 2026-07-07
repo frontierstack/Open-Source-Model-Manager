@@ -1104,6 +1104,7 @@ module.exports = {
     deleteWorkspaceBucketByOwner,
     migrateLegacyWorkspaces,
     ensureWorkspace,
+    workspaceOwnerDir,
     resolveInWorkspace,
     normalizePathArgs,
     PATH_ARG_NAMES,
