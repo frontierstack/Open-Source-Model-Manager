@@ -19997,9 +19997,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         move_file:         a => a?.destPath || a?.destination || a?.dest,
                         copy_file:         a => a?.destPath || a?.destination || a?.dest,
                         create_directory:  a => a?.dirPath || a?.path,
-                        create_pdf:        a => a?.filePath || a?.outputPath,
-                        create_xlsx:       a => a?.filePath || a?.outputPath,
-                        html_to_pdf:       a => a?.filePath || a?.outputPath,
+                        create_pdf:        a => a?.filename || a?.filePath || a?.outputPath,
+                        create_xlsx:       a => a?.filename || a?.filePath || a?.outputPath,
+                        html_to_pdf:       a => a?.outputName || a?.filePath || a?.outputPath,
                         make_downloadable: a => a?.filePath || a?.path,
                     };
                     const webSearchBlockedCount = historySnapshot.filter(
@@ -20034,8 +20034,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             } catch { /* malformed args — fall back to full-args fp */ }
                         }
                         const fp = targetKey || `${call.function.name}:${call.function.arguments || ''}`;
+                        const callArgsHash = crypto.createHash('sha1')
+                            .update(call.function.arguments || '').digest('hex').slice(0, 16);
                         const priorHits = historySnapshot.filter(h => h.fp === fp);
-                        const targetRepeat = !!targetKey && priorHits.length >= 1;
+                        // Target-repeat fires immediately only on an IDENTICAL
+                        // re-issue (same target + same full args — re-running it
+                        // reproduces the same outcome, success or failure). A
+                        // content-DIFFERING write to the same target is a
+                        // legitimate recovery path (rewrite the HTML after a
+                        // downstream converter failed) — allow a few before
+                        // clamping churn.
+                        const identicalPriorHits = targetKey
+                            ? priorHits.filter(h => h.argsHash === callArgsHash)
+                            : priorHits;
+                        const targetRepeat = !!targetKey &&
+                            (identicalPriorHits.length >= 1 || priorHits.length >= 3);
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
 
@@ -20090,7 +20103,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             let nudgeText;
                             if (targetRepeat) {
                                 const target = targetKey.split('target=')[1];
-                                nudgeText = `You already called ${loopingToolName} for "${target}" this turn — that write succeeded. Do not call ${loopingToolName} again for the same target. Either move on to a different file, or stop calling tools and write your final answer to the user describing what you produced.`;
+                                if (identicalPriorHits.length >= 1) {
+                                    const priorAllFailed = identicalPriorHits.every(h => h.failed);
+                                    nudgeText = priorAllFailed
+                                        ? `You already called ${loopingToolName} for "${target}" with these EXACT arguments this turn and it FAILED. Re-issuing the identical call will fail identically. Fix the underlying problem the error described (change the content or arguments), use a different tool, or stop and tell the user what is blocking you.`
+                                        : `You already called ${loopingToolName} for "${target}" this turn — that write succeeded. Do not call ${loopingToolName} again for the same target. Either move on to a different file, or stop calling tools and write your final answer to the user describing what you produced.`;
+                                } else {
+                                    nudgeText = `You have rewritten "${target}" ${priorHits.length} times this turn with varying content. Stop churning on this file — proceed to the next step with the current version, or stop calling tools and explain to the user what is blocking you.`;
+                                }
                             } else if (fileTools.has(loopingToolName)) {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
                             } else if (webTools.has(loopingToolName)) {
@@ -20311,9 +20331,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     searchEngineHost = SEARCH_ENGINE_HOST_RE.test(u);
                                 } catch (_) { /* */ }
                             }
+                            let recFailed = false;
+                            try {
+                                const parsedRes = JSON.parse(resultMsg.content || '{}');
+                                recFailed = !!(parsedRes && (parsedRes.error || parsedRes.success === false));
+                            } catch (_) { /* non-JSON result — treat as success */ }
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
+                                argsHash: crypto.createHash('sha1')
+                                    .update(call.function.arguments || '').digest('hex').slice(0, 16),
+                                failed: recFailed,
                                 toolName: recName,
                                 searchBlocked,
                                 searchEngineHost,
