@@ -19196,6 +19196,29 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                     } catch (_) { /* estimation best-effort */ }
 
+                    // Anti-repetition — DRY sampler (llama.cpp only; sglang
+                    // would 400 on unknown fields). Local models re-emit the
+                    // same narration sentence many times per turn ("Let me fix
+                    // that line and convert to PDF." x10 observed) because the
+                    // container-level --repeat-penalty window (last 64 tokens)
+                    // can't see repeats that span tool rounds. DRY penalizes
+                    // EXTENDING a verbatim token sequence that already occurred
+                    // anywhere in the penalty window (which includes prior
+                    // rounds' prose in the prompt), so long repeated sentences
+                    // are suppressed while short common phrases stay free
+                    // (allowed_length). Sequence breakers include path/JSON
+                    // punctuation so file paths and tool-call JSON structure
+                    // never accumulate penalty. CHAT_DRY_MULTIPLIER=0 disables;
+                    // all knobs env-tunable, no rebuild.
+                    const dryMultiplier = Number(process.env.CHAT_DRY_MULTIPLIER ?? 0.7);
+                    const dryParams = (targetInstance?.backend !== 'sglang' && dryMultiplier > 0) ? {
+                        dry_multiplier: dryMultiplier,
+                        dry_base: Number(process.env.CHAT_DRY_BASE ?? 1.75),
+                        dry_allowed_length: Number(process.env.CHAT_DRY_ALLOWED_LENGTH ?? 4),
+                        dry_penalty_last_n: Number(process.env.CHAT_DRY_PENALTY_LAST_N ?? 4096),
+                        dry_sequence_breakers: ['\n', ':', '"', '*', '/', '_', '.', ',', '{', '}', '(', ')'],
+                    } : {};
+
                     const requestBody = {
                         model: targetModel,
                         messages: sendMessages,
@@ -19204,6 +19227,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         stream: true,
                         max_tokens: actualMaxTokens,
                         stop: DEFAULT_STOP_STRINGS,
+                        ...dryParams,
                         // Native tool calling — only attach `tools` when the
                         // catalog has something. Empty arrays confuse some
                         // backends; omitting the key is the safer default.
@@ -19993,6 +20017,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         create_file:       a => a?.filePath || a?.path,
                         update_file:       a => a?.filePath || a?.path,
                         append_to_file:    a => a?.filePath || a?.path,
+                        replace_lines:     a => a?.filePath || a?.path,
                         delete_file:       a => a?.filePath || a?.path,
                         move_file:         a => a?.destPath || a?.destination || a?.dest,
                         copy_file:         a => a?.destPath || a?.destination || a?.dest,
@@ -20047,8 +20072,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const identicalPriorHits = targetKey
                             ? priorHits.filter(h => h.argsHash === callArgsHash)
                             : priorHits;
+                        // append_to_file / replace_lines are inherently
+                        // multi-call per file (chunked writes, sequential
+                        // edits) — give them a much longer churn leash.
+                        const churnLimit = (call.function.name === 'append_to_file' ||
+                                            call.function.name === 'replace_lines') ? 8 : 3;
                         const targetRepeat = !!targetKey &&
-                            (identicalPriorHits.length >= 1 || priorHits.length >= 3);
+                            (identicalPriorHits.length >= 1 || priorHits.length >= churnLimit);
+
+                        // Read-repeat: a read-only tool re-issued with IDENTICAL
+                        // args is pure waste — the result is deterministic and
+                        // already in context — UNLESS the target was mutated
+                        // since the last identical read (read → edit → re-read
+                        // is legitimate verification). Observed: read_file x17
+                        // on one unchanged file while the model re-narrated the
+                        // same plan without ever acting on it.
+                        const READONLY_PATH_TOOLS = {
+                            read_file:         a => a?.filePath || a?.path,
+                            head_file:         a => a?.filePath || a?.path,
+                            tail_file:         a => a?.filePath || a?.path,
+                            outline_file:      a => a?.filePath || a?.path,
+                            get_file_metadata: a => a?.filePath || a?.path,
+                            list_directory:    a => a?.dirPath || a?.path,
+                        };
+                        let readRepeat = false;
+                        let readRepeatPath = null;
+                        if (!targetKey && priorHits.length >= 1 && READONLY_PATH_TOOLS[call.function.name]) {
+                            try {
+                                readRepeatPath = READONLY_PATH_TOOLS[call.function.name](
+                                    JSON.parse(call.function.arguments || '{}')) || null;
+                            } catch { /* malformed args — skip */ }
+                            if (readRepeatPath) {
+                                let lastIdenticalIdx = -1;
+                                historySnapshot.forEach((h, i) => { if (h.fp === fp) lastIdenticalIdx = i; });
+                                const mutatedSince = historySnapshot.slice(lastIdenticalIdx + 1)
+                                    .some(h => typeof h.fp === 'string' && h.fp.includes(`:target=${readRepeatPath}`));
+                                readRepeat = !mutatedSince;
+                            }
+                        }
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
 
@@ -20096,7 +20157,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 search_engine_scrapes: scraplingSearchCount,
                             };
                             console.warn(`[Chat Stream] ${nudge.error}: ${nudge.rate_limited_count} web_search blocks, ${nudge.search_engine_scrapes} search-engine scrapes`);
-                        } else if (targetRepeat || argRepeat) {
+                        } else if (targetRepeat || argRepeat || readRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
                             const loopingToolName = call.function.name;
@@ -20111,6 +20172,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 } else {
                                     nudgeText = `You have rewritten "${target}" ${priorHits.length} times this turn with varying content. Stop churning on this file — proceed to the next step with the current version, or stop calling tools and explain to the user what is blocking you.`;
                                 }
+                            } else if (readRepeat) {
+                                nudgeText = `You already called ${loopingToolName} on "${readRepeatPath}" with these EXACT arguments this turn and nothing has modified it since — the result is unchanged and already in your context above. Do NOT read it again. Act on what you read: make the edit or conversion you planned (replace_lines / html_to_pdf / create_pdf …), or stop calling tools and answer the user.`;
                             } else if (fileTools.has(loopingToolName)) {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
                             } else if (webTools.has(loopingToolName)) {
@@ -20128,7 +20191,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 message: nudgeText,
                                 previous_call_count: priorHits.length,
                             };
-                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : readRepeat ? 'read-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
                         }
                         return { call, policy, fp, nudge };
                     });
