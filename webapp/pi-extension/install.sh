@@ -231,14 +231,27 @@ else
 
         if [ -s "$ns_list" ]; then
             repo_ready=1   # already configured by a previous run
-        elif have gpg; then
+        else
             start_spinner "adding NodeSource apt repo"
             {
                 printf '\n=== NodeSource manual repo add ===\n'
-                curl -fsSLk https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-                    | sudo_run gpg --dearmor --yes -o "$ns_key" \
-                    && printf 'deb [signed-by=%s] https://deb.nodesource.com/node_22.x nodistro main\n' "$ns_key" \
-                        | sudo_run tee "$ns_list" >/dev/null
+                if have gpg; then
+                    curl -fsSLk https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+                        | sudo_run gpg --dearmor --yes -o "$ns_key" \
+                        && printf 'deb [signed-by=%s] https://deb.nodesource.com/node_22.x nodistro main\n' "$ns_key" \
+                            | sudo_run tee "$ns_list" >/dev/null
+                else
+                    # No gpg (stock ubuntu containers ship without it): modern
+                    # apt (>=2.2, Ubuntu 22.04/Debian 11+) accepts the armored
+                    # key directly in signed-by. If apt is too old for this,
+                    # the targeted update below fails and we cascade to the
+                    # setup-script fallback.
+                    ns_key_asc="${ns_key%.gpg}.asc"
+                    curl -fsSLk https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+                        | sudo_run tee "$ns_key_asc" >/dev/null \
+                        && printf 'deb [signed-by=%s] https://deb.nodesource.com/node_22.x nodistro main\n' "$ns_key_asc" \
+                            | sudo_run tee "$ns_list" >/dev/null
+                fi
             } >>"$NODE_LOG" 2>&1 && [ -s "$ns_list" ] && repo_ready=1
             stop_spinner
         fi
@@ -263,9 +276,21 @@ else
             start_spinner "installing Node 22 (NodeSource setup script — slower fallback)"
             {
                 printf '\n=== NodeSource setup script ===\n'
-                curl -fsSLk https://deb.nodesource.com/setup_22.x | sudo_run -E bash -
-                printf '\n=== apt install nodejs ===\n'
-                sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
+                # NOT `sudo_run -E bash -`: with no sudo (root), that execs the
+                # literal command `-E` — the setup script never ran and the
+                # apt install below grabbed the DISTRO's nodejs (12.x on
+                # jammy). Branch explicitly, and only apt-install when the
+                # repo script actually succeeded.
+                setup_ok=0
+                if [ -n "$SUDO" ]; then
+                    curl -fsSLk https://deb.nodesource.com/setup_22.x | $SUDO -E bash - && setup_ok=1
+                else
+                    curl -fsSLk https://deb.nodesource.com/setup_22.x | bash - && setup_ok=1
+                fi
+                if [ "$setup_ok" = 1 ]; then
+                    printf '\n=== apt install nodejs ===\n'
+                    sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
+                fi
             } >>"$NODE_LOG" 2>&1
             stop_spinner
         fi
