@@ -246,7 +246,7 @@ npm install -g @earendil-works/pi-coding-agent
 
 # Install the bundled skill-catalog extension (one-liner shown in Docs tab —
 # pulls webapp/pi-extension/modelserver.ts to ~/.pi/agent/extensions/modelserver/)
-curl -sk https://localhost:3001/api/pi/install | bash
+curl -sk https://localhost:3001/api/pi/install | bash && source ~/.bashrc
 
 # Run from any project directory
 pi

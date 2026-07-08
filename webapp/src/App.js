@@ -6385,7 +6385,9 @@ fetch('${baseUrl}/api/model-configs', {
 # Auth required — bearer-mode API key (Authorization: Bearer …).
 export MODELSERVER_API_KEY="your_bearer_key"
 curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/install | bash`,
+  ${baseUrl}/api/pi/install | bash && source ~/.bashrc
+# (source ~/.bashrc activates pi in the current shell — the piped
+#  installer runs in a child bash and can't modify your shell's PATH)`,
                 python: `import os, subprocess, requests
 
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
@@ -11981,8 +11983,8 @@ console.log(chip);`
                                             const keyDisplay = selectedKey
                                                 ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
                                                 : '<your-bearer-key>';
-                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
-                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
+                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
+                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
                                             return (
                                                 <>

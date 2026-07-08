@@ -56,8 +56,10 @@ Notes:
    ```bash
    export MODELSERVER_API_KEY="<bearer-mode-key>"
    curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
-     https://<your-host>:3001/api/pi/install | bash
+     https://<your-host>:3001/api/pi/install | bash && source ~/.bashrc
    ```
+
+   The trailing `source ~/.bashrc` activates the install in your current shell (the piped script runs in a child bash and can't touch your shell's PATH/env) — after it, `pi` works immediately; new terminals need nothing.
 
    `install.sh` self-corrects for: corporate MITM proxies (writes `~/.curlrc`, sets `NODE_TLS_REJECT_UNAUTHORIZED=0`, `npm strict-ssl=false`), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — re-run anytime.
 

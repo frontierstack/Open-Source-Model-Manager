@@ -22,7 +22,12 @@
 # Usage:
 #   export MODELSERVER_API_KEY="<your-bearer-key>"
 #   curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
-#     <BASE_URL>/api/pi/install | bash
+#     <BASE_URL>/api/pi/install | bash && source ~/.bashrc
+#
+# The trailing `source ~/.bashrc` matters: this script runs in a CHILD bash
+# (curl | bash) and cannot modify the shell you invoked it from. It makes
+# your rc self-sufficient (nvm init + MODELSERVER_BASE_URL), so one source
+# in YOUR shell puts `pi` on PATH immediately. New terminals need nothing.
 #
 # Env:
 #   PI_INSTALL_NO_SPINNER=1   disable the progress spinner (CI / log capture)
@@ -433,7 +438,7 @@ if [ -z "${MODELSERVER_API_KEY:-}" ]; then
     log_err "MODELSERVER_API_KEY is not set. Re-run with:"
     log_err "    export MODELSERVER_API_KEY=<your-bearer-key>"
     log_err "    curl -fsSk -H \"Authorization: Bearer \$MODELSERVER_API_KEY\" \\"
-    log_err "        $BASE_URL/api/pi/install | bash"
+    log_err "        $BASE_URL/api/pi/install | bash && source ~/.bashrc"
     exit 1
 fi
 
@@ -478,13 +483,34 @@ PI_SETTINGS_EOF
     log_ok "wrote $SETTINGS"
 fi
 
-# Persist MODELSERVER_BASE_URL (and a hint about the key) into shell rc.
+# Persist everything `pi` needs into the shell rc, so a single
+# `source ~/.bashrc` in the invoking shell (and nothing at all in new
+# terminals) makes the pi command work.
 shell_rc=""
 case "${SHELL:-/bin/bash}" in
     */zsh)  shell_rc="$HOME/.zshrc" ;;
     *)      shell_rc="$HOME/.bashrc" ;;
 esac
-if [ -f "$shell_rc" ] && ! grep -q 'MODELSERVER_BASE_URL' "$shell_rc"; then
+[ -f "$shell_rc" ] || touch "$shell_rc"
+
+# nvm-managed Node puts pi in ~/.nvm/versions/node/*/bin — invisible to any
+# shell that hasn't run the nvm init lines. nvm's own installer appends them,
+# but a PRE-EXISTING nvm (or a stripped rc) may lack them; without this,
+# `source ~/.bashrc` wouldn't surface `pi` and the summary below would lie.
+if [ -s "$HOME/.nvm/nvm.sh" ] && [[ "$(command -v node 2>/dev/null)" == "$HOME/.nvm/"* ]]; then
+    if ! grep -q 'NVM_DIR' "$shell_rc"; then
+        {
+            printf '\n# Added by pi-install (Node is nvm-managed; pi lives in the nvm bin dir)\n'
+            printf 'export NVM_DIR="$HOME/.nvm"\n'
+            printf '[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"\n'
+        } >> "$shell_rc"
+        log_ok "appended nvm init to $shell_rc (puts pi on PATH for new shells)"
+    else
+        log_ok "$shell_rc already initializes nvm"
+    fi
+fi
+
+if ! grep -q 'MODELSERVER_BASE_URL' "$shell_rc"; then
     {
         printf '\n# Added by pi-install for the modelserver Pi extension\n'
         printf 'export MODELSERVER_BASE_URL=%q\n' "$BASE_URL"
@@ -502,15 +528,15 @@ say "Extension:  $EXT_DIR"
 say "Settings:   $SETTINGS"
 say "Base URL:   $BASE_URL"
 echo ""
-say "Run (in THIS shell — bashrc edits don't take effect until next login):"
-if [ -n "${MODELSERVER_API_KEY:-}" ]; then
-    say "  ${c_cyan}export MODELSERVER_BASE_URL=\"$BASE_URL\"${c_off}"
-    say "  ${c_cyan}pi${c_off}"
-    echo ""
-    say "${c_dim}(MODELSERVER_API_KEY is already set; MODELSERVER_BASE_URL was appended to your shell rc but won't be live until you re-source it.)${c_off}"
-else
-    say "  ${c_cyan}export MODELSERVER_BASE_URL=\"$BASE_URL\"${c_off}"
-    say "  ${c_cyan}export MODELSERVER_API_KEY=\"<your-bearer-key>\"${c_off}"
-    say "  ${c_cyan}pi${c_off}"
+# This script runs in a child bash (curl | bash) — it CANNOT export vars or
+# PATH into the shell that invoked it. Everything needed is now in $shell_rc,
+# so one source in the user's shell activates it; new terminals need nothing.
+say "Activate in THIS shell, then run pi:"
+say "  ${c_cyan}source $shell_rc${c_off}"
+if [ -z "${MODELSERVER_API_KEY:-}" ]; then
+    say "  ${c_cyan}export MODELSERVER_API_KEY=\"<your-bearer-key>\"${c_off}  ${c_dim}# API Keys tab (bearer mode)${c_off}"
 fi
+say "  ${c_cyan}pi${c_off}"
+echo ""
+say "${c_dim}(new terminals pick everything up from $shell_rc automatically)${c_off}"
 echo ""
