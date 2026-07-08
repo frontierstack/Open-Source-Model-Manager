@@ -41,6 +41,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
 - **AIMem Memory Compression** — Compresses older conversation history to reduce token usage, speeding up inference and lowering VRAM consumption during long conversations
 - **Knowledge Base (RAG)** — Upload per-user document collections (PDF / DOCX / XLSX / text / CSV / Markdown); the chat model retrieves only the most relevant passages via the `search_knowledge_base` tool, so large libraries never strain the context window
+- **Account Memory & Persona** — The assistant learns per account: preferences, durable facts, and *experience* (the tool path that worked for each kind of task), consolidating instead of sprawling and injecting only what's relevant each turn. Shared across the web chat and Pi; browse/edit/clear it in the **Memory** tab
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
@@ -49,9 +50,13 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 The chat model can invoke tools on its own via OpenAI-style function calls. Every enabled skill in your workspace is surfaced to the model as a named tool; the UI renders each call as an inline chip showing the tool name, arguments, and (on click) the full result. There are no "web search" or "URL fetch" toggles anymore — the model decides when to reach for them.
 
 - **Catalog built from your skill registry** — toggling a skill off in Settings removes it from the tool catalog the model sees on the next turn
+- **Semantic tool router** — the 130+ tool catalog is trimmed per turn to the tools relevant to the request (embedding-based top-K plus intent rules), so even small local models see a focused, reliable catalog
 - **Streamed tool chips** — `native_tool_call` events render live below the assistant message while the model works
 - **Multi-round reasoning** — the model can call several tools in sequence and see each result before responding
-- **Shipped tools include** — `web_search` (DuckDuckGo → Scrapling → Brave → Playwright fallback chain), `fetch_url` (direct file download for PDF/DOCX/XLSX then Scrapling/Playwright/axios for HTML), `crawl_pages`, `playwright_fetch` / `playwright_interact` for JS-rendered pages, `scrapling_fetch` for CAPTCHA-evading fetches, `search_knowledge_base` (semantic retrieval over the user's uploaded documents), `dns_lookup`, `virustotal_lookup`, `base64_decode`, `extract_strings` (printable-string extraction from binaries), plus every built-in skill (file ops, git, system info, OCR, PDF, email parsing, and more)
+- **One `web` tool for retrieval** — search and read pages (including JS-rendered, dynamic, and bot-protected sites) through a single consolidated tool that routes internally to the search engines (DuckDuckGo → Scrapling → Brave → Playwright), direct file download (PDF/DOCX/XLSX), Scrapling stealth fetch, Playwright full-browser rendering with XHR interception, page interaction, and multi-page crawling
+- **Media & data tools** — `find_image` (searched or extracted images rendered as inline thumbnail grids, every URL liveness-probed; also takes page screenshots), `find_video` (click-to-play inline players, including HLS streams), `sniff_media_streams` (DevTools-style network inspection to find the stream URLs a JS player loads), `render_chart` (inline Recharts), `fetch_timeseries` (Yahoo Finance quotes/history)
+- **Analysis & security tools** — `dns_lookup`, `virustotal_lookup`, `base64_decode`, `extract_strings` (printable-string extraction from binaries), `extract_archive` (zip/tar/gz/bz2/xz with magic-byte detection), `search_knowledge_base` (semantic retrieval over the user's uploaded documents), plus every built-in skill (file ops, git, code navigation, system info, OCR, PDF, email parsing, and more)
+- **Self-improving** — a `record_learning` tool lets the model save outcome-aware lessons and per-task recipes into account memory, so repeat tasks use fewer tool calls
 - **No silent dead-ends** — if the tool-iteration cap is reached, the model still returns a final user-visible message
 
 ### Web Scraping & Search
@@ -59,6 +64,8 @@ The chat model can invoke tools on its own via OpenAI-style function calls. Ever
 - **[Scrapling](https://github.com/D4Vinci/Scrapling) Integration** — CAPTCHA-evading web scraping with StealthyFetcher
 - **Multi-Engine Search** — DuckDuckGo → Scrapling → Brave Search → Playwright
 - **Smart Content Extraction** — Playwright SPA/XHR interception, direct file download for PDFs/DOCX/XLSX
+- **JS-shell-aware cascade** — the fetch pipeline detects SPA app-shells in the raw HTML and escalates to a real browser only when needed, so static pages stay fast and client-rendered apps still return real content
+- **Bot-wall fast-fail** — hosts whose protection defeats every layer are remembered for a few minutes and fail instantly with guidance to use a different site, instead of re-burning the full fallback chain on URL variants
 
 ### AIMem — Memory Compression
 
@@ -85,11 +92,14 @@ Upload documents into per-user **knowledge bases** and the chat model references
 Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
 
 - Native tool-call chips rendered inline with each assistant message
+- Inline media from tool results — image thumbnail grids, click-to-play video players (including HLS via hls.js), and Recharts charts
+- Queue follow-up messages while the model is still streaming (dispatched automatically when the turn finishes)
 - 18 themes and 6 chat layouts (Default, Centered, Timeline, Bubbles, Slack, Minimal)
 - 54 font choices with dynamic Google Fonts loading
 - Clipboard image paste and drag-and-drop file attachments
 - Paste-as-file for large text (500+ chars auto-converted to attachment)
 - Email file parsing (.eml, .msg) with nested attachment extraction
+- Archive uploads (zip/tar/gz/bz2/xz) extracted into the conversation workspace for code/file analysis
 - OCR text extraction for uploaded images via Tesseract
 
 <p align="center">
@@ -108,6 +118,8 @@ The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil
 - **Skills surface as Pi tools** — the bundled extension at `webapp/pi-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
 - **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Pi's status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
 - **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Pi turn instead of sitting at `0/max`
+- **Persistent shell & SSH sessions** — first-party Pi tools (`ssh_connect`, `shell_open`, `shell_exec`, `shell_send`, `shell_read`, `shell_close`, `shell_list`) hold a real interactive PTY open across turns — SSH logins with password prompts, REPLs, `docker exec -it`, live `tail -f`, control keys (ctrl-c/-d/…) — with no native modules required (works even when the model server is unreachable)
+- **Shared account memory** — Pi turns read and write the same persona/experience memory as the web chat (create the bearer key while signed in so it's tied to your account)
 - **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
 - **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
 
@@ -124,7 +136,7 @@ A first-party visual **workflow engine** is built into the chat UI (the **Automa
 - **Database nodes** — *Database: Store* keeps a persistent per-workflow SQLite collection; set a unique **key** (with optional ignore-words, normalize, and a comma-separated fallback like `link,post_title`) to deduplicate and emit only newly-seen records as `.new` — i.e. **change-tracking across runs**. *Database: Query* reads rows back (newest-first, or a raw `SELECT` a model can generate) to feed a model, Telegram, or a file.
 - **Robust logic gates** — text operators (equals, contains, starts/ends with, regex, `>`, `<`, is-empty, …); a blank *Value to check* defaults to the previous node's output.
 - **Data wiring** — reference any upstream step with `{{nodes.<id>.field}}` tags; the config panel lists clickable tags from all upstream nodes (with expected fields shown before a run). Independent non-LLM steps at the same depth run **in parallel**.
-- **Runnable everywhere** — build it in the UI or drive it over the API: `POST /api/automations/:id/run-sync` (plus full CRUD under `/api/automations`). Persists to `/models/.modelserver/` — no database service required.
+- **Runnable everywhere** — build it in the UI or drive it over the API: `POST /api/automations/:id/run-sync` for the final JSON, `POST /api/automations/:id/run` for live SSE frames, `POST /api/automations/:id/test` to test-run + self-repair a saved workflow, plus full CRUD under `/api/automations`. Persists to `/models/.modelserver/` — no database service required.
 
 > **Example change-monitor:** `Schedule → HTTP Request (API) → Parse JSON → Database: Store (key) → If/Else (new is not empty) → Model → Telegram` — fetches a feed daily, stores it with a dedup key, and pings you only when genuinely-new items appear.
 
@@ -217,7 +229,8 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 4. **My Models** — Launch and manage instances
 5. **API Keys** — Generate access tokens
 6. **Knowledge Base** — Upload documents the model can reference (semantic RAG)
-7. **Docs** — API code builder with 70+ endpoints in 4 languages
+7. **Memory** — Browse and edit the assistant's account memory / persona
+8. **Docs** — API code builder with 100+ endpoints in 4 languages
 
 > Tip: drag the left-nav items to reorder them — your layout is saved per user.
 
@@ -323,15 +336,15 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │     ┌─────┴──────┐                                         │
           │     ▼            ▼                                         │
           │  ┌────────┐  ┌────────┐                                    │
-          │  │llamacpp│  │  sglang  │  Dynamic instances on :8001+       │
-          │  │Maxwell │  │Pascal  │  Bound to localhost only           │
-          │  │ 5.2+   │  │ 6.0+  │  Models mounted read-only          │
+          │  │llamacpp│  │ sglang │  Dynamic instances on :8001+       │
+          │  │Maxwell │  │ Turing │  Bound to localhost only           │
+          │  │ 5.2+   │  │  7.5+  │  Models mounted read-only          │
           │  └────┬───┘  └───┬────┘                                    │
           │       └─────┬────┘                                         │
           │             ▼                                               │
           │  ┌──────────────────┐                                      │
           │  │  NVIDIA GPU(s)   │                                      │
-          │  │  CUDA 12.1       │                                      │
+          │  │  CUDA 12.8/12.9  │                                      │
           │  │  Shared VRAM     │                                      │
           │  └──────────────────┘                                      │
           └────────────────────────────────────────────────────────────┘
@@ -372,7 +385,7 @@ docker stats                        # Container resource usage
 ## Documentation
 
 - **[COMMANDS.md](COMMANDS.md)** — Complete command and feature reference
-- **[Docs Tab](https://localhost:3001)** — Interactive API code builder (70+ endpoints, 4 languages)
+- **[Docs Tab](https://localhost:3001)** — Interactive API code builder (100+ endpoints, 4 languages)
 
 ---
 

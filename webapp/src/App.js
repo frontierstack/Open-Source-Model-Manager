@@ -7528,6 +7528,711 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
   body: JSON.stringify({ query: 'How do I reset the device?', k: 5 })
 }).then(r => r.json());
 (resp.results || []).forEach(hit => console.log(\`[\${hit.filename}] \${(hit.text || '').slice(0, 120)}\`));`
+            },
+            '/api/skills/:skillName/execute': {
+                curl: `# Bearer Token Authentication
+# Execute any enabled skill by name (needs the "agents" permission).
+# Params match the skill's declared parameters — this example greps a workspace repo.
+curl -k -X POST ${baseUrl}/api/skills/grep_code/execute \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "params": {
+      "pattern": "TODO",
+      "directory": "/workspace"
+    }
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+# Execute any enabled skill by name (needs the "agents" permission)
+response = requests.post(
+    '${baseUrl}/api/skills/grep_code/execute',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'params': {'pattern': 'TODO', 'directory': '/workspace'}},
+    verify=False  # For self-signed certificates
+)
+
+print(response.json())`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ params = @{ pattern = "TODO"; directory = "/workspace" } } | ConvertTo-Json -Depth 5
+
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/skills/grep_code/execute" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$resp | ConvertTo-Json -Depth 5`,
+                javascript: `// Bearer Token Authentication
+// Execute any enabled skill by name (needs the "agents" permission)
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/skills/grep_code/execute', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ params: { pattern: 'TODO', directory: '/workspace' } })
+}).then(r => r.json());
+console.log(resp);`
+            },
+            '/api/me/preferences': {
+                curl: `# Bearer Token Authentication
+# Read preferences for one app (webapp | chat)
+curl -k "${baseUrl}/api/me/preferences?app=webapp" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Update preferences for that app
+curl -k -X PUT "${baseUrl}/api/me/preferences?app=webapp" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "theme": "theme-dark" }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+prefs = requests.get('${baseUrl}/api/me/preferences', params={'app': 'webapp'}, headers=headers, verify=False).json()
+
+requests.put(
+    '${baseUrl}/api/me/preferences?app=webapp',
+    headers={**headers, 'Content-Type': 'application/json'},
+    json={'theme': 'theme-dark'},
+    verify=False
+)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$prefs = Invoke-RestMethod -Uri "${baseUrl}/api/me/preferences?app=webapp" -Headers $headers
+
+$body = @{ theme = "theme-dark" } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/me/preferences?app=webapp" -Method Put -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const prefs = await fetch('${baseUrl}/api/me/preferences?app=webapp', { headers }).then(r => r.json());
+
+await fetch('${baseUrl}/api/me/preferences?app=webapp', {
+  method: 'PUT',
+  headers,
+  body: JSON.stringify({ theme: 'theme-dark' })
+});`
+            },
+            '/api/models/load-hf': {
+                curl: `# Bearer Token Authentication
+# Load a HuggingFace repo directly into sglang (no manual download step)
+curl -k -X POST ${baseUrl}/api/models/load-hf \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "repoId": "Qwen/Qwen3-4B-Instruct-2507",
+    "config": {
+      "maxModelLen": 32768,
+      "memFractionStatic": 0.88
+    }
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/models/load-hf',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'repoId': 'Qwen/Qwen3-4B-Instruct-2507',
+        'config': {'maxModelLen': 32768, 'memFractionStatic': 0.88}
+    },
+    verify=False
+)
+print(response.json())`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{
+    repoId = "Qwen/Qwen3-4B-Instruct-2507"
+    config = @{ maxModelLen = 32768; memFractionStatic = 0.88 }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Uri "${baseUrl}/api/models/load-hf" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/models/load-hf', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({
+    repoId: 'Qwen/Qwen3-4B-Instruct-2507',
+    config: { maxModelLen: 32768, memFractionStatic: 0.88 }
+  })
+}).then(r => r.json());
+console.log(resp);`
+            },
+            '/api/models/hf-cache': {
+                curl: `# Bearer Token Authentication
+# List HuggingFace cache contents (sglang downloads)
+curl -k ${baseUrl}/api/models/hf-cache \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Delete one cached repo (dirName from the list response)
+curl -k -X DELETE ${baseUrl}/api/models/hf-cache/models--Qwen--Qwen3-4B-Instruct-2507 \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+cache = requests.get('${baseUrl}/api/models/hf-cache', headers=headers, verify=False).json()
+print(cache)
+
+# Delete one cached repo (dirName from the list response)
+requests.delete('${baseUrl}/api/models/hf-cache/models--Qwen--Qwen3-4B-Instruct-2507', headers=headers, verify=False)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$cache = Invoke-RestMethod -Uri "${baseUrl}/api/models/hf-cache" -Headers $headers
+$cache | ConvertTo-Json -Depth 5
+
+# Delete one cached repo
+Invoke-RestMethod -Uri "${baseUrl}/api/models/hf-cache/models--Qwen--Qwen3-4B-Instruct-2507" -Method Delete -Headers $headers`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const cache = await fetch('${baseUrl}/api/models/hf-cache', { headers }).then(r => r.json());
+console.log(cache);
+
+// Delete one cached repo (dirName from the list response)
+await fetch('${baseUrl}/api/models/hf-cache/models--Qwen--Qwen3-4B-Instruct-2507', { method: 'DELETE', headers });`
+            },
+            '/api/huggingface/repo-size/:owner/:repo': {
+                curl: `# Bearer Token Authentication
+# Total size of an HF repo — pre-download disk check
+curl -k ${baseUrl}/api/huggingface/repo-size/Qwen/Qwen3-4B-Instruct-2507 \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/huggingface/repo-size/Qwen/Qwen3-4B-Instruct-2507',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+print(response.json())`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/repo-size/Qwen/Qwen3-4B-Instruct-2507" -Headers $headers`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const size = await fetch('${baseUrl}/api/huggingface/repo-size/Qwen/Qwen3-4B-Instruct-2507', { headers }).then(r => r.json());
+console.log(size);`
+            },
+            '/api/system-settings': {
+                curl: `# Bearer Token Authentication
+# Admin only. Read server-wide settings
+curl -k ${baseUrl}/api/system-settings \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Relax private-network SSRF blocking (cloud-metadata IPs stay blocked regardless)
+curl -k -X PUT ${baseUrl}/api/system-settings \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "allowInternalNetwork": true }'`,
+                python: `import requests
+
+# Bearer Token Authentication (admin only)
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+settings = requests.get('${baseUrl}/api/system-settings', headers=headers, verify=False).json()
+
+requests.put(
+    '${baseUrl}/api/system-settings',
+    headers={**headers, 'Content-Type': 'application/json'},
+    json={'allowInternalNetwork': True},
+    verify=False
+)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$settings = Invoke-RestMethod -Uri "${baseUrl}/api/system-settings" -Headers $headers
+
+$body = @{ allowInternalNetwork = $true } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/system-settings" -Method Put -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication (admin only)
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const settings = await fetch('${baseUrl}/api/system-settings', { headers }).then(r => r.json());
+
+await fetch('${baseUrl}/api/system-settings', {
+  method: 'PUT',
+  headers,
+  body: JSON.stringify({ allowInternalNetwork: true })
+});`
+            },
+            '/api/memories/search': {
+                curl: `# Bearer Token Authentication
+# Relevance-ranked search over the account's memory (semantic + keyword)
+curl -k -X POST ${baseUrl}/api/memories/search \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "query": "preferred report format" }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/memories/search',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'query': 'preferred report format'},
+    verify=False
+)
+for m in response.json().get('results', []):
+    print(m)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ query = "preferred report format" } | ConvertTo-Json
+
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/memories/search" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$resp.results | ConvertTo-Json -Depth 5`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/memories/search', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ query: 'preferred report format' })
+}).then(r => r.json());
+console.log(resp.results);`
+            },
+            '/api/memories/maintenance': {
+                curl: `# Bearer Token Authentication
+# Dry-run by default: reports junk deletions + consolidations without applying
+curl -k -X POST ${baseUrl}/api/memories/maintenance \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{}'
+
+# Apply the cleanup (junk-delete + consolidate; optional extra steps)
+curl -k -X POST ${baseUrl}/api/memories/maintenance \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "apply": true, "mergeProcedures": true, "pruneScratch": true }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+}
+
+# Dry-run first — see what would change
+report = requests.post('${baseUrl}/api/memories/maintenance', headers=headers, json={}, verify=False).json()
+print(report)
+
+# Then apply
+requests.post('${baseUrl}/api/memories/maintenance', headers=headers, json={'apply': True}, verify=False)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+# Dry-run first — see what would change
+$report = Invoke-RestMethod -Uri "${baseUrl}/api/memories/maintenance" -Method Post -Headers $headers -Body "{}" -ContentType "application/json"
+$report | ConvertTo-Json -Depth 5
+
+# Then apply
+$body = @{ apply = $true } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/memories/maintenance" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+// Dry-run first — see what would change
+const report = await fetch('${baseUrl}/api/memories/maintenance', {
+  method: 'POST', headers, body: JSON.stringify({})
+}).then(r => r.json());
+console.log(report);
+
+// Then apply
+await fetch('${baseUrl}/api/memories/maintenance', {
+  method: 'POST', headers, body: JSON.stringify({ apply: true })
+});`
+            },
+            '/api/agent-workspaces': {
+                curl: `# Bearer Token Authentication
+# List sandbox workspaces (agents + webchat sessions; admins see all users')
+curl -k ${baseUrl}/api/agent-workspaces \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Delete one workspace (owner + bucket from the list response)
+curl -k -X DELETE ${baseUrl}/api/agent-workspaces/OWNER/BUCKET \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+workspaces = requests.get('${baseUrl}/api/agent-workspaces', headers=headers, verify=False).json()
+print(workspaces)
+
+# Delete one workspace (owner + bucket from the list response)
+requests.delete('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', headers=headers, verify=False)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$workspaces = Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces" -Headers $headers
+$workspaces | ConvertTo-Json -Depth 5
+
+# Delete one workspace
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces/OWNER/BUCKET" -Method Delete -Headers $headers`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const workspaces = await fetch('${baseUrl}/api/agent-workspaces', { headers }).then(r => r.json());
+console.log(workspaces);
+
+// Delete one workspace (owner + bucket from the list response)
+await fetch('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', { method: 'DELETE', headers });`
+            },
+            '/api/agent-workspaces/file': {
+                curl: `# Bearer Token Authentication
+# API-key / bearer callers only — reads and writes the caller's own agent workspace.
+# Download a workspace file to the local machine
+curl -k "${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -o report.pdf
+
+# Upload a local file into the workspace (raw bytes, max 50MB)
+curl -k -X POST "${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/octet-stream" \\
+  --data-binary @data.csv`,
+                python: `import requests
+
+# Bearer Token Authentication (API-key / bearer callers only)
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+# Download a workspace file
+r = requests.get('${baseUrl}/api/agent-workspaces/file', params={'path': 'artifacts/report.pdf'}, headers=headers, verify=False)
+open('report.pdf', 'wb').write(r.content)
+
+# Upload a local file into the workspace (raw bytes, max 50MB)
+with open('data.csv', 'rb') as f:
+    requests.post(
+        '${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv',
+        headers={**headers, 'Content-Type': 'application/octet-stream'},
+        data=f.read(),
+        verify=False
+    )`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+# Download a workspace file
+Invoke-WebRequest -Uri "${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf" -Headers $headers -OutFile report.pdf
+
+# Upload a local file into the workspace (raw bytes, max 50MB)
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv" -Method Post -Headers $headers -InFile data.csv -ContentType "application/octet-stream"`,
+                javascript: `// Bearer Token Authentication (API-key / bearer callers only)
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+// Download a workspace file
+const bytes = await fetch('${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf', { headers })
+  .then(r => r.arrayBuffer());
+
+// Upload a file into the workspace (raw bytes, max 50MB)
+await fetch('${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv', {
+  method: 'POST',
+  headers: { ...headers, 'Content-Type': 'application/octet-stream' },
+  body: fileBytes  // Buffer / Blob / ArrayBuffer
+});`
+            },
+            '/api/automations/:id/run': {
+                curl: `# Bearer Token Authentication
+# Run a workflow with live SSE frames (node start/finish, edges, final output).
+# Needs the "automation" permission. Use run-sync for a single JSON response.
+curl -k -N -X POST ${baseUrl}/api/automations/AUTOMATION_ID/run \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "input": "optional input for the trigger" }'`,
+                python: `import requests, json
+
+# Bearer Token Authentication — live SSE frames
+response = requests.post(
+    '${baseUrl}/api/automations/AUTOMATION_ID/run',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'input': 'optional input for the trigger'},
+    stream=True,
+    verify=False
+)
+for line in response.iter_lines():
+    if line.startswith(b'data: '):
+        print(json.loads(line[6:]))`,
+                powershell: `# PowerShell buffers SSE — prefer run-sync for scripting:
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ input = "optional input for the trigger" } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/run-sync" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication — live SSE frames
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/run', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ input: 'optional input for the trigger' })
+});
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  console.log(decoder.decode(value));  // "data: {...}" SSE frames
+}`
+            },
+            '/api/automations/:id/edit': {
+                curl: `# Bearer Token Authentication
+# Edit a workflow with an LLM — returns { proposed, diff, summary }.
+# Preview only: nothing is saved until you PUT the proposed graph back.
+curl -k -X POST ${baseUrl}/api/automations/AUTOMATION_ID/edit \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "prompt": "Also send the summary to Slack when new items are found" }'`,
+                python: `import requests
+
+# Bearer Token Authentication — preview only (save by PUTting the proposed graph)
+response = requests.post(
+    '${baseUrl}/api/automations/AUTOMATION_ID/edit',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'prompt': 'Also send the summary to Slack when new items are found'},
+    verify=False
+)
+result = response.json()
+print(result['summary'])
+print(result['diff'])`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ prompt = "Also send the summary to Slack when new items are found" } | ConvertTo-Json
+
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/edit" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$resp.summary
+$resp.diff | ConvertTo-Json -Depth 10`,
+                javascript: `// Bearer Token Authentication — preview only (save by PUTting the proposed graph)
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/edit', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ prompt: 'Also send the summary to Slack when new items are found' })
+}).then(r => r.json());
+console.log(resp.summary, resp.diff);`
+            },
+            '/api/automations/:id/test': {
+                curl: `# Bearer Token Authentication
+# Test-run a saved automation; the LLM repairs non-config failures.
+# Returns a structured testReport; persists the fix only with "apply": true.
+curl -k -X POST ${baseUrl}/api/automations/AUTOMATION_ID/test \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "apply": false }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/AUTOMATION_ID/test',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'apply': False},
+    verify=False
+)
+report = response.json().get('testReport', response.json())
+print(report)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ apply = $false } | ConvertTo-Json
+
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/test" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$resp | ConvertTo-Json -Depth 10`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/test', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ apply: false })
+}).then(r => r.json());
+console.log(resp.testReport || resp);`
+            },
+            '/api/automations/:id/runs': {
+                curl: `# Bearer Token Authentication
+# Run history for one automation (newest first)
+curl -k ${baseUrl}/api/automations/AUTOMATION_ID/runs \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# One run with per-node outputs
+curl -k ${baseUrl}/api/automations/runs/RUN_ID \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+runs = requests.get('${baseUrl}/api/automations/AUTOMATION_ID/runs', headers=headers, verify=False).json()
+
+# One run with per-node outputs
+run = requests.get('${baseUrl}/api/automations/runs/RUN_ID', headers=headers, verify=False).json()
+print(run)`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$runs = Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/runs" -Headers $headers
+$runs | ConvertTo-Json -Depth 5
+
+# One run with per-node outputs
+Invoke-RestMethod -Uri "${baseUrl}/api/automations/runs/RUN_ID" -Headers $headers | ConvertTo-Json -Depth 10`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const runs = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/runs', { headers }).then(r => r.json());
+
+// One run with per-node outputs
+const run = await fetch('${baseUrl}/api/automations/runs/RUN_ID', { headers }).then(r => r.json());
+console.log(run);`
+            },
+            '/api/automations/:id/webhook-token': {
+                curl: `# Bearer Token Authentication
+# Mint (or rotate) the public webhook token for an automation.
+# The returned token gates POST ${baseUrl}/api/automations/webhook/:token
+curl -k -X POST ${baseUrl}/api/automations/AUTOMATION_ID/webhook-token \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/AUTOMATION_ID/webhook-token',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+print(response.json())  # { token, url }`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/webhook-token" -Method Post -Headers $headers`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/webhook-token', {
+  method: 'POST',
+  headers
+}).then(r => r.json());
+console.log(resp);  // { token, url }`
+            },
+            '/api/automations/webhook/:token': {
+                curl: `# Public endpoint — no auth header. The token (minted via
+# POST /api/automations/:id/webhook-token) gates access; the workflow
+# runs as its owner and the body becomes the trigger input. Returns 202.
+curl -k -X POST ${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN \\
+  -H "Content-Type: application/json" \\
+  -d '{ "event": "deploy-finished", "status": "ok" }'`,
+                python: `import requests
+
+# Public endpoint — no auth header; the token gates access
+requests.post(
+    '${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN',
+    json={'event': 'deploy-finished', 'status': 'ok'},
+    verify=False
+)  # 202 Accepted — runs in the background`,
+                powershell: `# Public endpoint — no auth header; the token gates access
+$body = @{ event = "deploy-finished"; status = "ok" } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN" -Method Post -Body $body -ContentType "application/json"`,
+                javascript: `// Public endpoint — no auth header; the token gates access
+await fetch('${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ event: 'deploy-finished', status: 'ok' })
+});  // 202 Accepted — runs in the background`
+            },
+            '/api/node-types': {
+                curl: `# Bearer Token Authentication
+# List custom palette node types (GET /api/node-types/builtin for the built-in palette)
+curl -k ${baseUrl}/api/node-types \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Create a custom node type
+curl -k -X POST ${baseUrl}/api/node-types \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "My Connector",
+    "kind": "tool",
+    "config": { "tool": "http_request" }
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {'Authorization': 'Bearer your_bearer_token'}
+
+node_types = requests.get('${baseUrl}/api/node-types', headers=headers, verify=False).json()
+builtin = requests.get('${baseUrl}/api/node-types/builtin', headers=headers, verify=False).json()
+print(len(node_types), len(builtin))`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$nodeTypes = Invoke-RestMethod -Uri "${baseUrl}/api/node-types" -Headers $headers
+$builtin = Invoke-RestMethod -Uri "${baseUrl}/api/node-types/builtin" -Headers $headers
+$nodeTypes | ConvertTo-Json -Depth 5`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+const nodeTypes = await fetch('${baseUrl}/api/node-types', { headers }).then(r => r.json());
+const builtin = await fetch('${baseUrl}/api/node-types/builtin', { headers }).then(r => r.json());
+console.log(nodeTypes, builtin);`
+            },
+            '/api/chips/build': {
+                curl: `# Bearer Token Authentication
+# Draft a custom node-setting chip from a plain-language prompt (LLM-assisted)
+curl -k -X POST ${baseUrl}/api/chips/build \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "prompt": "A chip that limits results to the last 24 hours" }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/chips/build',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'prompt': 'A chip that limits results to the last 24 hours'},
+    verify=False
+)
+print(response.json())`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+$body = @{ prompt = "A chip that limits results to the last 24 hours" } | ConvertTo-Json
+
+Invoke-RestMethod -Uri "${baseUrl}/api/chips/build" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const chip = await fetch('${baseUrl}/api/chips/build', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ prompt: 'A chip that limits results to the last 24 hours' })
+}).then(r => r.json());
+console.log(chip);`
             }
         };
 
@@ -11022,16 +11727,20 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <MenuItem value="/api/auth/me">GET /api/auth/me - Get Current User</MenuItem>
                                                             <MenuItem value="/api/auth/password">PUT /api/auth/password - Change Password</MenuItem>
                                                             <MenuItem value="/api/auth/reset-password">POST /api/auth/reset-password - Reset Password (Self-Service)</MenuItem>
+                                                            <MenuItem value="/api/me/preferences">GET/PUT /api/me/preferences - Per-User UI Preferences</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Models ───</MenuItem>
                                                             <MenuItem value="/api/models">GET /api/models - List Models</MenuItem>
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
                                                             <MenuItem value="/api/models/:name/load">POST /api/models/:modelName/load - Load Model</MenuItem>
+                                                            <MenuItem value="/api/models/load-hf">POST /api/models/load-hf - Load HF Repo into sglang</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:modelName - Delete Model</MenuItem>
+                                                            <MenuItem value="/api/models/hf-cache">GET/DELETE /api/models/hf-cache - HuggingFace Cache</MenuItem>
                                                             <MenuItem value="/api/model-configs">GET /api/model-configs - List All Model Configs</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName/update">PUT /api/model-configs/:name - Update Model Config</MenuItem>
                                                             <MenuItem value="/api/huggingface/search">GET /api/huggingface/search - Search HuggingFace</MenuItem>
                                                             <MenuItem value="/api/huggingface/files/:owner/:repo">GET /api/huggingface/files/:owner/:repo - List HuggingFace Files</MenuItem>
+                                                            <MenuItem value="/api/huggingface/repo-size/:owner/:repo">GET /api/huggingface/repo-size/:owner/:repo - HF Repo Size</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Downloads ───</MenuItem>
                                                             <MenuItem value="/api/downloads">GET /api/downloads - List Active Downloads</MenuItem>
                                                             <MenuItem value="/api/downloads/:downloadId">DELETE /api/downloads/:id - Cancel Download</MenuItem>
@@ -11053,6 +11762,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
                                                             <MenuItem value="/api/system/tools-catalog">GET /api/system/tools-catalog - Native Tools Catalog</MenuItem>
                                                             <MenuItem value="/api/system/egress-proxy">GET /api/system/egress-proxy - Egress Proxy Stats (Admin)</MenuItem>
+                                                            <MenuItem value="/api/system-settings">GET/PUT /api/system-settings - Server Settings (Admin)</MenuItem>
                                                             <MenuItem value="/api/sandbox/run-code">POST /api/sandbox/run-code - Sandboxed Python Eval</MenuItem>
                                                             <MenuItem value="/api/tool-artifacts/:runId/:filename">GET /api/tool-artifacts/:runId/:filename - Download Tool Artifact</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - DevDocs Reference Lookup</MenuItem>
@@ -11074,6 +11784,8 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <MenuItem value="/api/memories/clear">DELETE /api/memories - Clear All Memory</MenuItem>
                                                             <MenuItem value="/api/memories/:id">DELETE /api/memories/:id - Delete Memory</MenuItem>
                                                             <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/search">POST /api/memories/search - Search Memory (Relevance-Ranked)</MenuItem>
+                                                            <MenuItem value="/api/memories/maintenance">POST /api/memories/maintenance - Memory Cleanup / Consolidation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Knowledge Bases (RAG) ───</MenuItem>
@@ -11144,11 +11856,22 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Sandbox Workspaces ───</MenuItem>
+                                                            <MenuItem value="/api/agent-workspaces">GET /api/agent-workspaces - List Sandbox Workspaces</MenuItem>
+                                                            <MenuItem value="/api/agent-workspaces/file">GET/POST /api/agent-workspaces/file - Download / Upload Workspace File</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Automation & Chips ───</MenuItem>
                                                             <MenuItem value="/api/automations">GET/POST /api/automations - List / Create Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/run">POST /api/automations/:id/run - Run (SSE live frames)</MenuItem>
                                                             <MenuItem value="/api/automations/:id/run-sync">POST /api/automations/:id/run-sync - Run (final JSON)</MenuItem>
                                                             <MenuItem value="/api/automations/build">POST /api/automations/build - Build from Prompt (LLM)</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/edit">POST /api/automations/:id/edit - Edit with LLM (preview + diff)</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/test">POST /api/automations/:id/test - Test-Run + Self-Repair</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/runs">GET /api/automations/:id/runs - Run History</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/webhook-token">POST /api/automations/:id/webhook-token - Mint Webhook Token</MenuItem>
+                                                            <MenuItem value="/api/automations/webhook/:token">POST /api/automations/webhook/:token - Public Webhook Trigger</MenuItem>
+                                                            <MenuItem value="/api/node-types">GET/POST /api/node-types - List / Create Node Types</MenuItem>
                                                             <MenuItem value="/api/chips">GET/POST /api/chips - List / Create Chips</MenuItem>
+                                                            <MenuItem value="/api/chips/build">POST /api/chips/build - LLM-Drafted Chip</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>
@@ -11354,6 +12077,8 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                 <TableBody>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>shell / SSH</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Seven <strong style={{ color: 'var(--text-primary)' }}>local</strong> session tools — <code>ssh_connect</code>, <code>shell_open</code>, <code>shell_exec</code>, <code>shell_send</code>, <code>shell_read</code>, <code>shell_close</code>, <code>shell_list</code> — hold a persistent interactive PTY open across turns (SSH password prompts, REPLs, <code>docker exec -it</code>, live <code>tail -f</code>, control keys like ctrl-c). Run in the Pi process, so they work even without the model server; no native modules needed.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>workspace</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Each key gets a persistent server-side sandbox workspace (<code>agent-&lt;keyId&gt;</code>). Real host-file path args are auto-uploaded (≤50MB) and rewritten to <code>/workspace/&lt;name&gt;</code>; <code>workspace_get</code> pulls files back to the host. Browse/manage it in the <strong style={{ color: 'var(--text-primary)' }}>Sandbox Workspace</strong> tab.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Pi&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
                                                 </TableBody>
@@ -11506,15 +12231,23 @@ GET    ${baseUrl}/api/automations/:id      # fetch
 PUT    ${baseUrl}/api/automations/:id      # update
 DELETE ${baseUrl}/api/automations/:id      # delete
 
-# Build / edit with an LLM
+# Build / edit / test with an LLM
 POST   ${baseUrl}/api/automations/build       # { prompt, test? }  draft a workflow from a prompt
 POST   ${baseUrl}/api/automations/:id/edit    # { prompt }  -> { proposed, diff } (preview, does not save)
+POST   ${baseUrl}/api/automations/:id/test    # test-run + self-repair; persists fix only with { apply: true }
+
+# Lifecycle
+POST   ${baseUrl}/api/automations/:id/enable  # { enabled } enable/disable
+POST   ${baseUrl}/api/automations/:id/archive # archive/unarchive
 
 # Run history
-POST   ${baseUrl}/api/automations/:id/runs    # list past runs
+GET    ${baseUrl}/api/automations/:id/runs    # list past runs (DELETE clears)
 GET    ${baseUrl}/api/automations/runs/:runId # one run, with per-node outputs
+POST   ${baseUrl}/api/automations/runs/:runId/stop  # abort a live run
+GET    ${baseUrl}/api/automations/events      # per-user SSE stream of live run frames
 
 # Public webhook trigger (unauthenticated, token-gated, runs as the owner)
+POST   ${baseUrl}/api/automations/:id/webhook-token  # mint/rotate the token (authed)
 POST   ${baseUrl}/api/automations/webhook/:token
 
 # Chips — custom node-setting building blocks (require auth)
@@ -11561,10 +12294,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                         <Box sx={{ p: 1.5, mb: 2, bgcolor: 'var(--accent-muted)', borderRadius: 1.5, border: '1px solid var(--accent-muted)' }}>
                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
                                                 <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--accent-primary)' }} />
-                                                <Typography sx={{ fontSize: '0.85rem', fontWeight: 600 }}>Native tools, no UI toggle</Typography>
+                                                <Typography sx={{ fontSize: '0.85rem', fontWeight: 600 }}>One consolidated <code>web</code> tool, no UI toggle</Typography>
                                             </Box>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                The chat model invokes <code>web_search</code> and <code>fetch_url</code> as OpenAI-style function calls when a query warrants it. Each call streams in as a chip showing the tool name, arguments, and result. There is no globe / link button to enable; the model decides per turn.
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 0.75 }}>
+                                                The chat model invokes a single <code>web</code> tool as an OpenAI-style function call when a query warrants it — pass a <code>query</code> to search, a <code>url</code> / <code>urls</code> (up to 3) to read pages, or both (<code>read: N</code> auto-fetches the top N search results inline). A <code>mode</code> argument (<code>auto</code> / <code>search</code> / <code>read</code> / <code>stealth</code> / <code>browser</code> / <code>interact</code> / <code>crawl</code>) and a <code>want</code> argument (<code>text</code> / <code>images</code> / <code>links</code>) pick the engine; <code>auto</code> escalates only as far as a page requires. Each call streams in as a chip showing the arguments and result. There is no globe / link button to enable; the model decides per turn.
+                                            </Typography>
+                                            <Typography sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                                The legacy <code>web_search</code> / <code>fetch_url</code> / <code>scrapling_fetch</code> / <code>playwright_fetch</code> / <code>playwright_interact</code> / <code>crawl_pages</code> tools still exist as the internal engines <code>web</code> routes to (and automations can still call them by name) — they are just no longer offered to the chat model as separate tools.
                                             </Typography>
                                         </Box>
 
@@ -11574,8 +12310,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                             <Grid item xs={12} lg={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)', height: '100%' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="web_search" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Open-web search with content extraction</Typography>
+                                                        <Chip label="web — search path" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Open-web search with content extraction (internal engine: <code>web_search</code>)</Typography>
                                                     </Box>
 
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
@@ -11608,8 +12344,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                             <Grid item xs={12} lg={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)', height: '100%' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="fetch_url" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Backed by <code>POST /api/url/fetch</code> (<code>query</code> scope)</Typography>
+                                                        <Chip label="web — read path" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Internal engine: <code>fetch_url</code> — backed by <code>POST /api/url/fetch</code> (<code>query</code> scope)</Typography>
                                                     </Box>
 
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
@@ -11635,7 +12371,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         <Chip label="axios" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
                                                     </Box>
                                                     <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
-                                                        Known file extensions skip the browser path entirely and go straight to direct download.
+                                                        Known file extensions skip the browser path entirely and go straight to direct download (bot-protected file CDNs escalate to a real-browser download). The cascade is JS-shell-aware: a thin SPA app-shell in the raw HTML escalates to Playwright, while small-but-complete static pages are served fast. Hosts whose bot protection defeats every layer fast-fail for ~10 minutes with guidance to try a different site.
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -11688,17 +12424,17 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </Typography>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.72rem' } }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 190, whiteSpace: 'nowrap' }}>crawl_pages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Follow links from a seed URL and pull text from multiple pages in one call.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>scrapling_fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stealth anti-bot page fetch (Scrapling StealthyFetcher) for sites that block plain requests.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>playwright_fetch / playwright_interact</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Full browser load (XHR interception) and scripted clicks / typing for JS-heavy pages.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 190, whiteSpace: 'nowrap' }}>web (modes)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>mode: stealth</code> = Scrapling anti-bot fetch; <code>mode: browser</code> = full Playwright load with XHR interception; <code>mode: interact</code> = scripted clicks / typing via <code>actions[]</code>; <code>mode: crawl</code> = follow links from a seed URL across multiple pages; <code>want: images | links</code> extracts rendered images / hyperlinks instead of text.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>sniff_media_streams</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DevTools-style network inspector — passively records the media URLs (HLS <code>.m3u8</code>, DASH <code>.mpd</code>, direct files) a JS player loads at runtime. Hidden when Playwright is unavailable.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_video</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extracts a playable video (embed / direct file / HLS) from URLs the model found via search and renders an inline click-to-play player in the chat.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_image</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Searches the open web for images (or displays model-supplied URLs), liveness-probes each, and renders an inline thumbnail grid.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_image</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Searches the open web for images (or displays model-supplied image / page URLs — JS-rendered galleries are read via the stealth browser), liveness-probes each, and renders an inline thumbnail grid. Also handles &quot;take a screenshot of &lt;url&gt;&quot; asks via full-page capture.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>render_chart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Validates a chart spec (line / bar / area / pie / scatter) and renders it inline via Recharts.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>fetch_timeseries</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pulls a price/quote time series from Yahoo Finance (no key) for charting and analysis.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>search_knowledge_base</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic RAG lookup over the user's knowledge bases — returns cited snippets only. Hidden until the user has at least one KB.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>dns_lookup / virustotal_lookup</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DNS record resolution and VirusTotal reputation lookup for security / OSINT questions.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>base64_decode / load_skill</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Decode a base64 blob; load a skill's full code on demand. Plus every enabled skill in the catalog is exposed as its own tool.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extract an uploaded or downloaded archive (zip / tar / gz / bz2 / xz — magic-byte detection beats a lying extension) into the conversation workspace for <code>read_file</code> / <code>grep_code</code> analysis.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>record_learning</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>The model's self-improvement path — saves an outcome-aware lesson or per-task recipe into account memory (consolidates into prior learnings instead of duplicating).</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>base64_decode / load_skill</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Decode a base64 blob; load a skill's full code on demand. Plus every enabled skill in the catalog is exposed as its own tool (a semantic router trims the 130+ tool catalog to the relevant ones per turn).</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
@@ -11770,13 +12506,37 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an editable Word <code>.docx</code> (paragraphs separated by blank lines; <code># </code> / <code>## </code> lines map to Heading 1 / Heading 2). Params: <code>filename</code>, optional <code>title</code>, and <strong>either</strong> <code>content</code> inline <strong>or</strong> <code>contentFile</code> (a <code>/workspace</code> markdown file — preferred when the body exceeds ~5000 chars). Surfaces as a download chip on return.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>html_to_pdf</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an HTML document (inline <code>html</code> or a <code>/workspace</code> <code>htmlPath</code>) to PDF via WeasyPrint — full CSS layout, unlike <code>create_pdf</code>&apos;s markdown subset. Params: <code>html</code> or <code>htmlPath</code>, <code>outputName</code>. Output surfaces as a download chip.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>create_xlsx</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Write an Excel workbook (openpyxl). Params: <code>filename</code>, <code>sheets</code> (name → header row + data rows). Counterpart to <code>read_xlsx</code>; output surfaces as a download chip.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>download_video</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>yt-dlp download of a video URL into <code>/workspace/artifacts/</code> (format fallback chain handles HLS-only sources). Params: <code>url</code>, optional <code>format</code> / <code>outputName</code>.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>ocr_image</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Tesseract OCR over a workspace image (pasted screenshots land in <code>/workspace/uploads/</code>). Params: <code>imagePath</code> (bare filenames auto-resolve), <code>lang</code>.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>download_html</TableCell>
                                                         <TableCell sx={{ color: 'var(--text-secondary)' }}>Download a web page&apos;s raw HTML into <code>/workspace</code> so other tools (<code>read_file</code> / <code>grep_code</code> / <code>parse_html</code>) can parse the full, <strong>untruncated</strong> page. Params: <code>url</code> (required), <code>filename</code> (optional). For bot-protected sites use <code>scrapling_fetch</code> instead.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>code navigation</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}><code>grep_code</code> (ripgrep-backed regex/literal search — use before <code>read_file</code>), <code>outline_file</code> (signatures + line numbers), <code>replace_lines</code> (line-ranged edits), <code>scan_source_files</code>, <code>git_clone_shallow</code> and the git trio (<code>git_status</code> / <code>git_diff</code> / <code>git_log</code>).</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>binary / CTF</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}><code>hex_dump</code>, <code>hex_convert</code>, <code>xor_bytes</code>, <code>extract_strings</code> (printable ASCII + UTF-16LE runs from a workspace file or inline hex/base64) — all run with <code>network: none</code>.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
                                             <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                Defined in <code>webapp/default-skills.json</code>. All run with <code>sandbox: true</code> and <code>network: "none"</code>; most also mount <code>/workspace</code> (<code>workspace: true</code>), except <code>create_pdf</code> / <code>create_docx</code> which stage straight to <code>/workspace/artifacts/</code>.
+                                                Defined in <code>webapp/default-skills.json</code>. All run with <code>sandbox: true</code>; any built-in skill that takes a path-like parameter is automatically run with the <code>/workspace</code> mount (a dispatch-time guard also upgrades any call whose args reference <code>/workspace</code>), so file-taking skills can never silently run where the workspace doesn&apos;t exist. Network access defaults per skill (<code>none</code> for local-only skills; public-internet egress via the proxy for fetch/download skills — private IPs blocked unless the admin enables internal network access).
                                             </Typography>
                                         </Box>
 
@@ -11995,9 +12755,12 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Account memory &amp; persona — list / add / clear all (account-scoped, shared across web + Pi)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / edit / delete one memory</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Relevance-ranked memory search</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/maintenance</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clean up memory (junk-delete + consolidate; dry-run unless <code>apply: true</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id/link</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Link / unlink two related memories</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / create knowledge bases (RAG)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / rename / delete a knowledge base</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/documents</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Add a document (base64 upload, auto-chunked + embedded)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/documents/:docId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Remove a document (and its vectors)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic top-k search over a knowledge base</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Web search with content fetch</TableCell></TableRow>
@@ -12083,6 +12846,38 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/delete</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete file</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/list</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List directory</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/move</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Move/rename file</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sandbox workspaces (agents + webchat sessions; admins see all)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/:owner/:bucket</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a sandbox workspace</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download / upload a file in the caller&apos;s agent workspace (Pi host⇆workspace bridge; API-key callers only)</TableCell></TableRow>
+
+                                                    {/* Automation Permission */}
+                                                    <TableRow>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'var(--accent-muted)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="automation" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Workflow Automation</Typography>
+                                                            </Box>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create workflow automations</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage automation</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/run</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Run with live SSE frames (node spinners, edges)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/run-sync</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Run and return the final JSON only</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/build</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Draft a workflow from a prompt (LLM; <code>test: true</code> test-runs + self-repairs)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/edit</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Edit with an LLM — returns proposed graph + diff (preview, does not save)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/test</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Test-run + self-repair a saved automation (persists fix only with <code>apply: true</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/enable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Enable / disable (body <code>{`{ enabled }`}</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Archive / unarchive</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/runs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / clear run history</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/runs/:runId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One run with per-node outputs (<code>POST …/stop</code> aborts a live run)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/webhook-token</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Mint / rotate the public webhook token</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/webhook/:token</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Public webhook trigger (unauthenticated, token-gated, runs as the owner)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/events</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-user SSE stream of live run frames (drives the editor animation)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/node-types</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create custom palette node types (<code>/builtin</code> lists the built-in palette)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/node-types/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage node type</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create custom node-setting chips (<code>/kinds</code> lists valid kinds)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete chip</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips/build</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>LLM-drafted chip from a prompt</TableCell></TableRow>
 
                                                     {/* Admin Permission */}
                                                     <TableRow>
@@ -12117,6 +12912,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/restart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Reset system</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system-settings</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Server-wide settings (e.g. <code>allowInternalNetwork</code> SSRF relaxation; cloud-metadata IPs stay blocked)</TableCell></TableRow>
 
                                                     {/* OpenAI Compatible */}
                                                     <TableRow>
