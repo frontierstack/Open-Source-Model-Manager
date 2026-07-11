@@ -21,6 +21,14 @@ LOAD_FORMAT="${SGLANG_LOAD_FORMAT:-auto}"
 CHAT_TEMPLATE="${SGLANG_CHAT_TEMPLATE:-}"
 EXTRA_ARGS="${SGLANG_EXTRA_ARGS:-}"
 
+# CRITICAL: unset SGLANG_PORT after capturing it. sglang's internal
+# get_open_port() (srt/utils/network.py) honors a SGLANG_PORT env var when
+# allocating INTERNAL scheduler/dist-init ports — with TP>=2 the scheduler
+# asks for a port before uvicorn starts, gets handed $PORT, and the actual
+# HTTP server then dies with "[Errno 98] address already in use" AFTER the
+# whole model has loaded. SGLANG_HOST unset too for symmetry (harmless).
+unset SGLANG_PORT SGLANG_HOST
+
 if [ -z "$MODEL_PATH" ]; then
     echo "[sglang] ERROR: SGLANG_MODEL_PATH is required (HF repo id or /models/<path>)" >&2
     exit 2
