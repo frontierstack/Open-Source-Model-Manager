@@ -4928,6 +4928,21 @@ async function streamContainerLogs(container, modelName) {
                         cleanLine = cleanLine.replace(/^.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/, '');
                         if (!cleanLine) continue; // Skip empty lines after timestamp removal
 
+                        // Drop steady-state health plumbing that floods the Logs tab:
+                        // the Docker HEALTHCHECK curls /health every 10s (sglang's
+                        // /health runs a 1-token generation, producing a paired
+                        // "Prefill batch, #new-token: 1, #cached-token: 0" line) and
+                        // the webapp polls /v1/models. Only SUCCESSFUL (200) probe
+                        // lines are dropped — failures still surface; real request
+                        // prefills have >1 new token or cached tokens and keep logging.
+                        const isHealthNoise =
+                            /"(?:GET|HEAD) \/health\S* HTTP\/1\.[01]" 200/.test(cleanLine) ||
+                            /"GET \/v1\/models HTTP\/1\.[01]" 200/.test(cleanLine) ||
+                            (cleanLine.includes('Prefill batch') &&
+                             cleanLine.includes('#new-token: 1,') &&
+                             cleanLine.includes('#cached-token: 0,'));
+                        if (isHealthNoise) continue;
+
                         // Detect error patterns
                         const isError = /error|failed|fatal|exception|cannot|unable|oom|out of memory|killed/i.test(cleanLine);
                         // Detect success patterns
