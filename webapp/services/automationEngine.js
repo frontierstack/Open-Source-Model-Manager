@@ -50,14 +50,14 @@ const BUILTIN_NODE_TYPES = [
     { key: 'telegram_get',type: 'telegram_get',category: 'connector', label: 'Get Telegram Messages', description: 'Fetches the bot\'s recent messages on demand (getUpdates). Do NOT use on a bot that also has a Telegram trigger — getUpdates conflicts.', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'limit'] },
     { key: 'send_file',   type: 'send_file',  category: 'connector', label: 'Send File',        description: 'Sends a file produced by a previous step (PDF, image, CSV…) to Telegram, Slack, or any HTTP endpoint. Auto-uses the upstream node\'s generated file. Set "to": telegram (botToken+chatId), slack (botToken xoxb- + channel), or http (url).', inputs: ['in'], outputs: ['out'], fields: ['to', 'botToken', 'chatId', 'channel', 'url', 'caption'] },
     { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
-    { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
-    { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
+    { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages. Args: { "url": "https://…", "maxPages": 5 }.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
+    { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs SQL against an EXISTING SQLite file. Args: { "path": "/workspace/<file>.db", "query": "SELECT …" } — "path" is required. For this automation\'s own collected data use the Database Store / Database Query nodes instead.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
     { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart SPEC for inline display in chat (not a file). For a chart IMAGE you can embed in a PDF, use chart_plot instead.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
-    { key: 'chart_plot',  type: 'tool',       category: 'connector', label: 'Plot Chart (PNG)', description: 'Renders a chart as a real PNG image saved into the workspace (downloadable, and embeddable in a PDF). Args: { "type": "line|bar|scatter|pie", "x": [...], "y": [...], "title": "...", "xlabel": "...", "ylabel": "..." } (or a CSV "path" + "x_col"/"y_col"). Returns { file, workspacePath, data_url }. To put the chart IN a PDF: chart_plot → create_pdf whose markdown content includes an image tag ![chart](artifacts/<the returned filename>).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'chart_plot' }, fields: ['args'] },
+    { key: 'chart_plot',  type: 'tool',       category: 'connector', label: 'Plot Chart (PNG)', description: 'Renders a chart as a real PNG image saved into the workspace (downloadable, and embeddable in a PDF). Args: { "type": "line|bar|scatter|pie", "x": [...], "y": [...], "title": "...", "xlabel": "...", "ylabel": "..." } (or a CSV "path" + "x_col"/"y_col"). Returns { file, workspacePath, data_url }. To put the chart IN a PDF: chart_plot → create_pdf whose markdown content embeds it as ![chart]({{nodes.<chartId>.file}}) — always reference .file, never a hand-written filename (the PNG name is generated at run time).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'chart_plot' }, fields: ['args'] },
     { key: 'fetch_timeseries', type: 'tool',  category: 'connector', label: 'Fetch Time Series', description: 'Fetches free OHLC price history (stocks, indices, FX, crypto) from Yahoo Finance — no API key. Args: { "symbol": "AAPL", "period": "1mo|3mo|6mo|1y|2y|5y|ytd|max", "interval": "d|w|m" } (daily/weekly/monthly; NO intraday). Indices use ^GSPC / ^DJI / ^IXIC; FX like EURUSD=X; crypto like BTC-USD. Returns { symbol, count, data: [{date, close, open, high, low, volume}] } — the rows are in .data. Feed .data into chart_plot (x = .data.*.date, y = .data.*.close) for a graph and into a model for the written analysis.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'fetch_timeseries' }, fields: ['args'] },
     { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead. Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send or process it, connect another node after this (a Telegram/Slack/Send File node auto-sends the file as a document; any other node receives it too). Optional "sendMode": "pdf" (default, file only) | "both" (data + file) | "data" (the rendered text only, no file) controls what flows to the next node.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
     { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file). Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send or process it, connect another node after this (a Telegram/Slack/Send File node auto-sends the file as a document; any other node receives it too). Optional "sendMode": "pdf" (default) | "both" | "data" controls what flows to the next node.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
-    { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
+    { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace. Args: { "filePath": "artifacts/<name>.<ext>", "content": "…" } — the arg is "filePath" (NOT "filename"), and it must be under artifacts/ to be downloadable. For a CSV/TXT/MD/JSON download prefer the Export File node.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Script Block',      description: 'Runs a Python script in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). The script is shown and editable in the node settings panel. Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). The key can be a comma-separated fallback list (first non-empty wins, e.g. "link,post_title") so a stable id is used when present. For a stable identity (so re-listed/edited records don\'t re-appear as new) add Ignore-words (e.g. "NEW") and/or turn on Normalize. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key', 'keyStrip', 'keyNormalize'] },
     { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". For advanced reads provide a raw SELECT (records are JSON in a `data` column alongside `id`,`ts`; filter with json_extract(data,\'$.field\')) — a model node can generate this SQL. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
@@ -412,8 +412,67 @@ async function deliverArtifact(deps, ctx, node, destination, opts, artifactName,
 // Node handlers
 // ---------------------------------------------------------------------------
 
-async function runNode(node, scope, deps, ctx, inputs = []) {
+// A gate's own output is a ROUTING object ({result,_handle} / {pass,_handle,value}),
+// not the data that flowed through it. Anything consuming "the previous output"
+// must see the DATA the gate let past — otherwise a `… → gate.if → model` with a
+// bare prompt hands the model the literal {"result":true,"_handle":"true"} and it
+// dutifully explains that object to the user (and a create_pdf after a gate
+// typesets it). Unwrap routing objects back to their payload.
+// Tools whose whole purpose is to RETRIEVE the thing the workflow reasons about.
+// If one of these fails, everything downstream is reasoning about an error object,
+// so the node must fail rather than pass the failure off as content. (Deliberately
+// NOT every tool: a create_pdf/db_store failure is already thrown by its own
+// handler, and a generic skill may use `success:false` to mean a legitimate
+// negative result.)
+const RETRIEVAL_TOOLS = new Set(['fetch_url', 'web_search', 'http_request', 'parse_rss',
+    'crawl_pages', 'scrapling_fetch', 'playwright_fetch', 'fetch_timeseries']);
+
+// null when the payload looks like a successful retrieval, else why it failed.
+function retrievalFailureMessage(out) {
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
+    if (out.success === false) return String(out.error || out.message || 'the request did not succeed');
+    if (typeof out.status === 'number' && out.status >= 400) {
+        return `HTTP ${out.status}${out.error ? ` — ${out.error}` : ''}`;
+    }
+    // web_search's rate-limit / all-backends-down shape: { error, retryable }
+    if (typeof out.error === 'string' && out.error) return out.error;
+    return null;
+}
+
+// Reads the DEDICATED `_payload` key, never `value`: gate.switch's `value` is its
+// comparison OPERAND (the interpolated thing it matched on), not the data that
+// flowed through — unwrapping to that would hand the next node the compare string
+// instead of its content. A routing object with no `_payload` yields undefined and
+// is dropped, so a bare {result,_handle} can never leak downstream.
+function unwrapGateValue(v) {
+    if (v && typeof v === 'object' && typeof v._handle === 'string') {
+        return v._payload;
+    }
+    return v;
+}
+
+// The output of THIS node's own active upstream — not `scope.last`, which is a
+// single run-global slot overwritten by whichever node happened to finish last in
+// the parallel wave. With N independent branches in one wave (the canonical "watch
+// these 3 pages" shape) every blank-default node was reading a SIBLING's output:
+// e.g. three track_changes nodes all snapshotted the same page's body.
+function previousOutput(scope, inputs) {
+    const vals = (Array.isArray(inputs) ? inputs : [])
+        .map(unwrapGateValue)
+        .filter(v => v !== undefined);
+    if (vals.length === 1) return vals[0];
+    if (vals.length > 1) return vals;
+    return scope.last;   // entry nodes / no active input
+}
+
+async function runNode(node, runScope, deps, ctx, rawInputs = []) {
     const type = node.type || 'output';
+    // Per-node view of the run scope: `last` (and therefore every blank
+    // "use the previous output" default, plus {{last}} in any template) resolves
+    // to THIS node's own upstream. `nodes`/`vars`/`input` stay the shared objects
+    // by reference, so a `set` node still writes through to the run scope.
+    const inputs = (Array.isArray(rawInputs) ? rawInputs : []).map(unwrapGateValue).filter(v => v !== undefined);
+    const scope = { ...runScope, last: previousOutput(runScope, rawInputs) };
     const data = interpolate(node.data || {}, scope);
 
     // Triggers simply surface the run input as their output.
@@ -530,6 +589,21 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 const rendered = args.content != null ? String(args.content) : '';
                 if (rendered.trim()) parsed._pdfData = rendered;
             }
+            // A FAILED retrieval must FAIL THE NODE — never flow downstream as data.
+            //
+            // This is what made monitoring automations LIE. fetch_url returns
+            // { success:false, error:'HTTP 404' } and that object used to flow on as
+            // if it were the page: track_changes then snapshots the ERROR TEXT, so
+            // the moment the site comes back the diff "changes" and the user gets
+            // "the page changed!"; a release-monitor's db_store stores the error row
+            // and announces "New release!"; an in-stock verdict model sees empty
+            // content and answers "IT'S AVAILABLE". All three were reproduced live.
+            // A monitor that fires false alerts is worse than one that is silent, so
+            // fail loudly and let the run surface the broken source.
+            if (RETRIEVAL_TOOLS.has(toolName)) {
+                const why = retrievalFailureMessage(parsed);
+                if (why) throw new Error(`${toolName} failed — ${why}`);
+            }
             return parsed;
         }
 
@@ -548,7 +622,12 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             if (data.keyNormalize === true || data.keyNormalize === 'true') args.keyNormalize = true;
             const r = await dispatchTool(deps, ctx, node, 'workspace_db', args);
             if (r && r.success === false) throw new Error(`Database store failed — ${r.error || 'unknown error'}`);
-            return r; // { stored, skipped, total, new, table, db }
+            // The store FAILS OPEN when the configured `key` isn't a field of the
+            // records: it inserts them unkeyed, so every run re-reports every row as
+            // "new" and the dedupe gate downstream fires forever. The skill now
+            // reports keyMissing; make it visible on the node output so assessRunHealth
+            // can flag it and the repair loop gets told the real field names.
+            return r; // { stored, skipped, total, new, table, db, keyFields?, keyMissing?, keyWarning? }
         }
 
         case 'db_query': {
@@ -769,9 +848,11 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             // Auto-detect the file the previous step produced (its _artifacts).
             let filePath = String(data.path || '').trim();
             if (!filePath) {
-                const last = scope.last;
-                const arts = (last && typeof last === 'object' && Array.isArray(last._artifacts)) ? last._artifacts : [];
-                if (arts.length && arts[0] && arts[0].name) filePath = 'artifacts/' + arts[0].name;
+                // Use the array-safe helper: `scope.last` is an ARRAY when this node
+                // has more than one active input (a fan-in), and reading ._artifacts
+                // straight off it would find nothing and send an empty path.
+                const art = firstArtifact(scope.last, ...(Array.isArray(inputs) ? inputs : []));
+                if (art && art.name) filePath = 'artifacts/' + art.name;
             }
             // `destination` (not `to`) — `to` is a sandbox PATH_ARG_NAME and would
             // be rewritten to /workspace/telegram.
@@ -805,7 +886,10 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
 
         case 'gate.if': {
             const result = evalCondition(node.data ? node.data.condition : null, scope);
-            return { result, _handle: result ? 'true' : 'false' };
+            // Carry the gated payload through as `value` (mirrors gate.filter) so a
+            // downstream node that relies on "blank = previous output" receives the
+            // DATA, not this routing object. unwrapGateValue reads it back.
+            return { result, _handle: result ? 'true' : 'false', _payload: scope.last ?? {} };
         }
 
         case 'gate.switch': {
@@ -819,14 +903,14 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const caseVal = (c) => (c.value !== undefined && c.value !== '') ? c.value : c.equals;
             const hit = cases.find(c => c && compareOp(value, interpolate(caseVal(c), scope), c.op || c.match || '=='));
             const handle = hit ? (hit.handle || String(interpolate(caseVal(hit), scope))) : 'default';
-            return { value, matched: !!hit, _handle: handle };
+            return { value, matched: !!hit, _handle: handle, _payload: scope.last ?? {} };
         }
 
         case 'gate.filter': {
             // Continue down the 'out' handle only when the condition holds;
             // otherwise route to 'blocked' (usually unwired → branch stops).
             const pass = evalCondition(node.data ? node.data.condition : null, scope);
-            return { pass, _handle: pass ? 'out' : 'blocked', value: scope.last ?? {} };
+            return { pass, _handle: pass ? 'out' : 'blocked', value: scope.last ?? {}, _payload: scope.last ?? {} };
         }
 
         case 'merge': {
@@ -1209,8 +1293,23 @@ async function runWorkflow(workflow, opts = {}) {
                 const chosenHandle = (output && typeof output._handle === 'string') ? output._handle : null;
                 for (const e of outgoing.get(node.id)) {
                     let active = true;
-                    if (chosenHandle != null && e.sourceHandle != null) {
-                        active = (e.sourceHandle === chosenHandle);
+                    if (chosenHandle != null) {
+                        if (e.sourceHandle != null) {
+                            active = (e.sourceHandle === chosenHandle);
+                        } else if (POSITIVE_HANDLE[node.type]) {
+                            // A gate edge with NO sourceHandle used to stay ACTIVE on
+                            // both branches — which makes the gate a NO-OP and
+                            // silently defeats the whole "only notify me when there is
+                            // something new / when it changed" contract (the model has
+                            // to remember one `sourceHandle:"true"` string; when it
+                            // forgets, the workflow notifies on EVERY run forever).
+                            // Treat a handle-less edge as the node's POSITIVE branch.
+                            active = (POSITIVE_HANDLE[node.type] === chosenHandle);
+                        }
+                        // No positive branch defined for this type (gate.switch, whose
+                        // handles are user-defined case names): keep the pre-existing
+                        // lenient behavior — a handle-less edge stays active. Defaulting
+                        // it to a branch would prune the switch's entire downstream.
                     }
                     edgeState.set(edgeKey(e), active ? 'active' : 'pruned');
                     if (active) onEvent({ type: 'edge_active', edgeId: e.id, source: e.source, target: e.target });
@@ -1273,9 +1372,15 @@ const TRACEBACK_RE = /Traceback \(most recent call last\)|\b(?:Name|Type|Key|Val
 
 // Node types that are SUPPOSED to produce data — an empty result from one of
 // these is a problem worth flagging; an empty `set`/`delay`/`output` is fine.
+// Types whose empty output means the workflow did nothing useful. `model`,
+// `db_store` and the delivery/file types were MISSING here, which is why a run
+// that stored 0 rows and wrote an empty report still scored "ok, no issues" —
+// emptyDataReason was never even called on them. ('crawl'/'http_request' are
+// dead entries: those builtins materialize to engine type 'tool'.)
 const DATA_PRODUCING_TYPES = new Set([
     'web_search', 'fetch_url', 'parse_json', 'map', 'merge', 'db_query',
     'crawl', 'http_request', 'tool',
+    'model', 'db_store', 'export_file', 'render_html', 'track_changes',
 ]);
 
 // True when a node type is a model node (engine type is 'model').
@@ -1284,8 +1389,26 @@ function isModelNodeType(t) { return t === 'model'; }
 // "Empty data" detector for an object/array node output. Returns the reason
 // string when the value carries no usable data, else null.
 function emptyDataReason(o) {
+    if (typeof o === 'string') {
+        // Only a genuinely EMPTY string is a defect. A short one is not: the
+        // "alert when it becomes true" pattern the builder prompt teaches has the
+        // model emit a deliberate one-word sentinel ("NONE"), and flagging that
+        // would send the repair loop chasing a working workflow.
+        return o.trim() ? null : 'produced an empty string';
+    }
     if (Array.isArray(o)) return o.length === 0 ? 'returned an empty array' : null;
     if (o && typeof o === 'object') {
+        // db_store that stored nothing. `stored:0` on the FIRST run of a fresh
+        // table means the value it was handed was empty — the upstream is broken.
+        // (A later run legitimately stores 0 once everything is already seen, but
+        // the test loop resets the table before each pass, so 0 here is a defect.)
+        if (typeof o.stored === 'number' && o.stored === 0 && typeof o.total === 'number' && o.total === 0) {
+            return 'stored 0 records (the data handed to it was empty — check the node feeding its "value")';
+        }
+        // fetch_url / http_request that came back with no body.
+        if (typeof o.content === 'string' && o.content.trim().length < 200 && ('url' in o || 'title' in o)) {
+            return `fetched only ${o.content.trim().length} characters of page content — the page is empty, blocked, or JS-only`;
+        }
         // Common engine output shapes: merge {items,count}, web_search {results},
         // map {count,results}, db_query (array, handled above).
         if (Array.isArray(o.results) && o.results.length === 0) return 'results is empty';
@@ -1385,6 +1508,20 @@ function assessRunHealth(runRecord) {
             }
         }
 
+        // 2c. db_store whose dedupe FAILED OPEN: a `key` is configured but the records
+        //     don't carry that field, so they went in unkeyed. The node "succeeds",
+        //     stores everything, and reports it all as new — on every run, forever.
+        //     The gate downstream ("only if .new is not empty") therefore always fires.
+        //     Silent, and the #1 way a "notify me only about NEW items" workflow ends
+        //     up notifying about everything.
+        if (type === 'db_store' && out && typeof out === 'object' && typeof out.keyMissing === 'number' && out.keyMissing > 0) {
+            const fields = Array.isArray(out.recordFields) && out.recordFields.length
+                ? ` The records actually have: ${out.recordFields.join(', ')}.`
+                : '';
+            push('high', `dedupe is NOT working — the "key" is "${(out.keyFields || []).join(',')}" but ${out.keyMissing} record(s) have no such field, so they were stored WITHOUT a unique key and will be reported as new on EVERY run.${fields} Set "key" to a field the records really have.`);
+            return;
+        }
+
         // 3. A map node whose EVERY item failed (each slot is an {error} object).
         if (type === 'map' && out && typeof out === 'object' && Array.isArray(out.results) && out.results.length) {
             const allErr = out.results.every(r => r && typeof r === 'object' && typeof r.error === 'string' && r.error);
@@ -1416,8 +1553,13 @@ function assessRunHealth(runRecord) {
     const lastNodeId = nodes.length ? nodes[nodes.length - 1].nodeId : null;
     // Medium issue is disqualifying only when it sits on a model node or the
     // terminal node — i.e. the workflow's user-facing output is empty.
+    // db_store joins the disqualifying set: the test loop resets its table before
+    // every pass, so "stored 0 records" on a fresh table means NOTHING reached the
+    // collection step — the pipeline produced no data at all. That run must not be
+    // reported as healthy (it used to be: 0 rows stored + an empty report file
+    // still scored "ok, no issues").
     const terminalMedium = issues.some(i =>
-        i.severity === 'medium' && (isModelNodeType(i.type) || i.nodeId === lastNodeId));
+        i.severity === 'medium' && (isModelNodeType(i.type) || i.type === 'db_store' || i.nodeId === lastNodeId));
     const ok = !hasHigh && !terminalMedium;
     return { ok, issues, score };
 }
@@ -1528,14 +1670,22 @@ function buildBuilderSystemPrompt() {
         'JSON shape:',
         '{"name":"<short title>","nodes":[{"id":"n1","type":"<type>","data":{...}}],"edges":[{"source":"n1","target":"n2"}]}',
         '',
+        // ── The seven rules that break a workflow SILENTLY when missed. They lead
+        //    the list on purpose: the small builder model reliably applies what it
+        //    reads first and skips what is buried 20 rules deep.
+        'THE 7 HARD RULES (breaking any of these produces a workflow that looks right, runs "successfully", and does nothing):',
+        '1. IDS: node ids MUST be literally n1, n2, n3 … contiguous, in flow order, and every {{nodes.nX}} reference must name one of them. A non-nN id or a gap silently unbinds every template that points at it.',
+        '2. EDGES: wire EVERY node with an edge (source→target), trigger → … → the final delivery step. A node with no incoming edge NEVER RUNS — it is skipped silently, and a workflow whose last step (the PDF, the message) is unwired reports success while delivering nothing. The LAST node must be the thing the user actually asked for (the file, the notification, the stored row) — never a model node whose text goes nowhere.',
+        '3. EXACTLY ONE trigger node. A WATCH / MONITOR / TRACK / "keep an eye on" / "alert me when" / "check for new …" request is inherently RECURRING — it MUST use trigger.schedule (pick a sensible cadence yourself if the user did not say one); a trigger.manual there means the automation never fires and can never watch anything. Use trigger.manual ONLY for a genuine one-off "run this when I click it" task.',
+        '4. REFERENCES: pull a previous step\'s data in with {{nodes.<id>.<field>}}. Exact {{nodes.<id>}} is that node\'s whole output. {{vars.<name>}} is a value stored by a "set" node. Only reference a node that is UPSTREAM of the one referencing it. TRIGGER PAYLOAD — use the EXACT envelope: trigger.webhook → the run input is { body, query, receivedAt }, so the POSTed JSON fields are {{input.body.<field>}} (NOT {{input.<field>}}); trigger.telegram / trigger.slack → the incoming message is {{input.text}} (plus {{input.chat.id}} / {{input.channel}}).',
+        '5. A GATE IS A SWITCH, NOT A DATA STEP. gate.if\'s OWN output is {result,_handle,value} — so NEVER read a data field off a gate (there is no {{nodes.<gate>.new}} / {{nodes.<gate>.items}}). After a gate, reference the real PRODUCER explicitly: model prompt "…{{nodes.<the node that made the data>}}", create_pdf args.content "{{nodes.<producer>}}". Condition operands read the producer too: {"left":"{{nodes.<store>.new}}","op":"not_empty"}.',
+        '6. BRANCH HANDLES BELONG ONLY TO GATES. A model / tool / connector node has exactly ONE output — NEVER put a "sourceHandle" ("true"/"false") on an edge whose source is a model/fetch/tool node; that edge is dead and never fires. To branch on a model\'s answer, send the model INTO a gate.if (condition on "{{nodes.<model>}}" contains/not_contains a sentinel word) and branch from the GATE. Gate handles: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case. A gate.if with no "true" edge does nothing when the condition holds.',
+        '7. CREDENTIALS / SECRETS — LEAVE THEM BLANK: set every botToken, chatId, channel, webhookUrl, apiKey, token, password to "" (empty string). NEVER write a placeholder like "<BOT_TOKEN>", "YOUR_TOKEN_HERE" or "123456:ABC-DEF" — the engine treats it as a REAL value, the test run calls the API with it and hard-fails, whereas "" is correctly recognized as "needs configuration" for the user to fill in. (A non-secret target the user explicitly stated — a chat id or channel name they gave you — may be filled.)',
+        '',
         'Rules:',
-        '- Use short ids n1, n2, n3 … in flow order.',
-        '- Exactly ONE trigger node is the entry point. Use "trigger.manual" unless the user asks for a schedule/webhook/event/telegram/slack trigger.',
-        '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
-        '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
-        '- WEB SEARCH IS THIN — web_search returns only titles/links/short snippets (often just a domain), NEVER the page contents, and it rate-limits boolean/site:-heavy queries. Therefore: (a) keep any web_search query to plain keywords — no parentheses, no AND, at most one OR or one site:; and (b) if the automation needs the actual CONTENT behind the results, you MUST insert a map node that fetch_url\'s each result url ({ "items":"{{nodes.<search>.results}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.url}}", "maxLength":6000 } }) BEFORE any db_store/model — never feed raw web_search results straight into db_store or a model. Whenever a structured source fits the request (an RSS/Atom feed via parse_rss, or a JSON API via http_request), PREFER it over web_search; it returns complete, clean records.',
-        '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
-        '- BRANCH HANDLES BELONG ONLY TO GATES. A model / tool / connector node has exactly ONE output — NEVER put a "sourceHandle" (e.g. "true"/"false") on an edge whose source is a model/fetch/tool/etc. node; that edge is dead and never fires. To branch on a model\'s answer, send the model INTO a gate.if (e.g. condition on "{{nodes.<model>}}" contains/not_contains a sentinel word) and branch from the GATE, not the model.',
+        '- NEVER db_store web_search RESULTS. A web_search result is a PAGE (often just a domain or a search-index page), not an item, and its url is the SAME on every run — so keying on it stores everything once and then reports ZERO new forever, silently suppressing the automation permanently. To collect ITEMS from a search: web_search → map(fetch_url each result) → a model node that EXTRACTS the items as a JSON array → parse_json → db_store (key = the item\'s own stable url/id). If a feed or JSON API exists for the source, use parse_rss / http_request instead — always prefer it.',
+        '- A SCHEDULED WORKFLOW RUNS FOR MONTHS — never hardcode a year, a date, or today\'s current product/version names into a web_search query or a model prompt ("… 2025 reviews", "compare the iPhone 17 and Galaxy S26"). It silently goes stale. Describe the thing generically ("latest flagship phone reviews") and let the search/feed supply what is current.',
+        '- WEB SEARCH IS THIN — web_search returns only titles/links/short snippets (often just a domain), NEVER the page contents, and it rate-limits complex queries. Therefore: (a) keep any web_search query to plain keywords — no parentheses, no AND, at most one OR or one site:; and (b) if the automation needs the actual CONTENT behind the results, you MUST insert a map node that fetch_url\'s each result url ({ "items":"{{nodes.<search>.results}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.url}}", "maxLength":6000 } }) BEFORE any db_store/model, then feed the model "{{nodes.<map>.results}}" — never feed raw web_search results straight into db_store or a model. Whenever a structured source fits the request (an RSS/Atom feed via parse_rss, or a JSON API via http_request), PREFER it over web_search; it returns complete, clean records. When a model node extracts structured rows from that content, run its output through parse_json before db_store so the rows are stored (and deduped by key) individually.',
         '- DEDUPE A FEED / "only new or unique ITEMS on future runs" / "notify only when a new post/article/listing appears": use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
         '- DEDUPE KEY RULES (CRITICAL): the "key" MUST be a field that is UNIQUE PER ITEM and STABLE across runs — for articles/posts that is the per-item "link" (or "id"). The db_store input MUST be the LIST OF ITEMS (one row per article), never a single wrapper object. NEVER key on a value that is identical on every run — e.g. a source-page url or site title coming from a fetch_url of a HOMEPAGE/section page: that stores one row per PAGE (the page url never changes), so it reports "new" on the first run and then ZERO forever. That is not dedupe — it silently suppresses ALL content. If you only have a page (not a feed), the items aren\'t separated yet, so fetch_url→db_store CANNOT dedupe articles; use parse_rss on the site\'s feed instead (see below).',
         '- ALERT WHEN SOMETHING BECOMES TRUE / "tell me WHEN tickets go on sale / when it is back in stock / when the status flips" (a state CHANGE on a stable target, NOT a feed of new items): do NOT db_store the search/fetch results — their urls/ids are STABLE across runs, so db_store marks them all "new" on the first run and then ZERO forever, which silently suppresses the alert PERMANENTLY (it never fires even once the thing actually happens). Instead detect the STATE TRANSITION: (1) web_search / fetch_url / http_request the source, (2) a model node that emits a STRICT machine verdict — e.g. prompt it to output exactly "AVAILABLE: <urls>" when the thing is true or exactly "NONE" otherwise, and NOTHING else (pick sentinels where the negative does NOT contain the positive word — "NONE" not "NOT AVAILABLE", since contains-checks would match the substring), (3) track_changes { "key": "<a constant string id for this watch>", "content": "{{nodes.<model>}}" } to detect when that verdict TEXT changes between runs, (4) gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty" } } on the "true" handle (only when the verdict changed), (5) a SECOND gate.if { "condition": { "left": "{{nodes.<model>}}", "op": "not_contains", "right": "NONE" } } on its "true" handle (only when it is now the positive state), (6) telegram/slack. This alerts on the moment of the transition, never suppresses forever, and never spams the same alert every run while the state holds.',
@@ -1543,23 +1693,23 @@ function buildBuilderSystemPrompt() {
         '- LATEST NEWS / ARTICLES FROM A SITE (a feed): the BEST source is the site\'s own RSS/Atom FEED, parsed with the parse_rss node — parse_rss { "args": { "url": "<the feed URL for the source the user named>" } } returns clean { items:[{title, link, summary, published, id}] } with no scraping. Most sites publish a feed at a conventional path such as /feed/, /rss, /rss.xml, /atom.xml, or a /<section>/rss variant; if you are unsure of the exact URL, use the source the user specified (or a sensible feed path for it) — do not substitute an unrelated site. Do NOT use http_request+parse_json on a feed (parse_json cannot parse XML) and do NOT write a run_python XML parser. Do NOT use a site-specific web_search ("site:... latest") — DuckDuckGo rate-limits those. (Some feeds — e.g. feedburner-backed ones — can return 403 behind an egress proxy; if a feed yields nothing, fall back to a fetch_url of the site\'s news/index page.) web_search is only for open-ended "find pages about X". To report only NEW stories across runs: parse_rss → db_store(key="link") → gate.if({{nodes.<store>.new}} not_empty) → model → create_pdf.',
         '- MULTIPLE FEEDS (e.g. a daily newspaper from several sites): give each source its OWN parse_rss node, fan them all into a merge, then db_store. Because parse_rss outputs { items:[…] }, the merge holds N feed-wrapper objects, so the db_store "value" MUST FLATTEN them into one article list: value "{{nodes.<merge>.items.*.items}}" (the ".*.items" maps over every feed and flattens). Do NOT use "{{nodes.<merge>.items}}" (that stores N wrapper objects keyed on a missing field → never dedupes). key "link".',
         '- FULL ARTICLE TEXT (not just the RSS title/summary): after the gate.if(.new not_empty), add a map node that fetches each new article: { "items":"{{nodes.<store>.new}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.link}}", "maxLength":6000 } } → it returns { results:[{url,title,content,…}] }. Feed the model "{{nodes.<map>.results}}". Only the genuinely-new articles get fetched (cheap + on-topic). Without this step the model only sees short feed summaries.',
-        '- KEEP web_search QUERIES SIMPLE: DuckDuckGo/Brave do NOT understand nested boolean logic — a query like ("a" OR "b") AND ("c" OR "d") site:x.com OR site:y.com returns the bare DOMAIN homepages (title just "x.com"), not real results. Write plain keywords plus AT MOST one or two site: filters. No parentheses, no AND, at most one OR.',
-        '- web_search RESULTS ARE THIN (title + url + snippet, often only a domain). NEVER db_store the raw web_search results and feed them straight to a model — the model only gets links/snippets and produces a useless list. If the automation needs the actual CONTENT behind the results, add a map node that fetch_url\'s each result url ({ "items":"{{nodes.<search>.results}}", "action":"tool", "tool":"fetch_url", "args":{ "url":"{{item.url}}", "maxLength":6000 } }) BEFORE db_store/model, then feed the model "{{nodes.<map>.results}}". Better still, when a structured source exists for the topic (an RSS feed, a JSON API via http_request, or a single source page fetched with fetch_url), prefer that over web_search — it returns clean, complete records instead of a list of domains. When a model node extracts structured rows from that content, run its output through parse_json before db_store so the rows are stored (and deduped by key) individually.',
         '- CHAINING search/extract → parse_json: the parse_json "path" MUST match the REAL upstream shape. A merge node outputs {items:[...],count}; web_search outputs {results:[...]}. To pull every url from MERGED searches use path "items.*.results.*.url" (NOT "*.url"); from a single web_search use "results.*.url".',
         '- A map (Loop) node\'s "action" is "tool" or "model" — NOT a tool name. For a tool action set "action":"tool" AND "tool":"<valid tool name e.g. fetch_url|crawl_pages>" AND put per-item args in "args" using {{item}} for the current list item. Never put the tool name in "action".',
         '- STRUCTURED DATA FROM A SITE (a JSON API / feed): if the source exposes a JSON endpoint (e.g. .../api/recent, .../api.json, an RSS/Atom feed), ALWAYS use http_request to that endpoint then parse_json — NEVER scrape the HTML page with run_python. parse_json\'s "source" must be the http_request output\'s data, i.e. "{{nodes.<httpId>.data}}"; leave "path" empty to keep the whole parsed array/object, or set it to the field you want (e.g. "results.*.link"). Then db_store the parsed array for dedupe.',
-        '- run_python / run_node DO NOT have access to workflow data as variables. There is NO `nodes`, `last`, `input` or any node id available as a Python/JS name — referencing them throws "NameError: name \'nodes\' is not defined". To use an upstream value inside the code you MUST interpolate it as a literal via templating, e.g. code: "import json\\ndata = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')\\n…". But prefer NOT using run_python for fetching/parsing at all — use http_request + parse_json (JSON) or fetch_url + a model node (HTML). Reserve run_python for pure local transforms on already-interpolated data.',
-        '- fetch_url returns { url, title, content, success } — the page text is in "content" (NOT "data"). http_request returns { success, status, data } — the response body is in "data" (a string for JSON APIs; feed it to parse_json).',
-        '- A REPORT WITH GRAPHS/CHARTS IN A PDF: get the numbers (fetch_timeseries for stock/market data — args.symbol/period/interval, rows come back in .data; or http_request+parse_json for a JSON API), then chart_plot { "args": { "type":"line", "x":"{{nodes.<dataId>.data.*.date}}", "y":"{{nodes.<dataId>.data.*.close}}", "title":"..." } } to render a PNG into the workspace, then create_pdf whose markdown "content" embeds that image with an image tag: ![Chart]({{nodes.<chartId>.file}}) alongside the written analysis. create_pdf renders ![alt](path) images from /workspace (and /workspace/artifacts). Do NOT use render_chart for a PDF (it only makes an on-screen spec, not a file). Wire: fetch_timeseries → chart_plot → model (write the analysis) → create_pdf (embed ![Chart]({{nodes.<chartId>.file}}) + the analysis).',
-        '- MULTI-DAY/MULTI-TIME SCHEDULES (e.g. "Mon and Wed at 9am AND Fri at 4:30pm"): use trigger.schedule with a "crons" ARRAY of 5-field cron lines, one per (days, time) group. Example: { "crons": ["0 9 * * 1,3", "30 16 * * 5"] }. NEVER set "cron" (singular) to an array — use "crons". For one-off future dates use { "runAt": ["2026-12-25T09:00:00Z", ...] } (ISO UTC). intervalMs and cron(s)/runAt are mutually exclusive; pick ONE form per schedule node and OMIT the others entirely — when you set crons/cron/runAt do NOT also include intervalMs (leaving a stray intervalMs is ignored at run time but is a footgun and clutters the change log).',
+        '- run_python DOES NOT have access to workflow data as variables. There is NO `nodes`, `last`, `input` or any node id available as a Python/JS name — referencing them throws "NameError: name \'nodes\' is not defined". To use an upstream value inside the code you MUST interpolate it as a literal via templating, e.g. code: "import json\\ndata = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')\\n…". But prefer NOT using run_python for fetching/parsing at all — use http_request + parse_json (JSON) or fetch_url + a model node (HTML). Reserve run_python for pure local transforms on already-interpolated data.',
+        '- NODE OUTPUT SHAPES — reading a field a node does not produce silently yields an EMPTY value (no error), so use exactly these: fetch_url → { url, title, content, success } (page text is in .content, NOT .data) · http_request → { success, status, data } (.data is the response body, ALREADY PARSED into an object/array for JSON APIs — use parse_json only to EXTRACT a list from it with "path") · web_search → { results:[{title,url,snippet}] } · parse_rss → { feedTitle, count, items:[{title,link,summary,published,id}] } · db_store → { new, stored, total } · db_query → the rows array · map → { results:[…], count } · merge → { items:[…], count } · fetch_timeseries → { symbol, count, data:[{date,close,open,high,low,volume}] } · chart_plot → { file } · model → a plain STRING (no fields — {{nodes.<id>}} is the whole answer; there is no .text/.output/.content on it).',
+        '- track_changes outputs { changed, firstSeen, revision } on EVERY run, but diff / added / removed / addedCount / removedCount EXIST ONLY when changed is true. Read them exclusively on the gate\'s "true" branch — anywhere else they interpolate to nothing.',
+        '- A REPORT WITH GRAPHS/CHARTS IN A PDF: get the numbers (fetch_timeseries for stock/market data — args.symbol/period/interval, rows come back in .data; or http_request+parse_json for a JSON API), then chart_plot { "args": { "type":"line", "x":"{{nodes.<dataId>.data.*.date}}", "y":"{{nodes.<dataId>.data.*.close}}", "title":"..." } } to render a PNG into the workspace, then create_pdf whose markdown "content" embeds it as ![Chart]({{nodes.<chartId>.file}}) alongside the written analysis. ALWAYS reference the chart with {{nodes.<chartId>.file}} — the PNG filename is generated at run time, so a hand-written path like "artifacts/chart.png" is a guess and the PDF silently renders "[missing image]". Do NOT use render_chart for a PDF (it only makes an on-screen spec, not a file). The ANALYSIS model node must read the DATA node explicitly (prompt: "…{{nodes.<dataId>.data}}") — never let it auto-attach chart_plot\'s output, which contains the raw base64 PNG bytes and will flood its context. Wire: fetch_timeseries → chart_plot → create_pdf, and fetch_timeseries → model → create_pdf.',
+        '- SCHEDULES: a TIME-OF-DAY schedule is ALWAYS a cron — "every morning at 8" → { "crons": ["0 8 * * *"] }. intervalMs is ONLY for "every N minutes/hours" with no wall-clock anchor (it is epoch-aligned, so it fires at an arbitrary time of day and can never mean "every morning"). For several (days, time) groups use a "crons" ARRAY, one 5-field line per group — e.g. "Mon and Wed at 9am AND Fri at 4:30pm" → { "crons": ["0 9 * * 1,3", "30 16 * * 5"] }. NEVER set "cron" (singular) to an array — use "crons". For one-off future dates use { "runAt": ["2026-12-25T09:00:00Z", …] } (ISO UTC). Pick exactly ONE form and OMIT the others. A trigger.schedule with NO cron/runAt/intervalMs silently defaults to every 5 minutes — always set one explicitly.',
         '- COLLECTING/MONITORING DATA "over/throughout an hour": a single run is one point in time and cannot watch for an hour by itself. fetch_timeseries is DAILY/weekly/monthly only (no intraday), so for live intraday monitoring use a Schedule trigger at a short interval (e.g. every 5 minutes) that fetches the current value (http_request to the quote/price endpoint) and appends it to db_store; then a db_query (newest-N) feeds the chart/report from the rows collected across runs. If the user just wants a price trend, fetch_timeseries daily history over a period (e.g. 1mo) charted is the simple path.',
-        '- CREDENTIALS / SECRETS — LEAVE THEM BLANK: never invent or fill placeholder values for secret/account fields (botToken, chatId, channel, apiKey/api_key, webhookUrl, password, token, secret). Set each to an empty string "" or omit it entirely — the user fills these in the UI afterward. A placeholder like "<BOT_TOKEN>", "YOUR_TOKEN_HERE", or "123456:ABC-DEF" is WORSE than blank: the engine treats it as a real value, the test run actually calls the API with it, and it fails (e.g. Telegram HTTP 404). A blank field is correctly recognized as "needs configuration" and never causes a false failure. (Non-secret targeting fields the user gave you in the request — a chatId/channel they explicitly stated — may be filled; only invent NOTHING.)',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
         '- fetch_url: { "url": "..." }   web_search: { "query": "...", "limit": 5 }',
         '- http_request: { "args": { "url": "...", "method": "GET" } }   run_python: { "args": { "code": "print(1)" } }',
-        '- create_pdf / create_file / html_to_pdf / any tool node: ALWAYS nest the tool parameters under "args" — e.g. { "tool": "create_pdf", "args": { "content": "{{nodes.<id>}}", "filename": "report.pdf" } }. NEVER put content/filename/etc. at the node top level (siblings of "tool"); they will be ignored.',
+        '- ALWAYS nest a tool node\'s parameters under "args" — e.g. { "tool": "create_pdf", "args": { "content": "{{nodes.<id>}}", "filename": "report.pdf" } }. (A top-level param is folded into args as a fallback, EXCEPT the reserved names tool/label/model/temperature/maxTokens/sendMode/delivery/botToken/chatId/channel/caption/forward, which the node consumes itself and never reach the tool — so nest them and don\'t rely on the fallback.)',
+        '- FILE ARG NAMES DIFFER — get them right or the node hard-fails: create_pdf → args { content, filename } · html_to_pdf → args { content, outputName } · create_file → args { filePath, content } (it is "filePath", NOT "filename", and write it under "artifacts/…" or the user cannot download it).',
+        '- A DOWNLOADABLE CSV / TXT / MD / JSON FILE: use ONE export_file node — { "format": "csv", "filename": "data.csv" } (leave content blank to use the previous step\'s output; an array of objects becomes CSV rows automatically). Do NOT build the file text with run_python, and do NOT use create_file for it.',
         '- PDF OUTPUT — pick the right node: create_pdf renders MARKDOWN (headings/tables/bullets/code/links) — feed it a markdown string. For styled HTML (CSS layout, fonts, columns) use html_to_pdf: { "tool": "html_to_pdf", "args": { "content": "{{nodes.<id>}}", "outputName": "report.pdf" } }. NEVER convert markdown→HTML just to feed create_pdf, and NEVER feed raw HTML to create_pdf (it treats it as a code block). For both, args.content may be OMITTED to default to the previous node\'s output (just wire the edge).',
         '- parse_json: { "source": "{{nodes.<id>.data}}", "path": "results.*.url"? }',
         '- parse_rss: { "args": { "url": "https://site.com/feed.xml" } } → { feedTitle, count, items:[{title, link, summary, published, id}] } (use for RSS/Atom feeds; then db_store key="link")',
@@ -1568,8 +1718,8 @@ function buildBuilderSystemPrompt() {
         '- track_changes: { "key": "https://site.com/page", "content": "{{nodes.<fetchId>.content}}"? (blank = previous output), "ignoreWhitespace": true? } → outputs { changed, firstSeen, diff, added, removed, addedCount, removedCount, revision }',
         '- fetch_timeseries: { "args": { "symbol": "AAPL", "period": "1mo", "interval": "d" } } → { count, data:[{date, close, open, high, low, volume}] } (rows in .data; daily/weekly/monthly only)',
         '- chart_plot: { "args": { "type": "line", "x": "{{nodes.<dataId>.data.*.date}}", "y": "{{nodes.<dataId>.data.*.close}}", "title": "AAPL", "xlabel": "Date", "ylabel": "Price" } } → { file } (a PNG in the workspace; embed in create_pdf as ![Chart]({{nodes.<id>.file}}))',
-        '- telegram: { "botToken": "...", "chatId": "...", "text": "..." }   slack: { "webhookUrl": "...", "text": "..." }',
-        '- SENDING A FILE (PDF/image/CSV) to Telegram/Slack: just wire the file step (e.g. create_pdf) → a telegram (or slack) node — it auto-detects the upstream file and sends it as a document, with "text" as the caption. Do NOT put {{...artifacts}} in "text" and do NOT add a separate send node. Slack file upload needs { "botToken": "xoxb-…", "channel": "..." } (a webhookUrl can only post text). To control what flows to the next node (whatever it is), set the create_pdf/html_to_pdf node\'s "sendMode": "pdf" (file only, default) | "both" (the rendered data AND the file) | "data" (the rendered text only, no file).',
+        '- telegram: { "botToken": "", "chatId": "", "text": "…" } · slack posting TEXT: { "webhookUrl": "", "text": "…" } · slack sending a FILE: { "botToken": "", "channel": "" } — a Slack webhookUrl can ONLY post text, so if an upstream node produced a file the slack node MUST have botToken + channel or it throws at run time. (All of these stay "" — see HARD RULE 7.)',
+        '- SENDING A FILE (PDF/image/CSV) to Telegram/Slack: just wire the file step (e.g. create_pdf) → a telegram (or slack) node — it auto-detects the upstream file and sends it as a document, with "text" as the caption. Do NOT put {{...artifacts}} in "text", and do NOT add a send_file node for Telegram/Slack. (send_file is ONLY for posting the file to an arbitrary HTTP endpoint: { "to": "http", "url": "…" }.) To control what flows to the next node, set the create_pdf/html_to_pdf node\'s "sendMode": "pdf" (file only, default) | "both" (the rendered data AND the file) | "data" (the rendered text only, no file).',
         '- gate.if / gate.filter: { "condition": { "left": "{{last}}", "op": "not_empty", "right": "" } } (ops: ==,!=,>,<,>=,<=,contains,not_contains,startsWith,endsWith,matches,empty,not_empty)',
         '- gate.switch: { "value": "{{last}}", "cases": [{ "op": "==", "value": "x", "handle": "x" }] }',
         '- set: { "name": "var", "value": "..." }   delay: { "ms": 1000 }',
@@ -1580,17 +1730,17 @@ function buildBuilderSystemPrompt() {
         section('Connectors', cat.connector),
         section('Logic gates', cat.gate),
         '',
-        'Example — "every morning fetch a JSON feed and DM me only new items on Telegram":',
-        '{"name":"New items to Telegram","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":86400000}},{"id":"n2","type":"http_request","data":{"args":{"url":"https://example.com/feed.json","method":"GET"}}},{"id":"n3","type":"parse_json","data":{"source":"{{nodes.n2.data}}"}},{"id":"n4","type":"db_store","data":{"table":"items","key":"id","value":"{{nodes.n3}}"}},{"id":"n5","type":"gate.if","data":{"condition":{"left":"{{nodes.n4.new}}","op":"not_empty","right":""}}},{"id":"n6","type":"model","data":{"prompt":"Summarize these new items as a short list:\\n{{nodes.n4.new}}"}},{"id":"n7","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n6}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6","sourceHandle":"true"},{"source":"n6","target":"n7"}]}',
+        'Example — "every morning at 8 fetch a JSON feed and DM me only new items on Telegram":',
+        '{"name":"New items to Telegram","nodes":[{"id":"n1","type":"trigger.schedule","data":{"crons":["0 8 * * *"]}},{"id":"n2","type":"http_request","data":{"args":{"url":"https://example.com/feed.json","method":"GET"}}},{"id":"n3","type":"parse_json","data":{"source":"{{nodes.n2.data}}","path":"items"}},{"id":"n4","type":"db_store","data":{"table":"items","key":"id","value":"{{nodes.n3}}"}},{"id":"n5","type":"gate.if","data":{"condition":{"left":"{{nodes.n4.new}}","op":"not_empty","right":""}}},{"id":"n6","type":"model","data":{"prompt":"Summarize these new items as a short list:\\n{{nodes.n4.new}}"}},{"id":"n7","type":"telegram","data":{"botToken":"","chatId":"","text":"{{nodes.n6}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6","sourceHandle":"true"},{"source":"n6","target":"n7"}]}',
         '',
         'Example — "every hour check a web page and tell me on Telegram what changed":',
-        '{"name":"Page change monitor","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"fetch_url","data":{"url":"https://example.com/pricing"}},{"id":"n3","type":"track_changes","data":{"key":"https://example.com/pricing"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.changed}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"This web page changed since the last check. Summarize exactly what changed in plain language for a notification.\\n\\nDIFF:\\n{{nodes.n3.diff}}"}},{"id":"n6","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n5}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
+        '{"name":"Page change monitor","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"fetch_url","data":{"url":"https://example.com/pricing"}},{"id":"n3","type":"track_changes","data":{"key":"https://example.com/pricing"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.changed}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"This web page changed since the last check. Summarize exactly what changed in plain language for a notification.\\n\\nDIFF:\\n{{nodes.n3.diff}}"}},{"id":"n6","type":"telegram","data":{"botToken":"","chatId":"","text":"{{nodes.n5}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
         '',
-        'Example — "every hour make a PDF of new world-news headlines (only stories I have not seen)":',
-        '{"name":"Hourly new-news PDF","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/rss.xml"}}},{"id":"n3","type":"db_store","data":{"table":"stories","key":"link","value":"{{nodes.n2.items}}"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.new}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"Write a short markdown news brief of these NEW stories (one bullet each: bold headline then one-line summary):\\n{{nodes.n3.new}}"}},{"id":"n6","type":"create_pdf","data":{"args":{"content":"{{nodes.n5}}","filename":"world-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
+        'Example — "every hour make a PDF of new headlines from a feed (only stories I have not seen)":',
+        '{"name":"Hourly new-news PDF","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/rss.xml"}}},{"id":"n3","type":"db_store","data":{"table":"stories","key":"link","value":"{{nodes.n2.items}}"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.new}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"Write a short markdown brief of these NEW items (one bullet each: bold headline then one-line summary):\\n{{nodes.n3.new}}"}},{"id":"n6","type":"create_pdf","data":{"args":{"content":"{{nodes.n5}}","filename":"digest.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
         '',
-        'Example — "daily newspaper PDF from SEVERAL cybersecurity sites, only NEW articles, with full article text" (multi-feed + flatten + full-text fetch):',
-        '{"name":"Daily cyber newspaper","nodes":[{"id":"n1","type":"trigger.schedule","data":{"crons":["30 9 * * *"]}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/feed/"}}},{"id":"n3","type":"parse_rss","data":{"args":{"url":"https://news.example.org/rss.xml"}}},{"id":"n4","type":"parse_rss","data":{"args":{"url":"https://blog.example.net/feed/"}}},{"id":"n5","type":"merge","data":{}},{"id":"n6","type":"db_store","data":{"table":"cyber_articles","key":"link","value":"{{nodes.n5.items.*.items}}"}},{"id":"n7","type":"gate.if","data":{"condition":{"left":"{{nodes.n6.new}}","op":"not_empty","right":""}}},{"id":"n8","type":"map","data":{"items":"{{nodes.n6.new}}","action":"tool","tool":"fetch_url","args":{"url":"{{item.link}}","maxLength":6000}}},{"id":"n9","type":"model","data":{"prompt":"Write a newspaper-style report from these NEW cybersecurity articles (full text included):\\n{{nodes.n8.results}}"}},{"id":"n10","type":"create_pdf","data":{"args":{"content":"{{nodes.n9}}","filename":"cyber-news.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n1","target":"n3"},{"source":"n1","target":"n4"},{"source":"n2","target":"n5"},{"source":"n3","target":"n5"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n7","target":"n8","sourceHandle":"true"},{"source":"n8","target":"n9"},{"source":"n9","target":"n10"}]}',
+        'Example — "daily digest PDF from SEVERAL sites, only NEW articles, with full article text" (multi-feed + flatten + full-text fetch):',
+        '{"name":"Daily digest","nodes":[{"id":"n1","type":"trigger.schedule","data":{"crons":["30 9 * * *"]}},{"id":"n2","type":"parse_rss","data":{"args":{"url":"https://example.com/feed/"}}},{"id":"n3","type":"parse_rss","data":{"args":{"url":"https://news.example.org/rss.xml"}}},{"id":"n4","type":"parse_rss","data":{"args":{"url":"https://blog.example.net/feed/"}}},{"id":"n5","type":"merge","data":{}},{"id":"n6","type":"db_store","data":{"table":"articles","key":"link","value":"{{nodes.n5.items.*.items}}"}},{"id":"n7","type":"gate.if","data":{"condition":{"left":"{{nodes.n6.new}}","op":"not_empty","right":""}}},{"id":"n8","type":"map","data":{"items":"{{nodes.n6.new}}","action":"tool","tool":"fetch_url","args":{"url":"{{item.link}}","maxLength":6000}}},{"id":"n9","type":"model","data":{"prompt":"Write a newspaper-style report from these NEW articles (full text included):\\n{{nodes.n8.results}}"}},{"id":"n10","type":"create_pdf","data":{"args":{"content":"{{nodes.n9}}","filename":"digest.pdf"}}}],"edges":[{"source":"n1","target":"n2"},{"source":"n1","target":"n3"},{"source":"n1","target":"n4"},{"source":"n2","target":"n5"},{"source":"n3","target":"n5"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6"},{"source":"n6","target":"n7"},{"source":"n7","target":"n8","sourceHandle":"true"},{"source":"n8","target":"n9"},{"source":"n9","target":"n10"}]}',
     ].join('\n');
 }
 
@@ -1771,6 +1921,12 @@ function layoutWorkflow(nodes, edges) {
 // "false" handle off a model node).
 const GATE_TYPES = new Set(['gate.if', 'gate.filter', 'gate.switch']);
 
+// The branch a handle-less outgoing edge is assumed to mean. gate.switch is
+// deliberately absent: its handles are user-defined case names, so there is no
+// sane default and a handle-less switch edge stays inactive (surfaced by the
+// validator as an unwired case).
+const POSITIVE_HANDLE = { 'gate.if': 'true', 'gate.filter': 'out' };
+
 // Remove self-contradictory leftovers from a node's merged data. Currently a
 // Schedule node that specifies a calendar form (crons/cron/runAt) must NOT also
 // carry intervalMs: the scheduler prioritizes the calendar (server.js hasCalendar
@@ -1807,17 +1963,72 @@ function sanitizeEdgeHandles(nodes, edges) {
     return edges;
 }
 
+// The node types models actually invent, mapped to the real one. The request
+// routinely names a capability ("RSS", "Discord", "a python step") and the model
+// coins a plausible type for it; without an alias the node is silently dropped
+// and the graph loses its data source or its delivery step, with no error.
+const NODE_TYPE_ALIASES = new Map(Object.entries({
+    rss: 'parse_rss', rss_feed: 'parse_rss', feed: 'parse_rss', parse_feed: 'parse_rss', atom: 'parse_rss',
+    http: 'http_request', request: 'http_request', api: 'http_request', api_request: 'http_request', rest: 'http_request',
+    if: 'gate.if', condition: 'gate.if', gate: 'gate.if', filter: 'gate.filter', switch: 'gate.switch', branch: 'gate.if',
+    python: 'run_python', script: 'run_python', code: 'run_python', run_script: 'run_python',
+    llm: 'model', ai: 'model', gpt: 'model', chat: 'model', summarize: 'model', classify: 'model',
+    search: 'web_search', google: 'web_search', duckduckgo: 'web_search',
+    fetch: 'fetch_url', scrape: 'fetch_url', get_url: 'fetch_url', http_get: 'fetch_url',
+    pdf: 'create_pdf', make_pdf: 'create_pdf', report: 'create_pdf',
+    file: 'create_file', write_file: 'create_file', save_file: 'create_file',
+    csv: 'export_file', excel: 'export_file', download: 'export_file',
+    store: 'db_store', save: 'db_store', database: 'db_store', db: 'db_store',
+    query: 'db_query', read_db: 'db_query',
+    loop: 'map', foreach: 'map', for_each: 'map', iterate: 'map',
+    chart: 'chart_plot', plot: 'chart_plot', graph: 'chart_plot',
+    schedule: 'trigger.schedule', cron: 'trigger.schedule', timer: 'trigger.schedule',
+    webhook: 'trigger.webhook', manual: 'trigger.manual',
+    wait: 'delay', sleep: 'delay',
+}));
+
+// Rewrite {{nodes.<oldId>…}} references through an id map.
+//
+// Both materializers rewrite node IDS (build renumbers to n1..nN; edit assigns
+// fresh ids to inserted nodes) and remap EDGES through the map — but the node
+// `data` holding every {{nodes.<id>.field}} template used to be copied verbatim.
+// The result is silent: the template points at an id that no longer exists,
+// interpolate() resolves it to '', and the step runs with empty input while the
+// run reports success. Worse, a shifted id can make a template resolve to the
+// WRONG node (or to the node itself). Remapping data closes that.
+function remapTemplateIds(value, idMap) {
+    if (typeof value === 'string') {
+        if (value.indexOf('{{') === -1) return value;
+        // Rebuild the match from its parts. A substring `m.replace(id, mapped)` would
+        // hit the FIRST occurrence of the id text — for a single-char id like "o" or
+        // "n" that lands inside the literal "nodes." prefix and corrupts the template.
+        return value.replace(/(\{\{\s*nodes\.)([A-Za-z0-9_\-]+)/g, (m, pre, id) => {
+            const mapped = idMap.get(String(id));
+            return mapped ? pre + mapped : m;
+        });
+    }
+    if (Array.isArray(value)) return value.map(v => remapTemplateIds(v, idMap));
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const k of Object.keys(value)) out[k] = remapTemplateIds(value[k], idMap);
+        return out;
+    }
+    return value;
+}
+
 function materializeWorkflow(spec) {
     const byKey = new Map(), byType = new Map();
     for (const b of BUILTIN_NODE_TYPES) { byKey.set(b.key, b); byType.set(b.type, b); }
     const rawNodes = Array.isArray(spec && spec.nodes) ? spec.nodes : [];
     const idMap = new Map();
     const nodes = [];
+    const unknownTypes = [];
     let i = 0;
     for (const n of rawNodes) {
         const k = String((n && (n.type || n.kind)) || '').trim();
-        const b = byKey.get(k) || byType.get(k);
-        if (!b) continue;
+        const alias = NODE_TYPE_ALIASES.get(k.toLowerCase());
+        const b = byKey.get(k) || byType.get(k) || (alias ? (byKey.get(alias) || byType.get(alias)) : null);
+        if (!b) { if (k) unknownTypes.push(k); continue; }
         const newId = `n${++i}`;
         if (n && n.id != null) idMap.set(String(n.id), newId);
         const data = { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) };
@@ -1826,6 +2037,8 @@ function materializeWorkflow(spec) {
         nodes.push({ id: newId, type: b.type, position: { x: 0, y: 0 }, data });
     }
     if (!nodes.length) throw new Error('the model produced no recognizable nodes');
+    // Templates must follow the renumbering (see remapTemplateIds).
+    for (const n of nodes) n.data = remapTemplateIds(n.data, idMap);
     const hasTrigger = nodes.some(n => typeof n.type === 'string' && n.type.startsWith('trigger.'));
     const ids = new Set(nodes.map(n => n.id));
     const edges = [];
@@ -1849,7 +2062,10 @@ function materializeWorkflow(spec) {
     sanitizeEdgeHandles(nodes, edges);
     layoutWorkflow(nodes, edges);
     const name = (spec && typeof spec.name === 'string' && spec.name.trim()) ? spec.name.trim().slice(0, 80) : 'Generated automation';
-    return { name, nodes, edges };
+    // unknownTypes: node types the model invented that have no builtin and no
+    // alias. They were dropped, so the graph is missing a step the user asked
+    // for — the caller surfaces this instead of pretending the build is complete.
+    return { name, nodes, edges, unknownTypes };
 }
 
 // Engine `type` alone doesn't identify a node — every tool-backed connector
@@ -1880,10 +2096,12 @@ function materializeWorkflowEdit(spec, base) {
     // 1) resolve each proposed node to a builtin, keeping its raw (model) id +
     //    merged data so we can both match and remap edges.
     const raw = [];
+    const unknownTypes = [];
     for (const n of (Array.isArray(spec && spec.nodes) ? spec.nodes : [])) {
         const k = String((n && (n.type || n.kind)) || '').trim();
-        const b = byKey.get(k) || byType.get(k);
-        if (!b) continue;
+        const alias = NODE_TYPE_ALIASES.get(k.toLowerCase());
+        const b = byKey.get(k) || byType.get(k) || (alias ? (byKey.get(alias) || byType.get(alias)) : null);
+        if (!b) { if (k) unknownTypes.push(k); continue; }
         raw.push({
             rawId: (n && n.id != null && String(n.id).trim()) ? String(n.id).trim() : '',
             b,
@@ -1943,6 +2161,31 @@ function materializeWorkflowEdit(spec, base) {
     const idMap = new Map();
     for (let i = 0; i < raw.length; i++) { if (raw[i].rawId && !idMap.has(raw[i].rawId)) idMap.set(raw[i].rawId, finalIds[i]); }
     for (const id of finalIds) if (!idMap.has(id)) idMap.set(id, id);
+    // Templates must follow the same rawId → finalId remap the edges get. Without
+    // this an INSERTED node (which gets a fresh random id in pass C) leaves every
+    // {{nodes.<rawId>}} pointing at whichever node inherited that raw id — often
+    // the referencing node itself, which then reads its own empty output.
+    //
+    // But remap ONLY the fields the MODEL actually authored. The edit route swaps
+    // every long field for a __KEEP_FIELD_N__ token before the model sees the
+    // workflow and restores the ORIGINAL text afterwards — and that restored text is
+    // in BASE-id space, not the model's raw-id space. Running it through the raw-id
+    // map would repoint an UNCHANGED field at whatever node happened to inherit that
+    // raw id. A field byte-identical to the base node's is by definition unchanged,
+    // so leave it exactly as it is.
+    const same = (a, b) => {
+        if (a === b) return true;
+        try { return JSON.stringify(a) === JSON.stringify(b); } catch (_) { return false; }
+    };
+    for (const n of nodes) {
+        const baseN = baseNodes.get(String(n.id));
+        const baseData = (baseN && baseN.data) || null;
+        if (!n.data || typeof n.data !== 'object') continue;
+        for (const k of Object.keys(n.data)) {
+            if (baseData && same(n.data[k], baseData[k])) continue;   // unchanged → base-id space, don't touch
+            n.data[k] = remapTemplateIds(n.data[k], idMap);
+        }
+    }
     const edges = []; let e = 0;
     for (const ed of (Array.isArray(spec && spec.edges) ? spec.edges : [])) {
         if (!ed) continue;
@@ -1964,7 +2207,7 @@ function materializeWorkflowEdit(spec, base) {
         n.position = src ? { x: (src.position.x || 0) + 250, y: (src.position.y || 0) + 90 } : { x: maxX + 250, y: 100 + 90 * (stray++) };
     }
     const name = (spec && typeof spec.name === 'string' && spec.name.trim()) ? spec.name.trim().slice(0, 80) : ((base && base.name) || 'Automation');
-    return { name, nodes, edges };
+    return { name, nodes, edges, unknownTypes };
 }
 
 // Human-readable diff between two workflows (for the "show changes" preview).
@@ -2043,6 +2286,8 @@ module.exports = {
     buildBuilderSystemPrompt,
     materializeWorkflow,
     materializeWorkflowEdit,
+    remapTemplateIds,
+    NODE_TYPE_ALIASES,
     compactWorkflowForLLM,
     expandPlaceholders,
     hasResidualKeepToken,

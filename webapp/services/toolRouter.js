@@ -66,6 +66,11 @@ const CORE_DIFFUSION = ['web', 'base64_decode', 'run_python', 'read_file', 'load
 // for known-critical intents regardless of embeddings. GENERIC capability
 // triggers only (no topics/domains). A rule fires if its regex hits the query.
 const INTENT_RULES = [
+    // Recurring / triggered work -> the automation engine. Without this the model
+    // never sees build_automation and falls back to "write a cron job yourself".
+    // Kept ahead of the web rule: "every morning fetch the latest news" matches
+    // both, and the automation is the thing the user actually asked for.
+    [/\b(automat\w*|schedule[ds]?|scheduling|recurring|cron|workflow|every (morning|day|night|hour|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+\s*(min|hour|day))|each (morning|day|week)|daily|hourly|weekly|notify me when|alert me when|let me know when|monitor (this|the|a) (page|site|url)|keep an eye on)\b/i, ['build_automation']],
     [/\b(search|google|look ?up|latest|current|news|headline|today'?s|recent)\b|https?:\/\/|www\./i, ['web']],
     [/\bdns\b|\b(a|mx|txt|ns|cname)\s+record|nslookup|resolve .*(domain|host)/i, ['dns_lookup']],
     [/\bvirus\s*total\b|malware|reputation|\b[a-f0-9]{32,64}\b/i, ['virustotal_lookup']],

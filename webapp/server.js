@@ -91,6 +91,7 @@ const attachmentStore = require('./services/attachmentStore');
 
 // Automation engine (in-process DAG executor) + per-user run-history store.
 const automationEngine = require('./services/automationEngine');
+const workflowValidator = require('./services/workflowValidator');
 const workflowRunStore = require('./services/workflowRunStore');
 
 // Knowledge Base (RAG): per-user document collections + a resident CPU
@@ -1129,6 +1130,7 @@ function buildChatRuntimePrelude() {
         `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (the \`web\` tool — search the web or read a page/URL), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
         `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
+        `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -2430,6 +2432,17 @@ async function ensureDataDir() {
     } catch (err) {
         if (err.code !== 'EEXIST') throw err;
     }
+}
+
+// system-prompts.json is { <userId>: { <modelName>: "<prompt>" } } (written that
+// way by PUT /api/system-prompts/:modelName), with a legacy flat { <modelName>:
+// "<prompt>" } shape for pre-multiuser installs. Resolve through the user
+// namespace first, then fall back to flat.
+function resolveSystemPromptFor(prompts, userId, modelName) {
+    if (!prompts || !modelName) return '';
+    const byUser = (userId && prompts[userId] && typeof prompts[userId] === 'object') ? prompts[userId] : null;
+    if (byUser && typeof byUser[modelName] === 'string') return byUser[modelName];
+    return (typeof prompts[modelName] === 'string') ? prompts[modelName] : '';
 }
 
 async function loadSystemPrompts() {
@@ -8527,7 +8540,28 @@ async function resetStatefulStorage(wfObj, req) {
 // workflow the model edits against (id/position preservation); for Build it's
 // wfObj itself, for the Edit preview it's the original (so the proposed revision
 // is what's run/fixed). Keeps the BEST (fewest-issues) version seen.
-async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPrompt = '') {
+// Auto-repair the mechanical mistakes, then statically validate what's left.
+// Mutates `wf` and appends to `buildLog`. Returns { ok, issues, repairs, unknownTypes }.
+//
+// This is the gate that stops a semantically-dead workflow from being saved,
+// enabled and scheduled while reporting "built successfully" — the failure mode
+// that made every other builder defect invisible.
+function applyWorkflowStaticChecks(wf, unknownTypes, buildLog) {
+    const repairs = workflowValidator.repairWorkflow(wf);
+    for (const r of repairs) buildLog.push(`Auto-fixed — ${r}`);
+    const { ok, issues } = workflowValidator.validateWorkflow(wf);
+    const unknown = Array.isArray(unknownTypes) ? unknownTypes : [];
+    if (unknown.length) {
+        // The model asked for a capability that has no node (a "discord" node, an
+        // "email" node…). It used to be dropped in silence, so the user got a graph
+        // missing the exact step they asked for — with no error anywhere.
+        buildLog.push(`⚠ Unsupported step(s) dropped: ${[...new Set(unknown)].join(', ')} — there is no such node, so that part of your request is NOT in the workflow.`);
+    }
+    for (const i of issues) buildLog.push(`${i.severity === 'high' ? '✗' : '⚠'} ${i.nodeId ? i.nodeId + ': ' : ''}${i.detail}`);
+    return { ok, issues, repairs, unknownTypes: [...new Set(unknown)] };
+}
+
+async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPrompt = '', staticValidation = null) {
     // Compact per-node summary fed back to the model so it fixes against the
     // ACTUAL outputs (wrong paths, error payloads, empty results).
     // Per-node summary fed back to the model. Healthy nodes get a short preview;
@@ -8574,6 +8608,34 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
     // a missing token or an unreachable site — that's not a wiring bug).
     const isConfigError = (s) => /token|credential|chat id|webhook url|bot token|api key|not in the channel|channels:history|requires a /i.test(String(s || ''));
 
+    // A SOURCE THAT SIMPLY ISN'T REACHABLE is not a wiring bug, and no amount of
+    // re-prompting the model will fix it. The loop used to burn all 5 passes (≈3
+    // minutes of model time) re-writing a workflow whose only problem was that the
+    // URL the USER supplied returns 404 — and then blamed "the sites' RSS feeds".
+    // Detect it and stop like a config error, naming the URL so the user can fix it.
+    const RETRIEVAL_FAILED_RE = /\b(fetch_url|http_request|parse_rss|crawl_pages|scrapling_fetch|playwright_fetch|fetch_timeseries)\b[^]*\bfailed\b/i;
+    const UNREACHABLE_RE = /HTTP [45]\d\d|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|getaddrinfo|timed? ?out|unreachable|not found|forbidden|certificate|SSL|DNS/i;
+    const isUnreachableSourceError = (s) => RETRIEVAL_FAILED_RE.test(String(s || '')) && UNREACHABLE_RE.test(String(s || ''));
+
+    // Every URL the workflow's nodes point at, so we can tell a URL the USER gave us
+    // (unfixable by the model — it's their source) from one the model invented
+    // (which a repair pass CAN legitimately correct).
+    const urlsOf = (nodeIds) => {
+        const out = [];
+        for (const n of (wfObj.nodes || [])) {
+            if (nodeIds && nodeIds.size && !nodeIds.has(String(n.id))) continue;
+            const s = JSON.stringify(n.data || {});
+            for (const m of s.matchAll(/https?:\/\/[^\s"'\\)]+/g)) out.push(m[0]);
+        }
+        return [...new Set(out)];
+    };
+    const userSuppliedUrl = (url) => {
+        const g = String(goalPrompt || '');
+        if (!g) return false;
+        const bare = url.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+        return g.includes(url) || g.includes(bare) || g.includes(bare.split('/')[0]);
+    };
+
     // Targeted, data-driven guidance appended to every repair request — these are
     // the exact traps the cybersecurity-newspaper workflow fell into.
     const REPAIR_GUIDANCE = [
@@ -8582,11 +8644,11 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         '- If the source is a website you are scraping for structured records: check whether it has a JSON API or feed (paths like /api/recent, /api/<thing>, .json, /feed, /rss). If so, http_request that endpoint and parse_json its .data — that is far more reliable than parsing HTML. http_request output is { success, status, data }; parse_json "source" must be "{{nodes.<httpId>.data}}".',
         '- If an http_request node shows status >= 400: the URL/method is wrong — correct it (or switch to the site\'s real JSON endpoint).',
         '- If a db_store node\'s `.new` contains error objects (e.g. a stored {returncode:1,...}): the node feeding its "value" is broken — fix THAT upstream node; also make sure "key" is a real unique field of the records (e.g. "link" or an id), not a field that doesn\'t exist on the actual data shape shown above.',
-        '- If web_search nodes returned an {error} about rate-limiting / DuckDuckGo / Brave / Scrapling: site-specific web_search queries are unreliable. Replace them with fetch_url or crawl_pages directly on the source site\'s homepage or RSS/Atom feed (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://cybersecuritynews.com/, or that site\'s feed URL).',
+        '- If web_search nodes returned an {error} about rate-limiting / DuckDuckGo / Brave / Scrapling: site-specific web_search queries are unreliable. Replace them with parse_rss on the source\'s RSS/Atom feed, or fetch_url / crawl_pages directly on the source page — using the SOURCE THE USER NAMED (or a sensible feed path for it). Never substitute an unrelated site.',
         '- If a parse_json node returned [] or extracted nothing: its "path" does not match the real upstream shape shown above. A merge outputs {items:[...],count}; web_search outputs {results:[...]}. To get all urls from MERGED searches use path "items.*.results.*.url" (NOT "*.url").',
         '- If a map node returned results full of {error:"…needs a tool/skill name"}: a map\'s "action" must be "tool" or "model". For a tool action set "action":"tool", set "tool" to a valid name (e.g. "fetch_url" or "crawl_pages"), and put per-item args in "args" using {{item}} for the current item. Do NOT put the tool name in "action".',
         '- If a map node failed EVERY item with "Invalid URL" (or ran once treating a whole string as a single item): its "items" resolved to a STRING, not a list. A model node\'s output is a STRING, so you CANNOT feed a model node straight into a map. Fix it one of two ways: (a) replace that model node with a "set" node whose "value" is a real JSON array of the actual URLs (e.g. {"name":"urls","value":["https://a.com/feed/","https://b.com/rss.xml"]}); OR (b) add a "parse_json" node after the model to parse its JSON-array string into a real array. Then point the map\'s "items" at that node with an EXACT template (items:"{{nodes.<id>}}" or "{{nodes.<id>.<field>}}", no surrounding text) so the raw array is passed.',
-        '- For "latest news from a site", fetch_url works on the site HOMEPAGE and on its RSS/Atom FEED and returns real recent content. Prefer feed URLs, e.g. https://www.bleepingcomputer.com/feed/ , https://www.darkreading.com/rss.xml , https://krebsonsecurity.com/feed/ , https://thehackernews.com/ (homepage). Avoid feedburner.com mirrors (often refused).',
+        '- For "latest items/articles from a site", prefer that site\'s own RSS/Atom FEED via parse_rss (conventional paths: /feed/, /rss, /rss.xml, /atom.xml, or a /<section>/rss variant); fetch_url on the site\'s index page is the fallback when it has no feed. Stay on the source the USER named. Avoid feedburner.com mirrors (often refused behind an egress proxy).',
         '- If the final model node wrote an "error retrieving / no content" style message: that means it had no real source data — fix the upstream fetch/extract nodes so real content reaches it.',
         '- If a telegram/slack node failed with HTTP 400 / "message is too long": the text exceeds the platform limit. Keep the model node\'s output concise (ask it to summarize, not dump every record), and/or only forward the new items, so the message stays well under a few thousand characters.',
         '- DEDUP THAT SILENTLY SUPPRESSES EVERYTHING: if a db_store reports records on the FIRST run then ZERO "new" on later runs while real content keeps appearing — OR its input is a fetch_url of a HOMEPAGE/section page (or a merge of such) — it is keying on the SOURCE PAGE, not the articles. fetch_url on a homepage returns ONE record per site whose url never changes, so every later run sees "already seen" and the gate blocks forever. This is the #1 dedup bug. FIX: replace each homepage fetch_url with a parse_rss node on that site\'s RSS/Atom feed (one record PER ARTICLE with a stable link), fan them into a merge, and set db_store value="{{nodes.<merge>.items.*.items}}" (the ".*.items" flattens every feed\'s items into one article list) with key="link". Then gate.if on .new. For full article text (not just the feed summary), add a map node after the gate: { "items":"{{nodes.<store>.new}}", "action":"tool", "tool":"fetch_url", "args":{"url":"{{item.link}}"} } and feed the model "{{nodes.<map>.results}}".',
@@ -8605,6 +8667,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
     let lastRec = null;     // the most recent run record (per-node detail for the test report)
     let passesRun = 0;      // how many run/repair passes actually executed
     let configStop = false;
+    let configStopReason = '';   // the SPECIFIC reason (e.g. the unreachable URL), for the verdict
     let goalFix = '';
 
     for (let pass = 1; pass <= MAX_REPAIR_PASSES; pass++) {
@@ -8624,6 +8687,28 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
             assess = automationEngine.assessRunHealth(rec);
         } else {
             assess = { ok: outcome.status === 'completed', issues: outcome.error ? [{ nodeId: '(run)', type: '', severity: 'high', detail: outcome.error }] : [], score: outcome.error ? 3 : 0 };
+        }
+
+        // Fold in the STATIC defects (dangling refs, unreachable steps, a gate with
+        // no "true" edge, a node reading a field its producer never emits). A run
+        // cannot surface these — an unwired node is simply skipped and the run still
+        // reports "completed" — so without this the repair loop never sees them and
+        // the workflow ships broken. Re-validated each pass so a repair that
+        // introduces a new dangling ref is caught too.
+        {
+            const sv = workflowValidator.validateWorkflow(wfObj);
+            for (const i of sv.issues) {
+                if (i.severity !== 'high') continue;
+                assess.issues.push({ nodeId: i.nodeId || '(graph)', type: i.code, severity: 'high', detail: i.detail });
+            }
+            if (pass === 1 && staticValidation && (staticValidation.unknownTypes || []).length) {
+                assess.issues.push({
+                    nodeId: '(graph)', type: 'unknown_node', severity: 'high',
+                    detail: `the spec used node type(s) that do not exist (${staticValidation.unknownTypes.join(', ')}) so that step was DROPPED — rebuild it with a real node from the catalog, or if no node can do it, remove the dependency on it.`,
+                });
+            }
+            if (sv.issues.some(i => i.severity === 'high')) { assess.ok = false; }
+            assess.score = assess.issues.reduce((s, i) => s + (i.severity === 'high' ? 3 : 1), 0);
         }
 
         // Deeper verification on a structurally-healthy run — this is what makes
@@ -8738,9 +8823,27 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         const inputNeeded = inputDriven && !assess.ok && highIssues.length > 0
             && highIssues.every(i => isInputMissingError(i.detail));
 
+        // The ONLY thing wrong is that a source can't be reached. Repairing is
+        // pointless when the user chose that URL; when the MODEL invented it, give it
+        // exactly ONE pass to pick a better one, then stop rather than grind.
+        let sourceStop = '';
+        if (!assess.ok && highIssues.length > 0 && highIssues.every(i => isUnreachableSourceError(i.detail))) {
+            const badIdSet = new Set(highIssues.map(i => String(i.nodeId)).filter(Boolean));
+            const urls = urlsOf(badIdSet);
+            const mine = urls.filter(userSuppliedUrl);
+            const detail = String(highIssues[0].detail).replace(/\s+/g, ' ').slice(0, 120);
+            if (mine.length) {
+                sourceStop = `The source you asked for is unreachable — ${mine.join(', ')} (${detail}). The workflow wiring is fine; check the URL (or use that site's RSS/feed path) and it will run.`;
+            } else if (pass >= 2) {
+                sourceStop = `The source is unreachable after ${pass} attempt${pass === 1 ? '' : 's'} — ${urls.join(', ') || 'the configured URL'} (${detail}). Point it at a URL that loads and it will run; re-prompting the model cannot fix an unreachable site.`;
+            }
+        }
+
         // Stop early when healthy, or when the only thing wrong is missing config.
-        if (configError || inputNeeded) {
-            buildLog.push(inputNeeded
+        if (configError || inputNeeded || sourceStop) {
+            configStopReason = sourceStop || '';
+            if (sourceStop) buildLog.push(sourceStop);
+            else buildLog.push(inputNeeded
                 ? 'This workflow needs live input from its trigger (e.g. the webhook request body or the incoming message). It builds correctly and will run when triggered with real data.'
                 : 'That failure is just missing configuration (e.g. a token / unreachable site) — fill it in and it will run.');
             configStop = true;
@@ -8790,6 +8893,15 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
             }
             const revised = automationEngine.materializeWorkflowEdit(spec, base);
             wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
+            // A repair pass can invent a node type too. Those are DROPPED during
+            // materialize, so without this the repaired workflow silently loses the
+            // step and nothing downstream can tell (the node simply isn't there).
+            if ((revised.unknownTypes || []).length) {
+                buildLog.push(`⚠ Pass ${pass}: the repair used unsupported node type(s) — ${[...new Set(revised.unknownTypes)].join(', ')} — so that step was dropped.`);
+            }
+            // Re-apply the mechanical auto-repairs (placeholder creds, create_file
+            // filePath, map action…) to whatever the repair model just produced.
+            for (const r of workflowValidator.repairWorkflow(wfObj)) buildLog.push(`Pass ${pass}: auto-fixed — ${r}`);
             buildLog.push(`Pass ${pass}: applied a repair, re-running…`);
         } catch (e) {
             buildLog.push(`Pass ${pass}: auto-fix skipped — ${e.message}`);
@@ -8805,20 +8917,70 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         buildLog.push(`Kept the best attempt (${best.score} issue-points) over a worse final pass.`);
     }
 
+    // Which nodes never executed in the last test run? The engine SKIPS a node on a
+    // pruned branch and never records it, so a run whose gate went false (a first-run
+    // track_changes baseline, an empty db_store .new) simply omits the delivery node
+    // — and the loop then declared "Data is flowing end to end ✓" for a workflow
+    // whose Telegram/PDF step was never once exercised. Say so instead of claiming it.
+    const ranIds = new Set((lastRec && Array.isArray(lastRec.nodes) ? lastRec.nodes : []).map(n => String(n.nodeId)));
+    const hasOutgoing = new Set((wfObj.edges || []).map(e => String(e.source)));
+    const neverRan = (wfObj.nodes || [])
+        .filter(n => !ranIds.has(String(n.id)) && !String(n.type || '').startsWith('trigger.'));
+    const unverifiedTerminals = neverRan.filter(n => !hasOutgoing.has(String(n.id)));
+
     // Clear verdict.
     let verdictText;
     let outcomeKind; // 'ok' | 'config' | 'failed'
     if (configStop) {
-        outcomeKind = 'config';
-        verdictText = 'Runs — only needs configuration you must supply (a token / credential / reachable source).';
-        // (the specific config message was already pushed to buildLog above)
+        // "Only needs configuration" must not paper over a structurally broken graph.
+        // A blank credential (which the builder is REQUIRED to leave blank) stops the
+        // run early, and the old verdict then claimed the workflow was fine — while a
+        // static defect like "db_store keyed on web_search results" (which suppresses
+        // the automation permanently after run 1) sat right there in the issue list.
+        // Exclude the issue that CAUSED the stop — an unreachable source is the
+        // reason we stopped, not an extra defect on top of it. Without this the
+        // verdict leads with "needs a token/credential" for a workflow whose only
+        // problem is a URL that 404s.
+        const structural = (lastAssess && lastAssess.issues || [])
+            .filter(i => i.severity === 'high' && !isConfigError(i.detail) && !isUnreachableSourceError(i.detail));
+        if (structural.length) {
+            outcomeKind = 'failed';
+            const shown = structural.slice(0, 2)
+                .map(i => `${i.nodeId}: ${String(i.detail).replace(/\s+/g, ' ').slice(0, 140)}`).join(' · ');
+            verdictText = `Needs configuration (a token/credential) — but it ALSO has ${structural.length} problem${structural.length === 1 ? '' : 's'} that must be fixed or it will not work once configured: ${shown}${structural.length > 2 ? ` (+${structural.length - 2} more)` : ''}`;
+            buildLog.push('Result: ' + verdictText);
+        } else {
+            outcomeKind = 'config';
+            // Name the ACTUAL blocker when we know it (an unreachable source URL),
+            // instead of the generic "needs a token" line.
+            verdictText = configStopReason
+                || 'Runs — only needs configuration you must supply (a token / credential / reachable source).';
+        }
     } else if (lastAssess && lastAssess.ok) {
         outcomeKind = 'ok';
-        verdictText = 'Data is flowing end to end ✓';
-        buildLog.push('Result: data is flowing ✓');
+        if (unverifiedTerminals.length) {
+            const names = unverifiedTerminals.map(n => `${(n.data && n.data.label) || n.type} (${n.id})`).join(', ');
+            verdictText = `Data is flowing ✓ — but the final step${unverifiedTerminals.length > 1 ? 's' : ''} ${names} did not run in this test (the gate before it did not fire), so delivery is UNVERIFIED. That is expected for a "notify me only when something changes" workflow on its first run.`;
+            buildLog.push(`Result: data is flowing ✓ — but ${names} never ran in the test, so it is unverified.`);
+        } else {
+            verdictText = 'Data is flowing end to end ✓';
+            buildLog.push('Result: data is flowing ✓');
+        }
     } else {
         outcomeKind = 'failed';
-        verdictText = 'Still no data after repair passes — best attempt kept; likely needs the sites\' RSS feeds or a configured search/API key.';
+        // Say WHAT actually broke. This used to be a fixed string blaming "the sites'
+        // RSS feeds or a configured search/API key" no matter the real cause — so a
+        // model node 400ing on an oversized prompt, or a map whose every item errored,
+        // was reported as a feed/API-key problem and the user had nothing to act on.
+        const highs = (lastAssess && lastAssess.issues || []).filter(i => i.severity === 'high');
+        if (highs.length) {
+            const shown = highs.slice(0, 2)
+                .map(i => `${i.nodeId}${i.type ? ` (${i.type})` : ''}: ${String(i.detail).replace(/\s+/g, ' ').slice(0, 140)}`)
+                .join(' · ');
+            verdictText = `Did not succeed after ${passesRun} repair pass${passesRun === 1 ? '' : 'es'} — best attempt kept. ${highs.length} blocking problem${highs.length === 1 ? '' : 's'}: ${shown}${highs.length > 2 ? ` (+${highs.length - 2} more)` : ''}`;
+        } else {
+            verdictText = `Did not succeed after ${passesRun} repair pass${passesRun === 1 ? '' : 'es'} — best attempt kept.`;
+        }
         buildLog.push('Result: ' + verdictText);
     }
 
@@ -8842,6 +9004,20 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         preview: shortPreview(n.output),
         flagged: flaggedIds.has(n.nodeId),
     }));
+    // Append the nodes that never executed, so the report shows the WHOLE graph.
+    // Without these rows the delivery step is simply absent from the table and the
+    // run looks complete.
+    for (const n of neverRan) {
+        reportNodes.push({
+            id: n.id,
+            label: (n.data && n.data.label) || n.type,
+            type: n.type,
+            status: 'never ran',
+            error: null,
+            preview: 'did not run in this test — the branch leading to it was not taken',
+            flagged: false,
+        });
+    }
     const testReport = {
         outcome: outcomeKind,                 // ok | config | failed
         ok: outcomeKind === 'ok',
@@ -8851,6 +9027,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         verdict: verdictText,
         issues: (lastAssess && lastAssess.issues || []).map(i => ({ nodeId: i.nodeId, type: i.type, severity: i.severity, detail: i.detail })),
         nodes: reportNodes,
+        unverified: unverifiedTerminals.map(n => ({ id: n.id, label: (n.data && n.data.label) || n.type, type: n.type })),
     };
     return testReport;
 }
@@ -8968,6 +9145,66 @@ async function summarizeAutomation({ isBuild, prompt, wf, diff, model }) {
     }
 }
 
+// Core of "build an automation from a plain-English description". Shared by the
+// POST /api/automations/build route and the `build_automation` chat tool, so the
+// chat can actually CREATE an automation instead of telling the user to go write
+// a cron job (which is what it did — the engine was invisible to it).
+// `caller` only needs { userId, apiKeyData }.
+async function createAutomationFromPrompt({ prompt, model, caller, test = false }) {
+    const messages = [
+        { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
+        { role: 'user', content: `Build an automation for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
+    ];
+    const spec = await generateBuilderSpec(messages, model, 8000);
+    if (!spec || typeof spec !== 'object') {
+        const e = new Error('The model did not return a valid workflow. Try rephrasing the request.');
+        e.statusCode = 422; throw e;
+    }
+    let built;
+    try { built = automationEngine.materializeWorkflow(spec); }
+    catch (e) { const err = new Error(`Could not assemble the workflow: ${e.message}`); err.statusCode = 422; throw err; }
+
+    const now = new Date().toISOString();
+    const wf = {
+        id: crypto.randomBytes(16).toString('hex'),
+        name: built.name,
+        description: `Built with LLM — ${String(prompt).trim().slice(0, 160)}`,
+        nodes: built.nodes,
+        edges: built.edges,
+        enabled: true,
+        archived: false,
+        userId: caller.userId || null,
+        createdAt: now,
+        updatedAt: now,
+    };
+    const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
+    const validation = applyWorkflowStaticChecks(wf, built.unknownTypes, buildLog);
+
+    // Read-modify-write the list ONCE per save, re-loading each time. The list used
+    // to be loaded up front and re-saved after the test run — which can take several
+    // MINUTES — so the second save wrote a stale array and silently deleted every
+    // workflow created or edited in the meantime (a build from the chat and a build
+    // from the UI at the same time = one of them vanishes).
+    const upsert = async () => {
+        const fresh = await loadWorkflows();
+        const i = fresh.findIndex(w => w.id === wf.id);
+        if (i >= 0) fresh[i] = wf; else fresh.push(wf);
+        await saveWorkflows(fresh);
+    };
+    await upsert();
+
+    let testReport = null;
+    if (test) {
+        try {
+            testReport = await runAndRepairWorkflow(wf, wf, model, caller, buildLog, String(prompt).trim(), validation);
+            wf.updatedAt = new Date().toISOString();
+            await upsert(); // persist any auto-fix, against the CURRENT list
+        } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
+    }
+    const summary = await summarizeAutomation({ isBuild: true, prompt: String(prompt).trim(), wf, model });
+    return { wf, buildLog, summary, validation, testReport };
+}
+
 app.post('/api/automations/build', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
@@ -8977,49 +9214,18 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'A prompt describing the automation is required' });
     }
     try {
-        const messages = [
-            { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `Build an automation for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
-        ];
-        // No compaction here (unlike edit/repair): build generates a workflow from
-        // scratch and never echoes an existing one back, so there's nothing large
-        // to round-trip. generateBuilderSpec suppresses thinking + retries so the
-        // reasoning trace can't truncate the JSON (the old "no recognizable nodes").
-        const spec = await generateBuilderSpec(messages, model, 8000);
-        if (!spec || typeof spec !== 'object') {
-            return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your request.' });
-        }
-        let built;
-        try { built = automationEngine.materializeWorkflow(spec); }
-        catch (e) { return res.status(422).json({ error: `Could not assemble the workflow: ${e.message}` }); }
-        const workflows = await loadWorkflows();
-        const now = new Date().toISOString();
-        const wf = {
-            id: crypto.randomBytes(16).toString('hex'),
-            name: built.name,
-            description: `Built with LLM — ${String(prompt).trim().slice(0, 160)}`,
-            nodes: built.nodes,
-            edges: built.edges,
-            enabled: true,
-            archived: false,
-            userId: req.userId || null,
-            createdAt: now,
-            updatedAt: now,
-        };
-        workflows.push(wf);
-        await saveWorkflows(workflows);
-        const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
-        let testReport = null;
-        if (req.body && req.body.test) {
-            try {
-                testReport = await runAndRepairWorkflow(wf, wf, model, req, buildLog, String(prompt).trim());
-                wf.updatedAt = new Date().toISOString();
-                await saveWorkflows(workflows); // persist any auto-fix
-            } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
-        }
-        const summary = await summarizeAutomation({ isBuild: true, prompt: String(prompt).trim(), wf, model });
-        res.status(201).json({ ...wf, buildLog, summary, ...(testReport ? { testReport } : {}) });
+        // Single implementation, shared with the build_automation chat tool, so the
+        // two can never drift.
+        const { wf, buildLog, summary, validation, testReport } = await createAutomationFromPrompt({
+            prompt, model, caller: req, test: !!(req.body && req.body.test),
+        });
+        res.status(201).json({ ...wf, buildLog, summary, validation, ...(testReport ? { testReport } : {}) });
     } catch (error) {
+        // createAutomationFromPrompt tags the user-actionable failures (unparseable
+        // spec, un-assemblable graph) with statusCode 422 — don't flatten those to 500.
+        if (error && error.statusCode) {
+            return res.status(error.statusCode).json({ error: error.message });
+        }
         console.error('Error building automation:', error);
         res.status(500).json({ error: `Failed to build automation: ${error.message}` });
     }
@@ -9102,23 +9308,30 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         let proposed;
         try { proposed = automationEngine.materializeWorkflowEdit(spec, wf); }
         catch (e) { return res.status(422).json({ error: `Could not apply the change: ${e.message}` }); }
+        // Same static gate as the build path — an edit is at least as likely to
+        // strand a template or orphan a node (it renumbers inserted nodes) and the
+        // user is about to confirm this diff.
+        const editLog = [];
+        const validation = applyWorkflowStaticChecks(proposed, proposed.unknownTypes, editLog);
         let buildLog;
         let testReport = null;
         if (req.body && req.body.test) {
-            buildLog = [`Proposed ${proposed.nodes.length} node(s)`];
+            buildLog = [`Proposed ${proposed.nodes.length} node(s)`, ...editLog];
             try {
                 // Run the PROPOSED revision (not saved) and auto-fix a fixable failure,
                 // so the diff the user confirms is the tested-and-improved version.
                 const probe = { ...wf, nodes: proposed.nodes, edges: proposed.edges };
-                testReport = await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(prompt).trim());
+                testReport = await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(prompt).trim(), validation);
                 proposed.nodes = probe.nodes;
                 proposed.edges = probe.edges;
             } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
+        } else if (editLog.length) {
+            buildLog = editLog;
         }
         const diff = automationEngine.diffWorkflows(wf, proposed);
         const changelog = diffToChangeLines(diff);
         const summary = await summarizeAutomation({ isBuild: false, prompt: String(prompt).trim(), wf: proposed, diff, model });
-        res.json({ proposed, diff, summary, changelog, ...(buildLog ? { buildLog } : {}), ...(testReport ? { testReport } : {}) });
+        res.json({ proposed, diff, summary, changelog, validation, ...(buildLog ? { buildLog } : {}), ...(testReport ? { testReport } : {}) });
     } catch (error) {
         console.error('Error editing automation:', error);
         res.status(500).json({ error: `Failed to edit automation: ${error.message}` });
@@ -16717,7 +16930,10 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
         // Load system prompt for this model
         const systemPrompts = await loadSystemPrompts();
-        const systemPrompt = systemPrompts[targetModel] || '';
+        // The store is USER-NAMESPACED on write (prompts[userId][modelName]) but was
+        // read flat, so systemPrompts[targetModel] was always undefined and the
+        // per-model system prompt silently never applied on this path.
+        const systemPrompt = resolveSystemPromptFor(systemPrompts, req.userId, targetModel);
 
         // Estimate token count (rough estimate: 1 token ≈ 4 characters)
         const estimateTokens = (text) => Math.ceil(text.length / 4);
@@ -17069,12 +17285,21 @@ function parseProhibitedToolNames(text, knownNames) {
     const ITEM = "(?:the\\s+)?[a-z0-9_]+";
     const SEP = "\\s*(?:,|/|\\bor\\b|\\band\\b)\\s*";
     const re = new RegExp("\\b" + NEG + "\\b\\s*" + VERB + "\\s+" + ITEM + "(?:" + SEP + ITEM + ")*", "gi");
+    // A SHORT, common-word tool name (the consolidated `web` tool is 3 chars) was
+    // unbannable: the underscore-or->=7-chars filter below rejected it, so "never
+    // use the web tool" was a silent no-op — the very tool a user most wants to
+    // ban. Allow such a name only when the prompt qualifies it AS A TOOL
+    // ("the web tool", "web tool"), which incidental prose ("don't browse the web
+    // casually") does not do.
+    const lower = String(text).toLowerCase();
+    const qualifiedAsTool = (t) => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+tool\\b`).test(lower);
     let m;
     while ((m = re.exec(String(text))) !== null) {
         const toks = (m[0].toLowerCase().match(/[a-z0-9_]+/g) || []);
         for (const t of toks) {
             if (!known.has(t)) continue;
-            if (!(t.includes('_') || t.length >= 7)) continue;   // reject short/generic
+            const specific = t.includes('_') || t.length >= 7;
+            if (!specific && !qualifiedAsTool(t)) continue;   // reject short/generic unless named as a tool
             prohibited.add(knownNames.find(n => n.toLowerCase() === t) || t);
         }
         if (re.lastIndex === m.index) re.lastIndex++;  // guard against zero-width
@@ -17316,7 +17541,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
             // Load system prompt for this model (only for legacy format)
             const systemPrompts = await loadSystemPrompts();
-            const systemPrompt = systemPrompts[targetModel] || '';
+            const systemPrompt = resolveSystemPromptFor(systemPrompts, req.userId, targetModel);
 
             if (systemPrompt) {
                 chatMessages.push({ role: 'system', content: systemPrompt });
@@ -19035,7 +19260,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 .map(m => typeof m.content === 'string' ? m.content
                     : (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''))
                 .join('\n');
-            const prohibited = parseProhibitedToolNames(sysText, Array.from(fullByName.keys()));
+            // Match against the FULL registry, not just the visible catalog: the web
+            // retrieval tools (web_search / fetch_url / scrapling_fetch /
+            // playwright_fetch / crawl_pages) are hidden behind the consolidated
+            // `web` tool (build()→null) so they never appear in the catalog — which
+            // made "do not use web_search" a no-op. They are still DISPATCHABLE by
+            // name, and the dispatch-time refusal resolves `web` to its effective
+            // inner op, so a ban on an inner name correctly blocks `web` too.
+            const bannableNames = new Set(fullByName.keys());
+            try { for (const n of tools.toolRegistry.keys()) bannableNames.add(n); } catch (_) {}
+            const prohibited = parseProhibitedToolNames(sysText, Array.from(bannableNames));
             if (prohibited.size) {
                 toolCtx._prohibitedTools = prohibited;
                 for (const n of prohibited) {
@@ -21703,6 +21937,42 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 // from /api/complete (sglang/llama.cpp reject input+max_tokens > contextSize).
 //   opts: { messages:[{role,content}], model?, temperature?, maxTokens?, userId? }
 //   returns: the assistant text (string)
+// Shrink a completion's messages until the estimated input fits `budgetTokens`.
+// Keeps every message (a dropped message changes the task), keeps the system
+// message intact, and trims the LARGEST content first, head+tail so both the
+// instruction at the top and the most recent data at the bottom survive.
+// Returns a new array; never mutates the caller's messages.
+function fitCompletionMessagesToContext(messages, budgetTokens) {
+    const CHARS_PER_TOKEN = 4;
+    const budgetChars = Math.max(1000, budgetTokens * CHARS_PER_TOKEN);
+    const total = () => out.reduce((n, m) => n + String(m.content || '').length, 0);
+    let out = messages.map(m => ({ ...m }));
+    if (total() <= budgetChars) return out;
+
+    // Trim non-system messages, largest first, until it fits.
+    for (let guard = 0; guard < 50 && total() > budgetChars; guard++) {
+        const over = total() - budgetChars;
+        // biggest trimmable message
+        let idx = -1, size = 0;
+        for (let i = 0; i < out.length; i++) {
+            if (out[i].role === 'system') continue;
+            const len = String(out[i].content || '').length;
+            if (len > size) { size = len; idx = i; }
+        }
+        if (idx < 0 || size <= 400) break;   // nothing meaningful left to trim
+        const text = String(out[idx].content || '');
+        const marker = (n) => `\n\n…[TRUNCATED ${n} characters to fit the model's context window]…\n\n`;
+        // Reserve room for the marker itself, or the "trimmed" message comes back
+        // LONGER than the target and the result still overflows the window.
+        const target = Math.max(400, text.length - over - marker(text.length).length);
+        if (target >= text.length) break;
+        const head = Math.floor(target * 0.6);
+        const tail = target - head;
+        out[idx].content = `${text.slice(0, head)}${marker(text.length - target)}${text.slice(text.length - tail)}`;
+    }
+    return out;
+}
+
 async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking } = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error('messages[] is required');
@@ -21726,10 +21996,22 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
     const targetPort = targetInstance.internalPort || targetInstance.port;
 
     const contextSize = (targetInstance.config && (targetInstance.config.contextSize || targetInstance.config.maxModelLen)) || 4096;
-    const inputChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
-    const estimatedInputTokens = Math.ceil(inputChars / 4);
     const safetyMargin = 200;
     const minResponse = Math.min(512, Math.max(64, Math.floor(contextSize * 0.1)));
+
+    // FIT THE INPUT TO THE WINDOW. This used to only clamp max_tokens DOWN, and an
+    // over-long input simply 400'd the backend. That is exactly what killed real
+    // automations: an automation `model` node whose prompt interpolates
+    // "{{nodes.<map>.results}}" (N fetched articles) has NO size bound — the map's
+    // auto-attach path caps at 16k chars but the explicit-template path does not —
+    // so the model node 400s on every run, the repair loop can't fix a size problem,
+    // and the user's actual deliverable (the PDF) never executes.
+    // Trim the largest message contents head+tail until the input fits, always
+    // preserving the system message and never dropping a message entirely.
+    messages = fitCompletionMessagesToContext(messages, contextSize - minResponse - safetyMargin);
+
+    const inputChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
+    const estimatedInputTokens = Math.ceil(inputChars / 4);
     const available = Math.max(minResponse, contextSize - estimatedInputTokens - safetyMargin);
     const safeMaxTokens = maxTokens
         ? Math.min(maxTokens, available)
@@ -21818,7 +22100,10 @@ app.post('/api/complete', requireAuth, async (req, res) => {
 
         // Load system prompt for this model
         const systemPrompts = await loadSystemPrompts();
-        const systemPrompt = systemPrompts[targetModel] || '';
+        // The store is USER-NAMESPACED on write (prompts[userId][modelName]) but was
+        // read flat, so systemPrompts[targetModel] was always undefined and the
+        // per-model system prompt silently never applied on this path.
+        const systemPrompt = resolveSystemPromptFor(systemPrompts, req.userId, targetModel);
 
         // Prepend system prompt if one exists
         let finalPrompt = prompt;
@@ -28443,6 +28728,79 @@ app.use((req, res) => {
                 });
             } catch (e) {
                 return { error: `read_document_chunk failed: ${e.message || String(e)}` };
+            }
+        },
+    });
+
+    // ── build_automation ──────────────────────────────────────────────────────
+    // Without this the chat had NO idea this server has an automation engine: asked
+    // to "check a news site every morning at 8am and Telegram me a summary" it
+    // offered to write a Node script and told the user to add a crontab entry —
+    // for a product whose flagship feature is exactly that, with a scheduler,
+    // triggers and run history. Hidden when the caller lacks the automation perm.
+    tools.registerTool({
+        name: 'build_automation',
+        build(ctx) {
+            if (!checkPermission(ctx && ctx.apiKeyData, AUTOMATION_PERM)) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'build_automation',
+                    description:
+                        'Create a real, saved, scheduled automation on this server from a plain-English description — use this for ANY recurring/triggered task ("every morning at 8", "every hour", "whenever X happens", "notify me when…", "monitor this page"). ' +
+                        'This server has a first-class automation engine (schedule/cron, webhook, Telegram and Slack triggers; web fetch, RSS, JSON APIs, models, dedupe, PDF/CSV output, Telegram/Slack delivery; run history). ' +
+                        'NEVER tell the user to write a cron job, a shell/Node/Python script, or a GitHub Action for a recurring task — call this instead. ' +
+                        'Pass the user\'s request as `description`, including the schedule, the source, and where the result should go. Credentials (bot tokens, chat ids) are left blank for the user to fill in the Automations UI.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            description: {
+                                type: 'string',
+                                description: 'The automation in plain English, with the trigger/schedule, the data source, and the destination. e.g. "every morning at 8am fetch the RSS feed of <site> and send new articles to Telegram".',
+                            },
+                            test: {
+                                type: 'boolean',
+                                description: 'Run it once and auto-repair failures before returning (slower, but verifies it actually works). Default true.',
+                            },
+                        },
+                        required: ['description'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const description = String((args && args.description) || '').trim();
+            if (!description) return { error: 'description is required — describe the automation in plain English.' };
+            if (!checkPermission(ctx && ctx.apiKeyData, AUTOMATION_PERM)) {
+                return { error: 'You do not have the automation permission.' };
+            }
+            try {
+                const test = args && args.test === false ? false : true;
+                const { wf, summary, validation, testReport } = await createAutomationFromPrompt({
+                    prompt: description,
+                    model: undefined,
+                    caller: { userId: ctx.userId, apiKeyData: ctx.apiKeyData },
+                    test,
+                });
+                logUserActivity(ctx.userId, `Automation: built "${wf.name}" (${wf.nodes.length} steps)${testReport ? ` — test: ${testReport.outcome}` : ''}`);
+                // Keep the model-facing result SMALL: the steps + what still needs
+                // the user, not the whole graph.
+                return {
+                    success: true,
+                    id: wf.id,
+                    name: wf.name,
+                    summary,
+                    steps: wf.nodes.map(n => (n.data && n.data.label) || n.type),
+                    enabled: wf.enabled,
+                    needsConfiguration: [...new Set(wf.nodes.flatMap(n => Object.keys(n.data || {})
+                        .filter(k => ['botToken', 'chatId', 'channel', 'webhookUrl', 'apiKey'].includes(k) && !String(n.data[k] || '').trim())))],
+                    warnings: (validation && validation.issues || []).map(i => i.detail).slice(0, 5),
+                    droppedSteps: (validation && validation.unknownTypes) || [],
+                    test: testReport ? { outcome: testReport.outcome, verdict: testReport.verdict } : null,
+                    note: 'Saved and enabled. The user can open the Automations tab to fill in any credentials, edit the steps, or run it now.',
+                };
+            } catch (e) {
+                return { error: `build_automation failed: ${e.message || String(e)}` };
             }
         },
     });
