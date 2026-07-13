@@ -135,6 +135,45 @@ async function resolvesPublicly(host) {
     }
 }
 
+/** True when `host` is a private/internal (non-metadata) destination.
+ *  Used ONLY when the admin has opted into internal access, to let a
+ *  narrow-allowlist tool (git_clone_shallow, web_search, …) reach an
+ *  INTERNAL host that isn't on its per-tool allowlist — the whole point of
+ *  the toggle is "let tools reach the intranet." A single-label / reserved-TLD
+ *  host is internal by definition. A DNS host is treated as internal only when
+ *  EVERY resolved address is private and none is metadata — a host that
+ *  resolves to a mix of public + private addresses is NOT trusted as internal
+ *  (defense against a rebinding trick that smuggles a public target past the
+ *  allowlist). Metadata never counts as internal (it has its own floor). */
+async function isInternalDestination(host) {
+    host = String(host || '').toLowerCase().trim();
+    if (!host) return false;
+    if (net.isIP(host)) {
+        if (isMetadataIp(host)) return false;
+        return isPrivateOrLocalIp(host);
+    }
+    if (isInternalLookingHost(host)) return true;
+    try {
+        const addrs = await dnsPromises.lookup(host, { all: true, verbatim: true });
+        if (!addrs || addrs.length === 0) return false;
+        return addrs.every(a => !isMetadataIp(a.address) && isPrivateOrLocalIp(a.address));
+    } catch {
+        return false;
+    }
+}
+
+/** Allowlist gate with the internal-access carve-out folded in. A host passes
+ *  if it matches the tool's per-tool allowlist, OR — when the admin has enabled
+ *  internal access — if it's a private/internal destination (so narrow-allowlist
+ *  tools can reach the intranet, exactly what the toggle promises). Public
+ *  off-allowlist hosts remain blocked either way; the metadata floor is enforced
+ *  separately by the resolvesPublicly() check that follows every call site. */
+async function hostPermitted(host, allow) {
+    if (hostMatches(host, allow)) return true;
+    if (allowInternal && await isInternalDestination(host)) return true;
+    return false;
+}
+
 const PROXY_PORT = parseInt(process.env.EGRESS_PROXY_PORT || '3180', 10);
 
 // grants: token -> { allow:Set<string>, expiresAt:number, toolName, userId, ip }
@@ -319,7 +358,7 @@ async function onHttpRequest(req, res) {
         return deny(res, 407, 'denied', check.reason);
     }
     const hostname = target.hostname;
-    if (!hostMatches(hostname, check.grant.allow)) {
+    if (!(await hostPermitted(hostname, check.grant.allow))) {
         stats.rejectedNotOnAllowlist++;
         return deny(res, 403, 'denied', `${hostname} not on allowlist`);
     }
@@ -384,7 +423,7 @@ async function onConnect(req, clientSocket, head) {
         clientSocket.destroy();
         return;
     }
-    if (!hostMatches(hostname, check.grant.allow)) {
+    if (!(await hostPermitted(hostname, check.grant.allow))) {
         stats.rejectedNotOnAllowlist++;
         clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         clientSocket.destroy();
@@ -462,8 +501,10 @@ module.exports = {
     bindGrantToIp,
     getStats,
     hostMatches,            // exported for tests
+    hostPermitted,          // exported for tests — allowlist + internal carve-out
     isPrivateOrLocalIp,     // exported for tests + reuse
     isInternalLookingHost,  // exported for tests
+    isInternalDestination,  // exported for tests
     resolvesPublicly,       // exported for tests
     PROXY_PORT,
 };
