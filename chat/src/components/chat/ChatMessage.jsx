@@ -238,6 +238,13 @@ export default React.memo(function ChatMessage({
         lineHeight: 1.62,
         alignSelf: 'stretch',
         maxWidth: '100%',
+        // Same overflow guard as the user bubble — a long unbroken token in
+        // prose can't wrap at a space and would push past the edge. Code
+        // blocks are unaffected (their own overflow-x container + white-space:
+        // pre override wrapping).
+        minWidth: 0,
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
     };
     // User bubble stays as a proper bubble even in flat-bubble mode
     // so right-aligned user text reads as a message, not a highlight.
@@ -250,6 +257,13 @@ export default React.memo(function ChatMessage({
         lineHeight: 1.6,
         maxWidth: '78%',
         alignSelf: 'flex-end',
+        // Long unbroken pastes (URLs, hashes, base64, file paths) have no
+        // space to wrap at, so without this they overflow the bubble's right
+        // edge. `anywhere` both breaks the run AND lets the box shrink to fit;
+        // `pre-wrap` on children preserves multi-line paste layout.
+        minWidth: 0,
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
     };
     const collapseBtn = {
         marginLeft: 'auto',
