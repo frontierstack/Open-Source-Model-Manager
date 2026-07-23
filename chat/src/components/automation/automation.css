@@ -289,6 +289,14 @@
     border: 2px solid var(--edge);
     transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
+/* Invisible enlarged hit area: an 11px dot is too small a target to start or
+   finish a connection drag reliably — pad the pointer target without changing
+   the visual size. */
+.automation-flow .react-flow__handle::after {
+    content: '';
+    position: absolute;
+    inset: -10px;
+}
 .auto-node:hover ~ .react-flow__handle,
 .auto-node:hover .react-flow__handle { border-color: var(--cat); }
 .automation-flow .react-flow__handle.connectionindicator:hover,

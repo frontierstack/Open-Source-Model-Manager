@@ -257,6 +257,61 @@ function repairWorkflow(wf) {
         }
     }
 
+    // 5. A model node instructed to emit a quoted "nothing new" verdict ("If
+    //    nothing significant changed, say 'No new activity'") wired STRAIGHT into
+    //    telegram/slack delivers that verdict to the user on every quiet run —
+    //    the exact opposite of "only notify me when there is something new"
+    //    (live-reproduced on a page monitor). The fix is fully deterministic, so
+    //    do it here rather than hoping a repair pass restructures the graph:
+    //    insert model → gate.if({{nodes.<m>}} not_contains <sentinel>) --true-->
+    //    delivery. Only fires when a quoted sentinel is extractable — a vague
+    //    "respond that nothing changed" is left alone (no false-positive gates).
+    const DELIVERY_TYPES = new Set(['telegram', 'slack']);
+    const NOTHING_CUE_RE = /\bif\s+(?:nothing|none\b|no\s|there\s+(?:is|are)\s+no|it\s+did\s*n[o']?t)/i;
+    const SENTINEL_RE = /(?:say|reply|respond|output|return|answer|write|send|state)[^'"“”‘’\n]{0,40}['"“‘]([^'"“”‘’{}\n]{2,60})['"”’]/i;
+    const idSet = new Set(nodes.map(n => String(n.id)));
+    const nextId = () => {
+        let i = nodes.length + 1;
+        while (idSet.has(`n${i}`)) i++;
+        const id = `n${i}`;
+        idSet.add(id);
+        return id;
+    };
+    const sentinelGateByModel = new Map();
+    for (const e of [...edges]) {
+        const src = nodes.find(n => String(n.id) === String(e.source));
+        const dst = nodes.find(n => String(n.id) === String(e.target));
+        if (!src || !dst || src.type !== 'model' || !DELIVERY_TYPES.has(dst.type)) continue;
+        const prompt = String((src.data && src.data.prompt) || '');
+        if (!NOTHING_CUE_RE.test(prompt)) continue;
+        const m = SENTINEL_RE.exec(prompt);
+        if (!m) continue;
+        const sentinel = m[1].trim();
+        if (!sentinel) continue;
+        let gid = sentinelGateByModel.get(String(src.id));
+        if (!gid) {
+            gid = nextId();
+            sentinelGateByModel.set(String(src.id), gid);
+            const mid = (a, b) => ({
+                x: ((a && a.x) || 0) / 2 + ((b && b.x) || 0) / 2,
+                y: ((a && a.y) || 0) / 2 + ((b && b.y) || 0) / 2 + 40,
+            });
+            nodes.push({
+                id: gid,
+                type: 'gate.if',
+                position: mid(src.position, dst.position),
+                data: {
+                    label: 'Only if new',
+                    condition: { left: `{{nodes.${src.id}}}`, op: 'not_contains', right: sentinel },
+                },
+            });
+            edges.push({ id: `e_${gid}`, source: String(src.id), target: gid, sourceHandle: null, targetHandle: null });
+        }
+        e.source = gid;
+        e.sourceHandle = 'true';
+        fixes.push(`${src.id}→${e.target}: the model's "${sentinel}" nothing-new verdict was being delivered as an alert — inserted gate.if (not_contains "${sentinel}") so quiet runs send nothing`);
+    }
+
     return fixes;
 }
 

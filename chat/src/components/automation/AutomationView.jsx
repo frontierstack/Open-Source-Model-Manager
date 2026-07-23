@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
-import AutomationNode, { iconFor, NodeDropContext, NodeToggleContext } from './AutomationNode';
+import AutomationNode, { iconFor, handlesFor, NodeDropContext, NodeToggleContext } from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
 
@@ -841,6 +841,40 @@ function FlowEditor({ showSnackbar, models }) {
         setDirty(true);
     }, [setEdges, setNodes]);
 
+    // Dropping the connection line on a node's BODY (not exactly on the 11px
+    // handle) used to silently discard the edge — the "dragging the line to
+    // another node doesn't connect" complaint. When React Flow ends a drag
+    // without making a connection, hit-test the drop point against node bounds
+    // and wire to that node's default handle (respecting the drag direction).
+    const onConnectEnd = useCallback((event, connectionState) => {
+        if (!connectionState || connectionState.isValid) return; // a real handle-to-handle connection already happened
+        const fromNode = connectionState.fromNode;
+        const fromHandle = connectionState.fromHandle;
+        if (!fromNode) return;
+        const pt = (event && 'changedTouches' in event) ? event.changedTouches[0] : event;
+        if (!pt || pt.clientX == null) return;
+        let pos;
+        try { pos = screenToFlowPosition({ x: pt.clientX, y: pt.clientY }); } catch (_) { return; }
+        const hit = nodes.find(n => {
+            if (n.id === fromNode.id) return false;
+            const w = (n.measured && n.measured.width) || n.width || 0;
+            const h = (n.measured && n.measured.height) || n.height || 0;
+            if (!w || !h || !n.position) return false;
+            return pos.x >= n.position.x && pos.x <= n.position.x + w
+                && pos.y >= n.position.y && pos.y <= n.position.y + h;
+        });
+        if (!hit) return;
+        const hitHandles = handlesFor(hit.data?.kind, hit.data || {});
+        if (fromHandle && fromHandle.type === 'target') {
+            // Dragged backwards out of an input — the hit node becomes the source.
+            if (!hitHandles.sources.length) return;
+            onConnect({ source: hit.id, sourceHandle: hitHandles.sources[0], target: fromNode.id, targetHandle: (fromHandle && fromHandle.id) || null });
+        } else {
+            if (!hitHandles.targets.length) return; // triggers accept no input
+            onConnect({ source: fromNode.id, sourceHandle: (fromHandle && fromHandle.id) || null, target: hit.id, targetHandle: hitHandles.targets[0] });
+        }
+    }, [nodes, screenToFlowPosition, onConnect]);
+
     // Delete a single connection line (leaves the nodes intact) and mark dirty.
     const deleteEdge = useCallback((id) => {
         setEdges(es => es.filter(e => e.id !== id));
@@ -1534,6 +1568,8 @@ function FlowEditor({ showSnackbar, models }) {
                             onNodesChange={onNodesChange}
                             onEdgesChange={onEdgesChange}
                             onConnect={onConnect}
+                            onConnectEnd={onConnectEnd}
+                            connectionRadius={38}
                             onNodeClick={onNodeClick}
                             onPaneClick={onPaneClick}
                             onEdgesDelete={() => setDirty(true)}
