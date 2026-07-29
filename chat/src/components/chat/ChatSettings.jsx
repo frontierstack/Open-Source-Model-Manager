@@ -52,6 +52,69 @@ export default function ChatSettings({
     const fontDropdownRef = useRef(null);
     const confirm = useConfirm();
 
+    // Server-wide upload size limit. Editable when the caller is an admin
+    // (probed via the admin GET — 403 means regular user → read-only display).
+    const [uploadMaxMb, setUploadMaxMb] = useState(null);      // saved value on the server
+    const [uploadMaxDraft, setUploadMaxDraft] = useState('');  // input field contents
+    const [uploadLimitEditable, setUploadLimitEditable] = useState(false);
+    const [uploadLimitSaving, setUploadLimitSaving] = useState(false);
+    const [uploadLimitError, setUploadLimitError] = useState('');
+
+    useEffect(() => {
+        if (!open) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const r = await fetch('/api/system-settings', { credentials: 'include' });
+                if (r.ok) {
+                    const d = await r.json();
+                    if (cancelled) return;
+                    setUploadLimitEditable(true);
+                    setUploadMaxMb(d.uploadMaxMb);
+                    setUploadMaxDraft(String(d.uploadMaxMb));
+                    return;
+                }
+            } catch (_) { /* fall through to public read */ }
+            try {
+                const r = await fetch('/api/system-settings/public', { credentials: 'include' });
+                if (r.ok) {
+                    const d = await r.json();
+                    if (cancelled) return;
+                    setUploadLimitEditable(false);
+                    setUploadMaxMb(d.uploadMaxMb);
+                    setUploadMaxDraft(String(d.uploadMaxMb));
+                }
+            } catch (_) {}
+        })();
+        return () => { cancelled = true; };
+    }, [open]);
+
+    const saveUploadLimit = async () => {
+        const mb = Math.round(Number(uploadMaxDraft));
+        if (!Number.isFinite(mb) || mb < 1 || mb > 1024) {
+            setUploadLimitError('Enter a value between 1 and 1024 MB');
+            return;
+        }
+        setUploadLimitSaving(true);
+        setUploadLimitError('');
+        try {
+            const r = await fetch('/api/system-settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ uploadMaxMb: mb }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+            setUploadMaxMb(d.uploadMaxMb);
+            setUploadMaxDraft(String(d.uploadMaxMb));
+        } catch (e) {
+            setUploadLimitError(e.message || 'Failed to save');
+        } finally {
+            setUploadLimitSaving(false);
+        }
+    };
+
     const {
         temperature = 0.7,
         maxTokens = contextSize,  // Default to model's context window
@@ -519,6 +582,50 @@ export default function ChatSettings({
                                         />
                                     </button>
                                 </label>
+                            </div>
+
+                            {/* Upload size limit — server-wide; editable by admins only. */}
+                            <div className="pt-2 mt-2 border-t border-white/5">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-medium text-dark-200">Max upload size</div>
+                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                            {uploadLimitEditable
+                                                ? 'Largest file that can be attached to a chat or knowledge base. Applies to everyone on this server.'
+                                                : 'Largest file that can be attached to a chat or knowledge base. Set by an administrator.'}
+                                        </div>
+                                        {uploadLimitError && (
+                                            <div className="text-[10px] text-red-400 mt-1">{uploadLimitError}</div>
+                                        )}
+                                    </div>
+                                    {uploadLimitEditable ? (
+                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                            <input
+                                                type="number"
+                                                min={1}
+                                                max={1024}
+                                                value={uploadMaxDraft}
+                                                onChange={(e) => setUploadMaxDraft(e.target.value)}
+                                                onKeyDown={(e) => { if (e.key === 'Enter') saveUploadLimit(); }}
+                                                className="w-16 px-2 py-1 text-xs text-right bg-dark-800 border border-dark-700 rounded-md text-dark-100 focus:outline-none focus:border-primary-500"
+                                            />
+                                            <span className="text-[10px] text-dark-500">MB</span>
+                                            {uploadMaxMb != null && String(uploadMaxMb) !== uploadMaxDraft.trim() && (
+                                                <button
+                                                    onClick={saveUploadLimit}
+                                                    disabled={uploadLimitSaving}
+                                                    className="px-2 py-1 text-[10px] font-medium rounded-md bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all disabled:opacity-50"
+                                                >
+                                                    {uploadLimitSaving ? 'Saving…' : 'Save'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded mt-0.5">
+                                            {uploadMaxMb != null ? `${uploadMaxMb} MB` : '—'}
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                         </>
                     )}

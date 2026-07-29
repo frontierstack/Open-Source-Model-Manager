@@ -321,6 +321,18 @@ function timingSafeCompare(a, b) {
 let allowInternalNetworkFlag = false;
 function allowInternalNetwork() { return allowInternalNetworkFlag; }
 
+// Admin-configurable upload limit (MB) for base64-JSON uploads (chat + KB docs).
+// Persisted in system-settings.json; editable from the webchat Settings panel
+// via PUT /api/system-settings. The JSON body parser is rebuilt on change (see
+// rebuildJsonBodyParser) because uploads ride as base64 inside JSON (~4/3
+// inflation) and body-parser fixes its limit at creation time.
+let uploadMaxMbSetting = 50;
+function uploadMaxBytes() { return uploadMaxMbSetting * 1024 * 1024; }
+function clampUploadMaxMb(v) {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(1024, Math.max(1, n)) : null;
+}
+
 // SSRF protection: validate URLs against private IP ranges and dangerous protocols.
 // Returns null if the URL is allowed, or a descriptive error string if it's blocked.
 const PRIVATE_URL_MSG = 'URL points to a private/internal address — blocked for safety.';
@@ -2372,11 +2384,16 @@ async function loadSystemSettings() {
     }
     allowInternalNetworkFlag = settings.allowInternalNetwork === true;
     try { require('./services/egressProxy').setAllowInternal(allowInternalNetworkFlag); } catch (_) {}
-    return { allowInternalNetwork: allowInternalNetworkFlag };
+    const savedUploadMax = clampUploadMaxMb(settings.uploadMaxMb);
+    if (savedUploadMax !== null && savedUploadMax !== uploadMaxMbSetting) {
+        uploadMaxMbSetting = savedUploadMax;
+        rebuildJsonBodyParser();
+    }
+    return { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting };
 }
 
 async function saveSystemSettings() {
-    const settings = { allowInternalNetwork: allowInternalNetworkFlag };
+    const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting };
     await fs.writeFile(SYSTEM_SETTINGS_FILE, JSON.stringify(settings, null, 2));
     return settings;
 }
@@ -2861,7 +2878,19 @@ app.use(passport.session());
 // anonymous clients from forcing the server to parse 50 MB of JSON before
 // auth runs. Mounted before the global 50 MB parser so it wins for /api/auth/*.
 app.use('/api/auth', express.json({ limit: '16kb' }));
-app.use(express.json({ limit: '50mb' }));
+// Global JSON parser sized from the admin-configurable upload limit with 4/3
+// headroom: uploads ride as base64 inside JSON (~4/3 inflation), so a file at
+// the limit produces a body ~33% larger. Without the headroom the parser 413s
+// before the route's own file-size check ever runs. Rebuilt whenever an admin
+// changes uploadMaxMb (body-parser fixes its limit at creation time, hence the
+// delegating wrapper).
+let jsonBodyParser;
+function rebuildJsonBodyParser() {
+    const limitBytes = Math.ceil(uploadMaxBytes() * 4 / 3) + 2 * 1024 * 1024;
+    jsonBodyParser = express.json({ limit: limitBytes });
+}
+rebuildJsonBodyParser();
+app.use((req, res, next) => jsonBodyParser(req, res, next));
 
 // CSRF defense-in-depth for cookie-authenticated requests.
 // A cross-site page can make the browser send our session cookie on a
@@ -16009,10 +16038,12 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Handle base64-encoded file content
         const { filename, content, mimeType, optimize = true } = req.body;
 
-        // Validate file size (max 50MB)
+        // Validate file size against the admin-configured limit. `content` is
+        // base64, so the decoded file is ~3/4 of its length — compare decoded
+        // bytes, not base64 chars, or the effective limit is silently ~25% low.
         const contentLength = content ? content.length : 0;
-        if (contentLength > 50 * 1024 * 1024) {
-            return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+        if (Math.floor(contentLength * 3 / 4) > uploadMaxBytes()) {
+            return res.status(413).json({ error: `File too large. Maximum size is ${uploadMaxMbSetting}MB.` });
         }
 
         if (!content) {
@@ -22387,10 +22418,16 @@ function getHostIp() {
 }
 
 // List all manageable apps
-// System settings (admin-wide). Currently exposes the internal-network access
-// toggle. GET is admin-only (it reveals a security posture); PUT is admin-only.
+// System settings (admin-wide): the internal-network access toggle + the
+// upload size limit. GET/PUT are admin-only (the network flag reveals a
+// security posture); the /public variant below exposes only the harmless
+// values every authenticated client needs (upload pre-checks in the UIs).
 app.get('/api/system-settings', requireAdmin, async (req, res) => {
-    res.json({ allowInternalNetwork: allowInternalNetworkFlag });
+    res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting });
+});
+
+app.get('/api/system-settings/public', requireAuth, async (req, res) => {
+    res.json({ uploadMaxMb: uploadMaxMbSetting });
 });
 
 app.put('/api/system-settings', requireAdmin, async (req, res) => {
@@ -22402,7 +22439,19 @@ app.put('/api/system-settings', requireAdmin, async (req, res) => {
             await saveSystemSettings();
             console.log(`[system-settings] allowInternalNetwork set to ${allowInternalNetworkFlag} by ${req.user?.username || req.userId || 'admin'}`);
         }
-        res.json({ allowInternalNetwork: allowInternalNetworkFlag });
+        if (req.body?.uploadMaxMb !== undefined) {
+            const mb = clampUploadMaxMb(req.body.uploadMaxMb);
+            if (mb === null) {
+                return res.status(400).json({ error: 'uploadMaxMb must be a number between 1 and 1024' });
+            }
+            if (mb !== uploadMaxMbSetting) {
+                uploadMaxMbSetting = mb;
+                rebuildJsonBodyParser();
+                await saveSystemSettings();
+                console.log(`[system-settings] uploadMaxMb set to ${mb} by ${req.user?.username || req.userId || 'admin'}`);
+            }
+        }
+        res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting });
     } catch (err) {
         console.error('[system-settings] update failed:', err);
         res.status(500).json({ error: 'Failed to update system settings' });
@@ -24984,8 +25033,9 @@ app.post('/api/knowledge-bases/:id/documents', requireAuth, async (req, res) => 
         if (!content && !text) {
             return res.status(400).json({ error: 'content (base64) or text is required' });
         }
-        if (content && content.length > 50 * 1024 * 1024) {
-            return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+        // base64 → decoded bytes are ~3/4 of the string length (see /api/chat/upload)
+        if (content && Math.floor(content.length * 3 / 4) > uploadMaxBytes()) {
+            return res.status(413).json({ error: `File too large. Maximum size is ${uploadMaxMbSetting}MB.` });
         }
         const buffer = content ? Buffer.from(content, 'base64') : null;
         const docId = crypto.randomBytes(12).toString('hex');

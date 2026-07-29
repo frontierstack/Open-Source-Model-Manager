@@ -196,9 +196,26 @@ export default function ChatInput({
         }
     };
 
+    // Server-configured upload limit (admin-adjustable in Settings → Chat).
+    // Fetched once per mount; falls back to 50MB if the endpoint is unavailable.
+    const [uploadMaxMb, setUploadMaxMb] = useState(50);
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/system-settings/public', { credentials: 'include' })
+            .then(r => (r.ok ? r.json() : null))
+            .then(d => { if (!cancelled && d && Number(d.uploadMaxMb) > 0) setUploadMaxMb(Number(d.uploadMaxMb)); })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, []);
+
     const handleFileSelect = useCallback(async (files) => {
+        const maxUploadBytes = uploadMaxMb * 1024 * 1024;
         const fileArray = Array.from(files);
-        const validFiles = fileArray;
+        const oversizeFiles = fileArray.filter(f => f.size > maxUploadBytes);
+        if (oversizeFiles.length > 0 && onUploadError) {
+            onUploadError(`Too large to upload (max ${uploadMaxMb}MB): ${oversizeFiles.map(f => f.name).join(', ')}`);
+        }
+        const validFiles = fileArray.filter(f => f.size <= maxUploadBytes);
         if (validFiles.length === 0) return;
 
         const uploadingIds = validFiles.map(file => ({
@@ -278,7 +295,7 @@ export default function ChatInput({
                 : `Failed to upload ${failedFiles.length} files: ${failedFiles.join(', ')}`;
             onUploadError(msg);
         }
-    }, [onAddAttachment, onUploadError]);
+    }, [onAddAttachment, onUploadError, uploadMaxMb]);
 
     const PASTE_AS_FILE_THRESHOLD = 500;
     const handlePaste = useCallback(async (e) => {

@@ -5258,6 +5258,9 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 .hover\:underline:hover{
   text-decoration-line: underline;
 }
+.focus\:border-primary-500:focus{
+  border-color: var(--accent-primary);
+}
 .focus\:border-white\/20:focus{
   border-color: rgb(255 255 255 / 0.2);
 }
