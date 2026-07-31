@@ -10941,6 +10941,38 @@ app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
     }
 });
 
+// Read-only inventory of the CALLER'S OWN agent bucket. Pi calls this every
+// turn to re-state the sandbox contents in the system prompt, which is what
+// makes workspace knowledge survive conversation compaction: tool results get
+// summarized away, but the system prompt is rebuilt and re-sent every request.
+// Also backs the workspace_list tool (Pi has no other way to see the sandbox —
+// list_directory is deliberately shadowed so it can't mask Pi's local tools).
+// Never creates the bucket: an agent that hasn't uploaded anything reports
+// empty rather than materializing a directory.
+app.get('/api/agent-workspaces/inventory', requireAuth, async (req, res) => {
+    try {
+        if (!req.apiKeyData || !req.apiKeyData.id) {
+            return res.status(400).json({ error: 'Agent workspace requires API-key auth' });
+        }
+        const sbRunner = require('./services/sandboxRunner');
+        const maxEntries = Math.min(200, Math.max(1, parseInt(req.query.maxEntries, 10) || 60));
+        const inv = await sbRunner.describeAgentWorkspace(req.userId, req.apiKeyData.id, { maxEntries });
+        const bucket = 'agent-' + String(req.apiKeyData.id).replace(/[^A-Za-z0-9_-]/g, '_');
+        res.json({
+            bucket,
+            mountPath: '/workspace',
+            empty: !inv,
+            repos: inv ? inv.repos : [],
+            files: inv ? inv.files : [],
+            dirs: inv ? inv.dirs : [],
+            truncated: inv ? inv.truncated : false,
+        });
+    } catch (e) {
+        console.error('Agent workspace inventory failed:', e);
+        res.status(500).json({ error: 'Inventory failed' });
+    }
+});
+
 // Python skill executor. By default runs in a gVisor-sandboxed container
 // (see webapp/services/sandboxRunner.js). Individual skills can opt out with
 // `sandbox: false` on the skill definition — useful for trusted built-ins

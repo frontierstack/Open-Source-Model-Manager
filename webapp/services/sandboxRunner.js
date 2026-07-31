@@ -793,18 +793,17 @@ const WORKSPACE_SUMMARY_NOISE = new Set([
     'dist', 'build', '.cache', '.DS_Store',
 ]);
 
-/** Read-only inventory of a conversation's workspace bucket, for follow-up-turn
- *  context injection in the chat stream. Never creates the directory — owner/
- *  bucket resolution must match ensureWorkspace exactly so we describe the
- *  same bucket skills actually write to. Bounded (depth ≤ 2, ≤ maxEntries
- *  listed; deeper subtrees summarized as file counts) so a big clone or
- *  extracted archive can't stall the turn or flood the prompt. Repos under
- *  gh-clones/ are summarized as origin URL + ref, never walked.
- *  Returns null when the bucket doesn't exist or holds no files. */
-async function describeConversationWorkspace(userId, conversationId, { maxEntries = 20 } = {}) {
-    if (!conversationId) return null;
+/** Read-only inventory of ONE workspace bucket, for context injection (the
+ *  chat stream's follow-up pre-flight and Pi's per-turn sandbox-state block).
+ *  Never creates the directory — owner/bucket resolution must match
+ *  ensureWorkspace exactly so we describe the same bucket skills actually write
+ *  to. Bounded (depth ≤ 2, ≤ maxEntries listed; deeper subtrees summarized as
+ *  file counts) so a big clone or extracted archive can't stall the turn or
+ *  flood the prompt. Repos under gh-clones/ are summarized as origin URL + ref,
+ *  never walked. Returns null when the bucket doesn't exist or holds no files. */
+async function describeWorkspaceBucket(userId, bucket, { maxEntries = 20 } = {}) {
+    if (!bucket) return null;
     const owner = workspaceOwnerDir(userId);
-    const bucket = 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_');
     const base = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, bucket);
 
     const readdirSafe = async (p) => {
@@ -890,6 +889,23 @@ async function describeConversationWorkspace(userId, conversationId, { maxEntrie
 
     if (!repos.length && !files.length && !dirs.length) return null;
     return { repos, files, dirs, truncated, bucket };
+}
+
+/** Inventory a chat conversation's bucket (`conv-<id>`). */
+async function describeConversationWorkspace(userId, conversationId, opts = {}) {
+    if (!conversationId) return null;
+    const bucket = 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_');
+    return describeWorkspaceBucket(userId, bucket, opts);
+}
+
+/** Inventory an API-key agent's bucket (`agent-<apiKeyId>`) — the workspace a
+ *  Pi session works out of. Same bucket ensureWorkspace hands to skill calls
+ *  made with that key, so the inventory is exactly what the agent's next tool
+ *  call will see mounted at /workspace. */
+async function describeAgentWorkspace(userId, apiKeyId, opts = {}) {
+    if (!apiKeyId) return null;
+    const bucket = 'agent-' + String(apiKeyId).replace(/[^A-Za-z0-9_-]/g, '_');
+    return describeWorkspaceBucket(userId, bucket, opts);
 }
 
 /** Classify a bucket dir name for the management UI. */
@@ -1110,6 +1126,8 @@ module.exports = {
     setHostBase,
     deleteConversationWorkspace,
     describeConversationWorkspace,
+    describeAgentWorkspace,
+    describeWorkspaceBucket,
     listWorkspaces,
     listAllWorkspaces,
     deleteWorkspaceBucket,

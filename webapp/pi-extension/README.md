@@ -4,9 +4,28 @@ A [Pi](https://pi.dev) extension that wires the local model-server install into 
 
 - registers an OpenAI-compatible provider named **modelserver** populated from `/v1/models`
 - pulls the user's skill catalog from `/api/skills` and exposes every enabled skill as a Pi tool that proxies to `/api/skills/:name/execute`
+- keeps the **server sandbox workspace** visible and usable for a whole session, including across compaction (see below)
 - registers **interactive shell/SSH session tools** that keep a real terminal open across turns (see below)
 
 The 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, etc.) become callable from any Pi conversation without further configuration.
+
+## The two filesystems
+
+Pi runs on **your machine**; the server's skills (`read_pdf`, `create_pdf`, `transform_image`, `query_sqlite`, …) run in a **sandbox container on the model server**, whose files live under `/workspace`. They do not share a filesystem, and confusing them is the most expensive mistake a long session can make — the agent lists files with one tool, gets "no such file" from another, decides the workspace was wiped, and starts reconstructing deliverables from memory.
+
+The extension keeps the two straight:
+
+| Tool | Direction |
+|---|---|
+| `workspace_list` | Show what the sandbox currently holds. |
+| `workspace_get(workspacePath, hostPath)` | Sandbox → your machine. Use it to deliver a generated PDF/chart/image to where the user asked. Accepts a file or a directory; under WSL a `C:\Users\…` destination is translated to `/mnt/c/…`, and the write is verified before it reports success. |
+| `workspace_put(hostPath[, workspacePath])` | Your machine → sandbox. Usually unnecessary: passing a host path straight to a server skill uploads it automatically. |
+
+Supporting behavior, all automatic:
+
+- **The sandbox is restated in the system prompt every turn** — bucket name plus a live file listing, refreshed from `/api/agent-workspaces/inventory`. This is what makes workspace knowledge survive `/compact`: compaction summarizes away tool output (results are truncated to 2 KB before the summarizer even reads them), but the system prompt is rebuilt and re-sent on every request. Right after a compaction the block additionally states that the sandbox was *not* touched, so the agent re-reads the real files instead of rebuilding a deliverable from the summary.
+- **Sandbox shell skills are renamed.** `run_bash` becomes `sandbox_bash` (likewise `sandbox_python`, `sandbox_powershell`, …) so it can't be mistaken for Pi's own `bash`. Every skill that takes a path argument says in its description that it operates on the server, not on your machine.
+- **Handing a `/workspace/…` path to one of Pi's own tools is intercepted** and answered with the tool that *can* reach it, instead of a bare `ENOENT` that teaches nothing. Real local paths — including devcontainer `/workspaces/<project>` — are untouched. If your host happens to have its own `/workspace` directory, results from it are annotated so the two are never conflated.
 
 ## Interactive shell sessions
 

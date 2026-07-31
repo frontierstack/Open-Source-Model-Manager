@@ -34,7 +34,7 @@ import { Type } from "typebox";
 import * as fs from "fs";
 import * as os from "os";
 import { spawn, type ChildProcess } from "child_process";
-import { basename, dirname } from "path";
+import { basename, dirname, join, resolve as resolvePath } from "path";
 
 // Largest host file the auto-bridge will upload into the server workspace.
 const MAX_BRIDGE_BYTES = 50 * 1024 * 1024;
@@ -145,23 +145,270 @@ const LOCAL_SHADOW_SKILLS = new Set<string>([
 
 // Canonical working model, attached to workspace_get (always registered).
 const HOST_FIRST_DOCTRINE =
-    "[HOST-FIRST WORKING MODEL] Your primary filesystem is the user's LOCAL HOST — " +
-    "use your built-in read / write / edit / bash for ALL file work (the user's " +
-    "files live on the host: the current directory, /mnt/c/..., etc.). The model " +
-    "server's skills (create_pdf, html_to_pdf, transform_image, read_pdf, read_xlsx, " +
-    "query_sqlite, …) run in a SEPARATE sandbox; you do NOT manage its filesystem. " +
-    "Pass real HOST paths to those skills — host files are uploaded for you " +
-    "automatically. Use workspace_get(workspacePath, hostPath) to copy a skill's " +
-    "OUTPUT (e.g. 'artifacts/<name>') back to the host. Never create, list, or rely " +
-    "on files under /workspace yourself.";
+    "[HOST-FIRST WORKING MODEL] You work across TWO filesystems. (1) The user's " +
+    "LOCAL HOST is primary — your built-in read / write / edit / ls / grep / bash " +
+    "act ONLY here (the current directory, /mnt/c/..., etc.). (2) The model " +
+    "server's SANDBOX is a separate machine where the server skills run " +
+    "(create_pdf, html_to_pdf, transform_image, read_pdf, read_xlsx, query_sqlite, " +
+    "sandbox_bash, …); its files live under /workspace and your built-in tools " +
+    "CANNOT see them. Pass real HOST paths to server skills — host files are " +
+    "uploaded for you automatically. Use workspace_list to see what the sandbox " +
+    "holds, workspace_get(workspacePath, hostPath) to bring a skill's OUTPUT " +
+    "(e.g. 'artifacts/<name>') back to the host, and workspace_put(hostPath) to " +
+    "push a file in explicitly. The sandbox persists for your whole session.";
 
 // Shorter override prepended to any sandbox skill whose prompt still talks about
 // /workspace or create_file (those notes are written for the web chat UI).
 const HOST_FIRST_OVERRIDE =
     "[PI: HOST-FIRST] Pass real host file paths to this skill — they are uploaded " +
-    "to the sandbox automatically; do NOT use create_file or /workspace. Retrieve " +
-    "any output with workspace_get(workspacePath, hostPath). The /workspace and " +
-    "create_file mentions below are for the web chat UI only — ignore them here.\n\n";
+    "to the sandbox automatically; do NOT use create_file. Inspect the sandbox with " +
+    "workspace_list and retrieve output with workspace_get(workspacePath, hostPath). " +
+    "The create_file mentions below are for the web chat UI only — ignore them here. " +
+    "/workspace paths below refer to the SERVER sandbox, never to your host.\n\n";
+
+// Sandbox skills whose NAME reads like one of Pi's own local tools while they
+// actually execute inside the model server's container. "run_bash" sitting next
+// to Pi's built-in "bash" is the single most expensive confusion in a long
+// session: the agent interleaves the two, sees a file with one and ENOENT with
+// the other, decides the filesystem is corrupt, and starts inventing results.
+// Registering them under an unmistakable `sandbox_` name puts the target
+// filesystem in every call. The server-side skill name (the dispatch path) is
+// unchanged, so this is purely what the model sees.
+const SANDBOX_TOOL_RENAMES: Record<string, string> = {
+    run_bash: "sandbox_bash",
+    run_powershell: "sandbox_powershell",
+    run_cmd: "sandbox_cmd",
+    // Shadowed by default; renamed too so MODELSERVER_INCLUDE_LOCAL_SHADOW=1
+    // can't reintroduce the ambiguity.
+    run_python: "sandbox_python",
+    run_node: "sandbox_node",
+    run_npm: "sandbox_npm",
+};
+
+// Appended to the description of every registered skill that takes a path
+// argument. Systemic on purpose: any skill the operator enables later (skills
+// are user-toggleable, and `run_bash` reached this session precisely because it
+// was enabled after the fact) gets the disambiguation without a code change.
+const SANDBOX_FS_MARKER =
+    " [Runs in the MODEL SERVER SANDBOX, not on your machine: its paths are " +
+    "/workspace/... on the server. Host paths you pass are uploaded automatically; " +
+    "call workspace_list to see what the sandbox already holds.]";
+
+// Stronger wording for the shell family, where picking the wrong one silently
+// runs the command on the wrong computer.
+const SANDBOX_SHELL_MARKER =
+    " [Runs INSIDE the model server's sandbox container — NOT on the user's machine. " +
+    "Use it to inspect or manipulate /workspace on the server. To run a command on the " +
+    "machine the user is sitting at, use your own built-in bash tool instead.]";
+
+// Param names that denote a filesystem path (mirrors the server's PATH_ARG_NAMES
+// policy, which is what decides that an arg gets rewritten into /workspace).
+const PATHY_PARAM_RE = /(path|file|dir|directory|folder)s?\d*$/i;
+
+// Pi's own built-in tools. These act on the HOST, always.
+const HOST_BUILTIN_TOOLS = new Set([
+    "read", "write", "edit", "multiedit", "ls", "grep", "find", "bash",
+]);
+
+// Where a Windows drive shows up on a POSIX host, in probe order:
+// WSL, cygwin, then git-bash/msys (loosest, tried last).
+const WIN_MOUNT_PREFIXES = ["/mnt/", "/cygdrive/", "/"];
+
+/**
+ * Resolve a destination path supplied by the model or the user into something
+ * this process can actually write to.
+ *
+ * The failure this closes is silent, which is why it cost a whole session:
+ * `fs.writeFileSync("C:\\Users\\me\\Desktop\\r.pdf", buf)` on Linux/WSL does
+ * NOT throw. Backslash and colon are legal filename characters on POSIX, so it
+ * cheerfully creates a single file literally named `C:\Users\me\Desktop\r.pdf`
+ * in the process cwd and returns success. The user is told the report is on
+ * their Desktop, finds nothing, and there is no error anywhere to explain it.
+ */
+export function resolveHostPath(input: string): { path: string; note?: string } {
+    let p = String(input || "").trim().replace(/^["']|["']$/g, "");
+    if (!p) throw new Error("empty path");
+
+    if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) {
+        p = join(os.homedir(), p.slice(1).replace(/^[\\/]+/, ""));
+    }
+
+    // On real Windows a drive-letter path is already correct.
+    if (process.platform === "win32") return { path: resolvePath(p) };
+
+    const drive = p.match(/^([A-Za-z]):[\\/]?(.*)$/);
+    if (drive) {
+        const letter = drive[1].toLowerCase();
+        const rest = drive[2].replace(/\\/g, "/").replace(/^\/+/, "");
+        for (const prefix of WIN_MOUNT_PREFIXES) {
+            const root = `${prefix}${letter}`;
+            try {
+                if (fs.statSync(root).isDirectory()) {
+                    const mapped = rest ? `${root}/${rest}` : root;
+                    return { path: mapped, note: `Windows path ${input} resolved to ${mapped}` };
+                }
+            } catch { /* drive not mounted under this prefix — try the next */ }
+        }
+        throw new Error(
+            `"${input}" is a Windows path, but this machine has no ${letter.toUpperCase()}: drive mounted ` +
+            `(checked ${WIN_MOUNT_PREFIXES.map((x) => x + letter).join(", ")}). ` +
+            `Pi is running on ${process.platform}; give a path that exists here, ` +
+            `e.g. ${join(os.homedir(), "Desktop", "file.ext")}. Writing the Windows path verbatim ` +
+            `would create one oddly-named file in the current directory instead of delivering it.`
+        );
+    }
+
+    if (p.includes("\\") && !p.includes("/")) {
+        throw new Error(
+            `"${input}" looks like a Windows path but carries no drive letter, so it cannot be mapped ` +
+            `onto this machine. Use a path valid here, e.g. ${join(os.homedir(), "file.ext")}.`
+        );
+    }
+
+    return { path: resolvePath(p) };
+}
+
+/** Does this path exist on the machine pi is running on? */
+export function existsOnHost(p: string): boolean {
+    try { fs.statSync(p); return true; } catch { return false; }
+}
+
+/**
+ * Collect every "/workspace..." reference in a tool's arguments.
+ *
+ * The trailing boundary matters: devcontainers put real host projects under
+ * "/workspaces/<name>", so matching "/workspace" as a prefix would flag — and
+ * then block — perfectly valid local paths. Require the next character to end
+ * the segment.
+ */
+export function collectWorkspaceRefs(input: unknown, out: string[] = []): string[] {
+    if (typeof input === "string") {
+        for (const m of input.matchAll(/(^|[\s"'`=(:,])(\/workspace(?![A-Za-z0-9_.-])(?:\/[^\s"'`;|)&,]*)?)/g)) {
+            if (!out.includes(m[2])) out.push(m[2]);
+        }
+    } else if (Array.isArray(input)) {
+        for (const v of input) collectWorkspaceRefs(v, out);
+    } else if (input && typeof input === "object") {
+        for (const v of Object.values(input)) collectWorkspaceRefs(v, out);
+    }
+    return out;
+}
+
+export function humanBytes(n: number | null | undefined): string {
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+interface WorkspaceInventory {
+    bucket: string;
+    mountPath: string;
+    empty: boolean;
+    repos: Array<{ path: string; url: string | null; ref: string | null }>;
+    files: Array<{ rel: string; size: number | null }>;
+    dirs: Array<{ rel: string; fileCount: number; capped: boolean }>;
+    truncated: boolean;
+}
+
+const MAX_LISTED_WORKSPACE_FILES = 40;
+
+/**
+ * The sandbox-state block appended to the system prompt on every turn.
+ *
+ * Why the system prompt and not a message: pi's compaction summarizes old
+ * messages away, and tool results are truncated to 2000 chars before the
+ * summarizer even sees them. So everything the agent learned about the sandbox
+ * from tool output — which files it uploaded, that /workspace means the server
+ * and not the host — is gone after a /compact. That is exactly when a long
+ * session starts insisting the workspace was wiped, "re-discovers" a same-named
+ * host directory, and reconstructs deliverables from a stale summary instead of
+ * re-reading the files that are still sitting there.
+ *
+ * The system prompt is rebuilt and re-sent on every request, so state stated
+ * here survives compaction by construction.
+ */
+export function renderSandboxStateBlock(
+    inv: WorkspaceInventory | null,
+    opts: { hostHasWorkspaceDir: boolean; justCompacted: boolean; unreachable: boolean }
+): string {
+    const L: string[] = [];
+    L.push("[MODEL SERVER SANDBOX — live inventory, re-read every turn]");
+    L.push(
+        "This is a SECOND filesystem, separate from the host that your built-in " +
+        "read / write / edit / ls / grep / bash act on. It belongs to your API key and " +
+        "PERSISTS for the whole session: across turns, across compaction, across restarts."
+    );
+
+    if (opts.justCompacted) {
+        L.push(
+            "NOTE: the conversation was just compacted. Older tool output is no longer in your " +
+            "context, but the sandbox itself was untouched — everything listed below is still on " +
+            "disk. Do not conclude that files were lost, and do not rebuild a deliverable from " +
+            "remembered/summarized content: re-read the real files with the server skills."
+        );
+    }
+
+    if (opts.unreachable) {
+        L.push(
+            "The inventory could not be refreshed this turn (the model server did not answer). " +
+            "Treat the listing below as possibly stale and re-check with workspace_list before " +
+            "concluding anything about what the sandbox contains."
+        );
+    }
+
+    if (inv) {
+        L.push("");
+        L.push(`Bucket ${inv.bucket}, mounted at ${inv.mountPath} inside every server skill.`);
+        if (inv.empty) {
+            L.push("The sandbox is currently EMPTY — nothing has been uploaded or generated yet.");
+        } else {
+            const rows: string[] = [];
+            for (const r of inv.repos) {
+                rows.push(`  ${r.path}/  (git repo${r.url ? ` — ${r.url}` : ""}${r.ref ? ` @ ${r.ref}` : ""})`);
+            }
+            for (const d of inv.dirs) {
+                rows.push(`  ${d.rel}/  (${d.fileCount}${d.capped ? "+" : ""} files)`);
+            }
+            for (const f of inv.files) {
+                const sz = humanBytes(f.size);
+                rows.push(`  ${f.rel}${sz ? `  ${sz}` : ""}`);
+            }
+            const shown = rows.slice(0, MAX_LISTED_WORKSPACE_FILES);
+            const hidden = rows.length - shown.length;
+            L.push(`Contents of ${inv.mountPath} (${rows.length}${inv.truncated ? "+" : ""} entries):`);
+            L.push(...shown);
+            if (hidden > 0) L.push(`  …and ${hidden} more — call workspace_list for the full listing.`);
+            if (inv.truncated) L.push("  (server-side listing was truncated; workspace_list can show more)");
+        }
+    }
+
+    L.push("");
+    L.push("Reaching it:");
+    L.push("  workspace_list()                    re-read this inventory");
+    L.push("  workspace_get(wsPath, hostPath)     copy sandbox -> host (deliver a result)");
+    L.push("  workspace_put(hostPath[, wsPath])   copy host -> sandbox (also automatic whenever");
+    L.push("                                      you pass a host path to a server skill)");
+    L.push(
+        "  server skills (read_pdf, create_pdf, sandbox_bash, query_sqlite, …) see these paths directly."
+    );
+    L.push(
+        "Your OWN read / write / edit / ls / grep / bash CANNOT see any of it — they run on the host. " +
+        "A /workspace path handed to one of them is a bug, not a missing file."
+    );
+
+    if (opts.hostHasWorkspaceDir) {
+        L.push("");
+        L.push(
+            "WARNING: this host ALSO has a directory literally named /workspace. It is a DIFFERENT " +
+            "directory with different contents from the sandbox above. Listing it with your own bash " +
+            "tells you nothing about the sandbox — the two are unrelated despite the identical path."
+        );
+    }
+
+    return L.join("\n");
+}
 
 export default async function (pi: ExtensionAPI) {
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
@@ -194,6 +441,81 @@ export default async function (pi: ExtensionAPI) {
         }
     });
 
+    // ---- live sandbox state (the anti-compaction machinery) -----------------
+    // Everything the agent learns about the sandbox arrives as tool OUTPUT, and
+    // tool output is what compaction throws away first (results are truncated to
+    // 2000 chars before the summarizer even reads them). So a long session
+    // reliably reaches a point where the agent still has filenames but no longer
+    // knows they live on the server — it probes them with its own host tools,
+    // gets ENOENT, decides the workspace was wiped, and starts fabricating.
+    //
+    // Fix: restate the sandbox in the SYSTEM PROMPT every turn. Pi writes a
+    // before_agent_start override into agent.state.systemPrompt, which is re-sent
+    // on every LLM call for that turn — including calls after a mid-turn
+    // auto-compaction — so this state cannot be summarized away.
+    const INVENTORY_TTL_MS = 5000;
+    const INVENTORY_TIMEOUT_MS = 4000;
+    let inventoryCache: { at: number; inv: WorkspaceInventory | null } | null = null;
+    let lastGoodInventory: WorkspaceInventory | null = null;
+    let justCompacted = false;
+
+    // Does the HOST have its own directory called /workspace? If so the agent can
+    // list it with its own bash, get a completely different set of files, and
+    // "confirm" that the sandbox lost everything. Cheap to detect, worth warning
+    // about explicitly.
+    const hostHasWorkspaceDir = (() => {
+        try { return fs.statSync("/workspace").isDirectory(); } catch { return false; }
+    })();
+
+    const invalidateWorkspaceInventory = () => { inventoryCache = null; };
+
+    const fetchWorkspaceInventory = async (): Promise<WorkspaceInventory | null> => {
+        const now = Date.now();
+        if (inventoryCache && now - inventoryCache.at < INVENTORY_TTL_MS) return inventoryCache.inv;
+        let inv: WorkspaceInventory | null = null;
+        try {
+            const ac = new AbortController();
+            const timer = setTimeout(() => ac.abort(), INVENTORY_TIMEOUT_MS);
+            try {
+                const r = await authedFetch("/api/agent-workspaces/inventory?maxEntries=80", { signal: ac.signal });
+                if (r.ok) inv = await r.json() as WorkspaceInventory;
+            } finally { clearTimeout(timer); }
+        } catch { /* server down / slow — fall back to last known good */ }
+        if (inv) lastGoodInventory = inv;
+        inventoryCache = { at: now, inv };
+        return inv;
+    };
+
+    const sandboxStateBlock = async (): Promise<string> => {
+        const inv = await fetchWorkspaceInventory();
+        return renderSandboxStateBlock(inv || lastGoodInventory, {
+            hostHasWorkspaceDir,
+            justCompacted,
+            unreachable: !inv,
+        });
+    };
+
+    // Never let a slow or broken server break the user's turn: on any failure the
+    // block is simply omitted for that turn.
+    pi.on("before_agent_start", async (event: any) => {
+        try {
+            const block = await sandboxStateBlock();
+            justCompacted = false;
+            return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+        } catch (e) {
+            console.error("[modelserver] sandbox state injection failed:", (e as Error).message);
+            return undefined;
+        }
+    });
+
+    // Compaction is precisely when the agent loses the thread. Re-read the
+    // inventory and flag the next system prompt so it says, in as many words,
+    // that the sandbox was not touched.
+    pi.on("session_compact", () => {
+        justCompacted = true;
+        invalidateWorkspaceInventory();
+    });
+
     // ---- host <-> server-workspace bridge -----------------------------------
     // Pi lives on the user's machine; the model server's skills (read_pdf,
     // create_pdf, transform_image, …) run in a sandbox whose /workspace is a
@@ -203,16 +525,21 @@ export default async function (pi: ExtensionAPI) {
     // across: upload pushes a host file into the caller's agent-<keyId> bucket
     // (so the very next skill call sees it at /workspace/<basename>); download
     // pulls a workspace file back out to the host.
-    const uploadHostFileToWorkspace = async (hostPath: string): Promise<string> => {
-        const base = basename(hostPath);
+    const uploadHostFileToWorkspace = async (hostPath: string, destRel?: string): Promise<string> => {
+        const rel = (destRel || basename(hostPath)).replace(/^\/workspace\/?/, "").replace(/^\/+/, "");
         const buf = fs.readFileSync(hostPath);
-        const r = await fetch(`${baseUrl}/api/agent-workspaces/file?path=${encodeURIComponent(base)}`, {
+        const r = await fetch(`${baseUrl}/api/agent-workspaces/file?path=${encodeURIComponent(rel)}`, {
             method: "POST",
             headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/octet-stream" },
             body: buf,
         });
-        if (!r.ok) throw new Error(`workspace upload failed: HTTP ${r.status}`);
-        return base;
+        if (!r.ok) {
+            let msg = `HTTP ${r.status}`;
+            try { const j = await r.json() as any; if (j?.error) msg = j.error; } catch { /* keep status */ }
+            throw new Error(`workspace upload failed: ${msg}`);
+        }
+        invalidateWorkspaceInventory();
+        return rel;
     };
 
     // Heuristic: a string that names an existing host FILE, small enough to
@@ -256,6 +583,73 @@ export default async function (pi: ExtensionAPI) {
         }
         return out || args;
     };
+
+    // ---- cross-filesystem guardrails ----------------------------------------
+    // Handing a /workspace path to one of Pi's OWN tools is the concrete symptom
+    // of the two-filesystem confusion. Left alone it yields a bare ENOENT, which
+    // teaches the model nothing: in the session that motivated this work the
+    // agent reissued that same class of call dozens of times — rotating between
+    // read, bash, python and back — before concluding the files were gone and
+    // writing a report from a stale summary. Replace the useless error with one
+    // that names the tool that CAN reach the path.
+
+    // Unreachable = neither the path nor its parent exists here. The parent check
+    // matters: when the host has its own /workspace, writing a NEW file under it
+    // is perfectly legitimate and must not be blocked.
+    const unreachableOnHost = (p: string) => !existsOnHost(p) && !existsOnHost(dirname(p));
+
+    const sandboxRedirectHint = (refs: string[]): string => {
+        const inv = lastGoodInventory;
+        const L: string[] = [];
+        L.push(
+            `${refs.join(", ")} ${refs.length > 1 ? "are paths" : "is a path"} in the MODEL SERVER ` +
+            `SANDBOX, which is a different machine from the one you are running on. Your built-in ` +
+            `read / write / edit / ls / grep / bash only see this host, so they will never find it.`
+        );
+        const wanted = refs.map((r) => r.replace(/^\/workspace\/?/, "")).filter(Boolean);
+        const known = inv && !inv.empty
+            ? wanted.filter((w) => inv.files.some((f) => f.rel === w || basename(f.rel) === basename(w)))
+            : [];
+        if (known.length) {
+            L.push(`The sandbox does currently contain: ${known.join(", ")} — the file exists, you are just asking the wrong machine.`);
+        }
+        L.push("Use instead:");
+        L.push("  workspace_list()                      see what the sandbox holds");
+        L.push("  workspace_get(wsPath, hostPath)       copy it here, then use your own tools");
+        L.push("  read_pdf / read_xlsx / sandbox_bash / … read it in place, on the server");
+        return L.join("\n");
+    };
+
+    pi.on("tool_call", (event: any) => {
+        try {
+            if (!HOST_BUILTIN_TOOLS.has(event.toolName)) return;
+            // bash commands are compound ("cd /workspace && ..."); blocking one
+            // outright is too blunt, so it gets an explanatory note on the result.
+            if (event.toolName === "bash") return;
+            const refs = collectWorkspaceRefs(event.input).filter(unreachableOnHost);
+            if (!refs.length) return;
+            return { block: true, reason: sandboxRedirectHint(refs) };
+        } catch { return; }
+    });
+
+    // When the host has its own /workspace the call SUCCEEDS and returns a
+    // different directory's contents — the worst case, because it looks like
+    // proof that the sandbox changed. Annotate the result so the agent cannot
+    // mistake one for the other.
+    pi.on("tool_result", (event: any) => {
+        try {
+            if (!hostHasWorkspaceDir) return;
+            if (!HOST_BUILTIN_TOOLS.has(event.toolName)) return;
+            if (!collectWorkspaceRefs(event.input).length) return;
+            const inv = lastGoodInventory;
+            const note =
+                `[modelserver] This is the /workspace directory on the LOCAL HOST. It is NOT the ` +
+                `model server sandbox, which has its own unrelated /workspace` +
+                (inv && !inv.empty ? ` (bucket ${inv.bucket}, ${inv.files.length} file(s) — call workspace_list)` : "") +
+                `. What you see above says nothing about what the sandbox contains.`;
+            return { content: [...(event.content || []), { type: "text", text: note }] };
+        } catch { return; }
+    });
 
     // 1) Register the model server as an OpenAI-compatible provider.
     try {
@@ -342,15 +736,28 @@ export default async function (pi: ExtensionAPI) {
         // doesn't follow that web-chat-only guidance.
         const rawPrompt = skill.systemPrompt || "";
         const pushesWorkspace = /\/workspace|create_file|append_to_file/.test(rawPrompt + " " + baseDescription);
-        const description = baseDescription;
         const promptSnippet = pushesWorkspace
             ? HOST_FIRST_OVERRIDE + rawPrompt
             : (rawPrompt || undefined);
 
+        // Which filesystem does this tool act on? Anything taking a path arg is
+        // rewritten into /workspace server-side, so it is sandbox-scoped by
+        // definition. Stating that in the description is systemic: a skill the
+        // operator enables later inherits the disambiguation with no code change
+        // (run_bash reached the failing session exactly that way — it ships
+        // disabled and was turned on in the UI afterwards).
+        const toolName = SANDBOX_TOOL_RENAMES[skill.name] || skill.name;
+        const isRenamedShell = toolName !== skill.name;
+        const takesPath = Object.keys(skill.parameters || {}).some((k) => PATHY_PARAM_RE.test(k));
+        const description = baseDescription
+            + (isRenamedShell ? SANDBOX_SHELL_MARKER : (takesPath ? SANDBOX_FS_MARKER : ""));
+
         try {
             (pi as any).registerTool({
-                name: skill.name,
-                label: skill.name,
+                // The model-facing name may be rewritten (run_bash -> sandbox_bash);
+                // dispatch below still uses the real skill name.
+                name: toolName,
+                label: toolName,
                 description,
                 promptSnippet,
                 parameters: params,
@@ -381,8 +788,11 @@ export default async function (pi: ExtensionAPI) {
                     try { parsed = JSON.parse(raw); } catch { parsed = { raw }; }
                     if (!r.ok) {
                         const msg = (parsed && parsed.error) ? parsed.error : `HTTP ${r.status}`;
-                        throw new Error(`[${skill.name}] ${msg}`);
+                        throw new Error(`[${toolName}] ${msg}`);
                     }
+                    // Any server skill may have written into the sandbox; make the
+                    // next system-prompt block reflect it rather than a cached view.
+                    invalidateWorkspaceInventory();
                     // Skills that write files (create_pdf, create_docx,
                     // create_xlsx, render_chart, image transforms, …) drop them
                     // in the server-side sandbox at /workspace/artifacts/ and
@@ -421,52 +831,151 @@ export default async function (pi: ExtensionAPI) {
             console.error(`[modelserver] failed to register skill ${skill.name}:`, e);
         }
     }
-    // workspace_get: pull a file from the server workspace back to the host.
-    // The other half of the bridge — host->workspace is automatic (any host
-    // path passed to a server skill is uploaded), but delivering a *result*
-    // (a rendered PDF in /workspace/artifacts/, a transformed image, …) to a
-    // specific place on the user's machine needs an explicit destination.
+    // ---- the explicit half of the bridge ------------------------------------
+    // host->workspace is automatic (any host path passed to a server skill is
+    // uploaded), but the agent still needs to SEE the sandbox and to deliver
+    // results back to a chosen place on the user's machine.
     try {
+        (pi as any).registerTool({
+            name: "workspace_list",
+            label: "workspace_list",
+            description:
+                "List what is currently in the model server's sandbox workspace — the /workspace that " +
+                "server skills (read_pdf, create_pdf, sandbox_bash, …) read and write. Use it whenever " +
+                "you are unsure whether a file is still there, and after a compaction: the sandbox " +
+                "persists for the whole session even when the conversation history describing it does not. " +
+                "Your own ls/bash cannot see this — they run on the host.",
+            promptSnippet: HOST_FIRST_DOCTRINE,
+            parameters: Type.Object({}),
+            async execute() {
+                invalidateWorkspaceInventory();
+                const inv = await fetchWorkspaceInventory();
+                if (!inv) {
+                    throw new Error(
+                        "[workspace_list] could not reach the model server. The sandbox contents are " +
+                        "unknown right now — do not assume the workspace is empty."
+                    );
+                }
+                const L: string[] = [`Sandbox workspace ${inv.bucket} (mounted at ${inv.mountPath}):`];
+                if (inv.empty) {
+                    L.push("  (empty — nothing uploaded or generated yet)");
+                } else {
+                    for (const r of inv.repos) {
+                        L.push(`  ${r.path}/  git repo${r.url ? ` — ${r.url}` : ""}${r.ref ? ` @ ${r.ref}` : ""}`);
+                    }
+                    for (const d of inv.dirs) L.push(`  ${d.rel}/  (${d.fileCount}${d.capped ? "+" : ""} files)`);
+                    for (const f of inv.files) {
+                        const sz = humanBytes(f.size);
+                        L.push(`  ${f.rel}${sz ? `  ${sz}` : ""}`);
+                    }
+                    if (inv.truncated) L.push("  …listing truncated");
+                }
+                L.push("");
+                L.push("These are SERVER paths. To use one on this machine, workspace_get it first.");
+                return { content: [{ type: "text", text: L.join("\n") }], details: inv };
+            },
+        });
+        registered++;
+
+        (pi as any).registerTool({
+            name: "workspace_put",
+            label: "workspace_put",
+            description:
+                "Copy a file FROM this machine INTO the model server's sandbox workspace, so server " +
+                "skills can operate on it. Usually unnecessary — passing a host path straight to a " +
+                "server skill uploads it for you — but useful to stage several files up front or to " +
+                "control the name they get in the sandbox.",
+            promptSnippet: HOST_FIRST_DOCTRINE,
+            parameters: Type.Object({
+                hostPath: Type.String({ description: "Path of the file on this machine" }),
+                workspacePath: Type.Optional(Type.String({ description: "Destination inside the sandbox, relative to /workspace. Defaults to the file's basename." })),
+            }),
+            async execute(_id: string, a: any) {
+                const resolved = resolveHostPath(String(a?.hostPath || ""));
+                const st = fs.statSync(resolved.path);
+                if (!st.isFile()) throw new Error(`[workspace_put] ${resolved.path} is not a file`);
+                if (st.size > MAX_BRIDGE_BYTES) {
+                    throw new Error(`[workspace_put] ${resolved.path} is ${humanBytes(st.size)}, over the ${humanBytes(MAX_BRIDGE_BYTES)} bridge limit`);
+                }
+                const rel = await uploadHostFileToWorkspace(resolved.path, a?.workspacePath ? String(a.workspacePath) : undefined);
+                const lines = [`Uploaded ${humanBytes(st.size)} to /workspace/${rel} in the sandbox.`];
+                if (resolved.note) lines.push(resolved.note);
+                lines.push(`Server skills should now be given the path /workspace/${rel}.`);
+                return {
+                    content: [{ type: "text", text: lines.join("\n") }],
+                    details: { hostPath: resolved.path, workspacePath: `/workspace/${rel}`, bytes: st.size },
+                };
+            },
+        });
+        registered++;
+
         (pi as any).registerTool({
             name: "workspace_get",
             label: "workspace_get",
             description:
-                "Copy a file FROM the server workspace TO your local machine. " +
+                "Copy a file FROM the server workspace TO this machine. " +
                 "Use it to deliver outputs that server skills produced — e.g. after create_pdf, " +
-                "workspace_get('artifacts/report.pdf', '/mnt/c/Users/you/Desktop/report.pdf'). " +
+                "workspace_get('artifacts/report.pdf', '~/Desktop/report.pdf'). " +
                 "workspacePath is relative to /workspace (rendered files land under 'artifacts/'). " +
+                "hostPath must be valid on the machine pi is running on; if that is WSL, a Windows " +
+                "path like C:\\Users\\you\\Desktop is translated to /mnt/c/... automatically. " +
                 "The reverse direction is automatic — when you pass a host path to a server skill " +
                 "(read_pdf, create_pdf contentFile, transform_image, …) the file is uploaded for you.",
             promptSnippet: HOST_FIRST_DOCTRINE,
             parameters: Type.Object({
                 workspacePath: Type.String({ description: "Path inside the server workspace, e.g. 'artifacts/report.pdf' or 'report.md'" }),
-                hostPath: Type.String({ description: "Absolute destination path on the local machine" }),
+                hostPath: Type.String({ description: "Destination on this machine — a file path, or a directory to drop the file into" }),
             }),
             async execute(_id: string, a: any, signal: AbortSignal | undefined) {
                 const wp = String(a?.workspacePath || "").replace(/^\/workspace\/?/, "");
-                const hp = String(a?.hostPath || "");
-                if (!wp || !hp) throw new Error("workspace_get needs workspacePath and hostPath");
+                if (!wp || !String(a?.hostPath || "").trim()) {
+                    throw new Error("workspace_get needs workspacePath and hostPath");
+                }
+                // Resolve BEFORE downloading so a bad destination fails fast and
+                // loudly. Writing a Windows path verbatim on WSL does not throw —
+                // it silently creates one file named "C:\Users\..." in the cwd and
+                // reports success, which is how a delivered file goes missing.
+                const resolved = resolveHostPath(String(a.hostPath));
+                let target = resolved.path;
+                try {
+                    if (fs.statSync(target).isDirectory()) target = join(target, basename(wp));
+                } catch { /* doesn't exist yet — treated as a file path */ }
+
                 const r = await fetch(`${baseUrl}/api/agent-workspaces/file?path=${encodeURIComponent(wp)}`, {
                     headers: { "Authorization": `Bearer ${apiKey}` },
                     signal,
                 });
                 if (!r.ok) {
                     let msg = `HTTP ${r.status}`;
-                    try { const j = await r.json() as any; if (j?.error) msg = j.error; } catch { /* ignore */ }
+                    try { const j = await r.json() as any; if (j?.error) msg = j.error; } catch { /* keep status */ }
+                    if (r.status === 404) {
+                        msg += ` — '${wp}' is not in the sandbox. Call workspace_list to see what is.`;
+                    }
                     throw new Error(`[workspace_get] ${msg}`);
                 }
                 const buf = Buffer.from(await r.arrayBuffer());
-                fs.mkdirSync(dirname(hp), { recursive: true });
-                fs.writeFileSync(hp, buf);
+                fs.mkdirSync(dirname(target), { recursive: true });
+                fs.writeFileSync(target, buf);
+
+                // Confirm it actually landed, and report the path we really wrote.
+                let written: number;
+                try { written = fs.statSync(target).size; } catch {
+                    throw new Error(`[workspace_get] wrote ${target} but it is not there afterwards — the destination is not writable`);
+                }
+                if (written !== buf.length) {
+                    throw new Error(`[workspace_get] ${target} is ${written} bytes, expected ${buf.length} — the write was incomplete`);
+                }
+                const lines = [`Saved ${humanBytes(written)} to ${target}`];
+                if (resolved.note) lines.push(resolved.note);
                 return {
-                    content: [{ type: "text", text: `Saved ${buf.length} bytes to ${hp}` }],
-                    details: { hostPath: hp, bytes: buf.length },
+                    content: [{ type: "text", text: lines.join("\n") }],
+                    details: { hostPath: target, requestedHostPath: String(a.hostPath), bytes: written },
                 };
             },
         });
         registered++;
     } catch (e) {
-        console.error("[modelserver] failed to register workspace_get:", e);
+        console.error("[modelserver] failed to register workspace bridge tools:", e);
     }
 
     if (skippedStub > 0) {
@@ -970,8 +1479,9 @@ function describeArtifacts(parsed: any, insecure: boolean): string {
     lines.push(
         `Generated ${arts.length} file(s) on the model server — these live in the ` +
         `server-side sandbox, NOT on your local filesystem. The /workspace/... path in ` +
-        `the result does not exist on your machine, so do NOT cp it. To deliver a file ` +
-        `to the location the user asked for, call workspace_get:`
+        `the result does not exist on your machine, so do NOT cp it. They stay in the ` +
+        `sandbox for the rest of the session, so you can fetch them later too. To ` +
+        `deliver a file to the location the user asked for, call workspace_get:`
     );
     for (const a of arts) {
         const sz = typeof a.size === "number" ? ` (${a.size} bytes)` : "";
@@ -981,13 +1491,17 @@ function describeArtifacts(parsed: any, insecure: boolean): string {
             `  workspace_get("artifacts/${a.name}", "<DEST_PATH>/${a.name}")`
         );
         lines.push(
-            `  (or: curl -fsSL${kFlag} -H "Authorization: Bearer $MODELSERVER_API_KEY" "${a.url}" -o "<DEST_PATH>/${a.name}")`
+            `  (fallback, run with YOUR OWN bash tool on the user's machine — never with ` +
+            `sandbox_bash, which runs on the server and cannot reach it: ` +
+            `curl -fsSL${kFlag} -H "Authorization: Bearer $MODELSERVER_API_KEY" "${a.url}" -o "<DEST_PATH>/${a.name}")`
         );
     }
     lines.push("");
     lines.push(
-        `Replace <DEST_PATH> with the directory the user wants. workspace_get creates ` +
-        `parent dirs for you and needs no auth handling.`
+        `Replace <DEST_PATH> with a directory that exists on the machine pi is running on. ` +
+        `workspace_get creates parent dirs, translates a Windows path to its /mnt/... mount ` +
+        `when running under WSL, verifies the bytes landed, and needs no auth handling — ` +
+        `prefer it over curl.`
     );
     // Keep any human-facing summary the skill returned (the misleading
     // chat-chip note was already stripped by the caller).
