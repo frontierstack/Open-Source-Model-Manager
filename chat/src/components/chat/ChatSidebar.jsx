@@ -372,10 +372,11 @@ export default function ChatSidebar({
     const newChatRow = { padding: '0 12px 6px' };
     const newChatBtn = {
         display: 'flex', alignItems: 'center', gap: 8,
-        width: '100%', padding: '8px 10px',
+        width: '100%', padding: '5px 10px',
+        minHeight: 28,
         border: '1px dashed var(--rule-2)',
-        borderRadius: 8,
-        color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500,
+        borderRadius: 7,
+        color: 'var(--ink-2)', fontSize: 12, fontWeight: 500,
         background: 'transparent', cursor: 'pointer',
         transition: 'background .1s, border-color .1s',
     };
@@ -966,7 +967,7 @@ export default function ChatSidebar({
                     onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
                 >
-                    <Plus style={{ width: 14, height: 14 }} strokeWidth={2.25} />
+                    <Plus style={{ width: 13, height: 13 }} strokeWidth={2.25} />
                     <span>New chat</span>
                 </button>
             </div>
@@ -988,9 +989,9 @@ export default function ChatSidebar({
                         e.currentTarget.style.color = 'var(--ink-2)';
                     }}
                 >
-                    <Workflow style={{ width: 14, height: 14 }} strokeWidth={2} />
+                    <Workflow style={{ width: 13, height: 13 }} strokeWidth={2} />
                     <span>Automations</span>
-                    <ChevronRight style={{ width: 14, height: 14, marginLeft: 'auto', opacity: 0.55 }} strokeWidth={2} />
+                    <ChevronRight style={{ width: 13, height: 13, marginLeft: 'auto', opacity: 0.55 }} strokeWidth={2} />
                 </button>
             </div>
 
