@@ -228,30 +228,6 @@ const SETTINGS_TOOLTIPS = {
     compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts."
 };
 
-// Settings tooltips for llama.cpp configuration options
-const LLAMACPP_TOOLTIPS = {
-    nGpuLayers: "Number of model layers to offload to GPU. -1 = all layers (recommended). Lower values offload less to GPU, useful for large models that don't fit in VRAM.",
-    contextSize: "Maximum context window size in tokens. Larger values allow longer conversations but require more memory. Common values: 2048, 4096, 8192, 16384.",
-    contextShift: "Enable context shifting to automatically discard old context when the limit is reached. Without this, inference stops when context is full. Recommended for long conversations.",
-    compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts.",
-    flashAttention: "Enable flash attention for faster inference and lower memory usage. Recommended for most GPUs that support it.",
-    cacheTypeK: "Data type for key cache. f16 = full precision, q8_0 = 8-bit quantized (saves memory), q4_0 = 4-bit quantized (maximum memory savings).",
-    cacheTypeV: "Data type for value cache. Same options as key cache. Using quantized cache reduces memory but may slightly affect output quality.",
-    threads: "Number of CPU threads to use. 0 = auto-detect (uses all available cores). Lower values leave more CPU for other tasks.",
-    parallelSlots: "Number of parallel inference slots. Higher values allow more concurrent requests but use more memory.",
-    batchSize: "Batch size for prompt processing. Larger values are faster but use more memory. Common values: 512, 1024, 2048.",
-    ubatchSize: "Micro-batch size for processing. Should be smaller than batch size. Common values: 256, 512, 1024. Larger values speed up prompt processing for long inputs.",
-    swaFull: "Allocate the full sliding-window-attention cache. Required for prompt-cache reuse across turns on SWA/hybrid models like Gemma 3/4 — without it, every turn re-evaluates the entire prompt from scratch. Costs more VRAM proportional to context size; only enable if VRAM headroom allows.",
-    specType: "Speculative decoding mode (llama.cpp --spec-type). 'Off' = serial decode (default). 'MTP heads' uses this model's built-in multi-token-prediction heads — DeepSeek-V3/R1, Qwen3-Next-MTP, and Qwen3.5/3.6-MTP all ship them. No separate draft GGUF needed. 'Draft model' is classic speculative decoding using a smaller second GGUF. Both can deliver ~1.5–2× single-stream tok/s on supported models.",
-    specDraftNMax: "Max tokens speculatively drafted per step (llama.cpp --spec-draft-n-max). 3 is a balanced default. Higher = more aggressive speculation (helps when acceptance rate is high), lower = less wasted compute when the draft is wrong. Only meaningful when speculative decoding is enabled.",
-    specDraftModel: "Path inside /models to the draft GGUF (llama.cpp --spec-draft-model). Only used in 'Draft model' mode. The draft should be small + share the main model's tokenizer (e.g. Qwen2.5-0.5B-Instruct as draft for Qwen3-8B-Instruct). Ignored when 'MTP heads' is selected — those heads live inside the main GGUF.",
-    repeatPenalty: "Penalty for repeating tokens (1.0 = no penalty). Higher values (1.1-1.3) reduce repetition. Too high may affect coherence.",
-    repeatLastN: "Number of recent tokens to consider for repetition penalty. 64-128 is usually sufficient.",
-    presencePenalty: "Penalty for tokens that have appeared at all (0.0-1.0). Encourages the model to talk about new topics.",
-    frequencyPenalty: "Penalty based on token frequency (0.0-1.0). Higher values reduce repetition of common phrases.",
-    disableThinking: "Controls reasoning/thinking mode for models that support it (e.g., Qwen3, Gemma thinking variants). ON = reasoning enabled (model shows its work in <think> blocks). OFF = reasoning disabled (model answers directly, faster)."
-};
-
 // Section Header Component
 const SectionHeader = ({ icon, title, subtitle, action }) => (
     <Box sx={{ mb: { xs: 1.5, md: 2 } }}>
@@ -270,38 +246,6 @@ const SectionHeader = ({ icon, title, subtitle, action }) => (
     </Box>
 );
 
-// Collapsible Section Component
-const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) => {
-    const [expanded, setExpanded] = useState(defaultExpanded);
-    return (
-        <Box sx={{ mb: 2 }}>
-            <Box
-                onClick={() => setExpanded(!expanded)}
-                sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    cursor: 'pointer',
-                    py: 1,
-                    px: 1,
-                    borderRadius: 1,
-                    '&:hover': { bgcolor: 'var(--bg-tertiary)' }
-                }}
-            >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {icon && React.cloneElement(icon, { sx: { fontSize: 16, color: 'text.secondary' } })}
-                    <Typography variant="body2" sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                        {title}
-                    </Typography>
-                </Box>
-                {expanded ? <ExpandLessIcon sx={{ fontSize: 18, color: 'text.secondary' }} /> : <ExpandMoreIcon sx={{ fontSize: 18, color: 'text.secondary' }} />}
-            </Box>
-            <Collapse in={expanded}>
-                <Box sx={{ pt: 1 }}>{children}</Box>
-            </Collapse>
-        </Box>
-    );
-};
 
 // Docs sections — left-rail navigation pattern. The previous accordion
 // design had been polished repeatedly without losing its accordion-y

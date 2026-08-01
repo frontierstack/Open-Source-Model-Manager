@@ -6,7 +6,6 @@
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@kenjiuno/msgreader": "^1.28.0",
-    "@tanstack/react-query": "^5.90.21",
     "axios": "1.15.0",
     "bcryptjs": "^2.4.3",
     "child_process": "^1.0.2",
@@ -17,7 +16,6 @@
     "helmet": "^7.1.0",
     "jimp": "^1.6.1",
     "jsonrepair": "^3.12.0",
-    "jsqr": "^1.4.0",
     "lucide-react": "^0.460.0",
     "mailparser": "^3.9.8",
     "mammoth": "^1.11.0",
@@ -28,11 +26,8 @@
     "playwright": "^1.40.0",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "react-hook-form": "^7.71.2",
     "session-file-store": "^1.5.0",
-    "tar-fs": "^3.0.6",
     "ws": "^8.13.0",
-    "xml2js": "^0.6.2",
     "zustand": "^5.0.11"
   },
   "devDependencies": {
@@ -50,11 +45,8 @@
     "mini-css-extract-plugin": "^2.10.2",
     "postcss": "^8.5.14",
     "postcss-loader": "^7.3.4",
-    "prism-react-renderer": "^2.3.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0",
     "tailwindcss": "^3.4.19",
     "webpack": "^5.72.1",
     "webpack-cli": "^4.9.2"

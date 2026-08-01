@@ -579,10 +579,4 @@ function validateWorkflow(wf) {
     return { ok, issues };
 }
 
-// One-line-per-issue rendering for a prompt / build log.
-function summarizeValidation(issues) {
-    if (!issues || !issues.length) return 'no structural issues';
-    return issues.map(i => `[${i.severity}] ${i.nodeId ? i.nodeId + ': ' : ''}${i.detail}`).join('\n');
-}
-
-module.exports = { validateWorkflow, repairWorkflow, summarizeValidation, templatesIn, ancestorMap };
+module.exports = { validateWorkflow, repairWorkflow, templatesIn, ancestorMap };

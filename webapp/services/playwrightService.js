@@ -1272,45 +1272,6 @@ async function fetchMultipleUrls(urls, options = {}, concurrency = 3) {
 }
 
 /**
- * Search and extract content from URLs
- * Used for enhanced web search with content fetching
- */
-async function searchAndFetch(searchResults, options = {}) {
-    const { contentLimit = 5 } = options;
-
-    const urlsToFetch = searchResults
-        .slice(0, contentLimit)
-        .map(r => r.url)
-        .filter(Boolean);
-
-    const fetchResults = await fetchMultipleUrls(urlsToFetch, {
-        timeout: 12000,
-        waitForJS: true,
-        maxLength: 6000
-    });
-
-    // Merge fetch results back into search results
-    const fetchMap = new Map(fetchResults.map(r => [r.url, r]));
-
-    return searchResults.map(result => {
-        const fetched = fetchMap.get(result.url);
-        if (fetched && fetched.success) {
-            return {
-                ...result,
-                content: fetched.content,
-                contentFetched: true,
-                finalUrl: fetched.finalUrl
-            };
-        }
-        return {
-            ...result,
-            contentFetched: false,
-            fetchError: fetched?.error
-        };
-    });
-}
-
-/**
  * Advanced page interaction for complex sites
  */
 async function interactAndFetch(url, actions = [], options = {}) {
@@ -2268,7 +2229,6 @@ async function screenshotPageImages(url, options = {}) {
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
-    searchAndFetch,
     interactAndFetch,
     downloadFile,
     crawlPages,

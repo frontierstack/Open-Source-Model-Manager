@@ -995,11 +995,6 @@ async function deleteWorkspaceBucketByOwner(owner, bucket) {
     return { deleted: true, path: dirIn, byteCount, fileCount };
 }
 
-/** Delete a bucket scoped to a userId (self-service). */
-async function deleteWorkspaceBucket(userId, bucket) {
-    return deleteWorkspaceBucketByOwner(workspaceOwnerDir(userId), bucket);
-}
-
 /** One-shot migration: any legacy per-user workspace whose contents sit
  *  directly under <userId>/ (pre-bucketing scheme) is shuffled into
  *  <userId>/global/ so the new code can find them. Idempotent — if the
@@ -1130,7 +1125,6 @@ module.exports = {
     describeWorkspaceBucket,
     listWorkspaces,
     listAllWorkspaces,
-    deleteWorkspaceBucket,
     deleteWorkspaceBucketByOwner,
     migrateLegacyWorkspaces,
     ensureWorkspace,

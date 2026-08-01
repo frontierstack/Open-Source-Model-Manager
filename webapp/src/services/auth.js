@@ -77,33 +77,3 @@ export async function checkAuth() {
         return { success: false, error: error.message };
     }
 }
-
-/**
- * Change password
- */
-export async function changePassword(currentPassword, newPassword) {
-    try {
-        const response = await api.auth.changePassword({
-            currentPassword,
-            newPassword
-        });
-
-        return { success: true };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
-/**
- * Get current user from store
- */
-export function getCurrentUser() {
-    return useAuthStore.getState().user;
-}
-
-/**
- * Check if user is authenticated
- */
-export function isAuthenticated() {
-    return useAuthStore.getState().isAuthenticated;
-}

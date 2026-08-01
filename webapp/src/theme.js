@@ -636,25 +636,6 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
     });
 };
 
-// Export theme options for settings UI
-export const themeOptions = [
-    { value: 'dark', label: 'Dark', description: 'Default dark theme with indigo accents' },
-    { value: 'light', label: 'Light', description: 'Clean pure white theme for daytime use' },
-    { value: 'midnight', label: 'Midnight', description: 'Deep blue with indigo accents' },
-    { value: 'ocean', label: 'Ocean', description: 'Calm blues and teals' },
-    { value: 'forest', label: 'Forest', description: 'Natural greens' },
-    { value: 'sunset', label: 'Sunset', description: 'Warm oranges and reds' },
-    { value: 'matrix', label: 'Matrix', description: 'Classic green terminal style' },
-    { value: 'cyberpunk', label: 'Cyberpunk', description: 'Neon pink and cyan' },
-];
-
-export const fontOptions = [
-    { value: 'default', label: 'Inter (Default)', description: 'Modern sans-serif' },
-    { value: 'mono', label: 'JetBrains Mono', description: 'Monospace for code' },
-    { value: 'system', label: 'System Default', description: 'Your OS default font' },
-    { value: 'serif', label: 'Serif', description: 'Traditional serif font' },
-];
-
 // Font size is now a numeric input (10-24px) instead of preset options
 
 // Legacy export for backwards compatibility

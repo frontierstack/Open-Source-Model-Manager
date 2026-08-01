@@ -97,18 +97,6 @@ const COND_OP_OPTIONS = [
 // Case operators for the Switch gate (no empty/not_empty — a case needs a value).
 const SWITCH_OP_OPTIONS = COND_OP_OPTIONS.filter(o => o.value !== 'empty' && o.value !== 'not_empty');
 
-// The "main input" each node kind fills when a data chip is dropped onto it on
-// the canvas (see handleDropChip). Dotted paths target nested data (args/condition).
-const PRIMARY_SLOT = {
-    model: 'prompt', telegram: 'text', slack: 'text', fetch_url: 'url', web_search: 'query',
-    db_store: 'value', render_html: 'html', export_file: 'content', set: 'value', map: 'items',
-    parse_json: 'source', 'gate.if': 'condition.left', 'gate.filter': 'condition.left', 'gate.switch': 'value',
-};
-const TOOL_PRIMARY_SLOT = {
-    create_pdf: 'args.content', html_to_pdf: 'args.content', http_request: 'args.url',
-    query_sqlite: 'args.query', create_file: 'args.content', run_python: 'args.code', run_node: 'args.code', render_chart: 'args.chartSpec',
-    parse_rss: 'args.url',
-};
 
 // ---- server <-> React Flow conversion ----
 function serverToRF(wf, labelFor) {
@@ -142,17 +130,10 @@ function rfToServer(rfNodes, rfEdges) {
 // Action buttons across the editor use the `.auto-btn` CSS class family
 // (automation.css) for one consistent size/shape — see auto-btn / --accent /
 // --primary / --ghost / --danger / --ok / --icon / --sm / --block / --grow.
-const fieldLabel = { fontSize: 12.5, color: 'var(--ink-3, var(--ink-2))', marginBottom: 4, display: 'block', fontWeight: 500 };
 const fieldInput = {
     width: '100%', padding: '7px 9px', borderRadius: 6, border: '1px solid var(--rule-2)',
     background: 'var(--bg)', color: 'var(--ink)', fontSize: 14, marginBottom: 11, boxSizing: 'border-box',
 };
-
-// Module-scope so its identity is stable across NodeConfig re-renders — defining
-// it inside NodeConfig remounted every input on each keystroke (focus loss bug).
-function Field({ label, children }) {
-    return <div><label style={fieldLabel}>{label}</label>{children}</div>;
-}
 
 // Drag-to-resize bar on the left edge of the right-hand panels.
 function ResizeHandle({ onResizeStart, side = 'left' }) {
@@ -206,113 +187,7 @@ function buildTagGroups(outputs = {}, nodes = [], edges = [], currentNodeId) {
         });
 }
 
-// The "{ }" button docked in a field's top-right + its data-tag popover. The
-// popover is fixed-positioned (computed from the button rect) so it's never
-// clipped by the panel's scroll container. Clicking a tag inserts at the caret.
-function FieldTagButton({ insertRef }) {
-    const groups = React.useContext(DataTagsContext);
-    const btnRef = useRef(null);
-    const [open, setOpen] = useState(false);
-    const [pos, setPos] = useState(null);
-    useEffect(() => {
-        if (!open) return undefined;
-        const close = () => setOpen(false);
-        window.addEventListener('scroll', close, true);
-        window.addEventListener('resize', close);
-        return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
-    }, [open]);
-    if (!groups || !groups.length) return null;
-    const toggle = () => {
-        if (open) { setOpen(false); return; }
-        const r = btnRef.current && btnRef.current.getBoundingClientRect();
-        if (r) {
-            const MENU_H = 320;
-            const top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - MENU_H - 8));
-            setPos({ top, left: Math.max(8, r.right - 248) });
-        }
-        setOpen(true);
-    };
-    return (
-        <>
-            <button ref={btnRef} type="button" className={`auto-tagbtn${open ? ' is-open' : ''}`}
-                title="Insert data from a previous step" onMouseDown={(e) => e.preventDefault()} onClick={toggle}>
-                <Braces size={12} />
-            </button>
-            {open && pos && (
-                <>
-                    <div className="auto-tagmenu-backdrop" onMouseDown={() => setOpen(false)} />
-                    <div className="auto-tagmenu" style={{ top: pos.top, left: pos.left }}>
-                        {groups.map(g => (
-                            <div key={g.id} className="auto-tagmenu__group">
-                                <div className="auto-tagmenu__head">{g.label}{g.predicted ? ' · expected' : ''}</div>
-                                {g.tags.map(t => (
-                                    <button key={t.ref} type="button" className="auto-tagmenu__item" title={t.ref}
-                                        onMouseDown={(e) => e.preventDefault()} onClick={() => { insertRef(t.ref); setOpen(false); }}>
-                                        <span className="auto-tagmenu__label">{t.label}</span>
-                                        {t.sample ? <span className="auto-tagmenu__sample">{t.sample}</span> : null}
-                                    </button>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-                </>
-            )}
-        </>
-    );
-}
 
-// Insert a {{...}} ref at the field's caret (or append when unfocused).
-function insertAtCaret(el, onChangeRef, refStr) {
-    if (!el) return;
-    const v = el.value || '';
-    const focused = document.activeElement === el;
-    const s = (focused && el.selectionStart != null) ? el.selectionStart : v.length;
-    const e = (focused && el.selectionEnd != null) ? el.selectionEnd : v.length;
-    onChangeRef.current(`${v.slice(0, s)}${refStr}${v.slice(e)}`);
-    requestAnimationFrame(() => { try { el.focus(); const p = s + refStr.length; el.setSelectionRange(p, p); } catch (_) {} });
-}
-
-function makeDropHandlers(elRef, onChangeRef) {
-    return {
-        onDragOver: (ev) => { if (Array.from(ev.dataTransfer.types || []).includes(REF_MIME)) ev.preventDefault(); },
-        onDrop: (ev) => {
-            const ref = ev.dataTransfer.getData(REF_MIME);
-            if (!ref) return;
-            ev.preventDefault();
-            const el = elRef.current;
-            const v = (el && el.value) || '';
-            const s = (el && el.selectionStart != null) ? el.selectionStart : v.length;
-            const e = (el && el.selectionEnd != null) ? el.selectionEnd : v.length;
-            onChangeRef.current(`${v.slice(0, s)}${ref}${v.slice(e)}`);
-        },
-    };
-}
-function TemplInput({ value = '', onChange, style, ...rest }) {
-    const elRef = useRef(null);
-    const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
-    const groups = React.useContext(DataTagsContext);
-    const hasTags = groups && groups.length > 0;
-    return (
-        <div className="auto-field">
-            <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
-                style={{ ...fieldInput, ...(hasTags ? { paddingRight: 34 } : null), ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />
-            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
-        </div>
-    );
-}
-function TemplTextarea({ value = '', onChange, style, registerAsDefault, ...rest }) {
-    const elRef = useRef(null);
-    const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
-    const groups = React.useContext(DataTagsContext);
-    const hasTags = groups && groups.length > 0;
-    return (
-        <div className="auto-field">
-            <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
-                style={{ ...fieldInput, ...(hasTags ? { paddingRight: 34 } : null), ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />
-            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
-        </div>
-    );
-}
 
 // Flatten a node's output into dotted paths. Arrays use a `*` wildcard so a tag
 // pulls the field from EVERY element ({{...results.*.url}} = all urls), not just
@@ -1763,46 +1638,6 @@ function FlowEditor({ showSnackbar, models }) {
     );
 }
 
-// Client-side mirror of the engine's templating (incl. the `*` wildcard) so the
-// Output box can show a live preview of exactly what will be forwarded.
-function previewResolveParts(cur, parts) {
-    for (let i = 0; i < parts.length; i++) {
-        if (cur == null) return undefined;
-        const p = parts[i];
-        if (p === '*' || p === '[]') {
-            const items = Array.isArray(cur) ? cur : (typeof cur === 'object' ? Object.values(cur) : [cur]);
-            const rest = parts.slice(i + 1);
-            if (rest.length === 0) return items;
-            const mapped = items.map(it => previewResolveParts(it, rest)).filter(v => v !== undefined);
-            return mapped.some(Array.isArray) ? [].concat(...mapped) : mapped;
-        }
-        cur = cur[p];
-    }
-    return cur;
-}
-// Mirror the engine: a bare field ref ({{title}}) resolves against `last`.
-function previewResolvePath(scope, pathStr) {
-    const parts = String(pathStr).trim().split('.').filter(Boolean);
-    if (!parts.length) return undefined;
-    const head = parts[0];
-    if (!['input', 'vars', 'nodes', 'last'].includes(head) && scope && scope.last != null && typeof scope.last === 'object') {
-        const viaLast = previewResolveParts(scope.last, parts);
-        if (viaLast !== undefined) return viaLast;
-    }
-    return previewResolveParts(scope, parts);
-}
-function previewInterpolate(tmpl, scope) {
-    if (typeof tmpl !== 'string') return '';
-    const fmt = (v) => {
-        if (v === undefined || v === null) return '';
-        if (Array.isArray(v)) return v.every(x => x === null || typeof x !== 'object') ? v.join('\n') : JSON.stringify(v, null, 2);
-        return typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
-    };
-    const exact = tmpl.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
-    if (exact) return fmt(previewResolvePath(scope, exact[1]));
-    return tmpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, p) => fmt(previewResolvePath(scope, p)));
-}
-
 // ---- schedule builder (unit picker + live countdown) ----
 const SCHEDULE_UNITS = [['seconds', 1000], ['minutes', 60000], ['hours', 3600000], ['days', 86400000]];
 function fmtCountdown(ms) {
@@ -1837,38 +1672,6 @@ function CountdownLine({ intervalMs, anchorMs }) {
             Next run in {fmtCountdown(next - now)} <span style={{ color: 'var(--ink-3)' }}>· {new Date(next).toLocaleTimeString()}</span>
         </div>
     );
-}
-function ScheduleConfig({ d, onChange }) {
-    const ms = Number(d.intervalMs) || 0;
-    let unit = 'minutes', amount = 5;
-    if (ms > 0) {
-        const u = [...SCHEDULE_UNITS].reverse().find(([, m]) => ms % m === 0) || SCHEDULE_UNITS[0];
-        unit = u[0]; amount = Math.round(ms / u[1]);
-    }
-    const [useCron, setUseCron] = useState(!!d.cron);
-    const apply = (amt, un) => {
-        const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1];
-        // Re-anchor on every edit so "every N <unit>" counts down the full
-        // interval from now (and fires N units later), not from a UTC boundary.
-        onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), anchorMs: Date.now(), cron: '' });
-    };
-    if (useCron) {
-        return (<>
-            <Field label="Cron (min hour dom mon dow)"><input style={fieldInput} value={d.cron || ''} onChange={(e) => onChange({ cron: e.target.value })} placeholder="0 9 * * 1-5" /></Field>
-            <button onClick={() => { setUseCron(false); onChange({ cron: '' }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0 }}>← Use a simple interval instead</button>
-        </>);
-    }
-    return (<>
-        <label style={fieldLabel}>Run every</label>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-            <input type="number" min="1" style={{ ...fieldInput, marginBottom: 0, width: 78 }} value={amount} onChange={(e) => apply(e.target.value, unit)} />
-            <select style={{ ...fieldInput, marginBottom: 0 }} value={unit} onChange={(e) => apply(amount, e.target.value)}>
-                {SCHEDULE_UNITS.map(([n]) => <option key={n} value={n}>{n}</option>)}
-            </select>
-        </div>
-        <CountdownLine intervalMs={ms} anchorMs={Number(d.anchorMs)} />
-        <button onClick={() => setUseCron(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0 }}>Advanced: use a cron expression →</button>
-    </>);
 }
 
 // ---- per-node config panel ----
@@ -1915,7 +1718,6 @@ function fieldPathOptions(value, prefix = '', out = [], depth = 0) {
 // chips that apply to it; optional ones live in the Add tray.
 // ============================================================
 const CHIP_REF_DRAG = REF_MIME;            // data chip drag payload = a {{…}} ref
-const CHIP_ADD_DRAG = 'application/automation-chip'; // tray chip drag payload = field
 
 // Dotted-path read/patch helpers (so a chip can target args.url, condition.left…).
 function getAt(obj, path) { if (!path) return undefined; const ks = String(path).split('.'); let c = obj; for (const k of ks) { if (c == null) return undefined; c = c[k]; } return c; }
@@ -2625,11 +2427,6 @@ function resolveOptions(s, ctx) {
     if (s.optionsFrom === 'models') { const ms = (ctx && ctx.runningModels) || []; return [{ value: '', label: ms[0] ? `Current model (${ms[0].name})` : 'Current model' }, ...ms.map(m => ({ value: m.name, label: m.name + (m.backend ? ` · ${m.backend}` : '') }))]; }
     return (s.options || []).map(o => (typeof o === 'string' ? { value: o, label: o } : o));
 }
-function resolveSuggestions(s, ctx) {
-    if (s.suggestFrom === 'parseFields') return (ctx && ctx.parseFields) || [];
-    if (s.suggestFrom === 'incomingFields') return (ctx && ctx.incomingFields) || [];
-    return null;
-}
 function renderSpecial(s, d, onChange, ctx, registerActive) {
     if (s.special === 'toolArgs') return <ToolArgsChips d={d} onChange={onChange} nodeList={ctx.nodeList} registerActive={registerActive} />;
     if (s.special === 'switchCases') return <SwitchCases d={d} onChange={onChange} nodeList={ctx.nodeList} registerActive={registerActive} />;
@@ -2645,7 +2442,6 @@ function renderSpecial(s, d, onChange, ctx, registerActive) {
 // (parse / transform / filter). Definitions only (id/label/category/desc); the
 // engine wiring that runs them is a follow-up.
 // ============================================================
-const CHIP_LIB_DRAG = 'application/automation-chiplib';
 const CHIP_LIBRARY = [
     // Text
     { id: 'trim', label: 'Trim', category: 'Text', desc: 'Strip leading/trailing whitespace' },
@@ -2718,7 +2514,6 @@ const CHIP_LIBRARY = [
     { id: 'pretty_json', label: 'Pretty JSON', category: 'Format', desc: 'Indent JSON for readability' },
 ];
 const CHIP_LIB_BY_ID = Object.fromEntries(CHIP_LIBRARY.map(c => [c.id, c]));
-const CHIP_LIB_CATEGORIES = Array.from(new Set(CHIP_LIBRARY.map(c => c.category)));
 
 // Bare-minimum node settings: just the node's own essential fields as plain
 // controls. No data palette, no {{…}} tags, no args box, no add tray — extra
@@ -3049,46 +2844,7 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
     );
 }
 
-// JSON editor field with inline validity feedback + the inline data-tag picker
-// (drops {{...}} into a value, e.g. {"url": "{{nodes.id.results.0.url}}"}).
-function JsonField({ value, onChange, placeholder }) {
-    const [text, setText] = useState(() => value == null ? '' : JSON.stringify(value, null, 2));
-    const [err, setErr] = useState(false);
-    const elRef = useRef(null);
-    const groups = React.useContext(DataTagsContext);
-    const hasTags = groups && groups.length > 0;
-    const applyText = (t) => {
-        setText(t);
-        if (!t.trim()) { setErr(false); onChange(undefined); return; }
-        try { const parsed = JSON.parse(t); setErr(false); onChange(parsed); }
-        catch { setErr(true); }
-    };
-    const onChangeRef = useRef(applyText); onChangeRef.current = applyText;
-    return (
-        <div className="auto-field">
-            <textarea
-                ref={elRef}
-                style={{ ...fieldInput, minHeight: 70, fontFamily: 'monospace', fontSize: 12.5, resize: 'vertical', ...(hasTags ? { paddingRight: 34 } : null), borderColor: err ? 'var(--danger, #ef4444)' : 'var(--rule-2)' }}
-                value={text}
-                placeholder={placeholder || '{}'}
-                onChange={(e) => applyText(e.target.value)}
-                {...makeDropHandlers(elRef, onChangeRef)}
-            />
-            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
-            {err && <div style={{ fontSize: 10, color: 'var(--danger, #ef4444)', marginTop: -6, marginBottom: 8 }}>Invalid JSON</div>}
-        </div>
-    );
-}
 
-// Render a node's captured output as readable text (handles strings, objects,
-// and the engine's {_truncated, preview} summary blobs).
-function formatNodeOutput(out) {
-    if (out == null) return '';
-    if (typeof out === 'string') return out;
-    if (typeof out === 'object' && out._truncated && typeof out.preview === 'string') return out.preview;
-    if (Array.isArray(out) && out.every(x => x === null || typeof x !== 'object')) return out.filter(x => x != null).join('\n');
-    try { return JSON.stringify(out, null, 2); } catch { return String(out); }
-}
 
 // First generated-file name in a node's output (for the card's file chip).
 function artifactNameOf(out) {
@@ -3125,73 +2881,6 @@ async function saveArtifactViaBlob(url, filename) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 }
 
-// "Last result" card shown at the top of the node config panel — live during a
-// run, and seeded from the most recent run on load. Lets you inspect exactly
-// what a connector/gate/trigger returned, plus the reference to pipe it forward.
-function NodeResult({ lastRun, nodeId, isTrigger }) {
-    const status = lastRun && lastRun.status;
-    const hasOutput = lastRun && lastRun.output != null;
-    // Any node whose output carries an `html` string (Render HTML) gets a live,
-    // sandboxed preview (sandbox="" → no script execution; images/CSS still render).
-    const htmlPreview = (lastRun && lastRun.output && typeof lastRun.output === 'object' && typeof lastRun.output.html === 'string')
-        ? lastRun.output.html : null;
-    // Generated files (create_pdf / create_file / export_file / render_chart / etc.)
-    // come back as `_artifacts` with a ready download URL.
-    const artifacts = (lastRun && lastRun.output && typeof lastRun.output === 'object' && Array.isArray(lastRun.output._artifacts))
-        ? lastRun.output._artifacts.filter(a => a && a.url) : [];
-    return (
-        <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', background: 'var(--bg)', borderBottom: '1px solid var(--rule-2)' }}>
-                {status && <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(status) }} />}
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)' }}>Last result</span>
-                {status && <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{status}</span>}
-            </div>
-            <div style={{ padding: 8 }}>
-                {!lastRun && <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>No run yet — hit Run to capture this node's output.</div>}
-                {status === 'running' && <div style={{ fontSize: 10.5, color: 'var(--accent)' }}>Running…</div>}
-                {lastRun && lastRun.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginBottom: hasOutput ? 6 : 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{lastRun.error}</div>}
-                {artifacts.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Generated file{artifacts.length > 1 ? 's' : ''}</div>
-                        {artifacts.map((a, i) => {
-                            const dlUrl = withDownloadFlag(a.url);
-                            return (
-                            <a key={i} href={dlUrl} download={a.name} target="_blank" rel="noopener noreferrer"
-                               onClick={(e) => {
-                                   // fetch+blob first; the native <a download> on
-                                   // the href is the fallback (also keeps
-                                   // right-click → Save As working).
-                                   e.preventDefault();
-                                   saveArtifactViaBlob(dlUrl, a.name).catch(() => { window.location.href = dlUrl; });
-                               }}
-                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: 6, padding: '4px 9px', margin: '0 6px 6px 0', background: 'var(--accent-soft)' }}>
-                                <Download size={12} /> {a.name}{a.size ? <span style={{ color: 'var(--ink-3)', fontSize: 9.5 }}>{` · ${a.size < 1024 ? a.size + ' B' : Math.round(a.size / 1024) + ' KB'}`}</span> : null}
-                            </a>
-                            );
-                        })}
-                    </div>
-                )}
-                {htmlPreview != null && (
-                    <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Preview</div>
-                        <iframe
-                            title="HTML preview"
-                            sandbox=""
-                            srcDoc={htmlPreview}
-                            style={{ width: '100%', height: 240, border: '1px solid var(--rule-2)', borderRadius: 6, background: '#fff' }}
-                        />
-                    </div>
-                )}
-                {hasOutput && (
-                    <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: htmlPreview != null ? 100 : 220, overflow: 'auto', fontFamily: 'monospace' }}>{formatNodeOutput(lastRun.output)}</pre>
-                )}
-                {lastRun && status !== 'running' && !hasOutput && !lastRun.error && (
-                    <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>Completed with no output.</div>
-                )}
-            </div>
-        </div>
-    );
-}
 
 // ---- run history panel ----
 function fmtRunTime(iso) {
@@ -3324,123 +3013,6 @@ function nodeFriendlyType(type) {
 }
 function NodeStatusDot({ status }) {
     return <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: runStatusColor(status), display: 'inline-block' }} />;
-}
-function RunHistoryPanel({ runs, nodes: wfNodes = [], width = 300, mobile = false, onResizeStart, onClearHistory, onClose }) {
-    const [openRunId, setOpenRunId] = useState(null);
-    const [detail, setDetail] = useState(null);
-
-    const toggleRun = useCallback(async (runId) => {
-        if (openRunId === runId) { setOpenRunId(null); setDetail(null); return; }
-        setOpenRunId(runId);
-        setDetail(null);
-        try {
-            const res = await fetch(`/api/automations/runs/${runId}`, { credentials: 'include' });
-            setDetail(res.ok ? await res.json() : null);
-        } catch (_) { setDetail(null); }
-    }, [openRunId]);
-
-    return (
-        <div style={mobile
-            ? { position: 'fixed', inset: 0, zIndex: 60, width: '100%', overflowY: 'auto', padding: 12, background: 'var(--surface)' }
-            : { position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
-            {!mobile && onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>Run history</span>
-                <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>
-            </div>
-            {runs.length > 0 && onClearHistory && (
-                <button className="auto-btn auto-btn--block auto-btn--danger auto-btn--sm" onClick={onClearHistory} style={{ marginBottom: 10 }}>
-                    Clear history
-                </button>
-            )}
-            {runs.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No runs yet — hit Run to create one.</div>}
-            {runs.map(r => {
-                const isOpen = openRunId === r.id;
-                const rec = isOpen ? detail : null;
-                return (
-                    <div key={r.id} style={{ marginBottom: 3 }}>
-                        <div onClick={() => toggleRun(r.id)}
-                            style={{ padding: '7px 8px', borderRadius: 7, cursor: 'pointer', border: '1px solid var(--rule-2)', background: isOpen ? 'var(--accent-soft)' : 'transparent' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(r.status) }} />
-                                <span style={{ fontSize: 12, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{r.status}</span>
-                                <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--ink-3)' }}>{r.trigger}</span>
-                            </div>
-                            <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>
-                                {fmtRunTime(r.startedAt)}{r.durationMs != null ? ` · ${(r.durationMs / 1000).toFixed(1)}s` : ''}
-                            </div>
-                        </div>
-                        {isOpen && (
-                            <div style={{ margin: '4px 0 6px 0', borderLeft: '2px solid var(--rule)', paddingLeft: 8 }}>
-                                {!rec && <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>Loading…</div>}
-                                {rec && (
-                                    <>
-                                        <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
-                                            <span style={{ color: runStatusColor(rec.status), textTransform: 'capitalize' }}>{rec.status}</span>
-                                            {rec.durationMs != null ? ` · ${(rec.durationMs / 1000).toFixed(1)}s` : ''}
-                                        </div>
-                                        {rec.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10.5, marginBottom: 6 }}>{rec.error}</div>}
-                                        {(rec.nodes || []).map((n, i) => {
-                                            // Friendly label: prefer the workflow node's data.label,
-                                            // fall back to the engine type, then nodeId. Surface any
-                                            // generated files as download chips. Output renders as a
-                                            // smart one-line summary with a "view raw" disclosure.
-                                            const wfNode = wfNodes.find(x => x.id === n.nodeId);
-                                            const label = (wfNode && wfNode.data && (wfNode.data.label || wfNode.data.tool)) || nodeFriendlyType(n.type) || n.nodeId;
-                                            const arts = (n.output && typeof n.output === 'object' && Array.isArray(n.output._artifacts))
-                                                ? n.output._artifacts.filter(a => a && a.url && a.name) : [];
-                                            const summary = n.status === 'skipped' ? 'Skipped' : summarizeNodeOutput(n.output);
-                                            const isLast = i === rec.nodes.length - 1;
-                                            return (
-                                                <div key={i}>
-                                                    <div style={{ border: '1px solid var(--rule-2)', borderRadius: 8, background: 'var(--bg)', padding: '7px 9px' }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                            <NodeStatusDot status={n.status} />
-                                                            <span style={{ color: 'var(--ink)', fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-                                                            <span style={{ color: 'var(--ink-3)', fontSize: 9.5, marginLeft: 'auto', textTransform: 'uppercase', letterSpacing: '.3px' }}>{n.status}</span>
-                                                        </div>
-                                                        {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginTop: 4 }}>{n.error}</div>}
-                                                        {summary && !n.error && (
-                                                            <div style={{ color: 'var(--ink-2)', fontSize: 11, marginTop: 4, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{summary}</div>
-                                                        )}
-                                                        {arts.length > 0 && (
-                                                            <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                                                                {arts.map((a, j) => {
-                                                                    const dlUrl = withDownloadFlag(a.url);
-                                                                    return (
-                                                                        <a key={j} href={dlUrl} download={a.name} target="_blank" rel="noopener noreferrer"
-                                                                           onClick={(e) => { e.preventDefault(); saveArtifactViaBlob(dlUrl, a.name).catch(() => { window.location.href = dlUrl; }); }}
-                                                                           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: 5, padding: '2px 7px', background: 'var(--accent-soft)' }}>
-                                                                            <Download size={10} /> {a.name}
-                                                                        </a>
-                                                                    );
-                                                                })}
-                                                            </div>
-                                                        )}
-                                                        {n.output != null && (
-                                                            <details style={{ marginTop: 5 }}>
-                                                                <summary style={{ cursor: 'pointer', fontSize: 10, color: 'var(--ink-3)', userSelect: 'none' }}>view raw</summary>
-                                                                <pre style={{ margin: '4px 0 0 0', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: '1px solid var(--rule-2)', borderRadius: 4, padding: 5 }}>
-                                                                    {typeof n.output === 'string' ? n.output : JSON.stringify(n.output, null, 2)}
-                                                                </pre>
-                                                            </details>
-                                                        )}
-                                                    </div>
-                                                    {!isLast && (
-                                                        <div style={{ textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: '14px', padding: '2px 0' }}>↓</div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                );
-            })}
-        </div>
-    );
 }
 
 /* ============================================================ *

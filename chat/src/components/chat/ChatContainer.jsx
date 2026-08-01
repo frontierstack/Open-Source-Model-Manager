@@ -199,17 +199,6 @@ function parseThinkTags(content, streaming = false) {
 }
 
 /**
- * Extract URLs from text (max 3 URLs)
- */
-function extractUrls(text, maxUrls = 3) {
-    // Match http:// and https:// URLs, stopping at whitespace or common delimiters
-    const urlRegex = /https?:\/\/[^\s<>"')\]]+/gi;
-    const matches = text.match(urlRegex) || [];
-    // Remove duplicates and limit to maxUrls
-    return [...new Set(matches)].slice(0, maxUrls);
-}
-
-/**
  * Pull link references out of a native tool's structured result so the
  * UI can render them as clickable source cards (SearchSources).
  *
@@ -364,30 +353,6 @@ function summarizeToolArgs(rawArgs) {
     val = val.replace(/\s+/g, ' ').trim();
     if (val.length > 80) val = val.slice(0, 80) + '…';
     return key ? `${key}: ${val}` : val;
-}
-
-// Compact summary of what a tool returned — shown after the call completes
-// so the feed reads "Calling X… → Got N results in Ys".
-function summarizeToolResult(toolName, result) {
-    if (!result || typeof result !== 'object') return '';
-    if (Array.isArray(result.results)) {
-        const n = result.results.length;
-        if (toolName === 'web_search') return `${n} result${n === 1 ? '' : 's'}`;
-        return `${n} item${n === 1 ? '' : 's'}`;
-    }
-    if (typeof result.content === 'string' && result.content.length) {
-        return `${result.content.length.toLocaleString()} chars`;
-    }
-    if (typeof result.body === 'string' && result.body.length) {
-        return `${result.body.length.toLocaleString()} chars`;
-    }
-    if (typeof result.decoded === 'string' && result.decoded.length) {
-        return `decoded ${result.decoded.length} chars`;
-    }
-    if (typeof result.id === 'string' && toolName === 'load_skill') {
-        return `loaded ${result.id}`;
-    }
-    return '';
 }
 
 /**
