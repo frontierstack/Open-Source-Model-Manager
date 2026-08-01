@@ -8238,7 +8238,112 @@ console.log(chip);`
             }
         };
 
-        const code = examples[endpoint]?.[lang] || `// No specific example available for ${endpoint}
+        // ── Generic snippet generator ───────────────────────────────────────
+        // Every endpoint in the picker must produce runnable code. Endpoints
+        // without a hand-written example above are described here as
+        // {method, path, body} and rendered in all four languages. Snippets
+        // emit Bearer auth only — the auth filter below rewrites them for
+        // API Key + Secret, so there is no second block to keep in sync.
+        const GENERIC_SPECS = {
+            // Agents
+            '/api/agents/create':               { method: 'POST',   path: '/api/agents', body: { name: 'My Agent', description: 'What this agent does', permissions: ['query', 'skills'] } },
+            '/api/agents/:id':                  { method: 'GET',    path: '/api/agents/agent_id' },
+            '/api/agents/:id/update':           { method: 'PUT',    path: '/api/agents/agent_id', body: { name: 'Renamed Agent', permissions: ['query', 'skills', 'agents'] } },
+            '/api/agents/:id/delete':           { method: 'DELETE', path: '/api/agents/agent_id' },
+            '/api/agents/:id/regenerate-key':   { method: 'POST',   path: '/api/agents/agent_id/regenerate-key', note: 'Returns a NEW key + secret; the old pair stops working immediately' },
+            // API keys (admin)
+            '/api/api-keys/create':             { method: 'POST',   path: '/api/api-keys', body: { name: 'Pi terminal agent', permissions: ['query', 'agents'], bearerOnly: true }, note: 'bearerOnly:true is required for Pi and any Authorization: Bearer caller' },
+            '/api/api-keys/:id':                { method: 'PUT',    path: '/api/api-keys/key_id', body: { name: 'Renamed key', permissions: ['query'] } },
+            '/api/api-keys/:id/delete':         { method: 'DELETE', path: '/api/api-keys/key_id' },
+            '/api/api-keys/:id/revoke':         { method: 'POST',   path: '/api/api-keys/key_id/revoke' },
+            '/api/api-keys/:id/stats':          { method: 'GET',    path: '/api/api-keys/key_id/stats' },
+            '/api/api-keys/:id/clear-usage':    { method: 'POST',   path: '/api/api-keys/key_id/clear-usage' },
+            // Skills
+            '/api/skills/create':               { method: 'POST',   path: '/api/skills', body: { name: 'my_skill', description: 'What it does', parameters: { text: 'string' }, code: 'def execute(params):\n    return {"ok": True}' } },
+            '/api/skills/:id':                  { method: 'GET',    path: '/api/skills/skill_id' },
+            '/api/skills/:id/update':           { method: 'PUT',    path: '/api/skills/skill_id', body: { description: 'Updated description', enabled: true } },
+            '/api/skills/:id/delete':           { method: 'DELETE', path: '/api/skills/skill_id' },
+            '/api/markdown-skills/create':      { method: 'POST',   path: '/api/markdown-skills', body: { name: 'incident-runbook', content: '# Runbook\n\nSteps the model should follow.' } },
+            '/api/markdown-skills/:id/update':  { method: 'PUT',    path: '/api/markdown-skills/skill_id', body: { content: '# Updated runbook' } },
+            '/api/markdown-skills/:id/delete':  { method: 'DELETE', path: '/api/markdown-skills/skill_id' },
+            // Tasks
+            '/api/tasks/create':                { method: 'POST',   path: '/api/tasks', body: { name: 'Nightly report', prompt: 'Summarize today activity', schedule: '0 2 * * *' } },
+            '/api/tasks/:id':                   { method: 'GET',    path: '/api/tasks/task_id' },
+            '/api/tasks/:id/update':            { method: 'PUT',    path: '/api/tasks/task_id', body: { enabled: false } },
+            '/api/tasks/:id/delete':            { method: 'DELETE', path: '/api/tasks/task_id' },
+            // Users (admin)
+            '/api/users':                       { method: 'GET',    path: '/api/users' },
+            '/api/users/create':                { method: 'POST',   path: '/api/users', body: { username: 'analyst', password: 'a-strong-password', role: 'user' } },
+            '/api/users/:id':                   { method: 'PUT',    path: '/api/users/user_id', body: { role: 'admin' } },
+            '/api/users/:id/delete':            { method: 'DELETE', path: '/api/users/user_id' },
+            '/api/users/:username/reset-password': { method: 'POST', path: '/api/users/analyst/reset-password', body: { newPassword: 'a-new-strong-password' } },
+            // Automations
+            '/api/automations/:id':             { method: 'GET',    path: '/api/automations/workflow_id' },
+            '/api/automations/:id/update':      { method: 'PUT',    path: '/api/automations/workflow_id', body: { name: 'Renamed workflow', nodes: [], edges: [] } },
+            '/api/automations/:id/delete':      { method: 'DELETE', path: '/api/automations/workflow_id' },
+            '/api/automations/:id/enable':      { method: 'POST',   path: '/api/automations/workflow_id/enable', body: { enabled: true } },
+            '/api/automations/:id/archive':     { method: 'POST',   path: '/api/automations/workflow_id/archive', body: { archived: true } },
+            '/api/automations/events':          { method: 'GET',    path: '/api/automations/events', note: 'SSE stream of live run frames for the calling user' },
+            '/api/automations/runs/:runId':     { method: 'GET',    path: '/api/automations/runs/run_id', note: 'One run with per-node status, outputs and errors' },
+            '/api/automations/runs/:runId/stop':{ method: 'POST',   path: '/api/automations/runs/run_id/stop', note: 'Aborts a run that is still executing' },
+            '/api/automations/runs/:runId/artifacts/:name': { method: 'GET', path: '/api/automations/runs/run_id/artifacts/report.pdf', note: 'Raw bytes of a file the run produced' },
+            // Node types + chips (automation palette)
+            '/api/node-types/:id':              { method: 'GET',    path: '/api/node-types/type_id' },
+            '/api/node-types/:id/update':       { method: 'PUT',    path: '/api/node-types/type_id', body: { label: 'Renamed node' } },
+            '/api/node-types/:id/delete':       { method: 'DELETE', path: '/api/node-types/type_id' },
+            '/api/node-types/builtin':          { method: 'GET',    path: '/api/node-types/builtin', note: 'The built-in palette (triggers, gates, tools, delivery)' },
+            '/api/node-types/build':            { method: 'POST',   path: '/api/node-types/build', body: { prompt: 'A node that posts a message to Discord' } },
+            '/api/chips/:id/update':            { method: 'PUT',    path: '/api/chips/chip_id', body: { label: 'Last 24 hours' } },
+            '/api/chips/:id/delete':            { method: 'DELETE', path: '/api/chips/chip_id' },
+            '/api/chips/kinds':                 { method: 'GET',    path: '/api/chips/kinds', note: 'Valid chip kinds and the operations each supports' },
+            // Memory, models, workspaces, settings
+            '/api/memories/:id/link':           { method: 'POST',   path: '/api/memories/memory_id/link', body: { targetId: 'other_memory_id' }, note: 'Links are symmetric and ride along during retrieval' },
+            '/api/models/hf-cache/:dirName':    { method: 'DELETE', path: '/api/models/hf-cache/models--owner--repo', note: 'Frees disk by deleting one cached Hugging Face repo' },
+            '/api/agent-workspaces/:owner/:bucket': { method: 'DELETE', path: '/api/agent-workspaces/user_id/agent-key_id' },
+            '/api/agent-workspaces/inventory':  { method: 'GET',    path: '/api/agent-workspaces/inventory', note: 'File inventory of the calling API key sandbox workspace' },
+            '/api/system-settings/public':      { method: 'GET',    path: '/api/system-settings/public', note: 'Non-admin subset any signed-in user may read' },
+        };
+
+        const genericSnippet = (spec, language) => {
+            const url = `${baseUrl}${spec.path}`;
+            const method = spec.method;
+            const body = spec.body ? JSON.stringify(spec.body, null, 2) : null;
+            const hash = spec.note ? `# ${spec.note}\n` : '';
+            const slash = spec.note ? `// ${spec.note}\n` : '';
+
+            if (language === 'curl') {
+                const lines = [`curl -k -X ${method} ${baseUrl}${spec.path} \\`, `  -H "Authorization: Bearer your_bearer_token"`];
+                if (body) {
+                    lines[1] += ' \\';
+                    lines.push(`  -H "Content-Type: application/json" \\`);
+                    lines.push(`  -d '${body}'`);
+                }
+                return `${hash}# Bearer Token Authentication\n${lines.join('\n')}`;
+            }
+
+            if (language === 'python') {
+                const args = [`    '${url}'`, `    headers={\n        'Authorization': 'Bearer your_bearer_token'${body ? ",\n        'Content-Type': 'application/json'" : ''}\n    }`];
+                if (body) args.push(`    json=${body.replace(/\btrue\b/g, 'True').replace(/\bfalse\b/g, 'False').replace(/\bnull\b/g, 'None').split('\n').join('\n    ')}`);
+                args.push(`    verify=False  # For self-signed certificates`);
+                return `${hash}import requests\n\n# Bearer Token Authentication\nresponse = requests.${method.toLowerCase()}(\n${args.join(',\n')}\n)\n\nprint(response.status_code, response.text[:500])`;
+            }
+
+            if (language === 'powershell') {
+                const head = `${hash}# Bearer Token Authentication\n$headers = @{\n    "Authorization" = "Bearer your_bearer_token"${body ? '\n    "Content-Type" = "application/json"' : ''}\n}\n`;
+                const bodyLine = body ? `\n$body = @'\n${body}\n'@\n` : '';
+                const call = `\n$response = Invoke-RestMethod -Uri "${url}" -Method ${method.charAt(0) + method.slice(1).toLowerCase()} -Headers $headers${body ? ' -Body $body' : ''}\n$response | ConvertTo-Json -Depth 5`;
+                return head + bodyLine + call;
+            }
+
+            // javascript
+            const init = [`  method: '${method}'`, `  headers: {\n    'Authorization': 'Bearer your_bearer_token'${body ? ",\n    'Content-Type': 'application/json'" : ''}\n  }`];
+            if (body) init.push(`  body: JSON.stringify(${body.split('\n').join('\n  ')})`);
+            return `${slash}// Bearer Token Authentication\nfetch('${url}', {\n${init.join(',\n')}\n})\n  .then(res => res.json())\n  .then(data => console.log(data))\n  .catch(err => console.error(err));`;
+        };
+
+        const code = examples[endpoint]?.[lang]
+            || (GENERIC_SPECS[endpoint] ? genericSnippet(GENERIC_SPECS[endpoint], lang) : null)
+            || `// No specific example available for ${endpoint}
 // Follow the pattern shown in similar endpoints with the appropriate HTTP method`;
 
         // Filter code based on selected auth type
@@ -11737,6 +11842,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/models/load-hf">POST /api/models/load-hf - Load HF Repo into sglang</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:modelName - Delete Model</MenuItem>
                                                             <MenuItem value="/api/models/hf-cache">GET/DELETE /api/models/hf-cache - HuggingFace Cache</MenuItem>
+                                                            <MenuItem value="/api/models/hf-cache/:dirName">DELETE /api/models/hf-cache/:dirName - Delete One Cached Repo</MenuItem>
                                                             <MenuItem value="/api/model-configs">GET /api/model-configs - List All Model Configs</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName/update">PUT /api/model-configs/:name - Update Model Config</MenuItem>
@@ -11765,6 +11871,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/system/tools-catalog">GET /api/system/tools-catalog - Native Tools Catalog</MenuItem>
                                                             <MenuItem value="/api/system/egress-proxy">GET /api/system/egress-proxy - Egress Proxy Stats (Admin)</MenuItem>
                                                             <MenuItem value="/api/system-settings">GET/PUT /api/system-settings - Server Settings (Admin)</MenuItem>
+                                                            <MenuItem value="/api/system-settings/public">GET /api/system-settings/public - Public Settings Subset</MenuItem>
                                                             <MenuItem value="/api/sandbox/run-code">POST /api/sandbox/run-code - Sandboxed Python Eval</MenuItem>
                                                             <MenuItem value="/api/tool-artifacts/:runId/:filename">GET /api/tool-artifacts/:runId/:filename - Download Tool Artifact</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - DevDocs Reference Lookup</MenuItem>
@@ -11786,6 +11893,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/memories/clear">DELETE /api/memories - Clear All Memory</MenuItem>
                                                             <MenuItem value="/api/memories/:id">DELETE /api/memories/:id - Delete Memory</MenuItem>
                                                             <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/:id/link">POST /api/memories/:id/link - Link Two Memories</MenuItem>
                                                             <MenuItem value="/api/memories/search">POST /api/memories/search - Search Memory (Relevance-Ranked)</MenuItem>
                                                             <MenuItem value="/api/memories/maintenance">POST /api/memories/maintenance - Memory Cleanup / Consolidation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
@@ -11861,8 +11969,15 @@ console.log(chip);`
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Sandbox Workspaces ───</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces">GET /api/agent-workspaces - List Sandbox Workspaces</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces/file">GET/POST /api/agent-workspaces/file - Download / Upload Workspace File</MenuItem>
+                                                            <MenuItem value="/api/agent-workspaces/inventory">GET /api/agent-workspaces/inventory - Workspace File Inventory</MenuItem>
+                                                            <MenuItem value="/api/agent-workspaces/:owner/:bucket">DELETE /api/agent-workspaces/:owner/:bucket - Delete Workspace</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Automation & Chips ───</MenuItem>
                                                             <MenuItem value="/api/automations">GET/POST /api/automations - List / Create Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id">GET /api/automations/:id - Get Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/update">PUT /api/automations/:id - Update Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/delete">DELETE /api/automations/:id - Delete Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/enable">POST /api/automations/:id/enable - Enable / Disable</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/archive">POST /api/automations/:id/archive - Archive / Unarchive</MenuItem>
                                                             <MenuItem value="/api/automations/:id/run">POST /api/automations/:id/run - Run (SSE live frames)</MenuItem>
                                                             <MenuItem value="/api/automations/:id/run-sync">POST /api/automations/:id/run-sync - Run (final JSON)</MenuItem>
                                                             <MenuItem value="/api/automations/build">POST /api/automations/build - Build from Prompt (LLM)</MenuItem>
@@ -11871,8 +11986,20 @@ console.log(chip);`
                                                             <MenuItem value="/api/automations/:id/runs">GET /api/automations/:id/runs - Run History</MenuItem>
                                                             <MenuItem value="/api/automations/:id/webhook-token">POST /api/automations/:id/webhook-token - Mint Webhook Token</MenuItem>
                                                             <MenuItem value="/api/automations/webhook/:token">POST /api/automations/webhook/:token - Public Webhook Trigger</MenuItem>
+                                                            <MenuItem value="/api/automations/events">GET /api/automations/events - Live Run Frames (SSE)</MenuItem>
+                                                            <MenuItem value="/api/automations/runs/:runId">GET /api/automations/runs/:runId - One Run + Node Outputs</MenuItem>
+                                                            <MenuItem value="/api/automations/runs/:runId/stop">POST /api/automations/runs/:runId/stop - Stop a Live Run</MenuItem>
+                                                            <MenuItem value="/api/automations/runs/:runId/artifacts/:name">GET /api/automations/runs/:runId/artifacts/:name - Download Run Artifact</MenuItem>
                                                             <MenuItem value="/api/node-types">GET/POST /api/node-types - List / Create Node Types</MenuItem>
+                                                            <MenuItem value="/api/node-types/builtin">GET /api/node-types/builtin - Built-in Palette</MenuItem>
+                                                            <MenuItem value="/api/node-types/:id">GET /api/node-types/:id - Get Node Type</MenuItem>
+                                                            <MenuItem value="/api/node-types/:id/update">PUT /api/node-types/:id - Update Node Type</MenuItem>
+                                                            <MenuItem value="/api/node-types/:id/delete">DELETE /api/node-types/:id - Delete Node Type</MenuItem>
+                                                            <MenuItem value="/api/node-types/build">POST /api/node-types/build - LLM-Drafted Node Type</MenuItem>
                                                             <MenuItem value="/api/chips">GET/POST /api/chips - List / Create Chips</MenuItem>
+                                                            <MenuItem value="/api/chips/kinds">GET /api/chips/kinds - Valid Chip Kinds</MenuItem>
+                                                            <MenuItem value="/api/chips/:id/update">PUT /api/chips/:id - Update Chip</MenuItem>
+                                                            <MenuItem value="/api/chips/:id/delete">DELETE /api/chips/:id - Delete Chip</MenuItem>
                                                             <MenuItem value="/api/chips/build">POST /api/chips/build - LLM-Drafted Chip</MenuItem>
                                                         </Select>
                                                     </FormControl>
@@ -12851,6 +12978,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sandbox workspaces (agents + webchat sessions; admins see all)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/:owner/:bucket</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a sandbox workspace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download / upload a file in the caller&apos;s agent workspace (Pi host⇆workspace bridge; API-key callers only)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/inventory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>File inventory of the caller&apos;s agent workspace (Pi injects this into its system prompt so sandbox state survives compaction)</TableCell></TableRow>
 
                                                     {/* Automation Permission */}
                                                     <TableRow>
@@ -12872,11 +13000,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Archive / unarchive</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/runs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / clear run history</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/runs/:runId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One run with per-node outputs (<code>POST …/stop</code> aborts a live run)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/runs/:runId/artifacts/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download a file a run produced (PDF, CSV, chart, …)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/webhook-token</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Mint / rotate the public webhook token</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/webhook/:token</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Public webhook trigger (unauthenticated, token-gated, runs as the owner)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/events</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-user SSE stream of live run frames (drives the editor animation)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/node-types</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create custom palette node types (<code>/builtin</code> lists the built-in palette)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/node-types/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage node type</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/node-types/build</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>LLM-drafted node type from a prompt</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create custom node-setting chips (<code>/kinds</code> lists valid kinds)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete chip</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chips/build</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>LLM-drafted chip from a prompt</TableCell></TableRow>
@@ -12915,6 +13045,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/restart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Reset system</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system-settings</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Server-wide settings (e.g. <code>allowInternalNetwork</code> SSRF relaxation; cloud-metadata IPs stay blocked)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system-settings/public</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Non-admin subset any signed-in user may read (e.g. <code>uploadMaxMb</code>)</TableCell></TableRow>
 
                                                     {/* OpenAI Compatible */}
                                                     <TableRow>
