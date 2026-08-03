@@ -1212,6 +1212,17 @@ export default function ChatContainer({
             return { type: 'abort', message: 'Generation stopped' };
         }
 
+        // A message the SERVER explicitly authored (read out of the JSON error
+        // body below) is authoritative — it explains the ACTUAL failure far
+        // better than a status-code guess. It must also survive the second
+        // parseErrorMessage() pass in the outer catch, which would otherwise
+        // rewrite anything mentioning "context"/"token"/"length" into the
+        // generic "conversation is too long, start a new chat" advice (wrong
+        // and unactionable when the system prompt is what overflowed).
+        if (error?.serverMessage && error.message) {
+            return { type: error.errorType || 'server', message: error.message };
+        }
+
         // Handle network errors
         if (error?.message === 'Failed to fetch' || error?.name === 'TypeError') {
             return {
@@ -1223,24 +1234,35 @@ export default function ChatContainer({
         // Handle HTTP errors
         if (response && !response.ok) {
             const status = response.status;
+            // Message the server sent in the JSON body, when there is one.
+            const serverMsg = typeof error?.message === 'string' && error.message.trim()
+                ? error.message.trim()
+                : null;
+            // Statuses where our canned guidance is more actionable than
+            // whatever the body says ("Authentication required" etc.).
+            const CANNED_WINS = new Set([401, 403, 404, 429, 502, 503, 504]);
+            const prefer = (type, canned) => ({
+                type,
+                message: (!CANNED_WINS.has(status) && serverMsg) ? serverMsg : canned,
+            });
 
             switch (status) {
                 case 401:
-                    return { type: 'auth', message: 'Authentication error: Please log in again.' };
+                    return prefer('auth', 'Authentication error: Please log in again.');
                 case 403:
-                    return { type: 'permission', message: 'Permission denied: You do not have access to this resource.' };
+                    return prefer('permission', 'Permission denied: You do not have access to this resource.');
                 case 404:
-                    return { type: 'model', message: 'Model not found: The selected model may have been stopped.' };
+                    return prefer('model', 'Model not found: The selected model may have been stopped.');
                 case 429:
-                    return { type: 'rateLimit', message: 'Rate limit exceeded: Please wait before sending more requests.' };
+                    return prefer('rateLimit', 'Rate limit exceeded: Please wait before sending more requests.');
                 case 500:
-                    return { type: 'server', message: 'Server error: An internal error occurred. Please try again.' };
+                    return prefer('server', 'Server error: An internal error occurred. Please try again.');
                 case 502:
                 case 503:
                 case 504:
-                    return { type: 'model', message: 'Model unavailable: The model service is not responding. It may be loading or crashed.' };
+                    return prefer('model', 'Model unavailable: The model service is not responding. It may be loading or crashed.');
                 default:
-                    return { type: 'unknown', message: `Request failed with status ${status}` };
+                    return prefer('unknown', `Request failed with status ${status}`);
             }
         }
 
@@ -1597,11 +1619,16 @@ export default function ChatContainer({
                 }
 
                 const { type, message } = parseErrorMessage(
-                    errorBody ? new Error(errorBody.message || errorBody.error) : null,
+                    errorBody ? new Error(errorBody.error || errorBody.message) : null,
                     response
                 );
 
-                throw new Error(message);
+                // Flag it so the outer catch's re-parse passes it through
+                // verbatim instead of re-classifying it by keyword.
+                const httpError = new Error(message);
+                httpError.serverMessage = true;
+                httpError.errorType = type;
+                throw httpError;
             }
 
             const reader = response.body.getReader();

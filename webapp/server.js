@@ -18278,9 +18278,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     if (availableForConversation <= 0) {
                         clearStreamingJob();
+                        // Be specific: the generic "reduce system prompt size" gave the
+                        // user no idea BY HOW MUCH, and the failure is invisible from the
+                        // chat UI otherwise (a saved per-model system prompt that grew to
+                        // hundreds of KB — e.g. an embedded HTML report template — fills
+                        // the whole window before a single user token is counted).
+                        const overBy = Math.max(1, systemTokens - availableContextForInput);
                         return res.status(400).json({
                             success: false,
-                            error: `System prompt alone exceeds context window. Please reduce system prompt size.`
+                            error: `System prompt too large for "${targetModel}": it alone needs ~${systemTokens.toLocaleString()} tokens, but only ~${availableContextForInput.toLocaleString()} are available (context ${contextSize.toLocaleString()}, ~${responseReserve.toLocaleString()} reserved for the reply). Trim this model's system prompt by at least ~${overBy.toLocaleString()} tokens (~${(overBy * 3).toLocaleString()} characters), or load a model with a larger context.`
                         });
                     }
 
@@ -18329,7 +18335,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         clearStreamingJob();
                         return res.status(400).json({
                             success: false,
-                            error: `Input too large even with context shifting. Please reduce message size or clear conversation history.`
+                            error: `Input too large even with context shifting: ~${totalInputTokens.toLocaleString()} tokens (system prompt ~${systemTokens.toLocaleString()}) against ~${availableContextForInput.toLocaleString()} available in a ${contextSize.toLocaleString()}-token context. Reduce the message size, trim the system prompt, or clear conversation history.`
                         });
                     }
 
