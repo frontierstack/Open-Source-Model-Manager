@@ -252,6 +252,27 @@ ENV PYGAME_HIDE_SUPPORT_PROMPT=hide
 ENV XDG_CACHE_HOME=/tmp/.cache
 ENV XDG_CONFIG_HOME=/tmp/.config
 
+# HTML→PDF fidelity for the html_to_pdf skill. Added as a late layer so the
+# heavy whisper / JDK / node layers above stay cached — the main pip block's
+# weasyprint==62.3 pin is deliberately left in place as the historical floor.
+#
+# WeasyPrint 62.3 predates CSS Color 4, so it silently DROPS every
+# `rgb(59 130 246 / .5)`, `hsl(217 91% 60%)` and `oklch(...)` declaration it
+# parses — which is most of the colour in modern model-generated HTML. The
+# result was a PDF that no longer looked like the page it came from (flat
+# black text, no tinted pills/callouts, no accent colours). 69.x parses all
+# three natively. pydyf moves in lockstep: WeasyPrint calls its `transform()`
+# signature directly, so a mismatched pair raises mid-render.
+#
+# fonts-liberation2 supplies the metric-compatible Arial / Helvetica / Times
+# New Roman / Courier New faces those pages ask for; without them fontconfig
+# substituted DejaVu for every stack. (Web fonts named in the HTML are fetched
+# at render time — html_to_pdf runs with egress so Google Fonts resolves.)
+RUN pip install --no-cache-dir --upgrade weasyprint==69.0 pydyf==0.12.1 \
+    && apt-get update && apt-get install -y --no-install-recommends fonts-liberation2 \
+    && rm -rf /var/lib/apt/lists/* /root/.cache \
+    && python3 -c "import weasyprint; weasyprint.HTML(string='<p style=\"color:oklch(.55 .22 264)\">ok</p>').write_pdf('/tmp/_t.pdf'); print('weasyprint', weasyprint.__version__, 'OK')"
+
 USER sandbox
 WORKDIR /tmp
 

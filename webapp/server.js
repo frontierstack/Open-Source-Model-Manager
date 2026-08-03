@@ -22841,6 +22841,11 @@ const NETWORK_SANDBOX_DEFAULTS = {
     http_request:    { allowlist: ['*'], note: 'user-supplied URLs' },
     web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },
     playwright_fetch: { allowlist: ['*'], note: 'user-supplied URLs; browser renders' },
+    // html_to_pdf renders the page's OWN <link>/@import/@font-face/<img> refs.
+    // With network=none every one of those silently fails, so a design asking
+    // for Inter (or any remote stylesheet or image) came out in the fallback
+    // font with its pictures missing — the PDF stopped looking like the HTML.
+    html_to_pdf:     { allowlist: ['*'], note: 'web fonts, remote stylesheets and images referenced by the HTML being rendered' },
     dns_lookup:      { allowlist: [] }, // doesn't use HTTP proxy; noop
     // Code-execution skills — the model needs general public internet so it
     // can pip install, fetch arbitrary APIs, run yt-dlp, etc. Private/internal
