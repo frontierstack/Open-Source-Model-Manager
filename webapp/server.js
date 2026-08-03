@@ -12652,9 +12652,29 @@ function parseRetryAfter(raw) {
     if (!Number.isNaN(t)) { const d = t - Date.now(); return d > 0 ? d : 0; }
     return null;
 }
+// TLS chain errors where a normal BROWSER succeeds and Node does not: the site
+// serves a leaf cert without its intermediate, and browsers silently repair the
+// chain by following the cert's AIA "caIssuers" URL while Node has no such
+// fetcher. Retrying these once with verification relaxed is what makes an
+// otherwise-fine public page readable (observed: propertytaxescalculator.com →
+// `web failed UNABLE_TO_VERIFY_LEAF_SIGNATURE`, cascade gave up in 1.0s).
+// Deliberately NOT extended to self-signed / expired / hostname-mismatch codes —
+// a browser warns on those too, so failing is the correct answer there.
+const TLS_INCOMPLETE_CHAIN_CODES = new Set([
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'UNABLE_TO_GET_ISSUER_CERT',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+]);
+let relaxedTlsAgent = null;
+function getRelaxedTlsAgent() {
+    if (!relaxedTlsAgent) relaxedTlsAgent = new https.Agent({ rejectUnauthorized: false });
+    return relaxedTlsAgent;
+}
+
 async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts = {}) {
+    let tlsRelaxed = false;
     try {
-        const response = await axios.get(url, {
+        const requestConfig = (agent) => ({
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -12665,7 +12685,18 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts
             timeout: timeout,
             maxRedirects: 3,
             validateStatus: (status) => status < 400,
+            ...(agent ? { httpsAgent: agent } : {}),
         });
+
+        let response;
+        try {
+            response = await axios.get(url, requestConfig(null));
+        } catch (tlsErr) {
+            if (!TLS_INCOMPLETE_CHAIN_CODES.has(tlsErr.code)) throw tlsErr;
+            console.warn(`[Fetch] ${tlsErr.code} for ${url} — retrying once with TLS chain verification relaxed`);
+            response = await axios.get(url, requestConfig(getRelaxedTlsAgent()));
+            tlsRelaxed = true;
+        }
 
         const contentType = response.headers['content-type'] || '';
         if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
@@ -12684,6 +12715,7 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts
         const rawHtml = opts.includeRawHtml && typeof response.data === 'string' ? response.data : '';
         return {
             success: true, content, title, url,
+            ...(tlsRelaxed ? { tlsRelaxed: true } : {}),
             ...(rawHtml ? { rawHtml } : {}),
             ...(opts.includeHeaders ? { status: response.status, respHeaders: pickHeaders(response.headers) } : {}),
         };
@@ -20052,13 +20084,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             const truncatedTargetCounts = new Map();
             let largeEditTruncationExhausted = false;
             let largeEditTargetPath = null;
-            // Default 1: bail on the FIRST truncation of a large write. A
-            // targeted edit (replace_lines / small search_replace_file) fits the
-            // round budget and never truncates, so this only fires on the
-            // pathological whole-file/large-section rewrite — exactly the call we
-            // want to stop retrying. The on-disk file already reflects every
-            // SUCCESSFUL edit, so we deliver that immediately instead of grinding.
-            const MAX_EDIT_TRUNCATIONS = parseInt(process.env.MAX_EDIT_TRUNCATIONS || '1', 10);
+            // Default 2 (was 1): the truncation result carries a specific
+            // recovery hint — "create_file with a short first chunk, then
+            // append_to_file the rest" (TRUNCATION_CHUNKABLE) or "write it to a
+            // /workspace file and pass the path" (TRUNCATION_FILE_HATCH). At 1
+            // we bailed on the FIRST truncation, so that hint could never be
+            // acted on and a large report died with nothing written. 2 gives
+            // exactly ONE recovery round; the hint explicitly forbids re-sending
+            // the same oversized payload, so a model that ignores it still stops
+            // one round later instead of grinding to MAX_TOOL_ITERATIONS.
+            const MAX_EDIT_TRUNCATIONS = parseInt(process.env.MAX_EDIT_TRUNCATIONS || '2', 10);
             // Hoisted out of the per-round body: skills don't change mid-turn,
             // so loading and indexing them once per request avoids re-walking
             // the (potentially large) skills file on every tool round.
@@ -20181,7 +20216,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // let the round use the free context headroom up to
                 // TOOL_ROUND_MAX_TOKENS so a complete tool call fits; the final
                 // prose synthesis below still respects initialMaxTokens.
-                const TOOL_ROUND_MAX_TOKENS = 32768;
+                // 32768 was too tight once REASONING is on: the thinking trace
+                // is billed against the SAME max_tokens as the tool call, so a
+                // model that thinks for ~15k tokens and then emits a large
+                // create_file/html payload runs out mid-JSON — observed as
+                // `create_file args appear truncated (raw length 37)`, i.e. the
+                // budget died right after `{"filePath": "..."`. Still a CEILING
+                // clamped by roundHeadroom, and the reasoning-loop detector
+                // bounds runaway thinking well below it. Env-tunable.
+                const TOOL_ROUND_MAX_TOKENS = parseInt(process.env.TOOL_ROUND_MAX_TOKENS || '49152', 10);
                 const roundCap = toolCatalog.length
                     ? Math.max(initialMaxTokens, Math.min(TOOL_ROUND_MAX_TOKENS, roundHeadroom))
                     : initialMaxTokens;

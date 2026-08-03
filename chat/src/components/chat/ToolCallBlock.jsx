@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText } from 'lucide-react';
 import SearchSources from './SearchSources';
 import ChartBlock from './ChartBlock';
@@ -15,6 +15,26 @@ import ArtifactList from './ArtifactList';
  */
 export default function ToolCallBlock({ tool }) {
     const [open, setOpen] = useState(false);
+
+    // Live elapsed clock for an in-flight call. A bare spinner gives no signal
+    // about whether a slow tool (make_downloadable on a large artifact, a fetch
+    // walking the retrieval cascade) is progressing or wedged — a ticking
+    // counter does, and it hands straight off to the final durationMs on
+    // completion. Read off `tool` directly: these hooks must sit above the
+    // `if (!tool)` bail-out, before the destructure below.
+    const running = tool?.status === 'partial';
+    const startedAt = tool?.startedAt;
+    const [elapsedMs, setElapsedMs] = useState(0);
+    useEffect(() => {
+        if (!running) return undefined;
+        // Fall back to mount time for a chip restored without a startedAt.
+        const base = typeof startedAt === 'number' ? startedAt : Date.now();
+        const tick = () => setElapsedMs(Date.now() - base);
+        tick();
+        const id = setInterval(tick, 200);
+        return () => clearInterval(id);
+    }, [running, startedAt]);
+
     if (!tool) return null;
 
     const {
@@ -89,8 +109,10 @@ export default function ToolCallBlock({ tool }) {
     } else if (sourceCount && (type === 'native_tool_call' || type === 'web_search' || type === 'url_fetch')) {
         captionParts.push(`${sourceCount} source${sourceCount === 1 ? '' : 's'}`);
     }
-    if (isRunning) captionParts.push('running…');
-    else if (typeof durationMs === 'number' && durationMs >= 0) {
+    if (isRunning) {
+        const runningSeconds = elapsedMs / 1000;
+        captionParts.push(runningSeconds >= 1 ? `running… ${runningSeconds.toFixed(1)}s` : 'running…');
+    } else if (typeof durationMs === 'number' && durationMs >= 0) {
         const seconds = durationMs / 1000;
         captionParts.push(seconds >= 1 ? `${seconds.toFixed(1)}s` : `${Math.round(durationMs)}ms`);
     }

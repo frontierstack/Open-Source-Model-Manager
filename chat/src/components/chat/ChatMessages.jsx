@@ -73,6 +73,8 @@ function StreamingMessage() {
             label: tc.name,
             query: argPreview,
             durationMs: tc.durationMs,
+            // Drives ToolCallBlock's live "running… 4.2s" clock.
+            startedAt: tc.startedAt,
             status: tc.status === 'running' ? 'partial'
                 : tc.status === 'success' ? 'success'
                 : 'failed',
