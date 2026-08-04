@@ -121,6 +121,19 @@ function summaryOf(record) {
         finishedAt: record.finishedAt,
         durationMs: record.durationMs,
         error: record.error,
+        // A run can finish 'completed' and still have done nothing useful — a
+        // monitor whose source broke, a store that saved zero rows, a delivery
+        // step that never ran. Without this the index shows an unbroken column of
+        // green and the only symptom the user ever sees is silence.
+        health: record.health
+            ? {
+                ok: record.health.ok,
+                issueCount: (record.health.issues || []).length,
+                summary: (record.health.issues || [])[0]
+                    ? `${record.health.issues[0].nodeId}: ${String(record.health.issues[0].detail).slice(0, 160)}`
+                    : '',
+            }
+            : undefined,
     };
 }
 

@@ -2334,6 +2334,15 @@ const CHIP_DEFS_BY_KIND = {
         { field: 'sql', label: 'Raw SQL query', type: 'multiline', acceptsData: false, placeholder: 'SELECT data FROM records WHERE …', advanced: true, help: 'Advanced — a custom SELECT instead of the options above.' },
         { field: 'db', label: 'Storage file', type: 'value', acceptsData: false, placeholder: 'automation.db', advanced: true, help: 'Which storage file to read (default automation.db).' },
     ],
+    track_changes: [
+        { field: 'content', label: 'What to watch', type: 'multiline', placeholder: 'Blank watches the previous step’s output', help: 'The text to compare between runs. Leave blank to watch whatever the previous step produced.' },
+        { field: 'key', label: 'Name for this watcher', type: 'value', acceptsData: false, placeholder: 'e.g. the page URL — blank uses this step’s own id', help: 'A stable id so this step remembers its own snapshot. Keep it the same between runs; use different ones when you watch several sources.' },
+        { field: 'ignoreVolatile', label: 'Ignore timestamps & session tokens', type: 'toggle', default: true, advanced: true, help: 'On by default, so a page that only re-stamps “2 hours ago” on every visit isn’t reported as changed. Turn off to compare byte for byte (e.g. watching a checksum).' },
+        { field: 'ignoreWhitespace', label: 'Ignore spacing changes', type: 'toggle', advanced: true, help: 'Treat a re-flowed line as unchanged.' },
+        { field: 'requireContent', label: 'Only track real content', type: 'toggle', default: true, advanced: true, help: 'On by default: if the source returns an error page, a bot-protection wall or nothing readable, this step stops with an error instead of saving the junk — saving it would make every later run report “no change” forever.' },
+        { field: 'table', label: 'Collection name', type: 'value', acceptsData: false, placeholder: 'snapshots', advanced: true, help: 'Where snapshots are kept (default “snapshots”).' },
+        { field: 'db', label: 'Storage file', type: 'value', acceptsData: false, placeholder: 'automation.db', advanced: true, help: 'Which storage file to use (default automation.db).' },
+    ],
     render_html: [{ field: 'html', label: 'HTML', type: 'multiline', required: true, placeholder: '<h1>Report</h1> — blank wraps the previous output' }],
     export_file: [
         { field: 'format', label: 'Format', type: 'choice', required: true, default: 'txt', options: ['txt', 'csv', 'json', 'md', 'html', 'pdf'].map(f => ({ value: f, label: f.toUpperCase() })) },

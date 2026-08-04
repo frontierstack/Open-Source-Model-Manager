@@ -12,6 +12,7 @@
  */
 
 const { spawn, execSync } = require('child_process');
+const { isNonContentUrl, isPlumbingPayload, unusableContentReason, looksOpaque } = require('./contentQuality');
 
 // ============================================================================
 // SSL INSPECTION BYPASS CONFIGURATION
@@ -145,6 +146,10 @@ function flattenJsonToText(data, maxLength = 6000, prefix = '', depth = 0) {
                 if (value === null || value === undefined) continue;
                 if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
                     const strVal = String(value);
+                    // A long opaque value (a session token, a signed blob, an
+                    // embedded base64 asset) is never something a reader wants,
+                    // and 500 chars of it crowds out the content that is.
+                    if (strVal.length >= 64 && looksOpaque(strVal, 32)) continue;
                     if (strVal.length > 0 && strVal.length < 2000) {
                         output += `${prefix}${key}: ${strVal.length > 500 ? strVal.slice(0, 500) + '...' : strVal}\n`;
                     }
@@ -673,25 +678,39 @@ async function extractContent(page, options = {}) {
         const metaDesc = document.querySelector('meta[name="description"]')?.content ||
                          document.querySelector('meta[property="og:description"]')?.content || '';
 
-        // Get main content area - check specific article body selectors first (Blogger, WordPress, news sites)
-        const mainContent = document.querySelector('.post-body') ||
-                           document.querySelector('.articlebody') ||
-                           document.querySelector('.post-body-container') ||
-                           document.querySelector('[itemprop="articleBody"]') ||
-                           document.querySelector('.story-body') ||
-                           document.querySelector('.storycontent') ||
-                           document.querySelector('.entry-content') ||
-                           document.querySelector('.be__contents') ||
-                           document.querySelector('.be__contents-wrapper') ||
-                           document.querySelector('.blog-contents') ||
-                           document.querySelector('.section--article') ||
-                           document.querySelector('article') ||
-                           document.querySelector('main') ||
-                           document.querySelector('[role="main"]') ||
-                           document.querySelector('.content') ||
-                           document.querySelector('.article') ||
-                           document.querySelector('.post') ||
-                           document.body;
+        // Get main content area - check specific article body selectors first
+        // (Blogger, WordPress, news sites), then the semantic landmarks.
+        //
+        // The pick is SIZE-CHECKED, not first-match. These selectors assume the
+        // element wraps the whole article, which holds on a news/blog POST but not
+        // on a listing: an activity feed, a model/product grid, a search-results or
+        // blog INDEX page wraps EACH CARD in its own <article>, so first-match
+        // grabbed one ~40-character row and every extraction step below then
+        // queried inside that single row — discarding the entire page. (Live case:
+        // a HuggingFace activity feed with 20 <article> cards extracted 57 chars,
+        // which made the caller fall back to publishing captured bot-telemetry as
+        // the page.) A candidate that holds well under half the body text is a
+        // fragment, not the content, so it loses to the landmark elements.
+        const CONTENT_SELECTORS = [
+            '.post-body', '.articlebody', '.post-body-container', '[itemprop="articleBody"]',
+            '.story-body', '.storycontent', '.entry-content', '.be__contents',
+            '.be__contents-wrapper', '.blog-contents', '.section--article',
+            'article', 'main', '[role="main"]', '.content', '.article', '.post',
+        ];
+        const bodyTextLen = (document.body?.innerText || '').length;
+        let mainContent = document.body;
+        for (const sel of CONTENT_SELECTORS) {
+            const els = document.querySelectorAll(sel);
+            if (!els.length) continue;
+            // Repeated <article> = one per card. The page is their container, not
+            // any single one of them.
+            if (sel === 'article' && els.length > 1) continue;
+            const len = (els[0].innerText || '').length;
+            if (len >= 200 && (!bodyTextLen || len >= bodyTextLen * 0.4)) {
+                mainContent = els[0];
+                break;
+            }
+        }
 
         // Extract headings
         const headings = [];
@@ -741,6 +760,45 @@ async function extractContent(page, options = {}) {
             });
             if (rows.length > 0) tables.push(rows.join('\n'));
         });
+
+        // Repeated cards / list items → ONE LINE EACH.
+        //
+        // A feed, activity list, release list, job board or product grid keeps
+        // every entry in its own <article>/<li>, but innerText runs them together
+        // into one unbroken paragraph. That costs any line-oriented consumer its
+        // precision: a change monitor watching such a page can only say "the whole
+        // page differs" when a single new entry appears, and whatever reads the
+        // diff then has to re-derive which entry is new. One line per entry makes
+        // a new entry exactly one added line.
+        const cardItems = [];
+        {
+            let group = null;
+            const arts = document.querySelectorAll('article');
+            if (arts.length > 1) group = arts;
+            else {
+                const lis = document.querySelectorAll('main li, [role="list"] > [role="listitem"], main ul > li');
+                if (lis.length > 2) group = lis;
+            }
+            const seenCard = new Set();
+            for (const el of (group || [])) {
+                const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                // The card's own link IS its identity — on many feeds the visible
+                // text is just metadata ("Text-to-Video • Updated 2 hours ago") and
+                // the name lives only in the permalink, so without it every card
+                // reads identically and a new entry is indistinguishable.
+                const a = el.querySelector('a[href]');
+                let href = '';
+                if (a) {
+                    href = a.getAttribute('href') || '';
+                    try { href = new URL(href, location.href).pathname; } catch (_) {}
+                }
+                const line = href ? `${href}${t ? ' — ' + t : ''}` : t;
+                if (line.length < 12 || line.length > 400 || seenCard.has(line)) continue;
+                seenCard.add(line);
+                cardItems.push(line);
+                if (cardItems.length >= 60) break;
+            }
+        }
 
         // Extract image captions + per-image links. Image-heavy pages
         // (Instagram, Pinterest, photo galleries) carry their per-image TEXT in
@@ -797,6 +855,10 @@ async function extractContent(page, options = {}) {
         if (metaDesc) {
             output += `Summary: ${metaDesc}\n\n`;
         }
+        // Everything above is page metadata, present on every page whether or not
+        // the extraction actually worked. The rescue below must judge itself
+        // against the REAL content it produced, not against this preamble.
+        const preambleLen = output.length;
 
         if (headings.length > 0) {
             output += 'Key Points:\n';
@@ -805,6 +867,11 @@ async function extractContent(page, options = {}) {
             });
             output += '\n';
         }
+
+        const itemsSection = cardItems.length > 1
+            ? 'Items:\n' + cardItems.map(t => `- ${t}`).join('\n') + '\n\n'
+            : '';
+        if (itemsSection) output += itemsSection;
 
         // Videos first — there are only ever a handful and they're high-value
         // (the model passes them to find_video), so emit them before the bulky
@@ -854,9 +921,18 @@ async function extractContent(page, options = {}) {
             });
         }
 
-        // If structured extraction returned too little content, fall back to innerText
-        // This handles SPAs, shadow DOM, and sites with non-standard HTML structure
-        if (output.length < 300) {
+        // If structured extraction returned too little content, fall back to innerText.
+        // This handles SPAs, shadow DOM, and sites with non-standard HTML structure.
+        //
+        // "Too little" is measured on the extracted BODY (output minus the
+        // title/description preamble) and relative to the page: a card/list page
+        // can yield a few hundred characters of nav crumbs while the rendered body
+        // holds thousands, and the old absolute `output.length < 300` test — with
+        // the preamble counted in — meant the rescue never fired on exactly the
+        // pages that needed it.
+        const bodyPortionLen = output.length - preambleLen;
+        const pageTextLen = (document.body?.innerText || '').length;
+        if (bodyPortionLen < 300 || (pageTextLen > 800 && bodyPortionLen < pageTextLen * 0.25)) {
             // Recursive function to get text including shadow DOM
             function getAllText(element) {
                 let text = '';
@@ -877,15 +953,41 @@ async function extractContent(page, options = {}) {
                 return text;
             }
 
-            const shadowText = getAllText(mainContent);
-            const innerText = mainContent.innerText || '';
-            const fallbackText = shadowText.length > innerText.length ? shadowText : innerText;
+            // Rescue from whichever of the detected region / the document body
+            // actually holds the text. Re-reading only `mainContent` re-reads the
+            // very element the selector chain got wrong, so the rescue could
+            // never recover from a bad pick.
+            const src = ((document.body?.innerText || '').length > (mainContent.innerText || '').length)
+                ? document.body : mainContent;
+            const shadowText = getAllText(src);
+            const innerText = src.innerText || '';
+            // Prefer innerText: it preserves the page's LINE structure, which is
+            // what makes a diff (and any per-item reading of a feed/listing) work.
+            // getAllText walks into shadow roots but joins every text node with a
+            // space, so it is almost always the longer of the two and used to win
+            // on length alone — flattening every page to a single line. Only take
+            // it when it found materially more text, i.e. real shadow-DOM content
+            // innerText could not see.
+            const fallbackText = shadowText.length > innerText.length * 1.2 + 50 ? shadowText : innerText;
 
-            if (fallbackText.length > output.length) {
+            if (fallbackText.length > bodyPortionLen) {
                 output = '';
                 if (title) output += `Title: ${title}\n\n`;
                 if (metaDesc) output += `Summary: ${metaDesc}\n\n`;
-                output += 'Content:\n' + fallbackText.replace(/\s+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
+                // Keep the per-entry lines: they are the structured half of the
+                // answer, and the flat rescue text cannot reproduce them.
+                if (itemsSection) output += itemsSection;
+                // Collapse horizontal whitespace only. The old blanket /\s+/ → ' '
+                // put the entire page on ONE line (and made the following
+                // paragraph-break restore dead code), which costs every
+                // line-oriented consumer its precision: a change monitor could
+                // only report "this whole page differs" instead of the one row
+                // that actually appeared.
+                output += 'Content:\n' + fallbackText
+                    .replace(/[^\S\n]+/g, ' ')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .replace(/[ \t]*\n[ \t]*/g, '\n')
+                    .trim();
             }
         }
 
@@ -973,6 +1075,16 @@ async function fetchUrlContent(url, options = {}) {
             }
             // Intercept XHR/fetch responses that return JSON (SPA data loading)
             if (resourceType === 'xhr' || resourceType === 'fetch') {
+                // Bot-protection, captcha and analytics endpoints are passed
+                // through UNTOUCHED — never re-fetched, never captured. Their JSON
+                // is session plumbing, and presenting it as page content is worse
+                // than having no data at all: an AWS-WAF token blob is long enough
+                // to satisfy every "did we get content?" check downstream, so a
+                // page monitor happily snapshotted it and reported "no change" on
+                // every run for weeks. Replaying a challenge request through
+                // route.fetch() can also break the very handshake that would have
+                // unlocked the real page.
+                if (isNonContentUrl(route.request().url())) return route.continue();
                 try {
                     const response = await route.fetch();
                     const contentType = response.headers()['content-type'] || '';
@@ -981,11 +1093,14 @@ async function fetchUrlContent(url, options = {}) {
                         if (body.length > 100 && body.length < 500000) {
                             try {
                                 const json = JSON.parse(body);
-                                capturedJsonResponses.push({
-                                    url: route.request().url(),
-                                    data: json,
-                                    size: body.length
-                                });
+                                // {token, next_interval, session…} — plumbing, not data.
+                                if (!isPlumbingPayload(json)) {
+                                    capturedJsonResponses.push({
+                                        url: route.request().url(),
+                                        data: json,
+                                        size: body.length
+                                    });
+                                }
                             } catch (e) { /* Not valid JSON */ }
                         }
                     }
@@ -1175,12 +1290,16 @@ async function fetchUrlContent(url, options = {}) {
             for (const resp of capturedJsonResponses) {
                 if (apiContent.length >= maxLength) break;
                 const flatText = flattenJsonToText(resp.data, maxLength - apiContent.length);
-                if (flatText.length > 80) {
+                // A flattened response that is all opaque ids/tokens is noise no
+                // matter which endpoint it came from — the URL denylist catches the
+                // known bot-protection hosts, this catches the rest.
+                if (flatText.length > 80 && !unusableContentReason(flatText)) {
                     apiContent += flatText + '\n\n';
                 }
             }
             if (apiContent.length > 200) {
-                console.log(`[Playwright] Captured ${capturedJsonResponses.length} API responses (${apiContent.length} chars text), enriching content`);
+                console.log(`[Playwright] Captured ${capturedJsonResponses.length} API responses (${apiContent.length} chars text), enriching content`
+                    + ` [${capturedJsonResponses.slice(0, 4).map(r => { try { return new URL(r.url).host; } catch (_) { return '?'; } }).join(', ')}]`);
                 // SUPPLEMENT, don't supplant. The rendered DOM holds the
                 // human-readable text + media (paragraphs, tables, image
                 // captions/links) the JSON omits; the captured XHR/fetch JSON

@@ -47,7 +47,10 @@ const OUTPUT_FIELDS = {
     db_query: null,            // an array of rows
     track_changes: ['success', 'changed', 'firstSeen', 'diff', 'diffTruncated', 'added', 'removed',
         'addedCount', 'removedCount', 'revision', 'key', 'message', 'currentContent', 'currentHash',
-        'currentLength', 'previousContent', 'previousHash', 'previousLength', 'cleared', 'reset', 'error'],
+        'currentLength', 'previousContent', 'previousHash', 'previousLength', 'cleared', 'reset', 'error',
+        'rebaselined', 'previousUnusable', 'previousComparedHash', 'runsSinceLastChange', 'unchangedRuns',
+        'contentLength', 'contentWarning', 'contentPreview', 'comparedLength', 'signalLength', 'signalRatio',
+        'sourceUnusable', 'tracked', 'lastChanged', 'updated', 'storedLength', 'keysCleared'],
     map: ['results', 'count'],
     merge: ['items', 'count'],
     model: null,               // a plain string

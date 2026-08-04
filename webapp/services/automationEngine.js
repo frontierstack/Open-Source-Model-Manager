@@ -15,6 +15,8 @@
 // (planned for a later phase) — a `telegram.*` node fails fast with a clear
 // "not implemented" error rather than silently passing through.
 
+const { unusableContentReason, contentSignal } = require('./contentQuality');
+
 // ---------------------------------------------------------------------------
 // Built-in node-type catalog (drives the editor palette + validation).
 //
@@ -61,7 +63,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Script Block',      description: 'Runs a Python script in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). The script is shown and editable in the node settings panel. Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). The key can be a comma-separated fallback list (first non-empty wins, e.g. "link,post_title") so a stable id is used when present. For a stable identity (so re-listed/edited records don\'t re-appear as new) add Ignore-words (e.g. "NEW") and/or turn on Normalize. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key', 'keyStrip', 'keyNormalize'] },
     { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". For advanced reads provide a raw SELECT (records are JSON in a `data` column alongside `id`,`ts`; filter with json_extract(data,\'$.field\')) — a model node can generate this SQL. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
-    { key: 'track_changes', type: 'track_changes', category: 'connector', label: 'Track Changes', description: 'Watches a SINGLE source (a web page, an API response, or any text) for changes BETWEEN runs and reports WHAT changed. Give it a stable "key" (e.g. the page URL) and the "content" to watch (leave blank to use the previous step\'s output — it auto-reads a Fetch URL page body or an HTTP Request body). It stores the latest snapshot per key; when the content differs from the last run it returns changed=true plus a human-readable diff, the added/removed lines, and a revision number. The FIRST run stores a baseline (changed=false) so nothing fires until there is a real change. This is the node for "monitor a page and tell me what changed" — use db_store instead only for FEEDS where new ITEMS appear over time. Pair with: gate.if on {{nodes.<id>.changed}} (op not_empty / == true) → model (summarize {{nodes.<id>.diff}}) → telegram/slack. Volatile content (session tokens, uuids, timestamps, "N hours ago") is ignored by default so a dynamic page does not read as "changed" on every fetch — set ignoreVolatile=false only when the volatile bytes ARE the thing being watched (e.g. a checksum). Set ignoreWhitespace to ignore pure spacing changes.', inputs: ['in'], outputs: ['out'], fields: ['key', 'content', 'table', 'ignoreWhitespace', 'ignoreVolatile'] },
+    { key: 'track_changes', type: 'track_changes', category: 'connector', label: 'Track Changes', description: 'Watches a SINGLE source (a web page, an API response, or any text) for changes BETWEEN runs and reports WHAT changed. Give it a stable "key" (e.g. the page URL) and the "content" to watch (leave blank to use the previous step\'s output — it auto-reads a Fetch URL page body or an HTTP Request body). It stores the latest snapshot per key; when the content differs from the last run it returns changed=true plus a human-readable diff, the added/removed lines, and a revision number. The FIRST run stores a baseline (changed=false) so nothing fires until there is a real change. This is the node for "monitor a page and tell me what changed" — use db_store instead only for FEEDS where new ITEMS appear over time. Pair with: gate.if on {{nodes.<id>.changed}} (op not_empty / == true) → model (summarize {{nodes.<id>.diff}}) → telegram/slack. Volatile content (session tokens, uuids, timestamps, "N hours ago") is ignored when COMPARING so a dynamic page does not read as "changed" on every fetch — but the diff itself is reported verbatim, so names, links and dates stay readable. Set ignoreVolatile=false only when the volatile bytes ARE the thing being watched (e.g. a checksum). Set ignoreWhitespace to ignore pure spacing changes. Content that is not real page content (an empty body, an upstream error object, a bot-protection wall, a payload of nothing but session tokens, or a sudden collapse to a fraction of the previous size) FAILS the node instead of being stored — snapshotting junk is what makes a monitor report "no change" forever; set requireContent=false to override. Leave "key" blank and the step uses its own node id, so several watchers in one workflow never share a snapshot.', inputs: ['in'], outputs: ['out'], fields: ['key', 'content', 'table', 'ignoreWhitespace', 'ignoreVolatile', 'requireContent'] },
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
@@ -76,6 +78,15 @@ const BUILTIN_NODE_TYPES = [
     // --- Terminal ---
     { key: 'output', type: 'output', category: 'output', label: 'Output / End', description: 'Marks a workflow result.', inputs: ['in'] },
 ];
+
+// The tools that ship as their own palette CARD (Create PDF, Script Block,
+// Plot Chart, …). Derived from the catalog above so it can never drift as cards
+// are added. A card advertises one job; if it reports it failed, the node failed.
+const PALETTE_TOOLS = new Set(
+    BUILTIN_NODE_TYPES
+        .filter(b => b.key !== 'tool' && b.defaults && b.defaults.tool)
+        .map(b => b.defaults.tool)
+);
 
 const MAX_DELAY_MS = 5 * 60 * 1000; // a delay node can wait at most 5 minutes
 const MAX_PARALLEL_NODES = 8;       // max nodes run concurrently within one wave
@@ -191,6 +202,45 @@ function truthy(v) {
     return s !== '' && s !== 'false' && s !== '0' && s !== 'null' && s !== 'undefined' && s !== 'no';
 }
 
+// What an "is there anything here?" test should actually look at. A node output
+// is an ENVELOPE — { success, results: [], count: 0 } is a non-empty object and
+// so passed `not_empty` unconditionally, which made the canonical "only continue
+// if there is data" filter a no-op that also passed on failed retrievals and
+// empty searches. Unwrap to the payload the envelope is carrying.
+const PAYLOAD_ARRAY_KEYS = ['new', 'results', 'items', 'rows', 'pages', 'hits', 'entries', 'files', 'records'];
+function dataPayload(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    if (v.success === false || v.ok === false) return null;
+    if (typeof v.error === 'string' && v.error) return null;
+    // A change tracker's "is there anything to act on" IS its changed flag.
+    if (typeof v.changed === 'boolean') return v.changed;
+    for (const k of PAYLOAD_ARRAY_KEYS) {
+        if (Array.isArray(v[k])) return v[k];
+    }
+    for (const k of ['content', 'text', 'data', 'body']) {
+        if (typeof v[k] === 'string') return v[k];
+    }
+    return v;
+}
+function hasData(v) { return truthy(dataPayload(v)); }
+
+// "Nothing arrived", as distinct from "a falsy value arrived". A count of 0 and
+// a flag of false ARE data and must still be compared normally (`count < 5` is
+// true when count is 0); only an absent/blank/empty value — or a failure
+// envelope — is missing.
+function isMissing(v) {
+    if (v === undefined || v === null) return true;
+    if (typeof v === 'number' || typeof v === 'boolean') return false;
+    if (typeof v === 'string') return v.trim() === '';
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object') {
+        if (v.success === false || v.ok === false) return true;
+        if (typeof v.error === 'string' && v.error) return true;
+        return Object.keys(v).length === 0;
+    }
+    return false;
+}
+
 // Operator aliases → canonical form, so friendly UI labels ("equals", "regex")
 // and raw JSON ("==", "matches") both work.
 function normalizeOp(op) {
@@ -223,8 +273,8 @@ function compareOp(left, right, op) {
         case 'startsWith':               return L.startsWith(R);
         case 'endsWith':                 return L.endsWith(R);
         case 'matches':                  { try { return new RegExp(String(rs), 'i').test(String(ls)); } catch { return false; } }
-        case 'empty':                    return !truthy(left);
-        case 'not_empty': case 'truthy': return truthy(left);
+        case 'empty':                    return !hasData(left);
+        case 'not_empty': case 'truthy': return hasData(left);
         default:                         return false;
     }
 }
@@ -245,6 +295,19 @@ function evalCondition(condition, scope) {
         const hasLeft = condition.left !== undefined && condition.left !== null && String(condition.left).trim() !== '';
         const left = hasLeft ? interpolate(condition.left, scope) : scope.last;
         const right = interpolate(condition.right, scope);
+        // NO DATA MUST NOT SATISFY AN ASSERTION ABOUT THE DATA.
+        //
+        // An unresolved {{nodes.x}} interpolates to '', and '' does not contain
+        // anything — so the canonical quiet-run gate, `{{model}} not_contains
+        // "NOTHING_NEW"`, PASSED whenever the model node produced nothing at all,
+        // and the workflow delivered an empty alert. Every negative/comparison
+        // operator has the same hole. With no left-hand data the honest answer is
+        // false for all of them; only `empty` is legitimately true.
+        const op = normalizeOp(condition.op);
+        if (op !== 'empty' && isMissing(left)) {
+            const rightHasValue = right !== undefined && right !== null && String(right).trim() !== '';
+            if (rightHasValue || op === 'not_empty' || op === 'truthy') return false;
+        }
         return compareOp(left, right, condition.op);
     }
     return truthy(condition);
@@ -427,6 +490,43 @@ async function deliverArtifact(deps, ctx, node, destination, opts, artifactName,
 const RETRIEVAL_TOOLS = new Set(['fetch_url', 'web_search', 'http_request', 'parse_rss',
     'crawl_pages', 'scrapling_fetch', 'playwright_fetch', 'fetch_timeseries']);
 
+// Retrievals whose entire product is PAGE TEXT. These can "succeed" — HTTP 200,
+// success:true, a healthy-looking payload — while carrying no page content at
+// all: a bot wall, an error page, or the anti-bot session tokens the site's own
+// XHRs returned. Nothing downstream can tell that apart from a real page, so it
+// gets reasoned about, summarised and snapshotted as if it were one. (Live case:
+// a daily page monitor whose fetch returned 2 KB of AWS-WAF tokens and zero page
+// text reported "no change" on every run for weeks while the page changed daily.)
+const CONTENT_RETRIEVAL_TOOLS = new Set(['fetch_url', 'scrapling_fetch', 'playwright_fetch',
+    'http_request', 'crawl_pages']);
+
+// null when a content retrieval brought back usable text, else why it didn't.
+// Deliberately narrow: only a body that is EMPTY, a challenge wall, or ~all
+// opaque tokens counts, and only when the body is a STRING (a parsed JSON object
+// from an API is structured data — judging it as prose would be nonsense). A
+// short page is not a broken one, and a search/feed tool legitimately returns few
+// or no rows, so those are left alone entirely.
+function emptyRetrievalMessage(toolName, out) {
+    if (!CONTENT_RETRIEVAL_TOOLS.has(toolName)) return null;
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
+
+    if (toolName === 'crawl_pages') {
+        const pages = Array.isArray(out.pages) ? out.pages.filter(p => p && typeof p.content === 'string') : [];
+        if (!pages.length) return null;                       // shape we don't recognise — leave it
+        if (pages.some(p => !unusableContentReason(p.content))) return null;   // at least one good page
+        return `every crawled page came back unusable — ${unusableContentReason(pages[0].content)}`;
+    }
+
+    const body = typeof out.content === 'string' ? out.content
+        : (toolName === 'http_request' && typeof out.data === 'string') ? out.data
+            : null;
+    if (body === null) return null;
+    const why = unusableContentReason(body);
+    if (!why) return null;
+    const { signal, length } = contentSignal(body);
+    return `the request succeeded but ${why} (${length} bytes, ${signal} of readable text)`;
+}
+
 // null when the payload looks like a successful retrieval, else why it failed.
 function retrievalFailureMessage(out) {
     if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
@@ -519,7 +619,16 @@ async function runNode(node, runScope, deps, ctx, rawInputs = []) {
             // The model's response IS the node's output, so it flows cleanly to the
             // next node (and the Output box defaults to forwarding it as-is). The
             // author can still reshape it with {{last}} / text in the Output box.
-            return text != null ? String(text) : '';
+            const answer = text != null ? String(text) : '';
+            // An empty completion is a failed step, not an answer. Letting it pass
+            // hands the empty string to whatever comes next: the report is blank,
+            // the PDF is blank, and a sentinel gate ("deliver unless it said
+            // NOTHING_NEW") sees no sentinel and delivers the nothing.
+            if (!answer.trim()) {
+                throw new Error('the model returned an empty response '
+                    + '(no model loaded, the prompt exceeded the context window, or generation was cut off)');
+            }
+            return answer;
         }
 
         case 'tool':
@@ -603,6 +712,29 @@ async function runNode(node, runScope, deps, ctx, rawInputs = []) {
             if (RETRIEVAL_TOOLS.has(toolName)) {
                 const why = retrievalFailureMessage(parsed);
                 if (why) throw new Error(`${toolName} failed — ${why}`);
+                // …and a retrieval that "succeeded" with no readable content is
+                // just as broken: everything downstream would reason about a bot
+                // wall or a token blob believing it to be the page.
+                const empty = emptyRetrievalMessage(toolName, parsed);
+                if (empty) {
+                    throw new Error(`${toolName} returned no usable content — ${empty}. `
+                        + 'Try the Scrapling Fetch node (strongest anti-bot), an RSS feed, or the site\'s JSON API instead.');
+                }
+            } else if (PALETTE_TOOLS.has(toolName) && parsed && typeof parsed === 'object'
+                       && !Array.isArray(parsed) && parsed.success === false) {
+                // Every OTHER palette connector — Create PDF, Script Block, Create
+                // File, Plot Chart, SQLite Query, Send File — used to report the
+                // node "completed" while handing its own {success:false, error}
+                // object downstream as if it were the result: the PDF node fails,
+                // the Telegram node dutifully sends the error object, and the run
+                // history is all green. A card on the palette says what it does, so
+                // when it says it failed, the step failed.
+                //
+                // The generic "Run Tool / Skill" node keeps the lenient behaviour:
+                // an arbitrary skill may use success:false to mean a legitimate
+                // negative result, and the set is derived from the catalog so it
+                // cannot drift as cards are added.
+                throw new Error(`${toolName} failed — ${parsed.error || parsed.message || 'the step did not succeed'}`);
             }
             return parsed;
         }
@@ -657,7 +789,17 @@ async function runNode(node, runScope, deps, ctx, rawInputs = []) {
                 if (typeof content.content === 'string') content = content.content;      // fetch_url
                 else if (typeof content.data === 'string') content = content.data;       // http_request
                 else if (typeof content.text === 'string') content = content.text;       // model node
-                else content = stringifyValue(content);
+                else if (content.data !== undefined) content = stringifyValue(content.data);   // http_request, parsed JSON
+                else if (content.body !== undefined) content = stringifyValue(content.body);
+                else {
+                    // Last resort: the whole result object. Drop the transport
+                    // envelope first — an http_request result carries `headers`
+                    // (Date, request ids, cache tokens) that differ on EVERY call,
+                    // so hashing the envelope reported "changed" on every run no
+                    // matter what the payload did.
+                    const { headers, cookies, status, statusText, elapsed, elapsedMs, timing, requestId, url, ...payload } = content;
+                    content = stringifyValue(Object.keys(payload).length ? payload : content);
+                }
             } else if (content != null && typeof content !== 'string') {
                 content = stringifyValue(content);
             }
@@ -665,7 +807,13 @@ async function runNode(node, runScope, deps, ctx, rawInputs = []) {
                 action: 'track',
                 db: data.db || 'automation.db',
                 table: data.table || 'snapshots',
-                key: (data.key && String(data.key).trim()) || 'page',
+                // The snapshot key must be stable across runs AND unique per
+                // watcher. The old blank-default ('page') was neither unique nor
+                // obvious: two "watch these N pages" trackers in one workflow both
+                // wrote the same row, so each overwrote the other's baseline and
+                // both reported a change every run. The node id is stable for the
+                // life of the node and unique within the workflow.
+                key: (data.key && String(data.key).trim()) || `node:${node.id}`,
                 content: content == null ? '' : String(content),
             };
             if (data.ignoreWhitespace === true || data.ignoreWhitespace === 'true') args.ignoreWhitespace = true;
@@ -673,8 +821,19 @@ async function runNode(node, runScope, deps, ctx, rawInputs = []) {
             // uuids / "N hours ago" churn otherwise makes every run "changed");
             // only an explicit opt-out is forwarded.
             if (data.ignoreVolatile === false || data.ignoreVolatile === 'false') args.ignoreVolatile = false;
+            // Likewise the content-quality gate: on by default, opt out only.
+            if (data.requireContent === false || data.requireContent === 'false') args.requireContent = false;
+            if (data.minSignalRatio != null && data.minSignalRatio !== '') args.minSignalRatio = Number(data.minSignalRatio);
             const r = await dispatchTool(deps, ctx, node, 'track_changes', args);
-            if (r && r.success === false) throw new Error(`Change tracking failed — ${r.error || 'unknown error'}`);
+            // A tracker fed junk refuses to snapshot it and says so. Fail the node:
+            // reporting "no change" would be a lie, and reporting a change would be
+            // a false alert. The error names the broken step, so the run history
+            // shows WHY the monitor is quiet instead of silently looking healthy.
+            if (r && r.success === false) {
+                throw new Error(r.sourceUnusable
+                    ? `Change tracking skipped — ${r.error}`
+                    : `Change tracking failed — ${r.error || 'unknown error'}`);
+            }
             return r; // { changed, firstSeen, diff, added, removed, revision, ... }
         }
 
@@ -1523,6 +1682,17 @@ function assessRunHealth(runRecord) {
                 ? ` The records actually have: ${out.recordFields.join(', ')}.`
                 : '';
             push('high', `dedupe is NOT working — the "key" is "${(out.keyFields || []).join(',')}" but ${out.keyMissing} record(s) have no such field, so they were stored WITHOUT a unique key and will be reported as new on EVERY run.${fields} Set "key" to a field the records really have.`);
+            return;
+        }
+
+        // 2d. A change tracker running on content that isn't really content. It
+        //     only gets here with requireContent=false (otherwise the node fails),
+        //     and in that mode it compares junk to junk and reports "no change"
+        //     for as long as the source stays broken — silently, forever.
+        if (type === 'track_changes' && out && typeof out === 'object' && out.contentWarning) {
+            push('high', `change tracking is running on unusable content — ${out.contentWarning}. `
+                + 'It will report "no change" every run regardless of what the source does. '
+                + 'Fix the fetching step (or drop requireContent=false).');
             return;
         }
 

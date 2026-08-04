@@ -83,6 +83,10 @@ try {
 // require it once.
 const attachmentStore = require('./services/attachmentStore');
 
+// "Is this actually content?" — shared with the browser service and the
+// automation engine so every layer draws the line in the same place.
+const { unusableContentReason: contentUnusableReason } = require('./services/contentQuality');
+
 // Automation engine (in-process DAG executor) + per-user run-history store.
 const automationEngine = require('./services/automationEngine');
 const workflowValidator = require('./services/workflowValidator');
@@ -9499,6 +9503,21 @@ async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigge
     // outputs are rewritten to point at the workflow-run download endpoint.
     try { await persistRunArtifacts(userId, runId, outcome); } catch (e) { console.warn('[automation] persistRunArtifacts failed:', e.message); }
 
+    // Assess EVERY real run, not just the ones inside the build/test loop. A
+    // workflow that finishes 'completed' can still have done nothing it was
+    // built to do — a monitor whose source came back empty, a store that saved
+    // zero rows, a delivery step a gate pruned so it never ran. Those runs used
+    // to look identical to healthy ones in the history, so the only symptom a
+    // user ever got was silence, with nothing anywhere to explain it.
+    let health = null;
+    try {
+        health = automationEngine.assessRunHealth({ ...outcome, nodes: outcome.timeline, status: outcome.status });
+        if (health && !health.ok) {
+            console.log(`[automation] run ${runId} (${wf.name}) finished ${outcome.status} but looks unhealthy: `
+                + health.issues.map(i => `${i.nodeId} ${i.detail}`).join('; ').slice(0, 500));
+        }
+    } catch (e) { console.warn('[automation] assessRunHealth failed:', e.message); }
+
     try {
         await workflowRunStore.updateRun(userId, runId, {
             status: outcome.status,
@@ -9506,10 +9525,12 @@ async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigge
             error: outcome.error,
             nodes: outcome.timeline,
             result: outcome.result,
+            health,
         });
     } catch (_) {}
+    if (health && !health.ok) emit({ type: 'run_health', health });
 
-    return { runId, outcome };
+    return { runId, outcome, health };
 }
 
 // Copy sandboxed-tool artifacts (the bytes behind `_artifacts[].url`) into a
@@ -12602,12 +12623,38 @@ function extractTextFromHtml(html, maxLength = 5000) {
         }
     }
 
+    // Paragraphs + headings only ever finds PROSE. A listing page — an activity
+    // feed, a job board, a product/model grid, a blog index, a release list —
+    // keeps its content in <li>/<a>/<div> cards and has no substantial <p> at
+    // all, so this returned a bare title for the entire class of page it is most
+    // often pointed at, and every one of them escalated to the browser (or came
+    // back "empty") for nothing. Fall back to the flattened block text.
+    let listText = '';
+    if (paragraphs.length === 0 || paragraphs.join(' ').length < 300) {
+        const BLOCK_END = /<\/(?:li|div|p|tr|section|article|h[1-6]|dd|dt|td|th|figcaption|blockquote)>/gi;
+        const flat = mainContent
+            .replace(BLOCK_END, '\n')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]*>/g, ' ');
+        const seen = new Set();
+        const lines = [];
+        for (const raw of flat.split('\n')) {
+            const line = raw.replace(/\s+/g, ' ').trim();
+            if (line.length < 3 || seen.has(line)) continue;
+            seen.add(line);
+            lines.push(line);
+            if (lines.join('\n').length > maxLength) break;
+        }
+        listText = lines.join('\n');
+    }
+
     // Build final content
     let content = '';
     if (title) content += `Title: ${title}\n\n`;
     if (metaDesc) content += `Summary: ${metaDesc}\n\n`;
     if (headings.length > 0) content += `Key Points:\n- ${headings.slice(0, 5).join('\n- ')}\n\n`;
     if (paragraphs.length > 0) content += `Content:\n${paragraphs.join('\n\n')}`;
+    else if (listText) content += `Content:\n${listText}`;
 
     // Clean up whitespace and entities
     content = content.replace(/&nbsp;/g, ' ')
@@ -12617,8 +12664,15 @@ function extractTextFromHtml(html, maxLength = 5000) {
                      .replace(/&quot;/g, '"')
                      .replace(/&#39;/g, "'")
                      .replace(/&[a-z]+;/gi, ' ')
-                     .replace(/\s+/g, ' ')
-                     .replace(/\n\s*\n/g, '\n\n')
+                     // Collapse horizontal whitespace only. A blanket /\s+/ → ' '
+                     // flattened the whole page onto ONE line (it ran before the
+                     // paragraph-break restore, which was therefore dead code), and
+                     // a single-line body makes any line-based consumer — the diff
+                     // in a change monitor above all — useless: one edit anywhere
+                     // reports the entire page as changed.
+                     .replace(/[^\S\n]+/g, ' ')
+                     .replace(/\n{3,}/g, '\n\n')
+                     .replace(/[ \t]*\n[ \t]*/g, '\n')
                      .trim();
 
     // Truncate if too long
@@ -12786,6 +12840,11 @@ function isContentTooThin(content, url, rawHtml) {
     }
     // Short content likely means JS didn't render or extraction got ads/nav only
     if (len < 500) return true;
+    // Long-but-empty: a body made of session tokens / opaque ids and no readable
+    // text. Bot-protection XHRs produce kilobytes of these, which sails past the
+    // length floor above while containing not one word of the page — the reason a
+    // daily page monitor sat on a 2 KB AWS-WAF token blob reporting "no change".
+    if (contentUnusableReason(trimmed)) return true;
     // Check for JS-required boilerplate patterns
     for (const pattern of JS_REQUIRED_PATTERNS) {
         if (pattern.test(trimmed) && len < 1000) return true;
@@ -12815,6 +12874,9 @@ const CHALLENGE_MARKERS_STRONG = [
     /pardon our interruption/i, /verifying you are human/i,
     /enable javascript and cookies to continue/i, /unusual traffic/i,
     /needs to review the security of your connection/i,
+    // AWS WAF: its challenge SDK exposes these verbatim (and its token XHRs used
+    // to be captured INTO the extracted content, where nothing recognised them).
+    /awswaf/i, /aws-waf-token/i, /awswaf_session_storage/i,
 ];
 // Deliberately NOT a strike/escalation trigger: /distil networks/ is used above
 // instead of bare /distil/ because this repo is ML-heavy ("knowledge distillation").
@@ -13491,6 +13553,25 @@ async function fetchUrlContent(url, options = {}) {
             });
 
             if (result.success) {
+                // Never memoize a layer on a result we would not have accepted,
+                // and never let one clear the host's bot-wall strikes. A body of
+                // pure session tokens used to do both: it pinned the host to the
+                // browser for 6h (locking out the cheap layer that could actually
+                // read the page) and wiped the strikes that would have flagged the
+                // wall — so the failure re-fed itself on every later run.
+                const unusable = contentUnusableReason(result.content || '');
+                if (unusable) {
+                    console.log(`[fetchUrlContent] Playwright returned no usable content for ${url} — ${unusable}`);
+                    setHostMemo(url, null);          // re-probe the cheap layer next time
+                    // Strike the host only on POSITIVE evidence of a wall. "No
+                    // usable content" on its own may just be an extraction miss,
+                    // and a strike would fast-fail the whole host — including the
+                    // cheap layer that may well read it fine.
+                    if (looksLikeChallenge(result.content || '', { strongOnly: true })) {
+                        noteHostBotWall(url, 'playwright-challenge-content');
+                    }
+                    return { ...result, source: 'playwright', contentUnusable: unusable };
+                }
                 setHostMemo(url, 'playwright');   // go straight to the browser for this host next time
                 if (!looksLikeChallenge(result.content || '', { strongOnly: true })) clearHostBotWall(url);
                 return { ...result, source: 'playwright' };
