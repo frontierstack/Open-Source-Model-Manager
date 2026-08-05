@@ -133,6 +133,13 @@ RUN npx playwright install chromium
 # and the chat agent loses its strongest anti-bot fetch path.
 RUN python3 -m patchright install chromium
 
+# Full Tesseract language coverage (upload-time OCR + in-process ocr paths).
+# Base tesseract-ocr ships only eng+osd; non-English OCR needs the language
+# packs. Late layer (before COPY) so it stays cached across code changes.
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr-all \
+    && rm -rf /var/lib/apt/lists/* \
+    && tesseract --list-langs | tail -n +2 | wc -l | xargs -I{} echo "[tesseract] {} languages installed"
+
 COPY . .
 RUN npm run build
 

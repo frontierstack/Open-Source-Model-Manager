@@ -273,6 +273,15 @@ RUN pip install --no-cache-dir --upgrade weasyprint==69.0 pydyf==0.12.1 \
     && rm -rf /var/lib/apt/lists/* /root/.cache \
     && python3 -c "import weasyprint; weasyprint.HTML(string='<p style=\"color:oklch(.55 .22 264)\">ok</p>').write_pdf('/tmp/_t.pdf'); print('weasyprint', weasyprint.__version__, 'OK')"
 
+# Full Tesseract language coverage for the ocr_image skill. The base
+# tesseract-ocr package ships only eng+osd, so any non-English OCR request
+# (language='spa', 'deu', 'jpn', ...) failed with "language pack not
+# installed". tesseract-ocr-all pulls all ~160 Debian language/script packs
+# (~686 MB) — a late layer so the heavy layers above stay cached.
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr-all \
+    && rm -rf /var/lib/apt/lists/* \
+    && tesseract --list-langs | tail -n +2 | wc -l | xargs -I{} echo "[tesseract] {} languages installed"
+
 USER sandbox
 WORKDIR /tmp
 
