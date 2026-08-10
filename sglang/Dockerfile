@@ -1,4 +1,6 @@
-FROM lmsysorg/sglang:v0.5.12-cu129-runtime
+# Stay on the cu129 variant: cu130 exists for the same tag but raises the CUDA
+# runtime/driver floor, which is unverified against this project's R570 hosts.
+FROM lmsysorg/sglang:v0.5.17-cu129-runtime
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -31,10 +33,13 @@ RUN if ! command -v curl >/dev/null 2>&1; then \
         apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Patch missing transitive dep: openai's Python SDK imports `distro` for
-# user-agent fingerprinting, but lmsysorg/sglang:v0.5.12-cu129-runtime ships
-# without it. Without this line, `python3 -m sglang.launch_server` crashes at
-# import time with ModuleNotFoundError before any flag is parsed.
+# openai's Python SDK imports `distro` for user-agent fingerprinting. The
+# v0.5.12 base image shipped without it and crashed at import time, before any
+# flag was parsed. v0.5.17 declares distro in its own pyproject and installs it
+# in the upstream Dockerfile, so this is now belt-and-braces — kept because it
+# is idempotent and near-free, and the runtime stage's dependency set has
+# historically drifted. The build-time smoke test below is what actually
+# guarantees the import works.
 RUN pip install --no-cache-dir --root-user-action=ignore distro
 
 # The `nixl_cu12` Python package (NVIDIA NIM Exchange Library, used for
@@ -50,76 +55,25 @@ RUN rm -rf /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/libucs*.so* \
            /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/ucx \
     2>/dev/null || true
 
-# Patch compressed-tensors format detection for mixed-precision checkpoints
-# (e.g. unsloth NVFP4 "-Fast" quants: FP8 attention + NVFP4 MoE experts).
-# Those checkpoints set the TOP-LEVEL quantization format to "mixed-precision"
-# and carry the real format per config_group ("float-quantized" /
-# "nvfp4-pack-quantized"). sglang's _quantization_scheme_map_from_config only
-# checks the global format, is_activation_quantization_format("mixed-precision")
-# is False, so input_activations parses to None for every target — the NVFP4
-# detector then can't match and _is_dynamic_token_w8a8 crashes with
-# AttributeError: 'NoneType' object has no attribute 'num_bits'. Two spots,
-# mirroring vLLM: (1) the config parser prefers the per-group format, falling
-# back to the global one (no-op for checkpoints without per-group formats);
-# (2) _get_scheme_from_parts' activation-scheme gate also accepts a parsed
-# input_quant — with fix (1), input_quant is only non-None when that group's
-# format IS activation-quantized, so the global "mixed-precision" tag no
-# longer blocks linear W4A4/W8A8 scheme selection ("No compressed-tensors
-# compatible scheme was found" on the shared_expert projections).
-RUN python3 - <<'PYEOF'
-path = "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/compressed_tensors/compressed_tensors.py"
-src = open(path).read()
-patches = [
-    (
-        "                if is_activation_quantization_format(quant_format):",
-        "                if is_activation_quantization_format(\n"
-        "                    quant_config.get(\"format\") or quant_format\n"
-        "                ):",
-    ),
-    (
-        "        if is_activation_quantization_format(self.quant_format):",
-        "        if (\n"
-        "            is_activation_quantization_format(self.quant_format)\n"
-        "            or input_quant is not None\n"
-        "        ):",
-    ),
-]
-for old, new in patches:
-    if new in src:
-        print("already applied:", old.strip()[:60])
-        continue
-    assert src.count(old) == 1, f"expected 1 occurrence, found {src.count(old)}: {old.strip()[:60]}"
-    src = src.replace(old, new)
-    print("applied:", old.strip()[:60])
-open(path, "w").write(src)
-
-# Ignore-list matching must be exact-or-regex like vLLM, NOT substring.
-# sglang's should_ignore_layer passes check_contains=True, so a checkpoint
-# ignore entry naming a PARENT module (e.g. Qwen3.6's
-# "model.language_model.layers.N.linear_attn", meant for its non-linear
-# internals) swallows quantized CHILDREN (in_proj_qkvz / out_proj, FP8 with
-# weight_scale in the checkpoint). Those layers then build unquantized, the
-# FP8 bytes cast into bf16 without scales, and the model generates gibberish
-# ("Parameter ...weight_scale not found in params_dict" warnings at load are
-# the tell). Checkpoints enumerate ignored children explicitly because the
-# reference (vLLM) semantics are exact-match. Only caller is
-# should_ignore_layer in this file; quark has its own separate copy.
-path = "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/compressed_tensors/utils.py"
-src = open(path).read()
-patches = [
-    (
-        "        if _is_equal_or_regex_match(layer_name, target, check_contains=True):",
-        "        if _is_equal_or_regex_match(layer_name, target):",
-    ),
-]
-for old, new in patches:
-    if new in src:
-        print("already applied:", old.strip()[:60])
-        continue
-    assert src.count(old) == 1, f"expected 1 occurrence, found {src.count(old)}: {old.strip()[:60]}"
-    src = src.replace(old, new)
-    print("applied:", old.strip()[:60])
-open(path, "w").write(src)
+# Three of the four mixed-precision patches this file used to carry are now
+# FIXED UPSTREAM as of v0.5.17 and have been deleted. Do not reinstate them —
+# their anchor strings no longer exist, so the `assert src.count(old) == 1`
+# guard would hard-fail `docker build`. For the record, and so the history is
+# recoverable if a future base image regresses:
+#   (a)+(b) mixed-precision format detection (unsloth NVFP4 "-Fast" class: FP8
+#       attention + NVFP4 experts). Upstream now threads the PER-GROUP
+#       `format` through _quantization_scheme_map_from_config and gives
+#       _get_scheme_from_parts an explicit `format` param, so the global
+#       "mixed-precision" tag no longer parses input_activations to None for
+#       every target (which used to crash with
+#       AttributeError: 'NoneType' object has no attribute 'num_bits', or
+#       "No compressed-tensors compatible scheme was found" on shared_expert).
+#   (c) ignore-list matching. should_ignore_layer now calls a new
+#       check_equal_or_regex_match() — exact, regex, or dotted-path SUFFIX,
+#       never a prefix — with our exact bug report as its docstring. A parent
+#       ignore entry can no longer swallow its quantized children (which used
+#       to cast FP8 bytes to bf16 without scales → fluent-looking gibberish).
+# Only the lm_head patch below is still required.
 
 # Dequantize an FP8 lm_head at load time. Checkpoints like the unsloth NVFP4
 # "-Fast" series quantize lm_head to FP8 (weight fp8_e4m3 + per-channel
@@ -135,13 +89,24 @@ open(path, "w").write(src)
 # scale. Only fires when the MODEL's lm_head param is non-fp8 (a model that
 # natively supports a quantized lm_head is untouched), chunked to bound the
 # fp32 temp.
+#
+# RE-ANCHORING NOTE (v0.5.17): load_weights_and_postprocess was rewritten
+# upstream — it gained memory telemetry and an NVFP4-online branch, so there
+# are now THREE `model.load_weights(weights)` call sites and the old
+# three-line anchor is gone. The patch is therefore split in two: insert the
+# helper before the (still unique) staticmethod signature, then inject the
+# call on the unique quant_config/is_nvfp4_online pair, which sits above the
+# branch and so covers BOTH the nvfp4-online and the plain path.
+RUN python3 - <<'PYEOF'
 path = "/sgl-workspace/sglang/python/sglang/srt/model_loader/loader.py"
 src = open(path).read()
-old = """    @staticmethod
+anchor_def = """    @staticmethod
     def load_weights_and_postprocess(model, weights, target_device):
-        model.load_weights(weights)
 """
-new = '''    @staticmethod
+anchor_call = '''        quant_config = getattr(model, "quant_config", None)
+        is_nvfp4_online = getattr(quant_config, "is_nvfp4_online", False)
+'''
+helper = '''    @staticmethod
     def _dequant_fp8_lm_head(model, weights):
         import torch
 
@@ -184,34 +149,51 @@ new = '''    @staticmethod
             if "w" in entry:
                 yield base + ".weight", entry["w"]
 
-    @staticmethod
-    def load_weights_and_postprocess(model, weights, target_device):
-        weights = DefaultModelLoader._dequant_fp8_lm_head(model, weights)
-        model.load_weights(weights)
 '''
+call = '''        weights = DefaultModelLoader._dequant_fp8_lm_head(model, weights)
+'''
+
 if "_dequant_fp8_lm_head" in src:
     print("already applied: lm_head dequant")
 else:
-    assert src.count(old) == 1, f"expected 1 occurrence of load_weights_and_postprocess, found {src.count(old)}"
-    src = src.replace(old, new)
+    assert src.count(anchor_def) == 1, (
+        f"expected 1 occurrence of the load_weights_and_postprocess staticmethod, "
+        f"found {src.count(anchor_def)}"
+    )
+    assert src.count(anchor_call) == 1, (
+        f"expected 1 occurrence of the quant_config/is_nvfp4_online pair, "
+        f"found {src.count(anchor_call)}"
+    )
+    src = src.replace(anchor_def, helper + anchor_def)
+    src = src.replace(anchor_call, call + anchor_call)
     open(path, "w").write(src)
     print("applied: lm_head dequant")
+
 import py_compile
 py_compile.compile(path, doraise=True)
 print("loader.py compiles OK")
-# Reset path+src so the shared tail below rewrites utils.py with its own
-# (unchanged) content — NOT loader.py.
-path = "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/compressed_tensors/utils.py"
-src = open(path).read()
-patches = []
-for old, new in patches:
-    if new in src:
-        print("already applied:", old.strip()[:60])
-        continue
-    assert src.count(old) == 1, f"expected 1 occurrence, found {src.count(old)}: {old.strip()[:60]}"
-    src = src.replace(old, new)
-    print("applied:", old.strip()[:60])
-open(path, "w").write(src)
+
+# Guard the three patches we DELETED because upstream fixed them. Their failure
+# mode is silent — a checkpoint loads and generates fluent-looking GIBBERISH —
+# so a base image that regresses must break the BUILD, not production. If this
+# ever fires, re-read the deleted-patch notes above and reinstate them (adapted
+# to the then-current source) rather than deleting this check.
+base = "/sgl-workspace/sglang/python/sglang/srt/layers/quantization/compressed_tensors/"
+utils_src = open(base + "utils.py").read()
+ct_src = open(base + "compressed_tensors.py").read()
+assert "def check_equal_or_regex_match(" in utils_src, (
+    "UPSTREAM REGRESSION: compressed_tensors/utils.py no longer defines "
+    "check_equal_or_regex_match — prefix-matching ignore entries can swallow "
+    "quantized children again (symptom: fluent-looking gibberish)."
+)
+assert "check_contains=True" not in utils_src.split("def _find_first_match")[0], (
+    "UPSTREAM REGRESSION: should_ignore_layer appears to use substring matching again."
+)
+assert "format: Optional[str] = None" in ct_src, (
+    "UPSTREAM REGRESSION: _get_scheme_from_parts lost its per-group `format` "
+    "parameter — mixed-precision checkpoints will crash or mis-select schemes."
+)
+print("upstream mixed-precision fixes verified present")
 PYEOF
 
 # Fail the build now rather than at first model load if the base image is broken.

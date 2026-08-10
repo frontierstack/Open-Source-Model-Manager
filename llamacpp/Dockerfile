@@ -52,10 +52,40 @@ WORKDIR /build/llama.cpp
 ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH
 ENV LDFLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined"
 
+# Notes on the non-obvious flags:
+# - DO NOT SET -DGGML_NATIVE=OFF. It looks like the portable choice and
+#   upstream's own .devops/cuda.Dockerfile uses it, but it is a LANDMINE here:
+#   GGML_NATIVE=OFF does not mean "lowest common denominator", it means
+#   "upstream's fixed baseline", which is
+#     -msse4.2 -mf16c -mfma -mbmi2 -mavx -mavx2
+#   This project's host is a `QEMU Virtual CPU version 2.5+` exposing ONLY
+#   sse4.2 — no avx, avx2, fma, f16c or bmi2 (same non-AVX QEMU host that
+#   forces the sglang UCX removal, see sglang/Dockerfile). Building with
+#   NATIVE=OFF produced a llama-server that dies with SIGILL (exit 132) on
+#   `--version`, before it can even parse a flag. Tested, not theorized.
+#   Leaving GGML_NATIVE at its ON default makes cmake detect the ACTUAL build
+#   host CPU, which is also the run host (build.sh builds locally), so the
+#   binary matches the machine. If this image ever needs to be built on one
+#   host and run on a weaker one, do NOT reach for NATIVE=OFF — pin the ISA
+#   explicitly instead (-DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
+#   -DGGML_F16C=OFF -DGGML_BMI2=OFF) and re-test on the weakest target.
+# - LLAMA_BUILD_UI / LLAMA_USE_PREBUILT_UI=OFF: llama-server links a new
+#   llama-ui target whose assets are DOWNLOADED FROM HUGGING FACE at build
+#   time (scripts/ui-assets.cmake fetches dist.tar.gz, then compiles a ~15 MB
+#   generated ui.cpp). This container is API-only — the webapp talks to the
+#   HTTP API and never opens llama.cpp's browser UI — so that's an undeclared
+#   build-time network dependency and several minutes of compile for nothing.
+# - CMAKE_CUDA_ARCHITECTURES: do NOT add 121 — it fails to configure on CUDA
+#   12.8 (needs >=12.9) and only targets GB10/Thor parts. cmake rewrites 120
+#   into 120a automatically. Do NOT move to a CUDA 13.x base either: 13.0
+#   removed offline compilation for Maxwell/Pascal/Volta, which would break
+#   this project's advertised Maxwell 5.2+ support.
 RUN cmake -B build \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="52;60;70;75;80;86;89;90;120" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_BUILD_UI=OFF \
+    -DLLAMA_USE_PREBUILT_UI=OFF \
     -DLLAMA_CURL=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined" \

@@ -45,6 +45,30 @@ if [ "$TP_SIZE" -gt "$GPU_COUNT" ]; then
     TP_SIZE="$GPU_COUNT"
 fi
 
+# CRITICAL (v0.5.17 regression on consumer GPUs): --mm-feature-transport left
+# unset "resolves automatically", and single-node CUDA picks `cuda_ipc` — which
+# moves multimodal features between the TP ranks via a pooled CUDA IPC handle.
+# That requires peer-to-peer access. Consumer cards (GeForce/RTX over PHB, e.g.
+# 2x RTX 5060 Ti) do NOT support P2P, so the FIRST request carrying multimodal
+# features dies in torch.UntypedStorage._new_shared_cuda with
+# "CUDA error: peer access is not supported between these two devices", the
+# scheduler exits, and the whole server is killed — AFTER a full ~8 min model
+# load, with the earlier "Setup Custom allreduce failed ... peer access is not
+# supported" line being the only (easily-missed) hint. Only bites multimodal
+# models (Qwen3.5/3.6-VL class) at TP>=2; text-only models never hit the path.
+# Secondary win: cuda_ipc also reserves SGLANG_MM_FEATURE_CACHE_MB (1 GiB by
+# default) on the BASE GPU only, which is why rank 0 shows ~1 GiB less free VRAM
+# than rank 1 and loses the prefill CUDA-graph capture to the 4 GiB safety gate.
+# Auto-detect rather than hardcode: `nvidia-smi topo -p2p r` prints NS (Not
+# Supported) per pair. Explicit SGLANG_MM_FEATURE_TRANSPORT always wins.
+MM_FEATURE_TRANSPORT="${SGLANG_MM_FEATURE_TRANSPORT:-}"
+if [ -z "$MM_FEATURE_TRANSPORT" ] && [ "$TP_SIZE" -gt 1 ]; then
+    if nvidia-smi topo -p2p r 2>/dev/null | grep -qw 'NS'; then
+        MM_FEATURE_TRANSPORT=cpu
+        echo "[sglang] P2P unsupported between GPUs; forcing --mm-feature-transport=cpu (TP=$TP_SIZE)" >&2
+    fi
+fi
+
 if [[ "$MODEL_PATH" == *.gguf ]]; then
     IS_GGUF=1
     RESOLVED_GGUF="$MODEL_PATH"
@@ -111,7 +135,11 @@ CMD=(python3 -m sglang.launch_server
     --host "$HOST"
     --port "$PORT"
     --mem-fraction-static "$MEM_FRACTION_STATIC"
-    --tp "$TP_SIZE"
+    # --tp-size, NOT --tp: sglang never DECLARED a --tp flag (it only ever
+    # resolved via argparse prefix abbreviation of --tp-size), and one new
+    # --tp* option upstream would make that abbreviation ambiguous and fail
+    # the launch. --tp-size is valid across v0.5.12 and v0.5.17.
+    --tp-size "$TP_SIZE"
     --chunked-prefill-size "$CHUNKED_PREFILL_SIZE"
     --schedule-policy "$SCHEDULE_POLICY"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
@@ -125,6 +153,7 @@ CMD=(python3 -m sglang.launch_server
 [ -n "$TOOL_CALL_PARSER" ] && CMD+=(--tool-call-parser "$TOOL_CALL_PARSER")
 [ -n "$REASONING_PARSER" ] && CMD+=(--reasoning-parser "$REASONING_PARSER")
 [ -n "$CHAT_TEMPLATE" ] && CMD+=(--chat-template "$CHAT_TEMPLATE")
+[ -n "$MM_FEATURE_TRANSPORT" ] && CMD+=(--mm-feature-transport "$MM_FEATURE_TRANSPORT")
 case "${TRUST_REMOTE_CODE,,}" in 1|true|yes) CMD+=(--trust-remote-code) ;; esac
 [ -n "$EXTRA_ARGS" ] && read -r -a EXTRA_ARR <<< "$EXTRA_ARGS" && CMD+=("${EXTRA_ARR[@]}")
 

@@ -3,7 +3,9 @@
 # Configuration via environment variables:
 # - LLAMA_MODEL_PATH: Path to GGUF model file
 # - LLAMA_PORT: API server port (default: 8000)
-# - LLAMA_N_GPU_LAYERS: Number of layers to offload to GPU (-1 = all, default: -1)
+# - LLAMA_N_GPU_LAYERS: Number of layers to offload to GPU. Exact number,
+#   'all', or 'auto' (let llama.cpp fit the offload to available VRAM).
+#   The legacy -1 sentinel is translated to 'all' (default: -1)
 # - LLAMA_CTX_SIZE: Context size (default: 4096)
 # - LLAMA_CTX_SHIFT: Enable context shifting (default: true)
 # - LLAMA_FLASH_ATTN: Flash attention — true|false|auto (default: false)
@@ -23,7 +25,7 @@
 # - LLAMA_PRESENCE_PENALTY: Presence penalty (default: 0.0)
 # - LLAMA_FREQUENCY_PENALTY: Frequency penalty (default: 0.0)
 # - LLAMA_CTX_CHECKPOINTS: Max SWA/context checkpoints stored per slot
-#   (default: 2). llama.cpp's built-in default is 8 which, with a large
+#   (default: 2). llama.cpp's built-in default is 32 which, with a large
 #   --ctx-size and SWA models like Gemma, can accumulate multi-GB of KV
 #   state in host RAM per slot and OOM-kill the container. A small cap
 #   preserves some prefix-reuse benefit without unbounded growth.
@@ -91,11 +93,22 @@ echo "    SWA Full: $SWA_FULL"
 echo "    Speculative Decoding: $SPEC_TYPE${SPEC_TYPE:+ (draft-n-max=$SPEC_DRAFT_N_MAX${SPEC_DRAFT_MODEL:+, draft-model=$SPEC_DRAFT_MODEL})}"
 
 # Build command arguments
+# -1 no longer means "all layers" upstream: --n-gpu-layers now takes an exact
+# number, 'auto' (= -1, the new default, which lets the auto-fit logic size the
+# offload to available VRAM) or 'all'. webapp/server.js still defaults
+# nGpuLayers to -1 meaning "offload everything", so translate the legacy
+# sentinel to 'all' to preserve the intended semantics. Set
+# LLAMA_N_GPU_LAYERS=auto explicitly to opt into upstream's VRAM fitting.
+case "$N_GPU_LAYERS" in
+    -1)  NGL_ARG=all ;;
+    *)   NGL_ARG="$N_GPU_LAYERS" ;;
+esac
+
 CMD_ARGS=(
     --model "$MODEL_PATH"
     --port "$PORT"
     --host 0.0.0.0
-    --n-gpu-layers "$N_GPU_LAYERS"
+    --n-gpu-layers "$NGL_ARG"
     --ctx-size "$CTX_SIZE"
     --parallel "$PARALLEL"
     --batch-size "$BATCH_SIZE"
@@ -115,10 +128,18 @@ if [ -n "$THREADS" ]; then
     echo "    [Threads set to $THREADS]"
 fi
 
-# Disable context shift if requested (enabled by default in llama.cpp)
+# Context shift. Upstream FLIPPED the default: --context-shift is now
+# "(default: disabled)". This block used to pass --no-context-shift only on
+# the false path, so the advertised default (LLAMA_CTX_SHIFT=true, mirrored by
+# webapp/server.js's `contextShift` config) silently resolved to OFF. Always
+# pass the explicit flag — same rationale as --flash-attn below: the UI toggle
+# must have deterministic, observable behavior regardless of upstream defaults.
 if [ "$CTX_SHIFT" = "false" ]; then
     CMD_ARGS+=(--no-context-shift)
     echo "    [Context shift DISABLED]"
+else
+    CMD_ARGS+=(--context-shift)
+    echo "    [Context shift ENABLED]"
 fi
 
 # Flash attention — current llama.cpp requires an explicit value.
