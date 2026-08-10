@@ -4188,7 +4188,12 @@ const autoDetectSglangToolParser = (name) => {
     // on the body, and silently drops EVERY tool call (finish_reason
     // "tool_calls" with empty tool_calls[] → chat turns end with no content).
     if (r.includes('qwen3.5') || r.includes('qwen3.6') || r.includes('qwen-3.5') || r.includes('qwen-3.6') || r.includes('qwen3_5') || r.includes('qwen3_6')) return 'qwen3_coder';
-    if (r.includes('llama-4') || r.includes('llama4')) return 'llama4';
+    // Llama-4 emits the PYTHONIC tool format ([tool(arg=val), ...]), and
+    // sglang's PythonicDetector is documented as "Detector for Llama-4 models".
+    // There has never been a 'llama4' key in sglang's ToolCallParserEnum (not
+    // in v0.5.12, not in v0.5.17) — and an unknown parser name is a hard
+    // ValueError at startup, so this used to make every Llama-4 load fail.
+    if (r.includes('llama-4') || r.includes('llama4')) return 'pythonic';
     if (r.includes('llama-3') || r.includes('llama3')) return 'llama3';
     if (r.includes('mistral')) return 'mistral';
     if (r.includes('deepseek-v3.2') || r.includes('deepseekv3.2')) return 'deepseekv32';
