@@ -304,7 +304,16 @@ export default function ChatInput({
         const pastedText = e.clipboardData?.getData('text/plain');
         if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
         e.preventDefault();
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        // Deliberately NOT an ISO-8601 shape. The old form was
+        // `2026-08-12T19-03-14`, and models "corrected" the dash-separated
+        // time back to the colons ISO-8601 uses — asking for
+        // `pasted-text-2026-08-12T19:03:14.txt`, a file that never existed,
+        // then truncating/mangling it on every retry (each variant a fresh
+        // fingerprint, so the arg-repeat loop guard never fired). Dropping
+        // the `T` leaves nothing to "restore" while keeping second-level
+        // uniqueness, which the per-conversation uploads dir needs.
+        const iso = new Date().toISOString();
+        const timestamp = `${iso.slice(0, 10)}-${iso.slice(11, 19).replace(/:/g, '')}`;
         const filename = `pasted-text-${timestamp}.txt`;
         const base64 = btoa(unescape(encodeURIComponent(pastedText)));
         const uploadId = crypto.randomUUID();

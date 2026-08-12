@@ -70,19 +70,63 @@ def emit(kind, **fields):
 
 
 def head_size(url, headers):
-    """Return total size in bytes via HEAD (following redirects)."""
+    """Return total size in bytes.
+
+    HEAD alone is not enough: huggingface.co answers HEAD for a non-LFS file
+    (README.md, .gitattributes) with a 200 carrying NO content-length, so the
+    size came back 0 — which silently disabled both the aggregate progress
+    total and resume. Large LFS files (the .gguf we actually care about)
+    redirect to a CDN that does send content-length, which is why this went
+    unnoticed. Fall back to a 1-byte ranged GET and read the total out of
+    Content-Range; that works for every file and simultaneously proves the
+    origin honours Range requests.
+    """
     try:
         r = requests.head(url, headers=headers, allow_redirects=True, timeout=HEAD_TIMEOUT)
         if r.status_code == 200:
-            return int(r.headers.get('content-length', 0) or 0)
-    except requests.RequestException:
+            size = int(r.headers.get('content-length', 0) or 0)
+            if size:
+                return size
+            # HF exposes the true size of an LFS pointer here.
+            linked = r.headers.get('x-linked-size')
+            if linked:
+                return int(linked)
+    except (requests.RequestException, ValueError):
+        pass
+    try:
+        probe = dict(headers)
+        probe['Range'] = 'bytes=0-0'
+        r = requests.get(url, headers=probe, allow_redirects=True,
+                         stream=True, timeout=HEAD_TIMEOUT)
+        try:
+            if r.status_code == 206:
+                cr = r.headers.get('content-range', '')
+                if '/' in cr:
+                    total = cr.rsplit('/', 1)[1].strip()
+                    if total.isdigit():
+                        return int(total)
+            elif r.status_code == 200:
+                return int(r.headers.get('content-length', 0) or 0)
+        finally:
+            r.close()
+    except (requests.RequestException, ValueError):
         pass
     return 0
 
 
 def download_file(repo_id, filename, local_dir, file_idx, file_total,
                   total_bytes_all, bytes_before_this, token):
-    """Stream a single file to disk, emitting progress events."""
+    """Stream a single file to disk, emitting progress events.
+
+    RESUMES a partial file instead of restarting it. These are 10-25 GB
+    downloads: anything that interrupts one (a webapp restart — the download is
+    a child process of the container, so `docker compose up -d --build webapp`
+    kills it — a network drop, a cancel) used to leave a truncated .gguf that
+    could never be finished, only re-fetched from byte 0. A truncated GGUF is
+    also silently useless: it loads far enough to look real, then llama.cpp
+    dies with "tensor '...' data is not within the file bounds, model is
+    corrupted or incomplete" and the container exits 1.
+    """
     url = hf_hub_url(repo_id=repo_id, filename=filename)
     headers = {}
     if token:
@@ -91,18 +135,63 @@ def download_file(repo_id, filename, local_dir, file_idx, file_total,
     local_path = os.path.join(local_dir, filename)
     os.makedirs(os.path.dirname(local_path) or local_dir, exist_ok=True)
 
-    print(f">>> Downloading {filename}...", flush=True)
+    # How much is already on disk, and how big is the real thing?
+    existing = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+    remote_total = head_size(url, headers)
+
+    resume_from = 0
+    if existing > 0 and remote_total > 0:
+        if existing == remote_total:
+            print(f">>> {filename} already complete ({existing} bytes) - skipping",
+                  flush=True)
+            emit('progress',
+                 fileIndex=file_idx, fileTotal=file_total,
+                 fileName=os.path.basename(filename),
+                 filePct=100, fileDownloaded=existing, fileSize=existing,
+                 overallPct=int((bytes_before_this + existing) * 100 / total_bytes_all)
+                 if total_bytes_all > 0 else 100,
+                 overallDownloaded=bytes_before_this + existing,
+                 overallTotal=total_bytes_all or (bytes_before_this + existing),
+                 speed=0, eta=0)
+            return existing, local_path
+        if existing < remote_total:
+            resume_from = existing
+        else:
+            # Longer than the source: not a partial download of THIS file.
+            print(f">>> {filename} is larger than the remote file "
+                  f"({existing} > {remote_total}) - restarting", flush=True)
+
+    if resume_from:
+        headers['Range'] = f'bytes={resume_from}-'
+        pct = int(resume_from * 100 / remote_total) if remote_total else 0
+        print(f">>> Resuming {filename} at {resume_from} bytes ({pct}% already "
+              f"on disk, {remote_total - resume_from} to go)...", flush=True)
+    else:
+        print(f">>> Downloading {filename}...", flush=True)
 
     with requests.get(url, headers=headers, stream=True, timeout=GET_TIMEOUT,
                       allow_redirects=True) as r:
         r.raise_for_status()
-        total = int(r.headers.get('content-length', 0) or 0)
+        # 206 = the range was honoured. Anything else (a 200 from a server or
+        # CDN that ignored Range) means we are getting the whole file again, so
+        # the local bytes must be overwritten, not appended to.
+        resumed = resume_from > 0 and r.status_code == 206
+        if resume_from and not resumed:
+            print(">>> Server ignored the range request - restarting from 0",
+                  flush=True)
+        body_len = int(r.headers.get('content-length', 0) or 0)
+        total = (resume_from + body_len) if resumed else body_len
+        if not total:
+            total = remote_total
 
-        downloaded = 0
+        # `downloaded` counts bytes of the WHOLE file (not just this request)
+        # so progress/ETA stay meaningful across a resume.
+        downloaded = resume_from if resumed else 0
         start_time = time.time()
+        start_bytes = downloaded
         last_emit = 0.0
 
-        with open(local_path, 'wb') as f:
+        with open(local_path, 'ab' if resumed else 'wb') as f:
             for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                 if not chunk:
                     continue
@@ -114,7 +203,9 @@ def download_file(repo_id, filename, local_dir, file_idx, file_total,
                     continue
 
                 elapsed = now - start_time
-                speed = downloaded / elapsed if elapsed > 0 else 0
+                # Rate over bytes fetched THIS run — counting the resumed
+                # prefix would report a fictional multi-GB/s and a zero ETA.
+                speed = (downloaded - start_bytes) / elapsed if elapsed > 0 else 0
                 file_pct = int(downloaded * 100 / total) if total > 0 else 0
                 overall_bytes = bytes_before_this + downloaded
                 if total_bytes_all > 0:
@@ -134,7 +225,7 @@ def download_file(repo_id, filename, local_dir, file_idx, file_total,
 
         # Final per-file emit so UI settles at 100% for this file
         elapsed = time.time() - start_time
-        speed = downloaded / elapsed if elapsed > 0 else 0
+        speed = (downloaded - start_bytes) / elapsed if elapsed > 0 else 0
         overall_bytes = bytes_before_this + downloaded
         overall_pct = int(overall_bytes * 100 / total_bytes_all) if total_bytes_all > 0 else 100
         emit('progress',

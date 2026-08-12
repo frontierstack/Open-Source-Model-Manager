@@ -228,11 +228,26 @@ async function runPythonSkill(opts) {
     const pathNormalize = opts.pathNormalize !== false;
     let workspaceInfo = null;
     let resolvedParams = params;
+    let pathResolutions = [];
     if (workspace) {
         workspaceInfo = await ensureWorkspace(userId, conversationId, workspaceBucket);
         try {
             if (pathNormalize) {
                 resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
+                // A read-only path arg pointing at a file that isn't there is
+                // almost always a name the model could not transcribe, not a
+                // genuinely absent file. Recover it here — before the skill
+                // runs — so every file-reading skill gets the same second
+                // chance instead of each one growing its own handler.
+                const recovered = await resolveMissingReadPaths(
+                    toolName, resolvedParams, workspaceInfo, workspaceInfo.containerMount,
+                );
+                resolvedParams = recovered.params;
+                pathResolutions = recovered.resolutions;
+                if (pathResolutions.length) {
+                    console.log('[sandboxRunner] path recovery:', toolName,
+                        pathResolutions.map(r => `${r.from} -> ${r.to}`).join(', '));
+                }
             }
         } catch (pathErr) {
             await cleanupRun(runId).catch(() => {});
@@ -619,6 +634,21 @@ except Exception as _e:
         } catch { /* no /workspace/artifacts/ — nothing to promote */ }
     }
 
+    // 6c. Tell the model which path actually got read. Without this it keeps
+    // re-typing the name it invented on every follow-up call (and each variant
+    // is a fresh fingerprint, so the arg-repeat loop guard never catches it).
+    if (pathResolutions.length && result && typeof result === 'object' && !Array.isArray(result)) {
+        result.resolvedPaths = pathResolutions;
+        if (result.success !== false) {
+            const pairs = pathResolutions
+                .map(r => `'${r.from}' -> '${r.to}'`).join('; ');
+            const note = `Auto-resolved a path that does not exist as given: ${pairs}. `
+                + 'The second path is the real one — use it verbatim from now on; '
+                + 'do not retype or reconstruct the original.';
+            result.note = result.note ? `${result.note} ${note}` : note;
+        }
+    }
+
     return {
         runId,
         scratchDir: scratchIn,
@@ -633,6 +663,7 @@ except Exception as _e:
         artifacts,
         network,
         sandboxed: useRunsc,
+        pathResolutions,
     };
 }
 
@@ -690,6 +721,243 @@ const PATH_ARG_NAMES = [
     'imagePath', 'videoPath', 'outputDir', 'emailPath', 'mdPath', 'htmlPath',
     'path2',
 ];
+
+// ---------------------------------------------------------------------------
+// Missing-file recovery for READ-ONLY path args
+// ---------------------------------------------------------------------------
+//
+// Models cannot transcribe an awkward filename. This is the same failure class
+// already fixed for archive ids (_closestArchiveRef) and clone dirs
+// (git_clone_shallow's legible dir names + _auto_resolve_dir): the model
+// "normalizes" what it reads, and every mangled retry is a NEW string, so the
+// arg-repeat loop guard never fires and it spirals.
+//
+// Live case (2026-08-12): a paste-as-file upload landed at
+//   /workspace/uploads/pasted-text-2026-08-12T19-03-14.txt
+// and the model asked for `...T19:03:14.txt` — it restored the ISO-8601 colons
+// it "knew" belonged there. read_file's recovery matched basenames EXACTLY, so
+// there was no way back; the turn burned 8 tool calls (read_file x4 incl. a
+// loop_detected clamp, list_directory, 3 unrelated web searches) and never read
+// the file. list_directory had ALREADY printed the true name — re-reading it
+// did not help, because the name itself is what the model cannot reproduce.
+//
+// So resolution belongs at the choke point every skill passes through, not in
+// one skill's error handler. This runs right after normalizePathArgs: if a
+// read-only path arg does not exist on disk, fuzzy-match it against the real
+// workspace and rewrite the arg before the skill ever runs.
+//
+// STRICTLY read-intent args only, and only where a wrong pick comes straight
+// back to the model as content it can see is wrong. Three categories are
+// deliberately EXCLUDED — adding them would trade a loud 404 for a silent
+// wrong answer:
+//   1. WRITE targets (create_file, append_to_file, replace_lines,
+//      query_sqlite(readonly:false), and every outputPath / savePath /
+//      extractPath / outputDir). Resolving these points a write at an existing
+//      similar file and corrupts it.
+//   2. Args with a documented INLINE FALLBACK — create_pdf/create_docx
+//      `contentFile`, create_xlsx `rowsFile`, html_to_pdf `htmlPath`,
+//      run_python/run_node `codeFile`. Those skills deliberately fall back to
+//      the inline `content`/`code` when the path is missing (7a8d84a: "a model
+//      passing BOTH must never fail on the bogus path"). Resolving the bogus
+//      path would feed the WRONG source into the document — or, for
+//      run_python/run_node, EXECUTE the wrong program.
+//   3. Args whose result leaves the machine or becomes a deliverable —
+//      `send_file` (posts to Telegram/Slack: sending the wrong file is
+//      outward-facing and irreversible) and `make_downloadable` (publishing the
+//      wrong artifact; its missing-source error is tuned guidance that names
+//      the right creator skills, and must keep firing).
+const RESOLVABLE_READ_PATH_ARGS = {
+    read_file: ['filePath'],
+    head_file: ['filePath'],
+    tail_file: ['filePath'],
+    outline_file: ['filePath'],
+    get_file_metadata: ['filePath'],
+    read_pdf: ['filePath'],
+    pdf_page_count: ['filePath'],
+    pdf_to_images: ['filePath'],
+    read_email_file: ['emailPath'],
+    read_xlsx: ['path'],
+    csv_describe: ['path'],
+    spreadsheet_query: ['path', 'path2'],
+    extract_strings: ['path'],
+    chart_plot: ['path'],
+    ocr_image: ['imagePath'],
+    transcribe_audio: ['path'],
+    analyze_video: ['videoPath'],
+    markdown_to_html: ['mdPath'],
+    transform_image: ['sourcePath'],
+    convert_image: ['inputPath'],
+    diff_files: ['file1', 'file2'],
+    tar_extract: ['tarPath'],
+    unzip_file: ['zipPath'],
+};
+
+const RESOLVE_WALK_MAX_FILES = 4000;
+const RESOLVE_WALK_MAX_DEPTH = 8;
+const RESOLVE_SKIP_DIRS = new Set([
+    '.git', 'node_modules', '__pycache__', '.venv', '.deps', '.cache', '.npm',
+]);
+// Tier-1 (similarity) acceptance. Below MIN we refuse rather than guess; the
+// MARGIN keeps us from picking between two near-identical names (chunk-01 vs
+// chunk-02), where a wrong pick is worse than the skill's own not-found error.
+const RESOLVE_MIN_SIMILARITY = 0.72;
+const RESOLVE_MIN_MARGIN = 0.08;
+
+/** Case- and punctuation-insensitive form. `a-b_c.TXT` and `a:b c.txt` both
+ *  collapse to `abctxt`, which is exactly the difference between what the
+ *  model typed and what is on disk in the reported case. */
+function normalizeNameForMatch(s) {
+    return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** Dice coefficient over character bigrams — cheap, no dependency, and stable
+ *  for filename-shaped strings (order-sensitive enough to separate
+ *  `report-2026-08.csv` from `report-2025-08.csv`). */
+function diceSimilarity(a, b) {
+    const A = normalizeNameForMatch(a);
+    const B = normalizeNameForMatch(b);
+    if (!A || !B) return 0;
+    if (A === B) return 1;
+    if (A.length < 2 || B.length < 2) return A === B ? 1 : 0;
+    const counts = new Map();
+    for (let i = 0; i < A.length - 1; i++) {
+        const g = A.slice(i, i + 2);
+        counts.set(g, (counts.get(g) || 0) + 1);
+    }
+    let hits = 0;
+    for (let i = 0; i < B.length - 1; i++) {
+        const g = B.slice(i, i + 2);
+        const c = counts.get(g) || 0;
+        if (c > 0) { counts.set(g, c - 1); hits++; }
+    }
+    return (2 * hits) / (A.length - 1 + B.length - 1);
+}
+
+/** Files directly inside `dir` (no recursion). */
+async function listFilesShallow(dir) {
+    const out = [];
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return out; }
+    for (const e of entries) {
+        if (!e.isFile()) continue;
+        out.push({ name: e.name, full: path.join(dir, e.name) });
+    }
+    return out;
+}
+
+/** Bounded recursive walk of the workspace. */
+async function listFilesDeep(root) {
+    const out = [];
+    const queue = [{ dir: root, depth: 0 }];
+    while (queue.length && out.length < RESOLVE_WALK_MAX_FILES) {
+        const { dir, depth } = queue.shift();
+        let entries;
+        try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+        for (const e of entries) {
+            if (out.length >= RESOLVE_WALK_MAX_FILES) break;
+            if (e.isDirectory()) {
+                if (depth >= RESOLVE_WALK_MAX_DEPTH) continue;
+                if (RESOLVE_SKIP_DIRS.has(e.name)) continue;
+                queue.push({ dir: path.join(dir, e.name), depth: depth + 1 });
+            } else if (e.isFile()) {
+                out.push({ name: e.name, full: path.join(dir, e.name) });
+            }
+        }
+    }
+    return out;
+}
+
+/** Pick the one file `wanted` most plausibly meant, or null when the answer is
+ *  not obvious. Tiers are tried highest-first and never mixed:
+ *    3 — equal ignoring case/punctuation  (`...T19:03:14.txt` = `...T19-03-14.txt`)
+ *    2 — one stem is a prefix of the other (the model truncated the name)
+ *    1 — bigram similarity above the floor, with a clear margin
+ *  Ambiguity at the winning tier returns null: the skill's own not-found error
+ *  (which now lists the directory) beats opening the wrong file. */
+function pickBestFileMatch(wanted, candidates) {
+    if (!candidates.length) return null;
+    const wantNorm = normalizeNameForMatch(wanted);
+    if (!wantNorm) return null;
+    const stemOf = (n) => normalizeNameForMatch(n.replace(/\.[^.]*$/, ''));
+    const wantStem = stemOf(wanted);
+
+    const scored = candidates.map(c => {
+        const nameNorm = normalizeNameForMatch(c.name);
+        const stem = stemOf(c.name);
+        let tier = 0;
+        if (nameNorm === wantNorm) tier = 3;
+        else if (
+            wantStem.length >= 6 && stem.length >= 6 &&
+            (stem.startsWith(wantStem) || wantStem.startsWith(stem))
+        ) tier = 2;
+        return { ...c, tier, score: diceSimilarity(wanted, c.name) };
+    });
+
+    const bestTier = Math.max(...scored.map(s => s.tier));
+    if (bestTier === 0) {
+        const ranked = scored.sort((a, b) => b.score - a.score);
+        if (ranked[0].score < RESOLVE_MIN_SIMILARITY) return null;
+        if (ranked.length > 1 && ranked[0].score - ranked[1].score < RESOLVE_MIN_MARGIN) return null;
+        return ranked[0];
+    }
+    const top = scored.filter(s => s.tier === bestTier).sort((a, b) => b.score - a.score);
+    if (top.length > 1 && top[0].score - top[1].score < RESOLVE_MIN_MARGIN) return null;
+    return top[0];
+}
+
+/** Rewrite read-only path args that point at a file which is not there.
+ *  Returns the (possibly unchanged) params plus a list of what was rewritten.
+ *  Never throws — on any surprise we leave the arg alone and let the skill
+ *  produce its own error. */
+async function resolveMissingReadPaths(toolName, params, workspaceInfo, mount = CONTAINER_MOUNT) {
+    const argNames = RESOLVABLE_READ_PATH_ARGS[toolName];
+    if (!argNames || !params || typeof params !== 'object' || !workspaceInfo) {
+        return { params, resolutions: [] };
+    }
+    const root = workspaceInfo.localInContainer;
+    const resolutions = [];
+    let out = params;
+    let deepCache = null;
+
+    for (const arg of argNames) {
+        const value = params[arg];
+        if (typeof value !== 'string' || !value) continue;
+        // Only paths the normalizer already routed under the mount.
+        if (value !== mount && !value.startsWith(mount + '/')) continue;
+        const rel = value.slice(mount.length + 1);
+        if (!rel) continue;
+        const local = path.join(root, rel);
+        try {
+            const st = await fs.stat(local);
+            if (st.isFile()) continue;        // it exists — nothing to do
+            if (st.isDirectory()) continue;   // a dir where a file was wanted: the skill explains that better
+        } catch { /* ENOENT — this is the case we recover */ }
+
+        try {
+            const wantedBase = path.basename(rel);
+            const parentLocal = path.dirname(local);
+            // Prefer the directory the model aimed at (the reported case: the
+            // right dir, a mangled name). Only widen when that fails.
+            let hit = null;
+            if (parentLocal.startsWith(root)) {
+                hit = pickBestFileMatch(wantedBase, await listFilesShallow(parentLocal));
+            }
+            if (!hit) {
+                if (deepCache === null) deepCache = await listFilesDeep(root);
+                hit = pickBestFileMatch(wantedBase, deepCache);
+            }
+            if (!hit) continue;
+            const resolved = path.posix.join(mount, path.relative(root, hit.full).split(path.sep).join('/'));
+            if (resolved === value) continue;
+            if (out === params) out = { ...params };
+            out[arg] = resolved;
+            resolutions.push({ arg, from: value, to: resolved });
+        } catch (e) {
+            console.warn('[sandboxRunner] path recovery failed for', toolName, arg, e.message);
+        }
+    }
+    return { params: out, resolutions };
+}
 
 /** Create (if needed) + chmod the per-(user, conversation) workspace.
  *  Returns both the in-container path and the host path for the bind mount.
@@ -1131,7 +1399,10 @@ module.exports = {
     workspaceOwnerDir,
     resolveInWorkspace,
     normalizePathArgs,
+    resolveMissingReadPaths,
+    pickBestFileMatch,
     PATH_ARG_NAMES,
+    RESOLVABLE_READ_PATH_ARGS,
     SANDBOX_IMAGE,
     DEFAULT_TIMEOUT_MS,
 };
