@@ -406,7 +406,7 @@ The Chat UI (https://localhost:3002) exposes enabled skills to the model as nati
 Every enabled skill is surfaced to the chat model as a native tool. The model decides when to call them; the UI renders each invocation as a chip with the tool name, arguments, and (on click) the full result.
 
 - **Tool catalog**: built from the server-side skill registry; toggling a skill off in Settings removes it from the catalog immediately.
-- **Rendering**: tool calls stream as `native_tool_call` events from the server and appear inline in the message flow.
+- **Rendering**: the server streams `tool_call_delta` (one per token of the call's JSON arguments), then `tool_executing` on dispatch and `tool_result` with the outcome; the chips appear inline in the message flow. `native_tool_call` is **not** a stream event — it is the `type` of the chip persisted on the saved message for re-rendering, so tooling that watches the SSE stream must key on `tool_executing` / `tool_result`.
 - **No user toggle required**: the model calls `web_search`, `fetch_url`, `crawl_pages`, etc. when the query warrants it. There is no longer a globe or link button to enable these.
 - **Iteration cap**: a silent no-response path when the tool loop hit its cap was fixed in `d9bf5f5` — the model now always produces a final user-visible message.
 
