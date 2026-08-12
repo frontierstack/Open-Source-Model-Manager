@@ -505,6 +505,19 @@ async function executeToolCall(call, ctx) {
         }
     }
 
+    // scan_source_files reads a whole tree, so its raw output routinely dwarfs
+    // what a tool result can carry. Hand it the budget the caller can actually
+    // deliver (ctx.resultBudgetChars, set from the model's context window) so it
+    // returns one page plus a nextStartIndex, instead of 500 KB that the
+    // per-result cap then truncates — which is how the model ended up telling
+    // users "The scan was truncated." on every repo audit (2026-08-12). An
+    // explicit budgetChars from the caller always wins.
+    if (toolName === 'scan_source_files' &&
+        typeof ctx?.resultBudgetChars === 'number' && ctx.resultBudgetChars > 0 &&
+        args && args.budgetChars === undefined) {
+        args.budgetChars = ctx.resultBudgetChars;
+    }
+
     const def = toolRegistry.get(toolName);
     const dispatch = def
         ? (a, c) => def.execute(a, c)

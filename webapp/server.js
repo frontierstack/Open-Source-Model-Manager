@@ -880,6 +880,146 @@ function scrubHarmonyTokens(s) {
     return s.replace(HARMONY_TOKEN_REGEX, '');
 }
 
+// ---------------------------------------------------------------------------
+// Model-facing tool-result trimming
+// ---------------------------------------------------------------------------
+//
+// A tool result that overflows the per-result budget used to be cut with a blind
+// `slice(0, cap)`, which severs the JSON mid-string. Two costs, both observed
+// live (2026-08-12, scan_source_files 70,714 -> 24,000 chars on a repo audit):
+//   1. The model receives INVALID JSON — it can no longer read the metadata
+//      (counts, which files were skipped) that would tell it how to continue.
+//   2. The `[TRUNCATED ...]` marker becomes the headline. The runtime prelude
+//      tells the model to report truncation, so the turn opened with "The scan
+//      was truncated." and then flailed (7 list_directory calls) trying to
+//      recover coverage it could have simply paged through.
+//
+// So trim STRUCTURALLY instead: drop whole elements off the biggest array in
+// the payload (files / hits / entries / results / ...), keep the object valid,
+// and hand back an explicit, tool-aware continuation instruction. Falls back to
+// the old string slice for non-JSON results.
+const RESULT_ARRAY_FIELDS = [
+    'files', 'hits', 'entries', 'results', 'matches', 'pages',
+    'items', 'documents', 'rows', 'chunks', 'lines', 'skipped',
+];
+// Per-tool continuation advice keyed on the tool that produced the result.
+// Generic advice is deliberately vague about arg names; a wrong arg name sends
+// the model into a retry loop, which is exactly what this is here to prevent.
+function continuationHintFor(toolName, field, shown) {
+    switch (toolName) {
+        case 'scan_source_files':
+            return `Only the first ${shown} ${field} are included. Call scan_source_files again with the SAME dirPath and startIndex: ${shown} to read the next batch (the result also carries nextStartIndex), or read specific files with read_file.`;
+        case 'grep_code':
+            return `Only the first ${shown} ${field} are included. Narrow the search (a subdirectory, a filePattern, a more specific pattern) or lower maxResults — do NOT re-run the identical search.`;
+        case 'list_directory':
+            return `Only the first ${shown} ${field} are included. List a specific subdirectory instead of the whole tree, or raise maxEntries only if you truly need every name.`;
+        case 'read_file':
+            return `Only the first ${shown} ${field} are included. Continue with startLine/endLine (or the next chunkIndex) to read the rest.`;
+        default:
+            return `Only the first ${shown} ${field} are included. Request a narrower scope (a specific path, a smaller range, fewer results) rather than repeating this call unchanged.`;
+    }
+}
+// Per-result budget for what the MODEL sees, scaled to its own context window
+// (~12%, tokens→chars via the ~3.2 ratio estimateTokens uses) and floored at
+// the historic 24k so small-context models behave exactly as before. A 131k-ctx
+// model now takes a 70k-char repo scan whole instead of losing two thirds of it
+// — the truncation that opened a real audit turn with "The scan was truncated."
+// and then sent the model flailing (2026-08-12).
+function modelFacingResultCap(contextSize) {
+    return Math.max(24_000, Math.min(
+        parseInt(process.env.TOOL_RESULT_CHAR_CAP_MAX || '64000', 10),
+        Math.round((contextSize || 4096) * 0.12 * 3.2),
+    ));
+}
+function capToolResultForModel(content, capChars, toolName) {
+    if (typeof content !== 'string' || content.length <= capChars) {
+        return { content, capped: false };
+    }
+    const original = content.length;
+    // --- structural path: JSON object with a dominant array -----------------
+    try {
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            let field = null;
+            let fieldLen = 0;
+            for (const f of RESULT_ARRAY_FIELDS) {
+                if (!Array.isArray(parsed[f]) || !parsed[f].length) continue;
+                const len = JSON.stringify(parsed[f]).length;
+                if (len > fieldLen) { field = f; fieldLen = len; }
+            }
+            if (field) {
+                const arr = parsed[field];
+                const total = arr.length;
+                // Serialized size of the object with the first k elements kept.
+                // Reserve room for the note we append.
+                const RESERVE = 700;
+                const budget = Math.max(1000, capChars - RESERVE);
+                const sizeWith = (k) => {
+                    const probe = { ...parsed, [field]: arr.slice(0, k) };
+                    return JSON.stringify(probe).length;
+                };
+                // Binary search the largest k that fits.
+                let lo = 0, hi = total, best = 0;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (sizeWith(mid) <= budget) { best = mid; lo = mid + 1; }
+                    else { hi = mid - 1; }
+                }
+                let head = arr.slice(0, best);
+                // Not even ONE element fits (a single 60k-char file body). Keep
+                // that element with its largest string field cut down, so the
+                // model gets the head of the content instead of an empty list.
+                if (best === 0 && total > 0 && arr[0] && typeof arr[0] === 'object') {
+                    const el = { ...arr[0] };
+                    let big = null, bigLen = 0;
+                    for (const [k, v] of Object.entries(el)) {
+                        if (typeof v === 'string' && v.length > bigLen) { big = k; bigLen = v.length; }
+                    }
+                    if (big) {
+                        const room = Math.max(500, budget - (JSON.stringify({ ...parsed, [field]: [{ ...el, [big]: '' }] }).length));
+                        el[big] = el[big].slice(0, room) + '\n... [cut — element too large for one result]';
+                        el.truncated = true;
+                        head = [el];
+                    }
+                }
+                if (best > 0 || total > 0) {
+                    const out = { ...parsed, [field]: head };
+                    out._truncated = {
+                        field,
+                        shown: head.length,
+                        total,
+                        omitted: total - head.length,
+                        ...(best === 0 && head.length ? { partialElement: true } : {}),
+                        reason: `The full result was ${original} characters — too large to include. It was trimmed at ${field} boundaries, so this JSON is complete and valid.`,
+                        howToContinue: (best === 0 && head.length)
+                            // Re-calling with startIndex: 0 would repeat this
+                            // exact call — the one thing the guards exist to stop.
+                            ? `The single ${field.replace(/s$/, '')} shown is itself too large for one result and was cut. Read it directly in ranges (read_file with startLine/endLine or chunkIndex), or continue after it with startIndex: 1.`
+                            : continuationHintFor(toolName, field, head.length),
+                    };
+                    // When even 0 elements will not fit, the non-array fields
+                    // themselves are oversized — fall through to the slice.
+                    const serialized = JSON.stringify(out);
+                    if (serialized.length <= capChars) {
+                        return {
+                            content: serialized, capped: true, structural: true,
+                            field, shown: best, total, original,
+                        };
+                    }
+                }
+            }
+        }
+    } catch (_) { /* not JSON — string slice below */ }
+    // --- fallback: string slice (unchanged behavior) ------------------------
+    return {
+        content: content.slice(0, capChars) +
+            `\n\n[TRUNCATED — only the first ${capChars} of ${original} characters are shown. ` +
+            `Do NOT repeat this call unchanged: request a narrower scope (a specific entry/path, ` +
+            `a smaller line range, the next page/startIndex) or work with what is above.]`,
+        capped: true, structural: false, original,
+    };
+}
+
 // Reasoning-loop detector. Some models (observed on gemma-4 Harmony
 // templates and reasoning-ON Qwen3/DeepSeek checkpoints) get stuck in a
 // "Wait, I will read X.**" style enumeration in their reasoning stream —
@@ -19085,6 +19225,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // follow-up turn (no fresh upload) we instead pin to the
             // conversation's single indexed doc when there is exactly one.
             activeDocumentId: (useAgentic && agenticInfo) ? agenticInfo.documentId : followupActiveDocId,
+            // How much of a tool result this transport can actually deliver to
+            // the model. A batch reader (scan_source_files) uses it to PAGE
+            // instead of returning half a megabyte the per-result cap then has
+            // to throw away — the model saw "[TRUNCATED …]" on every scan and
+            // reported it to the user as a failure (2026-08-12). 15% headroom
+            // for the metadata the skill wraps around its page.
+            resultBudgetChars: Math.round(modelFacingResultCap(contextSize) * 0.85),
         };
         let toolCatalog = [];
         try {
@@ -19511,6 +19658,54 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let loopNudgeCount = 0;
         let loopNudgeExhausted = false;
         const LOOP_NUDGE_HARD_CAP = parseInt(process.env.LOOP_NUDGE_HARD_CAP || '6', 10);
+        // Loop-guard escalation: STOP THE LOOP, KEEP THE TURN.
+        //
+        // Reaching the nudge cap used to end the turn outright (break → forced
+        // synthesis). Live failure (2026-08-12, user prompt literally "DO NOT
+        // LOOP"): a repo audit had already clone→scan→grep'd and FOUND the
+        // malware, then called list_directory 7× on one path; six identical
+        // nudges hit the cap, the turn was cut off, synthesis produced nothing,
+        // and the user got only the "did not produce a final answer" note — the
+        // findings were never written. The guard is supposed to remove the
+        // looping behavior, not the response.
+        //
+        // So the cap now spends a CHECKPOINT first: disable the tool(s) that
+        // actually looped for the rest of the turn, restate the user's request,
+        // hand the model the tools it still has, and let it keep working. Only a
+        // SECOND cap hit (LOOP_MAX_CHECKPOINTS exhausted) forces synthesis.
+        const loopNudgeByTool = new Map();     // advertised tool name -> nudges this turn
+        const blockedToolNames = new Set();    // disabled for the remainder of this turn
+        let loopCheckpointsUsed = 0;
+        let pendingLoopCheckpoint = null;      // system message to inject next round
+        const LOOP_MAX_CHECKPOINTS = parseInt(process.env.LOOP_MAX_CHECKPOINTS || '1', 10);
+        // A tool refused this many times in one turn is quarantined — at the
+        // next checkpoint, or immediately once it passes the threshold on its
+        // own (evidence-based: only the actual offenders get blocked).
+        const LOOP_TOOL_BLOCK_AFTER = parseInt(process.env.LOOP_TOOL_BLOCK_AFTER || '2', 10);
+        // Shared body of a loop checkpoint. `offenders` are already in
+        // blockedToolNames; the message tells the model what it lost, what the
+        // task still is, and what it has left to finish it with.
+        const buildLoopCheckpoint = (offenders, why) => {
+            const remaining = (toolCatalog || [])
+                .map(d => d?.function?.name)
+                .filter(n => n && !blockedToolNames.has(n));
+            const askedFor = String(latestUserText || '').replace(/^\/no_think\s*/i, '').trim().slice(0, 400);
+            const plural = offenders.length === 1;
+            return {
+                role: 'system',
+                content:
+                    `LOOP GUARD — ${why}, so ${offenders.join(', ')} ${plural ? 'is' : 'are'} now DISABLED ` +
+                    `for the rest of this turn. Do not mention this to the user and do not try ` +
+                    `${plural ? 'it' : 'them'} again.\n` +
+                    (askedFor ? `THE TASK (this is what you must finish): "${askedFor}"\n` : '') +
+                    `Everything your earlier tool calls returned is still above in this conversation — use it. ` +
+                    (remaining.length
+                        ? `Take the next CONCRETE step toward the task with a tool you still have (${remaining.slice(0, 10).join(', ')}${remaining.length > 10 ? ', …' : ''}) — a different tool, a different target, or a different approach. `
+                        : '') +
+                    `If you already have enough to answer, stop calling tools and write the complete answer now. ` +
+                    `Do NOT end this turn with a plan or a promise: deliver findings or a result.`,
+            };
+        };
         // General redundancy backstop — catches loop shapes the specific
         // guards miss. If the turn has made many tool calls but the DISTINCT
         // information gathered (unique outcome signatures) has stalled below a
@@ -20244,6 +20439,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                     } catch (e) { /* keep current catalog */ }
                 }
+                // --- Loop quarantine (after the grow-only expansion, so it
+                // cannot re-advertise a blocked tool) --------------------------
+                // A tool that looped past the nudge budget is withdrawn from the
+                // catalog for the rest of the turn: the model then physically
+                // cannot pick it again and moves on with what is left, instead
+                // of burning every remaining round on the same dead call.
+                if (blockedToolNames.size && toolCatalog.length) {
+                    try {
+                        const kept = toolCatalog.filter(d => !blockedToolNames.has(d?.function?.name));
+                        if (kept.length !== toolCatalog.length) {
+                            toolCatalog = kept;
+                            toolCatalogJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                            toolCatalogTokens = toolCatalogJson ? estimateTokens(toolCatalogJson) : 0;
+                            console.warn(`[Chat Stream] Loop quarantine: withdrew ${[...blockedToolNames].join(', ')} from the catalog (${toolCatalog.length} tools left)`);
+                        }
+                        // Keep them out of the grow-only set too.
+                        for (const n of blockedToolNames) {
+                            advertisedNames?.delete(n);
+                            toolCtx._forcedToolNames?.delete(n);
+                        }
+                    } catch (_) { /* keep current catalog */ }
+                }
                 // Reset per-round state. fullResponse is cumulative for the
                 // client stream; roundStart marks where THIS turn's text began
                 // so we can feed only this turn's content back as the assistant
@@ -20603,6 +20820,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         };
                         let readRepeat = false;
                         let readRepeatPath = null;
+                        // A prior identical call whose path was AUTO-RESOLVED to a
+                        // DIFFERENT target than the model asked for. Re-issuing it
+                        // is not "re-reading the same thing" — the model never got
+                        // what it requested, so "you already have this" is a lie
+                        // that it (correctly) ignores. Answer with the truth
+                        // instead: the requested path does not exist, here is what
+                        // it actually resolved to.
+                        let resolveMismatch = null;
                         if (!targetKey && priorHits.length >= 1 && READONLY_PATH_TOOLS[call.function.name]) {
                             try {
                                 readRepeatPath = READONLY_PATH_TOOLS[call.function.name](
@@ -20614,6 +20839,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 const mutatedSince = historySnapshot.slice(lastIdenticalIdx + 1)
                                     .some(h => typeof h.fp === 'string' && h.fp.includes(`:target=${readRepeatPath}`));
                                 readRepeat = !mutatedSince;
+                                const resolvedHit = priorHits.filter(h => h.resolvedTarget &&
+                                    h.resolvedTarget !== readRepeatPath).pop();
+                                if (readRepeat && resolvedHit) resolveMismatch = resolvedHit.resolvedTarget;
                             }
                         }
                         // Range-agnostic re-read cap: the model reads the SAME
@@ -20771,6 +20999,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 previous_call_count: historySnapshot.filter(h => h.readPath === rereadPath).length,
                             };
                             console.warn(`[Chat Stream] Loop detected for ${call.function.name} (reread-cap on ${rereadPath}); short-circuited with nudge`);
+                        } else if (resolveMismatch) {
+                            // The requested path does not exist; a previous
+                            // identical call silently landed somewhere else. Say
+                            // that plainly instead of "you already have this".
+                            nudge = {
+                                error: 'path_not_found',
+                                message: `The path you asked for does not exist: "${readRepeatPath}". Your previous identical call was auto-resolved to a DIFFERENT location ("${resolveMismatch}"), which is why re-issuing it will never return what you want. Do not retype "${readRepeatPath}" again. Work from "${resolveMismatch}" instead: call ${call.function.name} on that EXACT path (no extra path segments) to see its real contents, then use the names it reports verbatim.`,
+                                requested_path: readRepeatPath,
+                                actually_resolved_to: resolveMismatch,
+                            };
+                            console.warn(`[Chat Stream] Path mismatch for ${call.function.name}: requested "${readRepeatPath}" previously resolved to "${resolveMismatch}"; short-circuited with a corrective nudge`);
                         } else if (targetRepeat || argRepeat || readRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
@@ -20787,7 +21026,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     nudgeText = `You have rewritten "${target}" ${priorHits.length} times this turn with varying content. Stop churning on this file — proceed to the next step with the current version, or stop calling tools and explain to the user what is blocking you.`;
                                 }
                             } else if (readRepeat) {
-                                nudgeText = `You already called ${loopingToolName} on "${readRepeatPath}" with these EXACT arguments this turn and nothing has modified it since — the result is unchanged and already in your context above. Do NOT read it again. Act on what you read: make the edit or conversion you planned (replace_lines / html_to_pdf / create_pdf …), or stop calling tools and answer the user.`;
+                                // Keep the suggested next step appropriate to the
+                                // tool. The old text pointed every read-repeat at
+                                // replace_lines / html_to_pdf / create_pdf, which
+                                // on a directory listing during a code audit is
+                                // both useless and misleading.
+                                nudgeText = loopingToolName === 'list_directory'
+                                    ? `You already listed "${readRepeatPath}" with these EXACT arguments this turn and nothing has changed — the entries are in your context above. Do NOT list it again. Move forward with the names it already gave you: read a specific file (read_file), search the contents (grep_code), or list a DIFFERENT subdirectory. If you have enough to answer, stop calling tools and write your response now.`
+                                    : `You already called ${loopingToolName} on "${readRepeatPath}" with these EXACT arguments this turn and nothing has modified it since — the result is unchanged and already in your context above. Do NOT read it again. Act on what you read — take the next concrete step of the task the user asked for — or stop calling tools and answer the user.`;
                             } else if (fileTools.has(loopingToolName)) {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
                             } else if (webTools.has(loopingToolName)) {
@@ -20810,13 +21056,68 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         return { call, policy, fp, nudge };
                     });
 
-                    // Tally loop_detected nudges this turn. When the model
-                    // keeps looping THROUGH the nudges (ignoring guidance), the
-                    // nudges become the loop — cap them and force synthesis.
-                    loopNudgeCount += perCall.filter(pc => pc.nudge && pc.nudge.error === 'loop_detected').length;
-                    if (loopNudgeCount >= LOOP_NUDGE_HARD_CAP && !loopNudgeExhausted) {
-                        loopNudgeExhausted = true;
-                        console.warn(`[Chat Stream] Loop-nudge hard cap (${LOOP_NUDGE_HARD_CAP}) reached — forcing synthesis`);
+                    // Tally refusal nudges this turn (the kinds that BLOCK the
+                    // call: a detected loop, or a path that does not exist). The
+                    // pivot nudges (rate-limited search) are deliberately left
+                    // out — they redirect the same tool to a better target and
+                    // must not get that tool quarantined.
+                    const REFUSAL_NUDGES = new Set(['loop_detected', 'path_not_found']);
+                    const earlyBlocked = [];
+                    for (const pc of perCall) {
+                        if (!pc.nudge || !REFUSAL_NUDGES.has(pc.nudge.error)) continue;
+                        loopNudgeCount++;
+                        const n = pc.call.function.name;
+                        const c = (loopNudgeByTool.get(n) || 0) + 1;
+                        loopNudgeByTool.set(n, c);
+                        // Early quarantine: past the threshold for ONE tool the
+                        // nudges are demonstrably not landing (six identical
+                        // list_directory refusals, verbatim, observed
+                        // 2026-08-12). Withdraw it NOW rather than spending the
+                        // rest of the round budget on the same dead call.
+                        if (c > LOOP_TOOL_BLOCK_AFTER && !blockedToolNames.has(n)) {
+                            blockedToolNames.add(n);
+                            earlyBlocked.push(n);
+                        }
+                    }
+                    if (earlyBlocked.length && !loopNudgeExhausted && !pendingLoopCheckpoint) {
+                        pendingLoopCheckpoint = buildLoopCheckpoint(
+                            earlyBlocked,
+                            `you re-issued the same ${earlyBlocked.join('/')} call after being told it returns nothing new`,
+                        );
+                        console.warn(`[Chat Stream] Loop quarantine (early): ${earlyBlocked.join(', ')} refused ${LOOP_TOOL_BLOCK_AFTER + 1}× — withdrawn, turn continues`);
+                        logChatActivity(`Loop guard: disabled ${earlyBlocked.join(', ')} for this turn — continuing the task`);
+                    }
+                    if (loopNudgeCount >= LOOP_NUDGE_HARD_CAP && !loopNudgeExhausted && !pendingLoopCheckpoint) {
+                        if (loopCheckpointsUsed < LOOP_MAX_CHECKPOINTS) {
+                            // CHECKPOINT — stop the loop, keep the turn. Withdraw
+                            // the tools that actually looped, restate the task,
+                            // and let the model continue with what is left.
+                            loopCheckpointsUsed++;
+                            const offenders = [...loopNudgeByTool.entries()]
+                                .filter(([, c]) => c >= LOOP_TOOL_BLOCK_AFTER)
+                                .sort((a, b) => b[1] - a[1])
+                                .map(([n]) => n);
+                            // Nothing hit the per-tool threshold (nudges spread
+                            // thin): quarantine the single worst offender so the
+                            // checkpoint always removes something concrete.
+                            if (!offenders.length && loopNudgeByTool.size) {
+                                offenders.push([...loopNudgeByTool.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+                            }
+                            offenders.forEach(n => blockedToolNames.add(n));
+                            pendingLoopCheckpoint = buildLoopCheckpoint(
+                                offenders,
+                                `you repeated the same call ${loopNudgeCount} times without gaining new information`,
+                            );
+                            // Fresh budget for the rest of the turn; the blocked
+                            // tools can no longer contribute to it.
+                            loopNudgeCount = 0;
+                            loopNudgeByTool.clear();
+                            console.warn(`[Chat Stream] Loop-nudge cap (${LOOP_NUDGE_HARD_CAP}) reached — checkpoint ${loopCheckpointsUsed}/${LOOP_MAX_CHECKPOINTS}: quarantined ${offenders.join(', ')}, continuing the turn`);
+                            logChatActivity(`Loop guard: disabled ${offenders.join(', ')} for this turn — continuing the task`);
+                        } else {
+                            loopNudgeExhausted = true;
+                            console.warn(`[Chat Stream] Loop-nudge hard cap (${LOOP_NUDGE_HARD_CAP}) reached again after ${loopCheckpointsUsed} checkpoint(s) — forcing synthesis`);
+                        }
                     }
 
                     // Same-round dedupe: collapse identical (name, args)
@@ -20845,6 +21146,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 role: 'tool',
                                 name: call.function.name,
                                 content: JSON.stringify(nudge),
+                            };
+                        }
+                        // Refuse a call to a tool quarantined by the loop guard.
+                        // Dispatch resolves any registered name, advertised or
+                        // not, so withdrawing it from the catalog is not enough
+                        // to stop a model that keeps emitting it from memory.
+                        if (blockedToolNames.has(call.function.name)) {
+                            return {
+                                tool_call_id: call.id,
+                                role: 'tool',
+                                name: call.function.name,
+                                content: JSON.stringify({
+                                    error: 'tool_disabled_this_turn',
+                                    message: `${call.function.name} was disabled for the rest of this turn because it kept returning nothing new. It will not run. Use the results already in this conversation and take a different concrete step, or write your final answer now.`,
+                                }),
                             };
                         }
                         // Refuse a call to a tool the user's system prompt
@@ -20884,9 +21200,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // Per-call post-processing (sequential, order-preserved):
                     // skill-prompt injection, size cap, history append,
                     // toolResultMessages push, tool_result SSE emit.
-                    const TOOL_RESULT_CHAR_CAP = 24_000;
+                    const TOOL_RESULT_CHAR_CAP = modelFacingResultCap(contextSize);
                     for (let idx = 0; idx < perCall.length; idx++) {
-                        const { call, policy, fp } = perCall[idx];
+                        const { call, policy, fp, nudge: guardNudge } = perCall[idx];
                         let resultMsg = dispatched[idx];
 
                         // Skill `systemPrompt` injection.
@@ -20945,17 +21261,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             } catch (_) { /* not JSON — leave as-is */ }
                         }
 
-                        // Per-tool-result size cap.
+                        // Per-tool-result size cap. Trims at ARRAY-ELEMENT
+                        // boundaries when the payload is JSON with a dominant
+                        // list (files/hits/entries/...) so the model keeps valid
+                        // JSON + the counts + an explicit way to continue;
+                        // string-slices only as a fallback.
                         if (typeof resultMsg.content === 'string' && resultMsg.content.length > TOOL_RESULT_CHAR_CAP) {
                             const original = resultMsg.content.length;
-                            resultMsg = {
-                                ...resultMsg,
-                                content: resultMsg.content.slice(0, TOOL_RESULT_CHAR_CAP) +
-                                    `\n\n[TRUNCATED — only first ${TOOL_RESULT_CHAR_CAP} characters of ${original} shown (~${Math.round(TOOL_RESULT_CHAR_CAP / 4)} tokens). ` +
-                                    `Request a narrower scope if you need more — re-call ${call.function.name} with ` +
-                                    `(e.g. a specific entry path, a smaller line range, an entryPath / startLine+endLine arg).]`,
-                            };
-                            console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
+                            const capped = capToolResultForModel(
+                                resultMsg.content, TOOL_RESULT_CHAR_CAP, call.function.name,
+                            );
+                            resultMsg = { ...resultMsg, content: capped.content };
+                            console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${capped.content.length} chars` +
+                                (capped.structural ? ` (kept ${capped.shown}/${capped.total} ${capped.field}, JSON intact)` : ' (raw slice — not JSON)'));
                         }
                         // Error-mentions-tool recovery: a failed tool result often NAMES
                         // the companion tool to use ("write it first via create_file /
@@ -20965,7 +21283,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // failed create_pdf/html_to_pdf calls on one turn). Scan failed
                         // results for known tool names and force-advertise them next
                         // round (same grow-only rebuild find_tools discoveries ride).
-                        if (toolCtx._forcedToolNames && typeof resultMsg.content === 'string') {
+                        // A guard nudge is NOT a tool error: the tool never ran.
+                        // Its prose names tools only as EXAMPLES ("make the edit
+                        // or conversion you planned (replace_lines / html_to_pdf
+                        // / create_pdf …)") and force-advertising those dragged
+                        // PDF tools into a code audit on every one of six
+                        // nudges (observed 2026-08-12). Skip the recovery.
+                        if (!guardNudge && toolCtx._forcedToolNames && typeof resultMsg.content === 'string') {
                             const looksFailed = resultMsg.content.includes('"error"') || /"success"\s*:\s*false/.test(resultMsg.content);
                             // Also self-heal a SUCCESS result that STEERS to another
                             // tool via a note/hint ("use download_file", "then
@@ -20992,7 +21316,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
 
                         // Record fingerprint + result hash for future loop checks.
-                        try {
+                        // A guard nudge is skipped: the tool never ran, so it has
+                        // no outcome. Recording it would let six identical nudges
+                        // count as six identical "outcomes" and drag the
+                        // redundancy ratio down on the guard's own noise.
+                        if (!guardNudge) try {
                             const rh = crypto.createHash('sha1')
                                 .update(String(resultMsg.content || ''))
                                 .digest('hex')
@@ -21238,6 +21566,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 .join('\n\n'),
                         }
                         : null;
+                    // A loop checkpoint rides in the same slot as the skill
+                    // prompts: after the tool results, so the model reads the
+                    // quarantine + the restated task right before its next
+                    // round instead of being cut off (see LOOP GUARD above).
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -21247,7 +21579,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         },
                         ...toolResultMessages,
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
+                        ...(pendingLoopCheckpoint ? [pendingLoopCheckpoint] : []),
                     ];
+                    if (pendingLoopCheckpoint) pendingLoopCheckpoint = null;
                     // Bound the truncation grind: the same target file truncated
                     // MAX_EDIT_TRUNCATIONS times. Stop retrying the oversized call
                     // and break to the direct-delivery / forced-synthesis block
@@ -21262,14 +21596,54 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // it has (mirrors reasoningLoopExhausted).
                         break; // exits the while → forced-synthesis block
                     }
-                    // General redundancy backstop (unknown loop shapes).
+                    // General redundancy backstop (unknown loop shapes). Like the
+                    // nudge cap, this spends a CHECKPOINT before it gives up:
+                    // quarantine the most redundant tool and let the turn carry
+                    // on. Only when no checkpoint is left does it end the loop.
                     if (toolCallHistory.length >= LOOP_REDUNDANCY_MIN) {
                         const distinctOutcomes = new Set(toolCallHistory.map(h => h.outcomeSig)).size;
                         const ratio = distinctOutcomes / toolCallHistory.length;
                         if (ratio < LOOP_REDUNDANCY_RATIO) {
-                            loopNudgeExhausted = true;
-                            console.warn(`[Chat Stream] Redundancy backstop — ${distinctOutcomes} distinct outcomes over ${toolCallHistory.length} recent calls (ratio ${ratio.toFixed(2)} < ${LOOP_REDUNDANCY_RATIO}) — forcing synthesis`);
-                            break;
+                            // Blame the tool whose own outcomes repeat the most.
+                            let worst = null, worstRatio = 1;
+                            const byTool = new Map();
+                            for (const h of toolCallHistory) {
+                                if (!h.toolName) continue;
+                                if (!byTool.has(h.toolName)) byTool.set(h.toolName, []);
+                                byTool.get(h.toolName).push(h.outcomeSig);
+                            }
+                            for (const [name, sigs] of byTool) {
+                                if (sigs.length < 3) continue;
+                                const r = new Set(sigs).size / sigs.length;
+                                if (r < worstRatio) { worstRatio = r; worst = name; }
+                            }
+                            if (loopCheckpointsUsed < LOOP_MAX_CHECKPOINTS && worst) {
+                                loopCheckpointsUsed++;
+                                // toolCallHistory records the EFFECTIVE inner op
+                                // (a `web` call is recorded as web_search), so only
+                                // withdraw it when it is an ADVERTISED name. For an
+                                // inner op the checkpoint message names it and the
+                                // parent tool stays usable for its other modes —
+                                // withdrawing `web` for a looping search would also
+                                // take away page reads.
+                                if (toolCatalog.some(d => d?.function?.name === worst)) {
+                                    blockedToolNames.add(worst);
+                                }
+                                loopNudgeCount = 0;
+                                loopNudgeByTool.clear();
+                                currentMessages = [...currentMessages, buildLoopCheckpoint(
+                                    [worst], `${worst} has been returning the same result over and over`,
+                                )];
+                                console.warn(`[Chat Stream] Redundancy backstop — ${distinctOutcomes} distinct outcomes over ${toolCallHistory.length} recent calls (ratio ${ratio.toFixed(2)} < ${LOOP_REDUNDANCY_RATIO}) — checkpoint ${loopCheckpointsUsed}/${LOOP_MAX_CHECKPOINTS}: quarantined ${worst}, continuing`);
+                                logChatActivity(`Loop guard: disabled ${worst} for this turn — continuing the task`);
+                                // Clear the stale history so the same ratio does
+                                // not re-trip on the next round's first call.
+                                toolCallHistory.length = 0;
+                            } else {
+                                loopNudgeExhausted = true;
+                                console.warn(`[Chat Stream] Redundancy backstop — ${distinctOutcomes} distinct outcomes over ${toolCallHistory.length} recent calls (ratio ${ratio.toFixed(2)} < ${LOOP_REDUNDANCY_RATIO}) — forcing synthesis`);
+                                break;
+                            }
                         }
                     }
                     toolCallRound++;
@@ -21495,6 +21869,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     type: 'status',
                                     message: reasoningLoopExhausted
                                         ? 'Model kept over-deliberating — forcing a direct answer'
+                                        : loopNudgeExhausted
+                                        ? 'Stopped a repeating tool loop — writing the answer from what was gathered'
                                         : deliveredViaArtifact
                                         ? 'The edit was too large to paste — attaching the updated file as a download'
                                         : (toolCallArgsTruncated || largeEditTruncationExhausted)
@@ -21534,6 +21910,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                       'fenced code block (with the correct language tag) — do not abbreviate, do not use "// ... rest ' +
                                       'unchanged" placeholders, include the whole thing. Use the file contents already in this ' +
                                       'conversation as your starting point and apply the changes you intended.'
+                                    : loopNudgeExhausted
+                                    ? loopSynthPrefix +
+                                      'You kept repeating tool calls that returned nothing new, so tool use is now disabled for this turn. ' +
+                                      'Write the COMPLETE answer now from the tool results already in this conversation. Report what you ' +
+                                      'DID establish, specifically — name the files, paths, commands and evidence you actually saw — then ' +
+                                      'add one closing line about anything you could not finish. Do not call tools and do not describe a plan.'
                                     : hitIterationCap
                                     ? 'You have reached the maximum number of tool calls allowed for this turn. ' +
                                       'Synthesize your final answer now from the tool results already in this conversation — ' +
@@ -21585,6 +21967,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             // requestModelCompletion's enable_thinking fallback).
                             const synthNoThink = modelSupportsNoThinkPrefix(targetModel);
                             let synthFinish = 'stop';
+                            // Tool-call attempts during synthesis are the reason a
+                            // synthesis can come back EMPTY: the catalog is
+                            // suppressed, but a model that spent the turn calling
+                            // tools often emits one more anyway as textual
+                            // <tool_call> XML, which the extractor strips out of
+                            // the content stream. The result is a blank answer and
+                            // the "did not produce a final answer" note on a turn
+                            // that had real findings to report (2026-08-12).
+                            const preSynthToolCalls = accumulatedToolCalls.length;
                             try {
                                 synthFinish = await streamOneRequest(synthesisMessages, synthMaxTokens, { forceNoThink: synthNoThink });
                             } catch (noThinkErr) {
@@ -21594,6 +21985,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     synthFinish = await streamOneRequest(synthesisMessages, synthMaxTokens);
                                 } else {
                                     throw noThinkErr;
+                                }
+                            }
+                            const synthToolAttempts = accumulatedToolCalls.length - preSynthToolCalls;
+                            console.log(`[Chat Stream] Forced synthesis produced ${fullResponse.length - preSynthLen} chars ` +
+                                `(finish=${synthFinish}, tool-call attempts=${synthToolAttempts}, budget=${synthMaxTokens})`);
+                            // Retry ONCE when synthesis wrote nothing. Naming the
+                            // failure mode is what makes the retry land: the model
+                            // is told its tool call was discarded and that prose is
+                            // the only accepted output.
+                            if (fullResponse.length <= preSynthLen) {
+                                const retryMsgs = [
+                                    ...currentMessages,
+                                    {
+                                        role: 'user',
+                                        content: loopSynthPrefix +
+                                            (synthToolAttempts > 0
+                                                ? 'Your last message contained only a tool call. Tools are DISABLED now and that call was discarded — it did nothing. '
+                                                : 'Your last message was empty, so the user has received nothing. ') +
+                                            'Reply with PLAIN TEXT only, no tool calls, no <tool_call> tags. Report what you found and what it means, ' +
+                                            'in as much detail as the results above support. If some part is unfinished, say so in one line at the end. Start writing now.',
+                                    },
+                                ];
+                                const retryBudget = Math.max(
+                                    MIN_OUTPUT_BUDGET,
+                                    Math.min(synthMaxTokens, contextSize - retryMsgs.reduce((s, m) => s + estimateTokens(m.content), 0) - 200),
+                                );
+                                try {
+                                    synthFinish = await streamOneRequest(retryMsgs, retryBudget, { forceNoThink: synthNoThink });
+                                    console.log(`[Chat Stream] Forced-synthesis retry produced ${fullResponse.length - preSynthLen} chars (finish=${synthFinish})`);
+                                } catch (e) {
+                                    console.warn('[Chat Stream] Forced-synthesis retry failed:', e.message);
                                 }
                             }
                             // Continue an INLINE deliverable that hit the token cap
@@ -21640,6 +22062,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     if (!synthAddedContent) {
                         const soft = reasoningLoopExhausted
                             ? '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_'
+                            : loopNudgeExhausted
+                            ? '_[I got stuck repeating the same tool call and could not turn what I gathered into an answer. Ask me to "summarize what you found so far" — the results from this turn are still in context — or break the request into smaller steps.]_'
                             : '_[I worked through this but did not produce a final answer — I may have spent the turn researching or planning without writing the result. Try asking again (e.g. "write the full updated file now"), or break the request into smaller steps.]_';
                         fullResponse += soft;
                         if (streamingConversationId) {
