@@ -31,10 +31,66 @@ const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encrypt
 let sslBypassEnabled = false;
 let httpsAgent = null;
 
+// ---- Outbound connection reuse (keep-alive) --------------------------------
+// Node 18's global agents default to keepAlive:false, so EVERY outbound axios
+// request paid a fresh TCP connect + full TLS handshake. A chat turn hits the
+// same host repeatedly (search result -> article -> follow-up reads, or N pages
+// off one domain), so the handshakes dominate. Measured in-container against
+// en.wikipedia.org, 3 sequential GETs after a warm DNS cache:
+//     no keep-alive  868ms   ->   keep-alive  229ms   (3.8x)
+// `scheduling: 'lifo'` (Node 18 default) reuses the most-recently-active socket,
+// which minimizes the classic keep-alive hazard of picking a socket the server
+// has just closed; the retry interceptor below covers the residual race.
+// Bounded socket counts keep a fan-out (crawl_pages, batch reads) from
+// exhausting file descriptors.
+// HTTPS ONLY — deliberately. The saving is the TLS handshake, and the model
+// backends are all reached over plain `http://<host>:<port>` (including the two
+// `responseType: 'stream'` call sites: the chat round and the /v1 passthrough).
+// Pooling those is worth ~nothing (loopback/bridge TCP setup is microseconds)
+// and costs real correctness: a stale pooled socket fails the request with
+// "socket hang up", and a streaming POST cannot be safely auto-retried. Live-
+// reproduced during this work — a forced-synthesis round died on exactly that,
+// and the user got a "no final answer" note on a turn that had answered.
+// Leaving httpAgent unset keeps http on Node's default non-pooling globalAgent,
+// i.e. byte-identical to the previous behavior for every backend call.
+const KEEPALIVE_OPTS = {
+    keepAlive: true,
+    keepAliveMsecs: 15000,
+    maxSockets: 128,
+    maxFreeSockets: 64,
+    scheduling: 'lifo',
+    timeout: 60000,
+};
+const keepAliveHttpsAgent = new https.Agent(KEEPALIVE_OPTS);
+axios.defaults.httpsAgent = keepAliveHttpsAgent;
+
+// A pooled socket can be closed by the peer in the window between us picking it
+// and writing to it — the request then fails with ECONNRESET/EPIPE having never
+// reached the server. That is safe to retry exactly once for a read-only method.
+// Scoped to https:, matching where pooling is enabled; everything else keeps its
+// original single-attempt semantics. Streaming requests are excluded regardless
+// (the caller owns the stream lifecycle and a replay would duplicate chunks).
+const IDEMPOTENT_RETRY_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED']);
+axios.interceptors.response.use(null, (error) => {
+    const cfg = error && error.config;
+    if (!cfg || cfg._kaRetried || error.response) return Promise.reject(error);
+    if (cfg.responseType === 'stream') return Promise.reject(error);
+    if (!/^https:/i.test(String(cfg.url || ''))) return Promise.reject(error);
+    const method = String(cfg.method || 'get').toLowerCase();
+    if (method !== 'get' && method !== 'head') return Promise.reject(error);
+    if (!IDEMPOTENT_RETRY_CODES.has(error.code)) return Promise.reject(error);
+    // ECONNABORTED is also axios' timeout code — a genuine timeout must NOT be
+    // retried (it would double the caller's timeout budget).
+    if (error.code === 'ECONNABORTED' && /timeout/i.test(error.message || '')) return Promise.reject(error);
+    cfg._kaRetried = true;
+    return axios(cfg);
+});
+
 // Check environment variable (set by docker-compose from build.sh detection)
 if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
     sslBypassEnabled = true;
     httpsAgent = new https.Agent({
+        ...KEEPALIVE_OPTS,
         rejectUnauthorized: false
     });
     console.log('[SSL] Corporate proxy bypass enabled - SSL verification disabled for outbound requests');
@@ -102,6 +158,7 @@ const knowledgeBaseService = require('./services/knowledgeBaseService');
 const memoryService = require('./services/memoryService');
 const memoryIndex = require('./services/memoryIndex');
 const toolRouter = require('./services/toolRouter');
+const toolIndex = require('./services/toolIndex');
 
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
@@ -954,10 +1011,20 @@ function capToolResultForModel(content, capChars, toolName) {
                 // Reserve room for the note we append.
                 const RESERVE = 700;
                 const budget = Math.max(1000, capChars - RESERVE);
-                const sizeWith = (k) => {
-                    const probe = { ...parsed, [field]: arr.slice(0, k) };
-                    return JSON.stringify(probe).length;
-                };
+                // Size the candidates arithmetically instead of re-serializing the
+                // whole object on each of the ~log2(total) binary-search probes.
+                // `{...parsed, [field]: []}` renders `field` at its ORIGINAL key
+                // position (spread preserves insertion order and the later
+                // assignment only overwrites the value), so the object's own bytes
+                // are a constant; the only variable part is the array contents plus
+                // the commas between them. Hence:
+                //     size(k) = base + sum(len(elem[0..k))) + max(0, k - 1)
+                // which is EXACT, not an estimate — same k, same output, no probes.
+                const base = JSON.stringify({ ...parsed, [field]: [] }).length;
+                const prefix = new Array(total + 1);
+                prefix[0] = 0;
+                for (let i = 0; i < total; i++) prefix[i + 1] = prefix[i] + JSON.stringify(arr[i]).length;
+                const sizeWith = (k) => base + prefix[k] + Math.max(0, k - 1);
                 // Binary search the largest k that fits.
                 let lo = 0, hi = total, best = 0;
                 while (lo <= hi) {
@@ -1085,11 +1152,21 @@ function makeReasoningLoopDetector() {
     // each round so lastCheckAt resets). Tracks when we last ran the scan so
     // we don't re-scan the buffer on every 20-char SSE delta.
     let lastCheckAt = 0;
-    return function detect(reasoningThisRound) {
-        const len = reasoningThisRound.length;
+    // Takes the CUMULATIVE reasoning buffer plus this round's start offset
+    // rather than a pre-sliced string. The caller used to build
+    // `fullReasoning.slice(roundReasoningStart)` on EVERY streamed delta, but
+    // the granularity gate discards that copy ~99% of the time — so a round
+    // emitting N chars of reasoning copied ~N/deltaSize buffers of average
+    // length N/2, i.e. quadratic string allocation on the SSE hot path (a 40k
+    // reasoning trace at ~20 chars/delta ≈ 40M copied chars per round, all of
+    // it blocking the event loop that forwards tokens to the client).
+    // Deriving len and tail from offsets is byte-for-byte identical to
+    // slice(start) followed by slice(-4000).
+    return function detect(reasoningBuffer, startOffset = 0) {
+        const len = reasoningBuffer.length - startOffset;
         if (len - lastCheckAt < REASONING_CHECK_GRANULARITY) return null;
         lastCheckAt = len;
-        const tail = reasoningThisRound.slice(-4000);
+        const tail = reasoningBuffer.slice(Math.max(startOffset, reasoningBuffer.length - 4000));
         // 1. Known loop phrases.
         for (const { pattern, name } of REASONING_LOOP_PHRASES) {
             const matches = tail.match(pattern);
@@ -1347,9 +1424,16 @@ function estimateTokenCount(content) {
 // chunking sooner on number-heavy content. See CLAUDE.md for the rationale.
 const CHAT_STREAM_CHARS_PER_TOKEN = 3;
 const CHAT_STREAM_SAFETY_MARGIN = 1.1;
+// The string estimator only ever reads `.length`, so callers that already know
+// the length (or would have to concatenate multi-megabyte strings just to
+// measure them) can go straight to the arithmetic. Byte-for-byte the same
+// number as estimateTokens(s) for a string of that length.
+function estimateTokensFromLength(len) {
+    return Math.ceil((len / CHAT_STREAM_CHARS_PER_TOKEN) * CHAT_STREAM_SAFETY_MARGIN);
+}
 function estimateTokens(content) {
     if (typeof content === 'string') {
-        return Math.ceil((content.length / CHAT_STREAM_CHARS_PER_TOKEN) * CHAT_STREAM_SAFETY_MARGIN);
+        return estimateTokensFromLength(content.length);
     }
     if (Array.isArray(content)) {
         let tokens = 0;
@@ -12399,9 +12483,13 @@ app.get('/api/search', requireAuth, async (req, res) => {
     const currentYear = now.getFullYear();
     const currentMonth = now.toLocaleString('en-US', { month: 'long' });
 
-    // If query contains "recent", "latest", "news", etc. and doesn't already have a year
+    // If query contains "recent", "latest", "news", etc. and doesn't already have a year.
+    // Build on the EXTRACTED query, not the raw prose: interpolating `q` threw away the
+    // reduction that had just been computed one line above, so any long natural-language
+    // query containing "new"/"news"/"latest"/… went to the backend un-reduced — the exact
+    // dilution extractSearchQuery exists to prevent.
     if (/(recent|latest|current|new|today|news)/i.test(q) && !/(202\d|201\d)/i.test(q)) {
-        enhancedQuery = `${q} ${currentMonth} ${currentYear}`;
+        enhancedQuery = `${extractedQuery} ${currentMonth} ${currentYear}`;
     }
 
     // Determine date filter parameter for DuckDuckGo
@@ -12495,11 +12583,18 @@ app.get('/api/search', requireAuth, async (req, res) => {
             // Try Scrapling first (anti-bot capabilities for CAPTCHA evasion)
             console.log(`DuckDuckGo failed (${ddgError.message}), trying Scrapling...`);
 
+            // Honour the SHARED backend cooldown memo. It is global by design —
+            // every backend rate-limits us by egress IP, so a block the web_search
+            // tool already discovered applies here too. This route consulted only
+            // the 'ddg' key and never recorded a brave/scrapling block, so it spent
+            // up to ~45s re-proving backends the tool had just been refused by (and
+            // its blocks were invisible to the tool in return).
             let scraplingSucceeded = false;
-            if (scraplingService) {
+            if (scraplingService && !backendCoolingDown('scrapling')) {
             try {
                 const scraplingResult = await scraplingService.search(enhancedQuery, parseInt(limit));
                 if (scraplingResult.success && scraplingResult.results && scraplingResult.results.length > 0) {
+                    noteBackendOk('scrapling');
                     searchSource = 'scrapling';
                     scraplingSucceeded = true;
                     for (const r of scraplingResult.results) {
@@ -12516,12 +12611,13 @@ app.get('/api/search', requireAuth, async (req, res) => {
                     console.log(`Scrapling returned ${results.length} results`);
                 }
             } catch (scraplingError) {
+                noteBackendBlocked('scrapling');
                 console.log(`Scrapling failed (${scraplingError.message})`);
             }
             } // End of scraplingService check
 
             // Fall back to Brave Search if Scrapling didn't work
-            if (!scraplingSucceeded || results.length === 0) {
+            if ((!scraplingSucceeded || results.length === 0) && !backendCoolingDown('brave')) {
                 console.log(`Falling back to Brave Search`);
                 searchSource = 'brave';
 
@@ -12589,47 +12685,18 @@ app.get('/api/search', requireAuth, async (req, res) => {
                     }
                 }
 
-                // If still no results, try Playwright for JS-rendered content
-                if (results.length === 0 && playwrightService) {
-                    console.log('Brave HTML parsing failed, trying Playwright...');
-                    searchSource = 'brave-playwright';
-                    try {
-                        const pwResult = await playwrightService.fetch(braveUrl, {
-                            timeout: 20000,
-                            waitForJS: true,
-                            includeLinks: true,
-                            maxLength: 50000
-                        });
-
-                        if (pwResult.success && pwResult.links) {
-                            // Filter to external links only
-                            const externalLinks = pwResult.links.filter(link =>
-                                link.href &&
-                                link.href.startsWith('http') &&
-                                !link.href.includes('brave.com') &&
-                                !seenUrls.has(link.href)
-                            );
-
-                            for (const link of externalLinks.slice(0, parseInt(limit))) {
-                                if (!seenUrls.has(link.href)) {
-                                    seenUrls.add(link.href);
-                                    results.push({
-                                        title: link.text || link.href,
-                                        url: link.href,
-                                        snippet: 'Result from Brave Search',
-                                        content: null
-                                    });
-                                }
-                            }
-                        }
-                    } catch (pwError) {
-                        console.error('Playwright Brave search failed:', pwError.message);
-                    }
-                }
+                // (A Playwright fallback used to sit here calling playwrightService.fetch(),
+                //  a method this module has never exported — so it threw TypeError on every
+                //  zero-result Brave parse and was swallowed by the catch below. Removed rather
+                //  than repaired: pointing it at fetchUrlContent would add a real 20s browser
+                //  render to every empty search, and web_search already falls through to
+                //  Scrapling for the JS-rendered case.)
             } catch (braveError) {
+                noteBackendBlocked('brave', parseRetryAfter(braveError.response && braveError.response.headers && braveError.response.headers['retry-after']));
                 console.error('Brave search also failed:', braveError.message);
                 // Continue with empty results if all methods fail
             }
+            if (results.length) noteBackendOk('brave');
             } // End of Scrapling fallback conditional
         }
 
@@ -12783,12 +12850,19 @@ function extractTextFromHtml(html, maxLength = 5000) {
             .replace(/<[^>]*>/g, ' ');
         const seen = new Set();
         const lines = [];
+        // Track the joined length incrementally. Re-joining the whole array on
+        // every accepted line made this quadratic in the output size, on exactly
+        // the page class this branch exists for (a feed/index with hundreds of
+        // cards). `join('\n').length` is precisely `sum(len) + (n - 1)`, so the
+        // break predicate below is the same one, just computed in O(1).
+        let sumLen = 0;
         for (const raw of flat.split('\n')) {
             const line = raw.replace(/\s+/g, ' ').trim();
             if (line.length < 3 || seen.has(line)) continue;
             seen.add(line);
             lines.push(line);
-            if (lines.join('\n').length > maxLength) break;
+            sumLen += line.length;
+            if (sumLen + lines.length - 1 > maxLength) break;
         }
         listText = lines.join('\n');
     }
@@ -12866,24 +12940,53 @@ const TLS_INCOMPLETE_CHAIN_CODES = new Set([
 ]);
 let relaxedTlsAgent = null;
 function getRelaxedTlsAgent() {
-    if (!relaxedTlsAgent) relaxedTlsAgent = new https.Agent({ rejectUnauthorized: false });
+    if (!relaxedTlsAgent) relaxedTlsAgent = new https.Agent({ ...KEEPALIVE_OPTS, rejectUnauthorized: false });
     return relaxedTlsAgent;
 }
 
 async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts = {}) {
     let tlsRelaxed = false;
+    // prefetchedHtml: the caller already downloaded this exact URL's HTML body
+    // (the direct-file pass discovered the "file" was really a web page) — run
+    // the identical extraction on those bytes rather than fetching them twice.
+    if (typeof opts.prefetchedHtml === 'string') {
+        const body = opts.prefetchedHtml;
+        const titleMatch = body.match(/<title[^>]*>([^<]+)<\/title>/i);
+        return {
+            success: true,
+            content: extractTextFromHtml(body, maxLength),
+            title: titleMatch ? titleMatch[1].trim() : '',
+            url,
+            ...(opts.includeRawHtml ? { rawHtml: body } : {}),
+        };
+    }
+    // probeDocument: take the body as BYTES so a non-HTML response (a PDF/DOCX
+    // served from an extensionless URL) can be handed straight to the file
+    // parser instead of costing a second download — and, more importantly, so
+    // the caller no longer needs a blocking HEAD probe to find out. Opt-in:
+    // without it the request is byte-identical to before, so the four other
+    // call sites are untouched. Buffer.toString('utf8') is exactly what axios'
+    // default responseEncoding does, so the HTML path decodes identically.
+    const asBytes = !!opts.probeDocument;
     try {
         const requestConfig = (agent) => ({
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
+                // Include brotli. This header is set explicitly, and axios only
+                // supplies its own default when the caller hasn't — so hard-coding
+                // "gzip, deflate" was opting the cascade's busiest layer OUT of the
+                // encoding most sites now prefer (typically 15-20% smaller than
+                // gzip on HTML). axios decodes br transparently and strips the
+                // header, so nothing downstream sees a difference.
+                'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive',
             },
             timeout: timeout,
             maxRedirects: 3,
             validateStatus: (status) => status < 400,
+            ...(asBytes ? { responseType: 'arraybuffer', maxContentLength: 50 * 1024 * 1024 } : {}),
             ...(agent ? { httpsAgent: agent } : {}),
         });
 
@@ -12899,19 +13002,33 @@ async function fetchUrlContentAxios(url, timeout = 8000, maxLength = 12000, opts
 
         const contentType = response.headers['content-type'] || '';
         if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-            return { success: false, error: 'Not HTML content' };
+            if (!asBytes) return { success: false, error: 'Not HTML content' };
+            // Hand the already-downloaded bytes back so the caller can parse the
+            // document without re-fetching it.
+            return {
+                success: false,
+                error: 'Not HTML content',
+                url,
+                contentType,
+                contentDisposition: response.headers['content-disposition'] || '',
+                docBuffer: Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data || ''),
+            };
         }
+
+        const bodyText = asBytes
+            ? (Buffer.isBuffer(response.data) ? response.data.toString('utf8') : String(response.data || ''))
+            : response.data;
 
         // Thread the caller's maxLength through (was a fixed 5000 internal cap, which
         // silently halved articles for the axios fast path) and surface the <title>
         // so web_search/fetch_url titles aren't blanked when the fast path serves.
-        const content = extractTextFromHtml(response.data, maxLength);
-        const titleMatch = String(response.data || '').match(/<title[^>]*>([^<]+)<\/title>/i);
+        const content = extractTextFromHtml(bodyText, maxLength);
+        const titleMatch = String(bodyText || '').match(/<title[^>]*>([^<]+)<\/title>/i);
         const title = titleMatch ? titleMatch[1].trim() : '';
         // rawHtml is OPT-IN (only the fast-path thin-content gate asks for it) so a
         // 1MB+ body never rides downstream into tool results / API responses — the
         // other callers that spread this object don't request it.
-        const rawHtml = opts.includeRawHtml && typeof response.data === 'string' ? response.data : '';
+        const rawHtml = opts.includeRawHtml && typeof bodyText === 'string' ? bodyText : '';
         return {
             success: true, content, title, url,
             ...(tlsRelaxed ? { tlsRelaxed: true } : {}),
@@ -13270,8 +13387,57 @@ async function fetchUrlAsFile(url, options = {}) {
         }
     }
 
-    // If still no match, try a HEAD request to check Content-Type / Content-Disposition
-    if (!isKnownFileExt) {
+    // Response headers -> file extension. Shared by the HEAD probe and by the
+    // caller-supplied headers of an already-completed GET (see `options.prefetched`),
+    // so both routes classify a document identically.
+    const extFromHeaders = (rawContentType, rawDisposition, via) => {
+        const disposition = rawDisposition || '';
+        const filenameMatch = disposition.match(/filename[*]?=(?:UTF-8''|"?)([^";\n]+)/i);
+        if (filenameMatch) {
+            const fileExt = filenameMatch[1].trim().split('.').pop().toLowerCase();
+            if (fileExt in DIRECT_DOWNLOAD_EXTENSIONS) {
+                console.log(`[fetchUrlAsFile] ${via} detected file type '${fileExt}' from Content-Disposition: ${disposition}`);
+                return fileExt;
+            }
+        }
+        const contentType = (rawContentType || '').toLowerCase();
+        if (DIRECT_DOWNLOAD_CONTENT_TYPES.some(ct => contentType.includes(ct)) && !contentType.includes('text/html')) {
+            let detected = null;
+            if (contentType.includes('application/pdf')) detected = 'pdf';
+            else if (contentType.includes('wordprocessingml')) detected = 'docx';
+            else if (contentType.includes('msword')) detected = 'doc';
+            else if (contentType.includes('spreadsheetml')) detected = 'xlsx';
+            else if (contentType.includes('ms-excel')) detected = 'xls';
+            else if (contentType.includes('text/csv')) detected = 'csv';
+            else if (contentType.includes('application/json')) detected = 'json';
+            else if (contentType.includes('application/xml')) detected = 'xml';
+            else if (contentType.includes('text/markdown')) detected = 'md';
+            else if (contentType.includes('text/plain')) detected = 'txt';
+            if (detected) {
+                console.log(`[fetchUrlAsFile] ${via} detected file type '${detected}' from Content-Type: ${contentType}`);
+                return detected;
+            }
+        }
+        return null;
+    };
+
+    // A caller that ALREADY downloaded the body (the fetch cascade's axios fast
+    // path, which asks for bytes) hands us its headers + buffer. That answers
+    // exactly what the HEAD probe used to answer — for free, with the payload
+    // already in hand — so the document is parsed with zero extra requests.
+    const prefetched = options.prefetched || null;
+    if (!isKnownFileExt && prefetched) {
+        const detected = extFromHeaders(prefetched.contentType, prefetched.contentDisposition, 'prefetched');
+        if (detected) { ext = detected; isKnownFileExt = true; }
+    }
+
+    // If still no match, try a HEAD request to check Content-Type / Content-Disposition.
+    // Skipped when the caller says so (`headProbe: false`) — the fetch cascade skips it
+    // because its own cheap GET, which it has to make anyway, carries the same headers.
+    // Leaving it in cost EVERY ordinary page read a full extra round-trip: measured
+    // in-container at 140-284ms of HEAD against 92-297ms of GET, i.e. 44-72% of the
+    // fast path spent proving the page was not a PDF.
+    if (!isKnownFileExt && options.headProbe !== false) {
         try {
             const headResponse = await axios.head(url, {
                 headers: {
@@ -13281,37 +13447,12 @@ async function fetchUrlAsFile(url, options = {}) {
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400,
             });
-
-            // Check Content-Disposition for filename (most reliable indicator)
-            const disposition = headResponse.headers['content-disposition'] || '';
-            const filenameMatch = disposition.match(/filename[*]?=(?:UTF-8''|"?)([^";\n]+)/i);
-            if (filenameMatch) {
-                const fileExt = filenameMatch[1].trim().split('.').pop().toLowerCase();
-                if (fileExt in DIRECT_DOWNLOAD_EXTENSIONS) {
-                    ext = fileExt;
-                    isKnownFileExt = true;
-                    console.log(`[fetchUrlAsFile] HEAD detected file type '${ext}' from Content-Disposition: ${disposition}`);
-                }
-            }
-
-            // Fall back to Content-Type header
-            if (!isKnownFileExt) {
-                const contentType = (headResponse.headers['content-type'] || '').toLowerCase();
-                if (DIRECT_DOWNLOAD_CONTENT_TYPES.some(ct => contentType.includes(ct)) && !contentType.includes('text/html')) {
-                    if (contentType.includes('application/pdf')) ext = 'pdf';
-                    else if (contentType.includes('wordprocessingml')) ext = 'docx';
-                    else if (contentType.includes('msword')) ext = 'doc';
-                    else if (contentType.includes('spreadsheetml')) ext = 'xlsx';
-                    else if (contentType.includes('ms-excel')) ext = 'xls';
-                    else if (contentType.includes('text/csv')) ext = 'csv';
-                    else if (contentType.includes('application/json')) ext = 'json';
-                    else if (contentType.includes('application/xml')) ext = 'xml';
-                    else if (contentType.includes('text/markdown')) ext = 'md';
-                    else if (contentType.includes('text/plain')) ext = 'txt';
-                    isKnownFileExt = true;
-                    console.log(`[fetchUrlAsFile] HEAD detected file type '${ext}' from Content-Type: ${contentType}`);
-                }
-            }
+            const detected = extFromHeaders(
+                headResponse.headers['content-type'],
+                headResponse.headers['content-disposition'],
+                'HEAD',
+            );
+            if (detected) { ext = detected; isKnownFileExt = true; }
         } catch (e) {
             // HEAD failed (405, timeout, etc.) — fall through to HTML scraping
         }
@@ -13323,6 +13464,11 @@ async function fetchUrlAsFile(url, options = {}) {
         // Download the file as binary
         let buffer, contentType;
         try {
+            if (prefetched && Buffer.isBuffer(prefetched.buffer) && prefetched.buffer.length) {
+                // Already downloaded by the caller's probe GET — reuse the bytes.
+                buffer = prefetched.buffer;
+                contentType = (prefetched.contentType || '').toLowerCase();
+            } else {
             const response = await axios.get(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -13336,6 +13482,7 @@ async function fetchUrlAsFile(url, options = {}) {
             });
             contentType = (response.headers['content-type'] || '').toLowerCase();
             buffer = Buffer.from(response.data);
+            }
         } catch (axiosError) {
             // Bot-protection layers (Akamai/Cloudflare) TLS-fingerprint the client
             // and 403 axios even with full browser headers, for PUBLIC files (e.g.
@@ -13359,6 +13506,15 @@ async function fetchUrlAsFile(url, options = {}) {
         // the server returned an error/login page instead — fall through to HTML scraping
         if (contentType.includes('text/html')) {
             console.log(`[fetchUrlAsFile] Expected file type '${ext}' but server returned HTML — falling through to HTML scraping`);
+            // Hand the body back rather than dropping it: the caller's next step is
+            // to GET the very same URL again for HTML. This is not a rare shape —
+            // a repo URL ending in .md/.json/.txt (a GitHub blob page is the common
+            // one) has a "file" extension and serves a full HTML page, so it was
+            // downloaded twice, in full, on every read. Skipped when the bytes came
+            // FROM the caller (`prefetched`), which already has them.
+            if (options.htmlOut && !prefetched) {
+                try { options.htmlOut.body = buffer.toString('utf-8'); } catch (_) { /* non-utf8 — let the caller re-fetch */ }
+            }
             return null;
         }
 
@@ -13591,13 +13747,31 @@ async function fetchUrlContent(url, options = {}) {
         return { success: false, url, error: 'bot_protected', message: hostBlocked, source: 'host-block-memo' };
     }
 
-    // Try direct file download first (PDF, DOCX, TXT, code files, etc.)
-    // This avoids wasting time on Scrapling/Playwright for binary files
-    const fileResult = await fetchUrlAsFile(url, { timeout, maxLength });
-    if (fileResult) return fileResult;
-
     // Escalation memory: start at the layer that served this host last time.
     const memoLayer = getHostMemo(url);
+
+    // The axios fast path below both (a) reads ordinary HTML pages and (b) can
+    // answer "is this actually a document?" from its own response headers. It
+    // runs for every plain read, so when it is going to run we let it do the
+    // document detection and skip fetchUrlAsFile's blocking HEAD probe. The two
+    // callers that SKIP the fast path (includeLinks — axios can't extract links;
+    // memoLayer — this host already proved it needs a stealth/browser layer)
+    // keep the HEAD probe so their behavior is unchanged.
+    const fastPathWillRun = !options.includeLinks && !memoLayer;
+
+    // Try direct file download first (PDF, DOCX, TXT, code files, etc.)
+    // This avoids wasting time on Scrapling/Playwright for binary files.
+    // With the fast path running, this pass only catches URLs that DECLARE a
+    // file (known extension or ?format=pdf-style query hint) — no network probe.
+    // htmlOut catches the body when a "file" URL turns out to serve a web page
+    // (a .md/.json/.txt repo link, a login/error interstitial), so the fast path
+    // below can extract from it instead of downloading the same page a second time.
+    const htmlOut = {};
+    const fileResult = await fetchUrlAsFile(url, {
+        timeout, maxLength, htmlOut,
+        ...(fastPathWillRun ? { headProbe: false } : {}),
+    });
+    if (fileResult) return fileResult;
 
     // ---- Axios fast path -------------------------------------------------
     // A cheap HTTP GET first. The Scrapling-first cascade below launches a
@@ -13614,9 +13788,21 @@ async function fetchUrlContent(url, options = {}) {
     // Scrapling is a stealth FETCHER, not a full JS engine, so a pure client-
     // rendered app (e.g. vuejs.org) otherwise dead-ends at a ~700-char nav shell.
     let forceBrowser = memoLayer === 'playwright';
-    if (!options.includeLinks && !memoLayer) {
+    if (fastPathWillRun) {
         try {
-            const ax = await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true });
+            const ax = typeof htmlOut.body === 'string'
+                ? await fetchUrlContentAxios(url, 0, maxLength, { includeRawHtml: true, prefetchedHtml: htmlOut.body })
+                : await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true, probeDocument: true });
+            // Not HTML: this is the extensionless-document case the HEAD probe used
+            // to catch. We already have the bytes AND the headers, so hand both to
+            // the file parser — no HEAD, no second download.
+            if (ax && !ax.success && ax.docBuffer) {
+                const docResult = await fetchUrlAsFile(url, {
+                    timeout, maxLength, headProbe: false,
+                    prefetched: { buffer: ax.docBuffer, contentType: ax.contentType, contentDisposition: ax.contentDisposition },
+                });
+                if (docResult) return docResult;
+            }
             if (ax && ax.success) {
                 const tooThin = isContentTooThin(ax.content || '', url, ax.rawHtml);
                 // Scan the RAW html — a cf-challenge / noscript interstitial is stripped
@@ -13641,6 +13827,14 @@ async function fetchUrlContent(url, options = {}) {
                     const sig = htmlShellSignal(ax.rawHtml, String(ax.content || '').trim().length);
                     if (sig.isShell) forceBrowser = true;
                 }
+            } else if (ax && /timeout|ECONNABORTED|ERR_BAD_RESPONSE/i.test(String(ax.error || ''))) {
+                // The probe GET is capped at 4s, but a document download gets the
+                // caller's full budget. A LARGE extensionless PDF can therefore
+                // out-run the probe. Fall back to the original cheap HEAD probe so
+                // that case still resolves to the file parser instead of being
+                // handed to Scrapling/Playwright (which cannot read a PDF at all).
+                const probed = await fetchUrlAsFile(url, { timeout, maxLength });
+                if (probed) return probed;
             }
         } catch (_) { /* fall through to the Scrapling → Playwright cascade */ }
     }
@@ -19729,8 +19923,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // if the loop's content-only budgeting undercounts structural overhead,
         // the model still gets a usable output budget instead of a 64-token cap.
         const fitMessagesToContext = (messages, toolsTokens, reserve) => {
-            const estOf = (msgs) => estimateTokens(JSON.stringify(msgs)) + toolsTokens;
-            if (contextSize - estOf(messages) - 200 >= reserve) return { messages, truncated: 0 };
+            const estOf = (msgs) => estimateTokensFromLength(JSON.stringify(msgs).length) + toolsTokens;
+            // Hand the serialization back on the (overwhelmingly common) no-trim
+            // path: the pre-clamp below needs exactly this string, and on a
+            // tool-heavy turn re-serializing the whole message array is megabytes
+            // of allocation per round.
+            const baseJson = JSON.stringify(messages);
+            if (contextSize - (estimateTokensFromLength(baseJson.length) + toolsTokens) - 200 >= reserve) {
+                return { messages, truncated: 0, json: baseJson };
+            }
             let copy = messages.slice();
             let truncated = 0;
             const sizable = copy
@@ -19739,10 +19940,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     && typeof copy[x.i].content === 'string' && x.t > 300)
                 .sort((a, b) => b.t - a.t);
             for (const c of sizable) {
-                if (contextSize - estOf(copy) - 200 >= reserve) break;
+                // One serialization per candidate, not two — `copy` is unchanged
+                // between the loop-head check and the `over` computation, so both
+                // read the same number.
+                const headroomNow = contextSize - estOf(copy) - 200;
+                if (headroomNow >= reserve) break;
                 const m = copy[c.i];
                 const text = m.content;
-                const over = reserve - (contextSize - estOf(copy) - 200); // tokens to shed
+                const over = reserve - headroomNow; // tokens to shed
                 const targetTokens = Math.max(150, c.t - over - 50);
                 // Invert estimateTokens proportionally from the ACTUAL text so the
                 // char target matches whatever ratio/margin estimateTokens uses.
@@ -19846,11 +20051,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // content-only budgeting undercounts structural overhead.
                     const toolsTokensForFit = toolCatalog.length ? toolCatalogTokens : 0;  // live-guarded: 0 during forced synthesis
                     let sendMessages = requestMessages;
+                    // Serialization of `sendMessages`, when we already have one that
+                    // is still valid for the exact array being sent. Reset to null
+                    // the moment the array changes.
+                    let sendMessagesJson = null;
                     {
                         const fitted = fitMessagesToContext(requestMessages, toolsTokensForFit, Math.min(maxTokens, MIN_OUTPUT_BUDGET));
                         if (fitted.truncated > 0) {
                             sendMessages = fitted.messages;
                             console.log(`[Chat Stream] Last-resort fit: truncated ${fitted.truncated} oversized message(s) to guarantee a usable output budget`);
+                        } else {
+                            sendMessagesJson = fitted.json || null;
                         }
                     }
 
@@ -19860,7 +20071,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // beginning" template can't 400 the request. Applied to the
                     // final array so the token estimate below matches the bytes
                     // actually sent.
-                    sendMessages = normalizeSystemMessages(sendMessages);
+                    {
+                        const beforeNormalize = sendMessages;
+                        sendMessages = normalizeSystemMessages(sendMessages);
+                        // normalizeSystemMessages returns the SAME array reference when
+                        // it rewrote nothing; a new one means the JSON is now stale.
+                        if (sendMessages !== beforeNormalize) sendMessagesJson = null;
+                    }
 
                     // Final-pass clamp: input == messages + tool catalog. The
                     // upstream responseReserve only counts message tokens, so a
@@ -19875,9 +20092,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // from the actual input_tokens sglang reports.
                     let actualMaxTokens = maxTokens;
                     try {
-                        const messagesJson = JSON.stringify(sendMessages);
+                        const messagesJson = sendMessagesJson != null ? sendMessagesJson : JSON.stringify(sendMessages);
                         const toolsJson = toolCatalog.length ? toolCatalogJson : '';  // live-guarded: '' during forced synthesis
-                        const inputTokenEstimate = estimateTokens(messagesJson + toolsJson);
+                        // Same value as estimateTokens(messagesJson + toolsJson) without
+                        // materializing the concatenation of two multi-MB strings.
+                        const inputTokenEstimate = estimateTokensFromLength(messagesJson.length + toolsJson.length);
                         const headroom = contextSize - inputTokenEstimate - 200;
                         if (actualMaxTokens > headroom) {
                             const clamped = Math.max(64, headroom);
@@ -20086,7 +20305,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                                     const roundContentLen = fullResponse.length - roundContentStart;
                                                     const noProgress = roundContentLen === 0 && accumulatedToolCalls.length === 0;
                                                     if (noProgress) {
-                                                        const reason = roundLoopDetector(fullReasoning.slice(roundReasoningStart));
+                                                        const reason = roundLoopDetector(fullReasoning, roundReasoningStart);
                                                         if (reason) {
                                                             loopDetectedThisRound = true;
                                                             lastReasoningLoopReason = reason;
@@ -20380,6 +20599,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // the (potentially large) skills file on every tool round.
             const allSkillsForPolicy = await loadSkills().catch(() => []);
             const skillByName = new Map(allSkillsForPolicy.map(s => [s.name, s]));
+            // Same hoist for the systemPrompt lookup below: that block used to
+            // re-run loadSkills() + filterByUserId() + a linear .find() over the
+            // whole skills store INSIDE the per-tool-call post-processing loop —
+            // once for every skill call in the turn. Built lazily (a turn with no
+            // skill calls never pays for it) and first-wins, matching .find().
+            let scopedSkillByToolName = null;
+            const skillForToolName = (name) => {
+                if (!scopedSkillByToolName) {
+                    scopedSkillByToolName = new Map();
+                    for (const s of filterByUserId(allSkillsForPolicy, toolCtx?.userId)) {
+                        const k = s && s.name ? safeToolName(s.name) : '';
+                        if (k && !scopedSkillByToolName.has(k)) scopedSkillByToolName.set(k, s);
+                    }
+                }
+                return scopedSkillByToolName.get(name) || null;
+            };
             const policyCache = new Map();
             const toolPolicy = (toolName) => {
                 const cached = policyCache.get(toolName);
@@ -21209,9 +21444,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const callName = call.function.name;
                         if (!chatTools.toolRegistry.has(callName) && !injectedSkillPrompts.has(callName)) {
                             try {
-                                const all = await loadSkills();
-                                const scoped = filterByUserId(all, toolCtx?.userId);
-                                const skill = scoped.find(s => safeToolName(s.name) === callName);
+                                const skill = skillForToolName(callName);
                                 if (skill && typeof skill.systemPrompt === 'string' && skill.systemPrompt.trim()) {
                                     let prompt = skill.systemPrompt.trim();
                                     if (prompt.length > SKILL_PROMPT_CHAR_CAP) {
@@ -24895,26 +25128,6 @@ app.use((req, res) => {
         name: 'web_search',
         build() {
             return null; // consolidated into the `web` tool — hidden from the chat catalog, still registered for automations + the web router
-            return {
-                type: 'function',
-                function: {
-                    name: 'web_search',
-                    description:
-                        'Search the web via DuckDuckGo; returns up to 5 results (title, url, snippet). Snippets are short — almost always follow up with fetch_url on top results. ' +
-                        'For single-fact lookups, fetch 1 result; for lists / comparisons / "what\'s new" / multi-aspect questions, fetch 2–3 in parallel in the same round. ' +
-                        'Trust the snippets over training when they conflict, and cite URLs in answers. Use search_string on long fetched pages instead of re-reading them. ' +
-                        '**Don\'t lead with web_search when the artifact itself is available.** For a named npm / PyPI / crates.io / RubyGems / NuGet / GitHub package, the registry tarball is the source of truth — fetch it (npm: `https://registry.npmjs.org/<pkg>/-/<pkg>-<version>.tgz`; PyPI: `https://pypi.org/pypi/<pkg>/json` → `urls[*].url`; GitHub: clone or download the archive) via fetch_url / download_file, extract via extract_archive / tar_extract / unzip_file, and read the actual code. Reserve web_search for post-hoc cross-reference (CVE IDs, advisory write-ups) AFTER you\'ve looked at the artifact. If a search has already been rate-limited (DDG / Scrapling / Brave all failed), stop re-querying — pivot to the artifact instead.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            query: { type: 'string', description: 'Search query.' },
-                            limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Max results (default 5).' },
-                        },
-                        required: ['query'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const rawQuery = String(args?.query || '').trim();
@@ -24926,17 +25139,33 @@ app.use((req, res) => {
             // DDG round-trip. ONLY successful, fully-parsed results are cached: error
             // / rate-limited returns are never pinned, so a transient block re-runs
             // the whole DDG→Brave→Scrapling evasion chain on the next call.
-            const cacheKey = `wsearch:${q}:${limit}`;
+            // Key on a case/whitespace-normalized query, and NOT on `limit`. The old
+            // key missed on "Best GPU" vs "best gpu" — the same search to every
+            // backend — and treated limit:5 and limit:10 as unrelated entries, so a
+            // repeat with a different limit re-ran the whole 3.5-26s backend chain.
+            // A cached page covers any request for FEWER results (sliced below); a
+            // request for MORE than was fetched still goes to the backends.
+            const cacheKey = `wsearch:${q.toLowerCase().replace(/\s+/g, ' ').trim()}`;
             cleanExpiredCache();
-            if (searchCache.has(cacheKey)) { const c = searchCache.get(cacheKey); return { ...c.data, cached: true }; }
-            const cacheReturn = (out) => { searchCache.set(cacheKey, { data: out, timestamp: Date.now() }); return out; };
+            if (searchCache.has(cacheKey)) {
+                const c = searchCache.get(cacheKey);
+                if ((c.limit || 0) >= limit) {
+                    const hit = { ...c.data, cached: true };
+                    if (Array.isArray(hit.results) && hit.results.length > limit) {
+                        hit.results = hit.results.slice(0, limit);
+                        hit.count = hit.results.length;
+                    }
+                    return hit;
+                }
+            }
+            const cacheReturn = (out) => { searchCache.set(cacheKey, { data: out, limit, timestamp: Date.now() }); return out; };
             const retryAfterOf = (e) => parseRetryAfter(e && e.response && e.response.headers && e.response.headers['retry-after']);
             const rateLimited = { error: 'search rate-limited; all search backends (DuckDuckGo, Brave, Scrapling) are temporarily blocked. Read the target page directly with a url, or try again shortly.', retryable: true, source: 'rate-limited', query: q };
             // Brave FIRST (cheap axios HTML GET, produces results post-DDG-CAPTCHA),
             // then Scrapling. Each backend is skipped while it's cooling down and only
             // cooled on a THROW (403/429/network) — never on a 0-result parse, which
             // can be a genuinely empty query or regex drift. Returns a result or null.
-            const ddgFallback = async () => {
+            const tryBrave = async () => {
                 if (!backendCoolingDown('brave')) {
                     try {
                         const braveResp = await axios.get(
@@ -24979,6 +25208,9 @@ app.use((req, res) => {
                         }
                     } catch (e) { noteBackendBlocked('brave', retryAfterOf(e)); }
                 }
+                return null;
+            };
+            const tryScrapling = async () => {
                 if (scraplingService && !backendCoolingDown('scrapling')) {
                     try {
                         const sr = await scraplingService.search(q, limit);
@@ -24999,6 +25231,18 @@ app.use((req, res) => {
                 }
                 return null;
             };
+            const ddgFallback = async () => (await tryBrave()) || (await tryScrapling());
+            // Resolve with the first backend to return actual results; null only
+            // once every backend has finished empty-handed.
+            const firstWithResults = (promises) => new Promise((resolve) => {
+                let pending = promises.length;
+                if (!pending) return resolve(null);
+                const settle = (v) => {
+                    if (v) return resolve(v);
+                    if (--pending === 0) resolve(null);
+                };
+                promises.forEach(p => Promise.resolve(p).then(settle, () => settle(null)));
+            });
             // DDG CAPTCHAs on nearly every hit AND throws on timeout/403/429 — so a
             // throw must funnel into the SAME fallback chain a CAPTCHA does (the old
             // code let a throw dead-end with no Brave/Scrapling). Skip DDG entirely
@@ -25007,6 +25251,21 @@ app.use((req, res) => {
                 const r = await ddgFallback();
                 return r ? cacheReturn(r) : rateLimited;
             }
+            // The backends used to run STRICTLY serially: DDG's 3.5s timeout, THEN
+            // Brave's 10s, THEN a Scrapling browser subprocess — up to ~20s before
+            // the model saw a single result, on the tool it reaches for most. DDG
+            // keeps first claim (a fast DDG answer is used exactly as before), but
+            // once it has spent SEARCH_HEDGE_DELAY_MS without answering, Brave runs
+            // ALONGSIDE it instead of behind it, and whichever produces results
+            // first wins. Extra request volume is bounded at one Brave GET per
+            // search, and only on searches where DDG was already going to be slow —
+            // which the comment above notes is nearly all of them, so in practice
+            // this reorders requests the chain was going to make anyway rather than
+            // adding new ones. Both cooldown counters are still updated by their own
+            // runner, so a blocked backend still cools correctly. Env-tunable; set
+            // very high to restore the fully serial behavior without a rebuild.
+            const SEARCH_HEDGE_DELAY_MS = parseInt(process.env.SEARCH_HEDGE_DELAY_MS || '1200', 10);
+            const tryDdg = async () => {
             try {
                 const resp = await axios.get(
                     `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
@@ -25024,8 +25283,7 @@ app.use((req, res) => {
                 const html = resp.data || '';
                 if (html.includes('anomaly-modal')) {
                     noteBackendBlocked('ddg');
-                    const r = await ddgFallback();
-                    return r ? cacheReturn(r) : rateLimited;
+                    return null;
                 }
                 const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
                 const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
@@ -25050,13 +25308,45 @@ app.use((req, res) => {
                 // Cache only a non-empty result set for the full TTL; a 0-result parse
                 // is returned but NOT pinned for an hour, and does NOT cool the backend
                 // (it may be a genuinely empty query, not a block).
-                if (results.length) { noteBackendOk('ddg'); return cacheReturn({ query: q, count: results.length, results }); }
-                return { query: q, count: 0, results, retryable: true };
+                if (results.length) { noteBackendOk('ddg'); return { query: q, count: results.length, results }; }
+                // A 0-result PARSE is not a block — it may be a genuinely empty
+                // query. Preserved verbatim from the serial version: it is the
+                // answer we fall back to when no other backend finds anything.
+                ddgEmptyPayload = { query: q, count: 0, results, retryable: true };
+                return null;
             } catch (e) {
                 noteBackendBlocked('ddg', retryAfterOf(e));
+                return null;
+            }
+            };
+
+            let ddgEmptyPayload = null;
+            const ddgPromise = tryDdg();
+            // Give DDG the head start it had before; only hedge if it overruns.
+            const early = await Promise.race([
+                ddgPromise.then(r => ({ done: true, r })),
+                new Promise(r => setTimeout(() => r(null), SEARCH_HEDGE_DELAY_MS)),
+            ]);
+            if (early && early.r) return cacheReturn(early.r);
+            if (early && !early.r) {
+                // DDG answered inside the window with nothing usable — no hedge was
+                // issued, so this is the original serial path exactly. A 0-result
+                // PARSE still short-circuits (the fallbacks are an evasion chain for
+                // a BLOCK; running them on a genuinely empty query only spends a
+                // Brave GET and a Scrapling browser to confirm the same answer).
+                if (ddgEmptyPayload) return ddgEmptyPayload;
                 const r = await ddgFallback();
                 return r ? cacheReturn(r) : rateLimited;
             }
+            // DDG is still outstanding past the hedge window: run Brave next to it.
+            const hedged = await firstWithResults([ddgPromise, tryBrave()]);
+            if (hedged) return cacheReturn(hedged);
+            // Same short-circuit as above: only escalate to the Scrapling browser
+            // when DDG was BLOCKED, never when it simply parsed to zero results.
+            if (ddgEmptyPayload) return ddgEmptyPayload;
+            const scr = await tryScrapling();
+            if (scr) return cacheReturn(scr);
+            return rateLimited;
         },
     });
 
@@ -25065,28 +25355,6 @@ app.use((req, res) => {
         name: 'fetch_url',
         build() {
             return null; // consolidated into the `web` tool — hidden from the chat catalog, still registered for automations + the web router
-            return {
-                type: 'function',
-                function: {
-                    name: 'fetch_url',
-                    description:
-                        'Fetch a URL and return its readable text. Rejects private/internal addresses. ' +
-                        'Already cascades Scrapling (anti-bot) → Playwright (JS render) → axios internally, so after a fetch_url that returns content there is no point re-fetching the SAME url with playwright_fetch or scrapling_fetch — they hit the same page. ' +
-                        'EXCEPTION — image-heavy / dynamic pages: for a social profile or feed, a photo gallery, or a product/listing grid, OR whenever the user asks for the IMAGES and their captions/text from a page, use playwright_fetch instead (it scrolls, renders, and returns each image URL with its alt-text caption and permalink). Plain fetch_url on those returns only page chrome — no images, no post text — so do not keep retrying it or fall through to download_html. ' +
-                        'Trust the fetched content over training when they conflict, and cite the URL. ' +
-                        'If the result includes a `hint`, follow it: a bot-protection/thin-content hint means retry with scrapling_fetch; a shopping/product-page hint means the price or stock is dynamically gated — switch SOURCE (web_search) instead of re-scraping the same URL. ' +
-                        'For long results (>1000 chars) where the user wants a specific fact, follow up with search_string on the returned text.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
-                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 15000).' },
-                        },
-                        required: ['url'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const url = String(args?.url || '').trim();
@@ -25182,10 +25450,19 @@ app.use((req, res) => {
                 // Optionally read the top N result URLs in the same call.
                 const readN = Math.min(3, Math.max(0, parseInt(a.read || 0, 10)));
                 if (readN && sr && Array.isArray(sr.results) && sr.results.length) {
-                    const top = sr.results.slice(0, readN);
+                    // Copy before attaching page text. web_search's cache stores the
+                    // very object it returns, and the cache-HIT path only shallow-
+                    // spreads it — so `sr.results` is the array living in searchCache
+                    // and writing `r.content` onto its entries pinned kilobytes of
+                    // page text into the cache for the rest of the hour. Every later
+                    // search of that query, INCLUDING a plain one with no `read`, then
+                    // carried the stale bodies back to the model.
+                    const copied = sr.results.map(r => ({ ...r }));
+                    const top = copied.slice(0, readN);
                     const reads = await Promise.all(top.map(r =>
                         run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
                     top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
+                    return { mode: 'search', ...sr, results: copied };
                 }
                 return { mode: 'search', ...(sr || {}) };
             }
@@ -26704,28 +26981,6 @@ app.use((req, res) => {
         name: 'scrapling_fetch',
         build() {
             return null; // consolidated into the `web` tool (mode:"stealth") — hidden from chat catalog, still registered
-            return {
-                type: 'function',
-                function: {
-                    name: 'scrapling_fetch',
-                    description:
-                        'USE WHEN fetch_url or playwright_fetch returned thin/bot-blocked content (Cloudflare, DataDome, "Just a moment", CAPTCHA). ' +
-                        'Fetch a webpage with Scrapling stealth (StealthyFetcher + curl_cffi). Strongest anti-bot tool — use when fetch_url/playwright_fetch returned a `hint` about bot protection or thin content, ' +
-                        'on Cloudflare/PerimeterX/DataDome/Akamai-gated sites, threat-intel portals (abuse.ch, threatfox, urlhaus), or pages showing "Checking your browser" / "Just a moment" / "Access denied" / CAPTCHA. ' +
-                        'Slower than fetch_url; reach for it only when evasion is needed, but try it before asking the user to paste. Rejects private addresses.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
-                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Timeout in ms (default 30000).' },
-                            extractLinks: { type: 'boolean', description: 'Include extracted links in the result (default false).' },
-                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 15000).' },
-                        },
-                        required: ['url'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const url = String(args?.url || '').trim();
@@ -26778,31 +27033,6 @@ app.use((req, res) => {
         name: 'playwright_fetch',
         build() {
             return null; // consolidated into the `web` tool (mode:"browser" / want:"images") — hidden from chat catalog, still registered
-            return {
-                type: 'function',
-                function: {
-                    name: 'playwright_fetch',
-                    description:
-                        'USE WHEN fetch_url returned empty/wrong content for a JS-rendered page (SPA, lazy-loaded, dynamic), OR WHENEVER the user wants the IMAGES and/or the TEXT off an image-heavy page — a social profile or feed (Instagram, etc.), a photo gallery, a product/listing grid, any infinite-scroll page. ' +
-                        'It renders the page in a real browser (Playwright + stealth), SCROLLS to trigger lazy-loaded media, and returns an "Images:" section listing each rendered image\'s URL, its caption (the alt text — this is where image-only feeds keep their per-image description), and its post/permalink, alongside the page\'s headings/paragraphs/tables. So a SINGLE call gets both the pictures and the text describing them. ' +
-                        'For those requests call this DIRECTLY and do NOT loop through fetch_url / scrapling_fetch / download_html / crawl_pages first — on JS-rendered sites those see only the static HTML shell, which contains none of the images or post text (that is the loop that fails). Pass includeLinks:true to also collect every link. ' +
-                        'Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
-                        'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it. ' +
-                        'This loads ONE view (it does auto-scroll for lazy content) — to click, accept a cookie wall, paginate, search, or otherwise move around the page to find items, use playwright_interact instead.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
-                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Timeout in ms (default 15000).' },
-                            waitForJS: { type: 'boolean', description: 'Wait for JS to render (default true).' },
-                            includeLinks: { type: 'boolean', description: 'Include extracted links (default false).' },
-                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 8000).' },
-                        },
-                        required: ['url'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const url = String(args?.url || '').trim();
@@ -26844,40 +27074,6 @@ app.use((req, res) => {
         name: 'playwright_interact',
         build() {
             return null; // consolidated into the `web` tool (mode:"interact") — hidden from chat catalog, still registered
-            return {
-                type: 'function',
-                function: {
-                    name: 'playwright_interact',
-                    description:
-                        'Navigate a page and perform an action sequence (click, type, wait, scroll, waitForNavigation) before extracting content. Use when a page needs interaction (accept cookies, submit a form, scroll for lazy content) before it renders useful text, or to MOVE AROUND a page to find items. Requires Playwright; errors if unavailable.\n' +
-                        'FINDING ITEMS / MOVING AROUND:\n' +
-                        '• Dismiss blockers first: click the cookie/consent/"close" button if a banner or modal is covering the content (e.g. {"type":"click","selector":"#accept-cookies"}).\n' +
-                        '• Lazy-load / infinite scroll: add several {"type":"scroll"} actions (each scrolls one viewport down) with a {"type":"wait","timeout":1200} between them so new items load; content is read from the fully-scrolled page.\n' +
-                        '• "Load more" / "Show all": click that button — repeat the click for several batches, with a wait after each, to pull in more items.\n' +
-                        '• Search to locate an item: {"type":"type","selector":"#search","text":"<query>"} then click/submit, then {"type":"wait","selector":".results"}.\n' +
-                        '• Open a tab/category/filter: click it, then wait for its result selector before extraction.\n' +
-                        'PAGINATION (next pages): content is extracted only from the FINAL page state, so this returns ONE page per call. Two patterns: (a) click the Next/page link then {"type":"waitForNavigation"} (or wait for the results selector) to land on — and read — that page; (b) to collect items across MANY pages, call playwright_interact once per page, advancing the URL\'s page param (…?page=2, &offset=20) each call, and merge the results yourself. For broad link-following across a site, prefer crawl_pages.\n' +
-                        'If a selector times out, the page likely uses a different selector — inspect it first with playwright_fetch (includeLinks:true) or scrapling_fetch to find the real one rather than retrying blindly.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            url: { type: 'string', description: 'Absolute HTTP(S) URL to navigate to.' },
-                            actions: {
-                                type: 'array',
-                                description: 'Ordered actions run before content is extracted. Each: { "type": "click|type|wait|scroll|waitForNavigation", ... }. ' +
-                                    'click → needs "selector"; type → needs "selector" + "text"; wait → "selector" (wait until it appears) OR "timeout" (ms pause); scroll → scrolls one viewport down (repeat to trigger lazy/infinite loading); waitForNavigation → wait for a full page load after a click. ' +
-                                    'Optional per-action "timeout" (ms, default 8000) widens slow elements. ' +
-                                    'Examples — reveal more: [{"type":"click","selector":".load-more"},{"type":"wait","timeout":1500}]; next page: [{"type":"click","selector":"a.next"},{"type":"waitForNavigation"}]; search: [{"type":"type","selector":"#q","text":"laptop"},{"type":"click","selector":"button[type=submit]"},{"type":"wait","selector":".results"}].',
-                                items: { type: 'object' },
-                            },
-                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Overall timeout in ms (default 30000).' },
-                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 8000).' },
-                        },
-                        required: ['url'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const url = String(args?.url || '').trim();
@@ -26967,34 +27163,6 @@ app.use((req, res) => {
         name: 'crawl_pages',
         build() {
             return null; // consolidated into the `web` tool (mode:"crawl") — hidden from chat catalog, still registered
-            return {
-                type: 'function',
-                function: {
-                    name: 'crawl_pages',
-                    description:
-                        'USE WHEN the user asks for "top N / most recent N" items spanning a paginated listing or when a fetch returned only page 1. ' +
-                        'Walk a paginated listing across multiple pages in one call. Use for "top N / most recent N" requests or when a fetch returned only page 1. ' +
-                        'Modes: auto (default; URL pattern then DOM Next/Load-more), url-pattern (increments ?page=/?p=/?offset=//page/N/), link-follow (clicks Next; pass nextSelector to override), ' +
-                        'load-more (clicks button; pass loadMoreSelector), infinite-scroll. Rejects private addresses. Stops on duplicate content.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            url: { type: 'string', description: 'Absolute HTTP(S) starting URL.' },
-                            maxPages: { type: 'integer', minimum: 1, maximum: 20, description: 'Hard cap on pages to walk (default 5).' },
-                            mode: { type: 'string', enum: ['auto', 'url-pattern', 'link-follow', 'load-more', 'infinite-scroll'], description: 'Pagination strategy (default auto).' },
-                            nextSelector: { type: 'string', description: 'CSS selector for the Next link (link-follow mode). Optional override when auto-detection picks the wrong element.' },
-                            loadMoreSelector: { type: 'string', description: 'CSS selector for the Load-more button (load-more mode).' },
-                            waitForSelector: { type: 'string', description: 'CSS selector to wait for on each page before extracting.' },
-                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Per-page timeout in ms (default 20000).' },
-                            maxLength: { type: 'integer', minimum: 1000, maximum: 200000, description: 'Total combined content cap across all pages (default 30000).' },
-                            includeLinks: { type: 'boolean', description: 'Include extracted links per page (default false).' },
-                            stealth: { type: 'boolean', description: 'Prefer Scrapling for url-pattern fetches (use when a site is known to be bot-gated).' },
-                        },
-                        required: ['url'],
-                        additionalProperties: false,
-                    },
-                },
-            };
         },
         async execute(args) {
             const url = String(args?.url || '').trim();
@@ -28263,6 +28431,16 @@ server.listen(PORT, async () => {
     knowledgeBaseService.ensureEngine()
         .then(() => knowledgeBaseService.health())
         .then((h) => console.log(`[kb] embedding engine ready (${h.model}, dim=${h.dim})`))
+        // Build the tool-router's semantic index for the default catalog while the
+        // engine is warm. toolIndex.search() deliberately never builds inline, so
+        // without this the FIRST chat turn after every restart was demoted to
+        // keyword tool routing (and paid a /stats round trip to discover that).
+        // warmup() was written for exactly this and had no call site. Fire-and-
+        // forget: boot must not block, and a miss just means the old behavior.
+        .then(async () => {
+            const catalog = await require('./services/chatTools').buildToolCatalog({ userId: null });
+            toolIndex.warmup(catalog);
+        })
         .catch((e) => console.warn('[kb] engine warm-up deferred:', e.message));
 
     // One-shot legacy-workspace migration: older installs kept per-user

@@ -11,7 +11,6 @@
  * - SSL inspection bypass for corporate proxy environments
  */
 
-const { spawn, execSync } = require('child_process');
 const { isNonContentUrl, isPlumbingPayload, unusableContentReason, looksOpaque } = require('./contentQuality');
 
 // ============================================================================
@@ -34,56 +33,13 @@ playwrightChromium.use(StealthPlugin());
 // Export stealth-enabled chromium
 const chromium = playwrightChromium;
 
-// Xvfb virtual display management
-let xvfbProcess = null;
-const DISPLAY_NUM = 99;
-const XVFB_DISPLAY = `:${DISPLAY_NUM}`;
-
-/**
- * Start Xvfb virtual display for headed browser mode
- */
-function startXvfb() {
-    if (xvfbProcess) return true;
-
-    try {
-        // Check if Xvfb is available
-        execSync('which Xvfb', { stdio: 'ignore' });
-
-        // Start Xvfb
-        xvfbProcess = spawn('Xvfb', [XVFB_DISPLAY, '-screen', '0', '1920x1080x24'], {
-            detached: true,
-            stdio: 'ignore'
-        });
-
-        xvfbProcess.unref();
-
-        // Set DISPLAY environment variable
-        process.env.DISPLAY = XVFB_DISPLAY;
-
-        console.log(`Xvfb started on display ${XVFB_DISPLAY} for headed browser mode`);
-        return true;
-    } catch (err) {
-        console.log('Xvfb not available, using headless mode');
-        return false;
-    }
-}
-
-/**
- * Stop Xvfb virtual display
- */
-function stopXvfb() {
-    if (xvfbProcess) {
-        try {
-            process.kill(-xvfbProcess.pid);
-        } catch (e) {
-            // Process already dead
-        }
-        xvfbProcess = null;
-    }
-}
-
-// Check for Xvfb on startup
-const USE_HEADED_MODE = startXvfb();
+// Headed-browser support was removed when getBrowser() was pinned to headless
+// (see the comment there): `USE_HEADED_MODE` was assigned at require time and
+// then never read by anything, so the Xvfb it started was pure overhead — a
+// synchronous `which Xvfb` on the server's boot path plus a detached X server
+// holding ~72 MB RSS for the process lifetime, verified running in the
+// container with zero consumers. Stealth/anti-detection lives in
+// scrapling_fetch (patchright + curl_cffi), not in a virtual display.
 
 /**
  * Flatten a JSON object/array into human-readable text.
@@ -502,8 +458,10 @@ async function applyStealthPatches(page) {
  * Get or create a browser from the pool
  */
 async function getBrowser() {
-    // Try to get an available browser from pool
-    const availableBrowser = browserPool.find(b => !b.inUse && b.browser.isConnected());
+    // Try to get an available browser from pool. `browser` is null while an entry
+    // is still launching (see the slot reservation below), so guard the isConnected
+    // call — a reserved slot is never handed out.
+    const availableBrowser = browserPool.find(b => !b.inUse && b.browser && b.browser.isConnected());
     if (availableBrowser) {
         availableBrowser.inUse = true;
         availableBrowser.lastUsed = Date.now();
@@ -512,17 +470,29 @@ async function getBrowser() {
 
     // Create new browser if pool not full
     if (browserPool.length < MAX_POOL_SIZE) {
-        // Always launch headless. The previous boot-time Xvfb spawn (startXvfb)
-        // could die silently — stdio: 'ignore' swallows any crash — leaving
-        // USE_HEADED_MODE cached as true while no X server is actually serving.
-        // The result was: every chromium launch died with "Missing X server or
-        // $DISPLAY" and the chat's playwright_fetch path was completely broken.
-        // Stealth/anti-detection lives in scrapling_fetch (patchright + curl_cffi);
+        // Reserve the slot SYNCHRONOUSLY, before the await. The length check and
+        // the push used to straddle `await chromium.launch()`, so concurrent
+        // callers all measured the same stale length and all launched — the pool
+        // could exceed MAX_POOL_SIZE by however many arrived in that window, at
+        // ~150-250 MB of RSS per surplus Chromium. The parallel find_image /
+        // crawl paths issue exactly that burst.
+        const poolEntry = {
+            browser: null,
+            inUse: true,
+            lastUsed: Date.now(),
+            createdAt: Date.now(),
+        };
+        browserPool.push(poolEntry);
+        try {
+        // Always launch headless. The previous boot-time Xvfb spawn could die
+        // silently — stdio: 'ignore' swallows any crash — leaving the headed flag
+        // cached as true while no X server was actually serving. The result was:
+        // every chromium launch died with "Missing X server or $DISPLAY" and the
+        // chat's playwright_fetch path was completely broken. Stealth/anti-
+        // detection lives in scrapling_fetch (patchright + curl_cffi);
         // playwright_fetch is the simple JS-render path and headless is fine.
-        const useHeaded = false;
-
         const browser = await chromium.launch({
-            headless: !useHeaded,
+            headless: true,
             args: [
                 '--disable-blink-features=AutomationControlled',
                 '--disable-features=IsolateOrigins,site-per-process',
@@ -561,8 +531,6 @@ async function getBrowser() {
                 '--metrics-recording-only',
                 '--password-store=basic',
                 '--use-mock-keychain',
-                // Extra anti-detection for headed mode
-                ...(useHeaded ? ['--disable-notifications', '--disable-popup-blocking'] : [])
             ]
         });
 
@@ -573,17 +541,17 @@ async function getBrowser() {
             try { const m = String(browser.version() || '').match(/(\d+)\./); if (m) detectedChromeMajor = m[1]; } catch (e) { /* keep fallback */ }
         }
 
-        const poolEntry = {
-            browser,
-            inUse: true,
-            lastUsed: Date.now(),
-            createdAt: Date.now()
-        };
-
-        browserPool.push(poolEntry);
+        poolEntry.browser = browser;
         startPoolCleanup();
 
         return poolEntry;
+        } catch (launchErr) {
+            // Launch failed — give the reserved slot back so the pool doesn't
+            // permanently shrink after a transient failure.
+            const i = browserPool.indexOf(poolEntry);
+            if (i >= 0) browserPool.splice(i, 1);
+            throw launchErr;
+        }
     }
 
     // Wait for an available browser
@@ -1601,14 +1569,11 @@ async function cleanup() {
 
     for (const entry of browserPool) {
         try {
-            await entry.browser.close();
+            if (entry.browser) await entry.browser.close();   // null while a slot is still launching
         } catch (e) {}
     }
 
     browserPool = [];
-
-    // Stop Xvfb if running
-    stopXvfb();
 }
 
 /**

@@ -462,6 +462,18 @@ except Exception as _e:
         outS.on('data', c => stdout += c.toString('utf8'));
         errS.on('data', c => stderr += c.toString('utf8'));
         container.modem.demuxStream(logStream, outS, errS);
+        // Docker closes the attach stream once the container exits and all of
+        // its output has been delivered, so "the stream ended" is the precise
+        // signal that stdout/stderr are complete. Resolving on it lets the
+        // common case (a few KB of JSON) proceed immediately instead of always
+        // sleeping out a fixed flush budget.
+        let logStreamEnded = false;
+        const logStreamDone = new Promise(resolve => {
+            const done = () => { logStreamEnded = true; resolve(); };
+            logStream.once('end', done);
+            logStream.once('close', done);
+            logStream.once('error', done);
+        });
 
         await container.start();
 
@@ -504,24 +516,52 @@ except Exception as _e:
             // the IP never bound, so a miss here is degraded, not broken.
         }
 
-        const waitResult = await Promise.race([
-            container.wait(),
-            new Promise(resolve => setTimeout(async () => {
-                timedOut = true;
-                try { await container.kill({ signal: 'SIGKILL' }); } catch (_) {}
-                resolve({ StatusCode: 137 });
-            }, timeoutMs)),
-        ]);
-        exitCode = waitResult.StatusCode;
+        // The kill timer MUST be cleared once the container exits on its own.
+        // Losing the handle left one pending timer per skill call — each holding
+        // the container object alive for the whole timeout (30s by default, up to
+        // several minutes for the long-running skills) and then firing a doomed
+        // `container.kill()` against a container that had already been removed.
+        let killTimer;
+        try {
+            const waitResult = await Promise.race([
+                container.wait(),
+                new Promise(resolve => {
+                    killTimer = setTimeout(async () => {
+                        timedOut = true;
+                        try { await container.kill({ signal: 'SIGKILL' }); } catch (_) {}
+                        resolve({ StatusCode: 137 });
+                    }, timeoutMs);
+                }),
+            ]);
+            exitCode = waitResult.StatusCode;
+        } finally {
+            clearTimeout(killTimer);
+        }
 
-        // Give the stream a moment to flush final bytes
-        await new Promise(r => setTimeout(r, 80));
+        // Wait for the last bytes, but only as long as they actually take.
+        // Bounded by the same 80ms the blind sleep used, so a stream that never
+        // closes (killed container) can't hold the call open.
+        if (!logStreamEnded) {
+            let flushTimer;
+            await Promise.race([
+                logStreamDone,
+                new Promise(r => { flushTimer = setTimeout(r, 80); }),
+            ]);
+            clearTimeout(flushTimer);
+        }
     } catch (err) {
         stderr = (stderr || '') + `\n[sandboxRunner error: ${err.message}]`;
         exitCode = -1;
     } finally {
         if (container) {
-            try { await container.remove({ force: true }); } catch (_) {}
+            // Fire-and-forget. The container has already exited and its output is
+            // fully captured, so removal is pure cleanup that the caller has no
+            // reason to wait for — yet awaiting it added a measured 170-230ms to
+            // EVERY skill tool call on this host (`docker rm -f` timed directly).
+            // The bind-mounted scratch/workspace dirs live on the host and are
+            // unmounted the moment the container stops, so `cleanupRun()` deleting
+            // them later cannot race this. Errors were already swallowed.
+            container.remove({ force: true }).catch(() => {});
         }
         if (egressToken) egressProxy.revokeGrant(egressToken);
     }

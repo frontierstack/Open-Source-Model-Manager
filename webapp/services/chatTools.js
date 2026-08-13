@@ -211,9 +211,18 @@ function accumulateToolCallDelta(acc, deltaToolCalls) {
         if (tc.function?.arguments) acc[idx].function.arguments += tc.function.arguments;
         // Non-enumerable bookkeeping so for...of iteration in finalizeToolCalls
         // and JSON.stringify of `acc` don't pick this up as a tool call.
-        Object.defineProperty(acc, '_lastIdx', {
-            value: idx, writable: true, enumerable: false, configurable: true,
-        });
+        // Defined once, then plain-assigned: this runs for every streamed
+        // argument fragment (thousands of times for a large tool-call payload)
+        // and defineProperty is far more expensive than a write to an existing
+        // writable slot. The descriptor is unchanged, so the property stays
+        // non-enumerable exactly as before.
+        if (Object.prototype.hasOwnProperty.call(acc, '_lastIdx')) {
+            acc._lastIdx = idx;
+        } else {
+            Object.defineProperty(acc, '_lastIdx', {
+                value: idx, writable: true, enumerable: false, configurable: true,
+            });
+        }
         touched.push(idx);
     }
     return touched;
@@ -659,8 +668,18 @@ const PY_MODULE_TO_PIP = {
 // stdout/stderr fields carry pip/npm/apt error text. We parse it first
 // so the regexes run against the *unescaped* shell output (JSON-serialized
 // stdout buries `\n` and `\"` in the string, which fights the regexes).
+// Cheap gate before the expensive parse below. Every pattern this function can
+// match contains one of these literals, and none of them contains a character
+// JSON.stringify escapes (no quote, backslash or control char) — so if a literal
+// is absent from the RAW serialized result it cannot be present in the decoded
+// stdout/stderr either, and there is nothing to find. Without it, every single
+// tool call JSON.parsed its entire (pre-cap, so up to hundreds of KB) result to
+// discover that a repo scan or a directory listing is not a failed pip install.
+const INSTALL_FAILURE_ANCHORS = /Could not find a version|npm ERR! 404|404 Not Found|Unable to locate package|No package |ModuleNotFoundError|command not found/;
+
 function detectInstallFailureAdvice(content) {
     if (typeof content !== 'string' || content.length === 0) return null;
+    if (!INSTALL_FAILURE_ANCHORS.test(content)) return null;
 
     // Pull out scanning targets from the JSON if we can; fall back to the
     // raw serialized string for non-JSON tool outputs (some skills return
