@@ -7,7 +7,7 @@
       "filePath": "string",
       "content": "string"
     },
-    "systemPrompt": "Create a new file with the given content. Paths resolve inside /workspace (the conversation workspace shared by all file skills); relative paths are fine. Organize multi-file projects into subdirectories (web_app/, api_server/). Don't blindly overwrite an existing file — read_file first if unsure. DOWNLOADS: a file the user should be able to download (PDF, image, archive, dataset) MUST be written under /workspace/artifacts/ — the chat UI auto-surfaces every file there as a download chip; files elsewhere in /workspace are NOT downloadable.",
+    "systemPrompt": "Create a new file with the given content. Paths resolve inside /workspace (the conversation workspace shared by all file skills); relative paths are fine. Organize multi-file projects into subdirectories (web_app/, api_server/). Don't blindly overwrite an existing file — read_file first if unsure. DOWNLOADS: a file the user should be able to download (PDF, image, archive, dataset) MUST be written under /workspace/artifacts/ — the chat UI auto-surfaces every file there as a download chip; files elsewhere in /workspace are NOT downloadable. EXECUTION: writing a .py/.js/.sh file does NOT run it — nothing on the platform picks a file up and executes it. To run a script you just wrote, call run_python (or run_node) with codeFile set to that path. Never write a wrapper script whose body just subprocess.run()s another script: nothing will execute the wrapper either.",
     "code": "def execute(params):\n    \"\"\"Create a new file with specified content.\"\"\"\n    import os\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n    dir_path = os.path.dirname(file_path)\n    if dir_path:\n        os.makedirs(dir_path, exist_ok=True)\n\n    with open(file_path, 'w') as f:\n        f.write(content)\n\n    return {\n        'success': True,\n        'message': f'File created: {file_path}',\n        'filePath': file_path,\n        'size': len(content)\n    }",
     "enabled": true
   },
@@ -299,7 +299,7 @@
   },
   {
     "name": "run_python",
-    "description": "Execute Python code",
+    "description": "Execute Python code to analyze files no other tool can read (pcap/capture, binary, log, dataset), compute results, or run a script you already wrote.",
     "type": "command",
     "parameters": {
       "code": "string",
@@ -318,7 +318,7 @@
   },
   {
     "name": "run_node",
-    "description": "Execute Node.js (JavaScript) code",
+    "description": "Execute Node.js (JavaScript) code — run a script you already wrote, or use a preinstalled npm package.",
     "type": "command",
     "parameters": {
       "code": "string",

@@ -19510,6 +19510,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Skipped silently when base64_decode isn't in the catalog (user
         // disabled it) or no base64 in the message decodes to
         // mostly-printable UTF-8.
+        // A binary upload (pcap, disk image, firmware, any octet-stream) is
+        // materialized to /workspace/uploads/ and its inline marker tells the
+        // model verbatim to "Read with run_python (open(..., 'rb'))". Never NAME
+        // a tool the catalog does not advertise: that is exactly what stranded a
+        // "review this pcap" turn — the marker said run_python, the router had
+        // not selected it, and the model spent 116 calls trying to bootstrap an
+        // interpreter out of create_file. run_python is CORE now, so this is a
+        // belt-and-braces guarantee for the case where a hard ceiling or a
+        // future CORE edit drops it.
+        try {
+            const atts = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+            if (atts.some(a => a && a.type === 'file' && a.attachmentId)) {
+                preflightForcedTools.add('run_python');
+            }
+        } catch (_) { /* best effort */ }
+
         const base64Detector = require('./services/base64Detector');
         const b64PreflightEncoded = new Set();
         const b64CatalogExposed = fullToolCatalog.some(t => t?.function?.name === 'base64_decode');
@@ -19907,6 +19923,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // (N distinct files) has ratio ≈ 1 and never trips.
         const LOOP_REDUNDANCY_MIN = parseInt(process.env.LOOP_REDUNDANCY_MIN || '22', 10);
         const LOOP_REDUNDANCY_RATIO = parseFloat(process.env.LOOP_REDUNDANCY_RATIO || '0.4');
+
+        // Runner-wrapper guard: a file write whose whole body is "spawn another
+        // workspace script". See the detector in the perCall block. Kept narrow
+        // on purpose — a real program that uses subprocess is far longer than
+        // WRAPPER_MAX_CHARS or leaves far more than WRAPPER_RESIDUE_CHARS of
+        // logic behind once the spawn/imports/prints are stripped.
+        const WRITE_TOOLS_FOR_WRAPPER_CHECK = new Set(['create_file', 'append_to_file', 'replace_lines']);
+        const WRAPPER_MAX_CHARS = parseInt(process.env.WRAPPER_MAX_CHARS || '900', 10);
+        const WRAPPER_RESIDUE_CHARS = parseInt(process.env.WRAPPER_RESIDUE_CHARS || '80', 10);
+        // No /g flag — this regex is .test()ed repeatedly and lastIndex would drift.
+        const SPAWN_CALL_RE = /subprocess\.(run|call|check_output|check_call|Popen)|os\.system|runpy\.run_path|exec\s*\(\s*open\s*\(|execfile\s*\(|child_process|spawnSync|execSync|execFileSync/;
 
         // Floor on the per-request output budget. Below this, tool calls
         // reliably truncate mid-JSON. Shared by streamOneRequest's last-resort
@@ -21194,6 +21221,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                         const scraplingSearchLoop = !!scraplingSearchUrl && scraplingSearchCount >= 2;
 
+                        // ---- Runner-wrapper detection -------------------------
+                        // A file write whose ENTIRE body is "shell out to another
+                        // script in the workspace". This is what a model does when
+                        // it has no interpreter in its catalog: it writes scripts
+                        // and hopes something runs them. Deliberately NARROW so a
+                        // real program that happens to use subprocess is untouched:
+                        // the body must be short AND essentially nothing but the
+                        // spawn call. A long script with real logic never matches.
+                        let runnerWrapperScript = null;
+                        if (WRITE_TOOLS_FOR_WRAPPER_CHECK.has(call.function.name)) {
+                            try {
+                                const a = JSON.parse(call.function.arguments || '{}');
+                                const target = String(a.filePath || a.path || '');
+                                const body = String(a.content || a.newContent || '');
+                                if (/\.(py|js|mjs|cjs|sh)$/i.test(target) && body && body.length <= WRAPPER_MAX_CHARS) {
+                                    const spawns = SPAWN_CALL_RE.test(body);
+                                    // The script it shells out to (a DIFFERENT
+                                    // workspace script — self-reference is not a chain).
+                                    const refs = body.match(/\/workspace\/[\w./-]+\.(?:py|js|mjs|cjs|sh)\b/g) || [];
+                                    const other = refs.find(r => r !== target);
+                                    // "Essentially nothing but the spawn": strip
+                                    // imports, the spawn statement, prints and
+                                    // blank/comment lines — almost nothing should remain.
+                                    const residue = body.split('\n')
+                                        .map(l => l.trim())
+                                        .filter(l => l && !l.startsWith('#') && !l.startsWith('//')
+                                            && !/^(import|from|const|let|var|require)\b/.test(l)
+                                            && !SPAWN_CALL_RE.test(l)
+                                            && !/^(print|console\.log|process\.stdout)/.test(l)
+                                            && !/^[)\]}]/.test(l))
+                                        .join('');
+                                    if (spawns && other && residue.length <= WRAPPER_RESIDUE_CHARS) {
+                                        runnerWrapperScript = { target, refers: other };
+                                    }
+                                }
+                            } catch (_) { /* malformed args — let the normal guards handle it */ }
+                        }
+
                         let nudge = null;
                         if (webSearchBlocked || scraplingSearchLoop) {
                             let q = '';
@@ -21259,6 +21324,42 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 actually_resolved_to: resolveMismatch,
                             };
                             console.warn(`[Chat Stream] Path mismatch for ${call.function.name}: requested "${readRepeatPath}" previously resolved to "${resolveMismatch}"; short-circuited with a corrective nudge`);
+                        } else if (runnerWrapperScript) {
+                            // A model that cannot see an interpreter in its
+                            // catalog tries to BOOTSTRAP one: it writes a script
+                            // whose whole body shells out to another script it
+                            // wrote, then writes a wrapper for THAT, forever.
+                            // Live-observed on a "review this pcap" turn — 44
+                            // create_file calls in one turn building
+                            // runner.py → go.py → main.py → … → please_run.py,
+                            // each subprocess.run()-ing the previous. Every call
+                            // had a DIFFERENT path, so none of the fingerprint
+                            // guards fired and the outcome-redundancy backstop
+                            // saw 44 "distinct" outcomes. Refuse the wrapper and
+                            // name the one tool that actually executes.
+                            // Never steer at a runner the user BANNED (prohibited
+                            // names are deleted from fullByName) or one the loop
+                            // guard already quarantined — that would hand the model
+                            // a dead end, which is the very failure we are fixing.
+                            const preferred = /\.(js|mjs|cjs)$/i.test(runnerWrapperScript.target) ? 'run_node' : 'run_python';
+                            const usable = (n) => fullByName.has(n) && !blockedToolNames.has(n);
+                            const runner = usable(preferred) ? preferred
+                                : (usable('run_python') ? 'run_python' : (usable('run_node') ? 'run_node' : null));
+                            const script = runnerWrapperScript.refers;
+                            nudge = {
+                                error: 'wrapper_will_not_execute',
+                                message: `Writing "${runnerWrapperScript.target}" will not run anything. Nothing on this platform picks up a file and executes it, so a wrapper script that shells out to "${script}" is dead code — and writing a wrapper for the wrapper will not help either. ` + (runner
+                                    ? `Execute it directly instead: call ${runner} with codeFile set to "${script}" (or pass the whole program inline as \`code\`). Do that now.`
+                                    : `You have no execution tool available this turn, so stop writing scripts entirely — answer the user with what you can determine from the tools you do have, and say plainly that you could not execute code.`),
+                                ...(runner ? { execute_with: runner, script_to_run: script } : { no_execution_tool_available: true }),
+                            };
+                            // Deterministic, single-tool force-advertise (unlike
+                            // the generic error-text scan, which is skipped for
+                            // guard nudges because their prose names tools only
+                            // as examples). run_python/run_node are CORE, so this
+                            // only matters if the hard ceiling trimmed them.
+                            if (runner) { try { toolCtx._forcedToolNames?.add(runner); } catch (_) { /* best effort */ } }
+                            console.warn(`[Chat Stream] Runner-wrapper refused: ${call.function.name} → ${runnerWrapperScript.target} (shells out to ${script}); steering to ${runner || 'NO RUNNER AVAILABLE'}`);
                         } else if (targetRepeat || argRepeat || readRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
@@ -21614,14 +21715,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     if (parsedRes.resolvedFrom) {
                                         resolvedTarget = parsedRes.directory || parsedRes.dirPath || parsedRes.path || null;
                                     }
+                                    // `message` and `size` are ECHOES of the input, not
+                                    // information gathered: create_file returns
+                                    // "File created: <the path you just passed>" and
+                                    // the byte count of the content you just sent. Both
+                                    // were being hashed, so stripping the filePath KEY
+                                    // achieved nothing — the same path came straight back
+                                    // inside the message string and made every call look
+                                    // like a distinct outcome (measured: 36 runner-script
+                                    // writes → 36 distinct sigs → redundancy ratio 1.00).
                                     const VOLATILE = new Set(['directory', 'dirPath', 'path', 'filePath',
                                         'requestedPath', 'resolvedFrom', 'resolvedPath', 'note', 'pattern',
-                                        'query', 'url', 'outputPath', 'dest', 'destPath', 'source']);
+                                        'query', 'url', 'outputPath', 'dest', 'destPath', 'source',
+                                        'message', 'size']);
                                     const sig = {};
                                     for (const k of Object.keys(parsedRes).sort()) {
                                         if (VOLATILE.has(k)) continue;
                                         sig[k] = parsedRes[k];
                                     }
+                                    // A WRITE tool's real outcome IS the artifact it
+                                    // produced, so put the target back explicitly. N
+                                    // distinct new files must stay N distinct outcomes —
+                                    // a legitimate bulk scaffold ("write these 25
+                                    // modules") must never read as a loop. This keeps
+                                    // write tools exactly as they behave today while the
+                                    // echo strip above still de-duplicates every OTHER
+                                    // tool whose result quotes its own arguments back.
+                                    // (The runner-script chain is caught by content, in
+                                    // the runner-wrapper guard — not by outcome diversity:
+                                    // 44 wrappers had 44 genuinely distinct targets and
+                                    // are indistinguishable from a bulk scaffold here.)
+                                    if (MUTATING_TARGET_EXTRACTORS[call.function.name]) sig.__target = fp;
                                     outcomeSig = crypto.createHash('sha1')
                                         .update(JSON.stringify(sig)).digest('hex').slice(0, 16);
                                     // Unproductive = an error, or an explicit

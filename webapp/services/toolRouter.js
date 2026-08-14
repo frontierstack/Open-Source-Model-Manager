@@ -58,6 +58,20 @@ const CORE = [
     'search_knowledge_base',  // only present when the user has a KB (build() null-gates it)
     'record_learning',        // only present when memory enabled (build() null-gates it)
     'make_downloadable',      // systemPrompt mandates it for file delivery
+    // The sandbox INTERPRETERS. Core for the same reason make_downloadable is:
+    // they are load-bearing for a whole class of asks and cannot be reached by
+    // semantics. run_python's description is necessarily generic ("execute
+    // code"), so its embedding is far from every concrete request that NEEDS it
+    // ("review this pcap", "parse this log", "compute the totals") — the router
+    // ranked it nowhere and the model, able to WRITE a file but not RUN one,
+    // spiralled: 116 tool calls over two turns building an infinite regress of
+    // runner scripts (runner.py -> go.py -> ... -> please_run.py), each
+    // subprocess.run()-ing the previous, plus create_xlsx(rowsFile=*.py) and
+    // read_pdf(*.py) as improvised execution primitives. A platform whose
+    // sandbox is its core value must always advertise its interpreter.
+    // Measured cost: ~130 tok, 2.7% of the 4500-tok max catalog budget.
+    'run_python',
+    'run_node',
 ];
 // Diffusion runs on a tiny budget — a leaner core (drop record_learning/make_downloadable).
 const CORE_DIFFUSION = ['web', 'base64_decode', 'run_python', 'read_file', 'load_skill'];
@@ -89,6 +103,19 @@ const INTENT_RULES = [
     [/\.(zip|tar|gz|tgz|7z|rar|bz2|xz)\b|archiveId=|\[Archive uploaded/i, ['extract_archive']],
     [/\b(grep|find in|search) (the )?code|where is .* (defined|function)|outline (the|this) file|read the file\b/i, ['grep_code', 'read_file', 'outline_file']],
     [/\b(xor|hex ?dump|hex ?convert|extract strings|carve|entropy|magic bytes)\b/i, ['xor_bytes', 'hex_dump', 'extract_strings']],
+    // Network-capture / traffic forensics. A capture is opaque to every reading
+    // tool on the platform (read_file returns binary, grep_code finds nothing),
+    // so the ONLY way to answer is to parse it in the sandbox — dpkt is baked
+    // into the image for exactly this. run_python is core now, but naming it
+    // here also pins it through the per-conversation selection cache and adds
+    // the byte/string tools a capture review actually needs.
+    [/\b(pcap|pcapng|packet capture|network capture|capture file|tcpdump|wireshark|netflow|\.cap\b|pcap file)\b/i,
+        ['run_python', 'read_file', 'extract_strings', 'hex_dump', 'get_file_metadata']],
+    // Explicit "run/execute/compute" asks. The interpreters' descriptions are
+    // necessarily generic, so even a DIRECT request to run code can miss the
+    // semantic cut. Deterministic recall costs nothing when they are already core.
+    [/\b(run|execute|interpret) (this|that|the|my|it|some)?\s*(python|node|js|javascript|code|script|program|snippet)\b|\bwrite (and run|a script|some code|a program)\b|\b(compute|calculate|crunch|tally) (the|these|those|all)\b/i,
+        ['run_python', 'run_node']],
     [/\b(stock|ticker|share price|time ?series|ohlc|market data)\b|\$[A-Z]{1,5}\b/i, ['fetch_timeseries']],
     [/\b(remember|note that|keep in mind|i prefer|from now on)\b/i, ['record_learning']],
     [/\b(download|save (this|it) as|export (to|as)) (a )?(pdf|csv|file|xlsx)\b/i, ['make_downloadable', 'create_file', 'download_file']],
@@ -118,9 +145,16 @@ const INTENT_RULES = [
 // registry still dispatches it by name; selectForTurn injects its def directly
 // when a profile is active. Its execute searches the FULL catalog and pushes the
 // matches into ctx._forcedToolNames so the grow-only loop advertises them next round.
-const FIND_TOOLS_DESC = 'Discover more tools by capability when the tool you need is not in the current list. ' +
+// NOTE the first sentence carries the TRIGGER, not the mechanics. Under an
+// active profile compactSchema shows the model only the first sentence (<=150
+// chars), so the old text's actionable line ("use this before saying a
+// capability is unavailable") — which lived in sentence three — was never
+// visible to a routed model. That is why a model missing an interpreter wrote
+// 44 wrapper scripts instead of asking for one. Mechanics move to sentence two.
+const FIND_TOOLS_DESC = 'Find a tool that is missing from this list — use it BEFORE improvising a workaround, ' +
+    'writing a wrapper, or saying something is impossible. ' +
     'Describe what you want to do; returns matching tool names + one-line descriptions, and makes them ' +
-    'available to call on your next step. Use this before saying a capability is unavailable.';
+    'available to call on your next step.';
 const FIND_TOOLS_PARAMS = {
     type: 'object',
     properties: { need: { type: 'string', description: 'what you want to do, e.g. "convert an image to grayscale"' } },
