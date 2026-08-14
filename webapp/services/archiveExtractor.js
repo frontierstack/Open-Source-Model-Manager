@@ -19,9 +19,36 @@ const os = require('os');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
-const { promisify } = require('util');
 
-const execFileP = promisify(execFile);
+// Every extractor is run through this wrapper rather than a bare execFile:
+//   - stdin is CLOSED immediately. An encrypted archive makes 7z (and unrar)
+//     prompt for a password on the terminal; with an open-but-never-written
+//     pipe they block FOREVER. Measured: `7z x` on an encrypted .7z sat for
+//     138 s and only died on an external SIGKILL — the `timeout` option below
+//     could not save it, because p7zip survives the SIGTERM node sends and
+//     execFile then keeps waiting on the still-open stdout.
+//   - killSignal is SIGKILL for the same reason: a timeout must actually end
+//     the process, not politely ask.
+function execFileP(bin, args, opts = {}) {
+    return new Promise((resolve, reject) => {
+        const child = execFile(
+            bin,
+            args,
+            { killSignal: 'SIGKILL', ...opts },
+            (err, stdout, stderr) => {
+                if (err) {
+                    err.stdout = stdout;
+                    err.stderr = stderr;
+                    reject(err);
+                } else {
+                    resolve({ stdout, stderr });
+                }
+            },
+        );
+        // Never leave a prompt-capable extractor with a readable stdin.
+        if (child.stdin) child.stdin.end();
+    });
+}
 
 const EXEC_TIMEOUT_MS = 60_000;
 const MAX_ENTRIES = 500;
@@ -35,9 +62,14 @@ const HANDLERS = [
     { name: 'tar.bz2', matches: (n) => /\.(tar\.bz2|tbz2?)$/i.test(n), cmd: ['tar', ['-xjf', '__FILE__', '-C', '__DIR__']] },
     { name: 'tar.xz',  matches: (n) => /\.(tar\.xz|txz)$/i.test(n),  cmd: ['tar', ['-xJf', '__FILE__', '-C', '__DIR__']] },
     { name: 'tar',     matches: (n) => /\.tar$/i.test(n),            cmd: ['tar', ['-xf',  '__FILE__', '-C', '__DIR__']] },
-    { name: 'zip',     matches: (n) => /\.zip$/i.test(n),            cmd: ['unzip', ['-qq', '-o', '__FILE__', '-d', '__DIR__']] },
-    { name: '7z',      matches: (n) => /\.7z$/i.test(n),             cmd: ['7z', ['x', '-y', '-bd', '-o__DIR__', '__FILE__']] },
-    { name: 'rar',     matches: (n) => /\.rar$/i.test(n),            cmd: ['unrar-free', ['-x', '__FILE__', '__DIR__/']] },
+    // `pw` builds the password arguments for encrypted archives. It is called
+    // with '' when the caller gave no password — 7z NEEDS the bare `-p` in
+    // that case so it fails fast with "Cannot open encrypted archive. Wrong
+    // password?" instead of the opaque "Break signaled" it emits when its
+    // prompt hits a closed stdin.
+    { name: 'zip',     matches: (n) => /\.zip$/i.test(n),            cmd: ['unzip', ['-qq', '-o', '__FILE__', '-d', '__DIR__']], pw: (p) => (p ? ['-P', p] : []) },
+    { name: '7z',      matches: (n) => /\.7z$/i.test(n),             cmd: ['7z', ['x', '-y', '-bd', '-o__DIR__', '__FILE__']], pw: (p) => [`-p${p}`] },
+    { name: 'rar',     matches: (n) => /\.rar$/i.test(n),            cmd: ['unrar-free', ['-x', '__FILE__', '__DIR__/']], pw: (p) => (p ? ['-p', p] : []) },
     { name: 'gz',      matches: (n) => /\.gz$/i.test(n),             single: 'gz' },
     { name: 'bz2',     matches: (n) => /\.bz2$/i.test(n),            single: 'bz2' },
     { name: 'xz',      matches: (n) => /\.xz$/i.test(n),             single: 'xz' },
@@ -92,6 +124,89 @@ function sniffFormat(buf) {
     // header — skip; we only hit this path when the extension also fails
     if (buf.length >= 263 && buf.slice(257, 262).toString('ascii') === 'ustar') return 'tar';
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted (password-protected) archives
+//
+// A password-protected zip is NOT a corrupt zip, but every extractor reports
+// it as a generic failure — and unzip reports a WRONG password with exit 82
+// and completely empty stderr. Without the checks below the model gets
+// "Extraction failed ... last error (zip): " and starts guessing at the
+// filename instead of asking the user for the password (live-observed: an
+// upload whose inner zip was encrypted produced ~25 flailing tool calls).
+// ---------------------------------------------------------------------------
+
+// Read the zip central directory and report how many entries carry the
+// "encrypted" general-purpose flag (bit 0). Returns null when the structure
+// can't be parsed (zip64, truncated, not a zip) — callers then fall back to
+// the stderr/exit-code classification.
+function zipEncryptionInfo(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 22) return null;
+    // End of central directory: PK\x05\x06, within the last 64KB + 22 bytes.
+    const scanFrom = Math.max(0, buf.length - 65_557);
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= scanFrom; i--) {
+        if (buf[i] === 0x50 && buf[i + 1] === 0x4B && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) { eocd = i; break; }
+    }
+    if (eocd < 0) return null;
+    const count = buf.readUInt16LE(eocd + 10);
+    let off = buf.readUInt32LE(eocd + 16);
+    // 0xFFFFFFFF means the real offset lives in the zip64 record — bail out
+    // rather than mis-parse (the stderr classification still covers it).
+    if (off === 0xFFFFFFFF || off + 46 > buf.length) return null;
+    let encrypted = 0, total = 0;
+    const names = [];
+    for (let i = 0; i < count; i++) {
+        if (off + 46 > buf.length) return null;
+        if (buf.readUInt32LE(off) !== 0x02014b50) return null; // PK\x01\x02
+        const flags = buf.readUInt16LE(off + 8);
+        const nameLen = buf.readUInt16LE(off + 28);
+        const extraLen = buf.readUInt16LE(off + 30);
+        const commentLen = buf.readUInt16LE(off + 32);
+        const name = buf.slice(off + 46, off + 46 + nameLen).toString('utf8');
+        // Directory entries have no content to encrypt — don't count them.
+        if (!name.endsWith('/')) {
+            total++;
+            if (flags & 0x0001) { encrypted++; if (names.length < 5) names.push(name); }
+        }
+        off += 46 + nameLen + extraLen + commentLen;
+    }
+    return { total, encrypted, names };
+}
+
+// Cheap per-file check used to flag an extracted entry that is ITSELF an
+// encrypted zip (the reported case: an ordinary zip containing a
+// password-protected zip). Reads only the local file header.
+async function zipFileIsEncrypted(fullPath) {
+    let fd = null;
+    try {
+        fd = await fs.promises.open(fullPath, 'r');
+        const head = Buffer.alloc(30);
+        const { bytesRead } = await fd.read(head, 0, 30, 0);
+        if (bytesRead < 30) return false;
+        if (head.readUInt32LE(0) !== 0x04034b50) return false; // PK\x03\x04
+        return (head.readUInt16LE(6) & 0x0001) === 1;          // local header flags
+    } catch (_) {
+        return false;
+    } finally {
+        if (fd) await fd.close().catch(() => {});
+    }
+}
+
+const PASSWORD_ERROR_RE = /unable to get password|incorrect password|wrong password|bad password|cannot open encrypted|encrypted archive|password is incorrect|need password|password required/i;
+
+// Does this extractor failure mean "the archive is encrypted and we don't have
+// the right password"? unzip is the tricky one: a wrong -P password exits 82
+// with NO output at all, so the exit code has to carry the verdict.
+function isPasswordFailure(err, handlerName, encInfo) {
+    const text = `${err?.stderr || ''}\n${err?.stdout || ''}\n${err?.message || ''}`;
+    if (PASSWORD_ERROR_RE.test(text)) return true;
+    // unzip exit 82 = "nothing extracted". Only a password verdict when the
+    // central directory actually says entries are encrypted — otherwise 82 is
+    // an ordinary empty/filtered archive and must keep its own error.
+    if (handlerName === 'zip' && err?.code === 82 && encInfo?.encrypted > 0) return true;
+    return false;
 }
 
 // When nothing matches, figure out whether the bytes are even an archive.
@@ -249,6 +364,11 @@ async function extractArchive(buffer, filename, opts = {}) {
     const attempts = [handler];
     if (FALLBACK[handler.name]) attempts.push(HANDLERS.find(h => h.name === FALLBACK[handler.name]));
 
+    const password = typeof opts.password === 'string' ? opts.password : '';
+    // Parsed once up front so a password verdict can be reached even when the
+    // extractor says nothing useful (unzip's silent exit 82).
+    const encInfo = zipEncryptionInfo(buffer);
+
     const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
     // When extracting into a caller-owned dir we expect read_file to follow up
     // per-entry, so default to NO inline text. Cap at 4KB / 32KB if the caller
@@ -279,6 +399,7 @@ async function extractArchive(buffer, filename, opts = {}) {
         // failure doesn't pollute the next attempt's listing.
         let lastErr = null;
         let used = null;
+        let passwordWarning = null;
         for (const attempt of attempts) {
             if (!attempt) continue;
             if (lastErr) {
@@ -328,6 +449,10 @@ async function extractArchive(buffer, filename, opts = {}) {
                     const args = tmpl.map(a => a
                         .replace('__FILE__', archivePath)
                         .replace('__DIR__', extractDir));
+                    // Password switches go at index 1 — after the subcommand
+                    // (`7z x`) but before the archive name (unzip/unrar treat
+                    // anything after the archive as a file selector).
+                    if (attempt.pw) args.splice(1, 0, ...attempt.pw(password));
                     await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
                 }
                 // An extractor that exits 0 but produces nothing (tar can on
@@ -339,6 +464,35 @@ async function extractArchive(buffer, filename, opts = {}) {
                 break;
             } catch (e) {
                 lastErr = { attempt, err: e };
+                // An encrypted archive is not a format mismatch — the fallback
+                // chain can only produce a more confusing error, so stop here
+                // and let the password branch below report it.
+                if (isPasswordFailure(e, attempt.name, encInfo)) break;
+            }
+        }
+        // Password failure. A mixed archive (some entries encrypted, some not)
+        // still leaves the readable files on disk — keep them and warn, rather
+        // than throwing away a partial extraction the model can use.
+        if (lastErr && !used && isPasswordFailure(lastErr.err, lastErr.attempt.name, encInfo)) {
+            const produced = await fs.promises.readdir(extractDir).catch(() => []);
+            const locked = encInfo?.encrypted
+                ? `${encInfo.encrypted} of ${encInfo.total} entries are encrypted${encInfo.names.length ? ` (e.g. ${encInfo.names.slice(0, 3).join(', ')})` : ''}`
+                : 'its contents are encrypted';
+            const advice = password
+                // Echo the password that was tried: models mangle a copied
+                // string as readily as they mangle a filename (live-observed:
+                // the user said "infected", the tool got "infected_"), and
+                // seeing it back is the only way that gets noticed.
+                ? `The password that was supplied ("${password.slice(0, 40)}") was REJECTED. Check it character-for-character against what the user gave you — if it matches, ask them for the correct one. Retry with the "password" argument; do not retry with a different path.`
+                : `Retry extract_archive with the "password" argument. If the user did not give one, ASK THEM for it — do not guess repeatedly, and do not retry with a different filename/archiveId (the reference was correct; the archive is simply locked).`;
+            if (produced.length) {
+                passwordWarning = `PARTIAL EXTRACTION: "${filename}" is password-protected (${locked}). The unencrypted entries below were extracted; the encrypted ones were skipped. ${advice}`;
+                used = lastErr.attempt;
+                lastErr = null;
+            } else {
+                throw new Error(
+                    `"${filename}" is password-protected (${locked}) and could not be extracted. ${advice}`,
+                );
             }
         }
         if (lastErr || !used) {
@@ -369,6 +523,11 @@ async function extractArchive(buffer, filename, opts = {}) {
 
         let totalTextBytes = 0;
         const entries = [];
+        // Entries that are themselves password-protected archives. The reported
+        // failure was exactly this shape (a plain zip wrapping an encrypted
+        // zip): extraction "succeeds", the model then extracts the inner file
+        // and hits a wall it has no way to explain to the user.
+        const lockedEntries = [];
         for (const f of selected) {
             // In persist mode, expose a path relative to pathBase so the caller
             // can hand it directly to a sandboxed read_file (which is rooted at
@@ -377,6 +536,10 @@ async function extractArchive(buffer, filename, opts = {}) {
                 ? path.relative(pathBase, f.fullPath).split(path.sep).join('/')
                 : f.path;
             const entry = { path: relPath, size: f.size };
+            if (/\.zip$/i.test(f.path) && await zipFileIsEncrypted(f.fullPath)) {
+                entry.encrypted = true;
+                lockedEntries.push(relPath);
+            }
             if (inlineText && f.size <= maxTextPerEntry && totalTextBytes + f.size <= maxTotalText) {
                 try {
                     const data = await fs.promises.readFile(f.fullPath);
@@ -407,9 +570,15 @@ async function extractArchive(buffer, filename, opts = {}) {
             entryCount: files.length,
             entries,
             truncated,
-            note: truncated
-                ? `Listing truncated at ${maxEntries} of ${files.length} entries.`
-                : undefined,
+            ...(lockedEntries.length ? { encryptedEntries: lockedEntries } : {}),
+            ...(passwordWarning ? { partial: true, passwordProtected: true } : {}),
+            note: [
+                truncated ? `Listing truncated at ${maxEntries} of ${files.length} entries.` : '',
+                passwordWarning || '',
+                lockedEntries.length
+                    ? `NOTE: ${lockedEntries.length === 1 ? 'this extracted entry is itself a password-protected zip' : 'these extracted entries are themselves password-protected zips'}: ${lockedEntries.slice(0, 5).join(', ')}. To read inside, call extract_archive again with path="<that entry>" AND the "password" argument — ask the user for the password if you do not have one (malware-sample archives are commonly locked with "infected").`
+                    : '',
+            ].filter(Boolean).join(' ') || undefined,
         };
     } finally {
         if (persistMode) {

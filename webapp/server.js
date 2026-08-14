@@ -27369,7 +27369,12 @@ app.use((req, res) => {
     // flow dead-ended on "No uploaded archives are available". Skips the
     // archives/ output dir (already-extracted content) and node_modules.
     const ARCHIVE_EXT_RE = /\.(zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|gz|bz2|xz)$/i;
-    async function listWorkspaceArchives(ctx, cap = 10) {
+    // `includeExtracted` also walks archives/ (where a previous extract_archive
+    // landed its output). It is off for the "which archives could you mean?"
+    // listing — that would be noise — but ON when resolving a path the model
+    // typed, because a nested archive (a zip inside the zip) lives exactly
+    // there and is otherwise unresolvable.
+    async function listWorkspaceArchives(ctx, cap = 10, includeExtracted = false) {
         const sandboxRunner = require('./services/sandboxRunner');
         let workspace;
         try {
@@ -27384,7 +27389,7 @@ app.use((req, res) => {
             const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
             for (const ent of entries) {
                 if (files.length >= cap) return;
-                if (ent.name === 'node_modules' || (depth === 0 && ent.name === 'archives')) continue;
+                if (ent.name === 'node_modules' || (!includeExtracted && depth === 0 && ent.name === 'archives')) continue;
                 const full = pathMod.join(dir, ent.name);
                 const relPath = rel ? `${rel}/${ent.name}` : ent.name;
                 if (ent.isDirectory()) await walk(full, relPath, depth + 1);
@@ -27410,14 +27415,58 @@ app.use((req, res) => {
             !resolved.startsWith(workspace.localInContainer + pathMod.sep)) {
             throw new Error('Resolved path escapes the workspace.');
         }
-        const stat = await fsp.stat(resolved).catch(() => null);
+        let stat = await fsp.stat(resolved).catch(() => null);
+        let finalPath = resolved;
+        let resolvedFrom = null;
         if (!stat || !stat.isFile()) {
-            const { files } = await listWorkspaceArchives(ctx).catch(() => ({ files: [] }));
-            const hint = files.length ? ` Archives in the workspace: ${files.join(', ')}` : '';
-            throw new Error(`No file at workspace path "${rel}".${hint}`);
+            // The path the model typed doesn't exist. Listing the real one back
+            // at it does NOT help — a model that cannot transcribe a long
+            // filename cannot transcribe it on the retry either, and every
+            // mangled retry is a NEW string so the loop guard's fingerprint
+            // never repeats (live-observed: ~25 extract_archive calls marching
+            // through invented dates and a-b-c-d suffixes of the same name).
+            // Same treatment the archiveId slot already gets: fuzzy-resolve to
+            // the one archive it is unambiguously closest to.
+            const { files } = await listWorkspaceArchives(ctx, 50, true).catch(() => ({ files: [] }));
+            const base = rel.split('/').pop();
+            const exact = files.find(f => f.split('/').pop().toLowerCase() === base.toLowerCase());
+            // Match on the WHOLE path first: the observed failure is a model
+            // that truncates a long path ("archives/2026-08" for a 60-char
+            // extraction dir), where the basename carries no signal at all but
+            // the path is a clean prefix of the real one.
+            const hit = exact
+                || (() => {
+                    const w = _closestArchiveRef(rel, files);
+                    return w || null;
+                })()
+                || (() => {
+                    const w = _closestArchiveRef(base, files.map(f => f.split('/').pop()));
+                    return w ? files.find(f => f.split('/').pop() === w) : null;
+                })()
+                // Nothing matched by similarity, but there is exactly ONE
+                // archive in the workspace and the model asked for something
+                // archive-shaped — that is what it means.
+                || (files.length === 1 && ARCHIVE_EXT_RE.test(base) ? files[0] : null);
+            if (!hit) {
+                const hint = files.length ? ` Archives in the workspace: ${files.join(', ')}` : '';
+                throw new Error(`No file at workspace path "${rel}".${hint}`);
+            }
+            finalPath = pathMod.resolve(workspace.localInContainer, hit);
+            if (finalPath !== workspace.localInContainer &&
+                !finalPath.startsWith(workspace.localInContainer + pathMod.sep)) {
+                throw new Error('Resolved path escapes the workspace.');
+            }
+            stat = await fsp.stat(finalPath).catch(() => null);
+            if (!stat || !stat.isFile()) throw new Error(`No file at workspace path "${rel}".`);
+            resolvedFrom = rel;
         }
         if (stat.size > 50 * 1024 * 1024) throw new Error(`File is ${stat.size} bytes; 50MB max.`);
-        return { buffer: await fsp.readFile(resolved), filename: pathMod.basename(resolved) };
+        return {
+            buffer: await fsp.readFile(finalPath),
+            filename: pathMod.basename(finalPath),
+            resolvedFrom,
+            resolvedPath: pathMod.relative(workspace.localInContainer, finalPath).split(pathMod.sep).join('/'),
+        };
     }
 
     async function resolveArchiveById(archiveId, userId) {
@@ -27504,6 +27553,7 @@ app.use((req, res) => {
                         'Three inputs (pass exactly one): (1) `archiveId` from the `[Archive uploaded: ... archiveId=... ]` marker when the user uploaded the archive; ' +
                         '(2) `path` — the workspace path of an archive a previous tool downloaded or created (use the exact savePath/path that tool returned, e.g. after download_file or fetch_url); ' +
                         '(3) `base64Data` + `filename` for tiny inline archives ONLY — base64 in tool args gets truncated, never paste real archive bytes. ' +
+                        'Pass `password` for a password-protected (encrypted) zip/7z/rar. ' +
                         'Extracts into the conversation workspace and returns the entry list — pass an entry `path` to read_file/grep_code to inspect contents.',
                     parameters: {
                         type: 'object',
@@ -27524,6 +27574,10 @@ app.use((req, res) => {
                                 type: 'string',
                                 description: 'Required when using base64Data. The extension hints the extractor (e.g. "report.tar.gz"); magic bytes override a wrong extension.',
                             },
+                            password: {
+                                type: 'string',
+                                description: 'Password for an encrypted zip/7z/rar. Use the one the user gave you; ask them if the result says the archive is password-protected. Ignored for unencrypted archives.',
+                            },
                         },
                         additionalProperties: false,
                     },
@@ -27532,6 +27586,7 @@ app.use((req, res) => {
         },
         async execute(args, ctx) {
             let buffer, filename;
+            const password = String(args?.password ?? '');
             let archiveId = String(args?.archiveId || '').trim();
             let wsPath = String(args?.path || '').trim();
             // Set when a garbled id/path was fuzzy-resolved to a real archive —
@@ -27594,6 +27649,10 @@ app.use((req, res) => {
                     const resolved = await resolveArchiveByPath(wsPath, ctx);
                     buffer = resolved.buffer;
                     filename = resolved.filename;
+                    if (resolved.resolvedFrom) {
+                        archiveAutoResolvedFrom = resolved.resolvedFrom;
+                        wsPath = resolved.resolvedPath;
+                    }
                 } catch (e) {
                     return { error: e.message };
                 }
@@ -27660,7 +27719,7 @@ app.use((req, res) => {
                 } catch (wsErr) {
                     // Fall back to legacy inline-extraction mode if no workspace
                     // (e.g. /v1 passthrough callers without conv plumbing).
-                    return await archiveExtractor.extractArchive(buffer, filename);
+                    return await archiveExtractor.extractArchive(buffer, filename, { password });
                 }
                 const fsp = require('fs').promises;
                 const pathMod = require('path');
@@ -27672,10 +27731,19 @@ app.use((req, res) => {
                 // new mangle of /archives/<32hex>/package/...). Mirrors the
                 // legible-clone-dir fix in git_clone_shallow. A short hash
                 // suffix is appended only on a genuine name collision.
-                const legibleBase = (String(filename || 'archive')
-                    .replace(/\.(zip|7z|rar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar|gz|bz2|xz)$/i, '')
-                    .replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^[-.]+|[-.]+$/g, '')
-                    .slice(0, 60)) || 'archive';
+                // Cap at 40 chars and cut on a separator, not mid-word: a
+                // 60-char stump ("...-two-different-RATs.pc") is past what the
+                // model will retype, and it then truncates the path itself on
+                // the follow-up call (live-observed).
+                const legibleBase = (() => {
+                    const cleaned = String(filename || 'archive')
+                        .replace(/\.(zip|7z|rar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar|gz|bz2|xz)$/i, '')
+                        .replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+                    if (cleaned.length <= 40) return cleaned || 'archive';
+                    const cut = cleaned.slice(0, 40);
+                    const sep = Math.max(cut.lastIndexOf('-'), cut.lastIndexOf('.'), cut.lastIndexOf('_'));
+                    return (sep >= 12 ? cut.slice(0, sep) : cut).replace(/[-._]+$/, '') || 'archive';
+                })();
                 const archivesDir = pathMod.join(workspace.localInContainer, 'archives');
                 await fsp.mkdir(archivesDir, { recursive: true });
                 let dirName = legibleBase;
@@ -27691,17 +27759,18 @@ app.use((req, res) => {
                 const result = await archiveExtractor.extractArchive(buffer, filename, {
                     extractTo: extractRoot,
                     pathBase: workspace.localInContainer,
+                    password,
                 });
                 return {
                     ...result,
                     workspaceRoot: workspace.containerMount,
                     ...(archiveAutoResolvedFrom ? {
                         resolvedFrom: archiveAutoResolvedFrom,
-                        resolvedTo: archiveId || filename,
+                        resolvedTo: archiveId || wsPath || filename,
                     } : {}),
                     note: (result.note ? result.note + ' ' : '') +
                         (archiveAutoResolvedFrom
-                            ? `NOTE: "${archiveAutoResolvedFrom}" did not match any archive; auto-resolved to ${archiveId ? `archiveId=${archiveId}` : `path=${filename}`}. Use that EXACT reference next time. `
+                            ? `NOTE: "${archiveAutoResolvedFrom}" did not match any archive; auto-resolved to ${archiveId ? `archiveId=${archiveId}` : `path=${wsPath || filename}`}. Use that EXACT reference next time. `
                             : '') +
                         `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`,
                 };
