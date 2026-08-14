@@ -248,6 +248,44 @@ async function runPythonSkill(opts) {
                     console.log('[sandboxRunner] path recovery:', toolName,
                         pathResolutions.map(r => `${r.from} -> ${r.to}`).join(', '));
                 }
+                // Code-execution tools carry their input paths as LITERALS in
+                // the source, which the arg resolver above cannot reach. Fix a
+                // mangled upload/archive path in the code itself, for both the
+                // inline `code` arg and a `codeFile` on disk.
+                if (toolName === 'run_python' || toolName === 'run_node') {
+                    try {
+                        const codeResolutions = [];
+                        if (typeof resolvedParams.code === 'string' && resolvedParams.code) {
+                            const r = await resolveCodePathLiterals(resolvedParams.code, workspaceInfo, workspaceInfo.containerMount);
+                            if (r.resolutions.length) {
+                                if (resolvedParams === params) resolvedParams = { ...params };
+                                resolvedParams.code = r.code;
+                                codeResolutions.push(...r.resolutions);
+                            }
+                        }
+                        const cf = resolvedParams.codeFile;
+                        if (typeof cf === 'string' && cf && (cf === workspaceInfo.containerMount || cf.startsWith(workspaceInfo.containerMount + '/'))) {
+                            const cfLocal = path.join(workspaceInfo.localInContainer, cf.slice(workspaceInfo.containerMount.length + 1));
+                            if (cfLocal.startsWith(workspaceInfo.localInContainer)) {
+                                const original = await fs.readFile(cfLocal, 'utf8').catch(() => null);
+                                if (original != null) {
+                                    const r = await resolveCodePathLiterals(original, workspaceInfo, workspaceInfo.containerMount);
+                                    if (r.resolutions.length && r.code !== original) {
+                                        await fs.writeFile(cfLocal, r.code);
+                                        codeResolutions.push(...r.resolutions);
+                                    }
+                                }
+                            }
+                        }
+                        if (codeResolutions.length) {
+                            pathResolutions = pathResolutions.concat(codeResolutions);
+                            console.log('[sandboxRunner] code-path recovery:', toolName,
+                                codeResolutions.map(r => `${r.from} -> ${r.to}`).join(', '));
+                        }
+                    } catch (e) {
+                        console.warn('[sandboxRunner] code-path recovery skipped:', e.message);
+                    }
+                }
             }
         } catch (pathErr) {
             await cleanupRun(runId).catch(() => {});
@@ -945,6 +983,73 @@ function pickBestFileMatch(wanted, candidates) {
     return top[0];
 }
 
+// Input-only directories: a mangled path literal under one of these is
+// unambiguously a READ of something already on disk (an upload, an extracted
+// archive), never a file the script is about to WRITE (outputs go to
+// artifacts/). Restricting the code-literal resolver to these means it can
+// never silently redirect a write and corrupt a different file.
+const CODE_INPUT_DIRS = ['uploads', 'archives'];
+
+/** Resolve mangled `/workspace/...` path LITERALS inside run_python / run_node
+ *  code. The arg-path resolver (resolveMissingReadPaths) can't reach these —
+ *  a path baked into the source is a string literal, not a tool argument — so
+ *  a model that hardcodes an upload's name from memory (wrong date, wrong
+ *  extension, truncated) hits FileNotFoundError deep in its own script and,
+ *  because it cannot re-transcribe the name any better on the retry, rewrites
+ *  the whole script in a loop (live-observed on a .pcap upload 2026-08-13:
+ *  `/workspace/uploads/2026-08-15-...pcapng` for a real
+ *  `/workspace/uploads/2026-08-12-...pcap`). Scoped to INPUT dirs so it only
+ *  ever fixes a read. Returns the rewritten text + what changed; never throws. */
+async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINER_MOUNT) {
+    if (typeof codeText !== 'string' || !codeText || !workspaceInfo) {
+        return { code: codeText, resolutions: [] };
+    }
+    const root = workspaceInfo.localInContainer;
+    const resolutions = [];
+    // Path-shaped tokens under the mount. Stop at whitespace, quotes, and the
+    // shell/format punctuation that commonly abuts a path literal.
+    const re = new RegExp(`${mount.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}/[^\\s'"\`,);:]+`, 'g');
+    const seen = new Set();
+    const dirCache = new Map();
+    let out = codeText;
+    const matches = codeText.match(re) || [];
+    for (let token of matches) {
+        // Trim a trailing dot the regex may have caught from prose.
+        token = token.replace(/\.$/, '');
+        if (seen.has(token)) continue;
+        seen.add(token);
+        const rel = token.slice(mount.length + 1);
+        if (!rel || rel.includes('..')) continue;
+        const topDir = rel.split('/')[0];
+        if (!CODE_INPUT_DIRS.includes(topDir)) continue;   // input-only scope
+        const local = path.join(root, rel);
+        try {
+            const st = await fs.stat(local);
+            if (st.isFile() || st.isDirectory()) continue;  // real — leave it
+        } catch { /* ENOENT — the case we recover */ }
+        try {
+            const parentLocal = path.dirname(local);
+            if (!parentLocal.startsWith(root)) continue;
+            let files = dirCache.get(parentLocal);
+            if (!files) { files = await listFilesShallow(parentLocal); dirCache.set(parentLocal, files); }
+            if (!files.length) continue;
+            const wantedBase = path.basename(rel);
+            // A single file in an input dir IS the file the model meant, even
+            // when the mangled name scores below the fuzzy floor.
+            let hit = files.length === 1 ? files[0] : pickBestFileMatch(wantedBase, files);
+            if (!hit) continue;
+            const resolved = path.posix.join(mount, path.relative(root, hit.full).split(path.sep).join('/'));
+            if (resolved === token) continue;
+            // Replace every occurrence of this exact literal.
+            out = out.split(token).join(resolved);
+            resolutions.push({ from: token, to: resolved });
+        } catch (e) {
+            console.warn('[sandboxRunner] code-path recovery failed:', e.message);
+        }
+    }
+    return { code: out, resolutions };
+}
+
 /** Rewrite read-only path args that point at a file which is not there.
  *  Returns the (possibly unchanged) params plus a list of what was rewritten.
  *  Never throws — on any surprise we leave the arg alone and let the skill
@@ -1440,6 +1545,7 @@ module.exports = {
     resolveInWorkspace,
     normalizePathArgs,
     resolveMissingReadPaths,
+    resolveCodePathLiterals,
     pickBestFileMatch,
     PATH_ARG_NAMES,
     RESOLVABLE_READ_PATH_ARGS,

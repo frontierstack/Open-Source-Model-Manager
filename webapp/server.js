@@ -21032,9 +21032,23 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             : priorHits;
                         // append_to_file / replace_lines are inherently
                         // multi-call per file (chunked writes, sequential
-                        // edits) — give them a much longer churn leash.
+                        // edits) — give them a much longer churn leash. A write
+                        // whose target is an ACTIVELY-EXECUTED script (some
+                        // run_python/run_node ran that exact path) is the
+                        // write→run→rewrite debug cycle — equally multi-call by
+                        // nature — so it gets the same leash. Without this a
+                        // real "fix the script and re-run" loop was clamped at 3
+                        // and then run_python itself was quarantined, killing a
+                        // pcap/data-analysis turn whose whole job is run_python
+                        // (live-observed 2026-08-13). A genuinely stuck loop is
+                        // still caught by the outcome-redundancy backstop and the
+                        // nudge hard cap; only the naive 3-write clamp is lifted.
+                        const debugCycleTarget = !!targetKey &&
+                            historySnapshot.some(h => h.execPath &&
+                                h.execPath === targetKey.split('target=')[1]);
                         const churnLimit = (call.function.name === 'append_to_file' ||
-                                            call.function.name === 'replace_lines') ? 8 : 3;
+                                            call.function.name === 'replace_lines' ||
+                                            debugCycleTarget) ? 8 : 3;
                         const targetRepeat = !!targetKey &&
                             (identicalPriorHits.length >= 1 || priorHits.length >= churnLimit);
 
@@ -21647,6 +21661,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     regexFlag = !!JSON.parse(call.function.arguments || '{}').regex;
                                 } catch (_) { /* */ }
                             }
+                            // The script an execution tool RAN (its codeFile). Lets
+                            // the churn guard tell a legitimate write→run→rewrite
+                            // debug cycle (edit a script, re-run it, edit again)
+                            // from blind churn on a document — the former deserves
+                            // the longer leash that append_to_file/replace_lines get.
+                            let execPath = null;
+                            if (call.function.name === 'run_python' || call.function.name === 'run_node') {
+                                try {
+                                    execPath = JSON.parse(call.function.arguments || '{}').codeFile || null;
+                                } catch (_) { /* */ }
+                            }
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
@@ -21657,6 +21682,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 outcomeEmpty,
                                 resolvedTarget,
                                 readPath,
+                                execPath,
                                 regexFlag,
                                 toolName: recName,
                                 searchBlocked,

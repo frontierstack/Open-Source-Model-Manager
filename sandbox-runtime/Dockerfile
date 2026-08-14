@@ -282,6 +282,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr-a
     && rm -rf /var/lib/apt/lists/* \
     && tesseract --list-langs | tail -n +2 | wc -l | xargs -I{} echo "[tesseract] {} languages installed"
 
+# Packet-capture / network-forensics parsing for run_python. This is a
+# security-analysis platform; a .pcap / .pcapng upload (malware C2 traffic,
+# incident response) is a first-class input, but the base image shipped no
+# pcap parser at all — so the model wrote `import dpkt`, hit ModuleNotFoundError,
+# and (because a same-script `pip install` is not importable without an
+# invalidate_caches() the model rarely writes) rewrote its analysis script in a
+# loop until the guard clamped it (live-observed 2026-08-13). dpkt is pure
+# Python (no libpcap/tshark needed to READ a capture), handles both classic
+# pcap and pcapng, and works headless — kept as a late layer so the heavy
+# whisper/JDK/node/weasyprint layers stay cached.
+#
+# scapy is deliberately NOT installed: importing it (even `from scapy.utils
+# import rdpcap`, not just `scapy.all`) eagerly enumerates network interfaces
+# via rtnetlink, which crashes under gVisor's netlink emulation with
+# `KeyError: 'scope'` — verified in the live sandbox. A preinstalled library
+# that crashes on import would just send the model back into the same loop, so
+# dpkt (which needs no interfaces — the sandbox has no live network anyway) is
+# the one we ship and advertise.
+RUN pip install --no-cache-dir \
+        dpkt==1.9.8 \
+    && rm -rf /root/.cache \
+    && python3 -c "import dpkt; print('dpkt', dpkt.__version__, 'OK')"
+
 USER sandbox
 WORKDIR /tmp
 
