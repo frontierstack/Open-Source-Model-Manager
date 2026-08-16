@@ -161,6 +161,14 @@ const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
 const reasoningEffort = require('./services/reasoningEffort');
 
+// Model-download integrity: `downloadState` reads the .download-state.json
+// manifest scripts/download_model.py writes into each model dir (and applies
+// the staleness rule that catches a downloader killed by a webapp rebuild);
+// `ggufInspect` proves a legacy .gguf with no manifest is truncated by
+// comparing its tensor table against the real file size.
+const downloadState = require('./services/downloadState');
+const ggufInspect = require('./services/ggufInspect');
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -3965,18 +3973,227 @@ app.put('/api/users/:id/enable', requireAuth, async (req, res) => {
 // MODEL DOWNLOAD ENDPOINTS (Multi-Download Support)
 // ============================================================================
 
+// ---------------------------------------------------------------------------
+// Download integrity helpers
+// ---------------------------------------------------------------------------
+// A partial .gguf is byte-for-byte indistinguishable from a complete one to a
+// directory listing, so before this the models list said "Downloaded (Not
+// Loaded)" for a 56%-complete file and the only symptom was llama.cpp exiting 1
+// with "tensor 'blk.N...' data is not within the file bounds" — after which the
+// health monitor removed the container and its logs with it.
+//
+// Two independent signals, in priority order:
+//   1. the .download-state.json manifest written by scripts/download_model.py
+//      (authoritative, and the only thing that can tell us the repo/file needed
+//      to RESUME), and
+//   2. the GGUF tensor-table check, which needs no manifest at all and is what
+//      catches models downloaded before manifests existed.
+
+// The primary weight file of a model dir: skip the mmproj sidecar, and for a
+// split model prefer the first shard (that is what the loader is handed).
+function pickPrimaryGguf(files) {
+    const ggufs = (files || []).filter(f => typeof f === 'string' && f.endsWith('.gguf') && !f.includes('-mmproj-'));
+    if (!ggufs.length) return null;
+    const first = ggufs.find(f => /-0*1-of-\d+\.gguf$/i.test(f));
+    return first || ggufs.sort()[0];
+}
+
+// Is a download for this model currently running in THIS process?
+function activeDownloadFor(modelName) {
+    for (const d of activeDownloads.values()) {
+        if (d.modelName === modelName && (d.status === 'downloading' || d.status === 'cancelling')) return d;
+    }
+    return null;
+}
+
+/**
+ * Combine manifest + GGUF check into one verdict for a model directory.
+ * Never throws — a broken manifest or an unreadable file degrades to "unknown",
+ * never to a false "corrupt" and never to a 500 on /api/models.
+ *
+ * @returns {Promise<{downloadState:object, integrity:object|null,
+ *                    incomplete:boolean, statusLabel:string|null}>}
+ */
+async function describeModelDownload(modelName, opts = {}) {
+    const modelDir = path.join('/models', modelName);
+
+    let state = null;
+    try { state = await downloadState.summarize(modelDir); } catch (_) { state = null; }
+
+    let ggufFile = opts.ggufFile;
+    if (ggufFile === undefined) {
+        let files = opts.files;
+        if (!files) {
+            try { files = await fs.readdir(modelDir, { recursive: true }); } catch (_) { files = []; }
+        }
+        ggufFile = pickPrimaryGguf(files);
+    }
+
+    let integrity = null;
+    if (ggufFile) {
+        // Skip the header check while bytes are actively landing — the file is
+        // legitimately short mid-download and the answer would just be noise.
+        const live = state && state.status === 'downloading';
+        if (!live && !activeDownloadFor(modelName)) {
+            try { integrity = await ggufInspect.inspectGgufCached(path.join(modelDir, ggufFile)); } catch (_) { integrity = null; }
+        }
+    }
+
+    const active = activeDownloadFor(modelName);
+    let incomplete = false;
+    let statusLabel = null;
+    let effective = state;
+
+    if (active || (state && state.status === 'downloading')) {
+        const pct = active ? Math.round(active.overallPct || active.progress || 0) : Math.round(state.percent || 0);
+        effective = state || { status: 'downloading', percent: pct, resumable: false, reason: 'download in progress' };
+        statusLabel = `Downloading (${pct}%)`;
+    } else if (state && (state.status === 'interrupted' || state.status === 'failed')) {
+        incomplete = true;
+        statusLabel = state.status === 'failed'
+            ? `Download failed (${Math.round(state.percent || 0)}%)`
+            : `Incomplete download (${Math.round(state.percent || 0)}%)`;
+    } else if (integrity && integrity.truncated) {
+        // No usable manifest (or a manifest that lies) but the tensor table
+        // proves the bytes are short. We cannot resume what we cannot attribute
+        // to a repo/file, so this one has to be re-downloaded.
+        incomplete = true;
+        statusLabel = 'Incomplete file (truncated)';
+        effective = {
+            status: 'incomplete',
+            percent: integrity.percent != null ? integrity.percent : 0,
+            downloadedBytes: integrity.actualBytes || 0,
+            totalBytes: integrity.expectedMinBytes || 0,
+            repo: (state && state.repo) || null,
+            file: (state && state.file) || ggufFile || null,
+            updatedAt: state ? state.updatedAt : null,
+            resumable: false,
+            reason: 'no download record — re-download to repair',
+            files: state ? state.files : []
+        };
+    } else if (!state) {
+        effective = { status: 'complete', percent: 100, resumable: false, reason: 'no download record; GGUF tensor table fits the file' };
+    }
+
+    return { downloadState: effective, integrity, incomplete, statusLabel };
+}
+
+/**
+ * Boot scan: make on-disk download state honest and say out loud what is partial.
+ *
+ * The downloader is a CHILD OF THIS CONTAINER, so any restart/rebuild kills it
+ * mid-pull and it never gets to write its own "interrupted" record — the
+ * manifest is frozen at "downloading" forever and every later reader has to
+ * re-derive that from timestamps. Rewrite those once, here, from a dead pid.
+ * Deliberately does NOT auto-resume: re-downloading tens of GB is the user's
+ * call, not a side effect of a restart.
+ */
+async function scanPartialDownloadsAtBoot() {
+    const modelsDir = '/models';
+    let entries = [];
+    try {
+        entries = await fs.readdir(modelsDir, { withFileTypes: true });
+    } catch (err) {
+        if (err.code !== 'ENOENT') console.warn('[Downloads] boot scan failed:', err.message);
+        return [];
+    }
+    const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('models--'));
+    const partials = [];
+
+    for (const d of dirs) {
+        const modelDir = path.join(modelsDir, d.name);
+        try {
+            const raw = await downloadState.readState(modelDir);
+            if (raw && raw.status === 'downloading') {
+                const eff = downloadState.effectiveStatus(raw);
+                if (eff !== 'downloading') {
+                    await downloadState.markStatus(modelDir, 'interrupted', {
+                        error: raw.error || 'downloader process ended before the download completed (webapp restart or crash)'
+                    });
+                    console.log(`[Downloads] ${d.name}: stale "downloading" record -> marked interrupted`);
+                }
+            }
+            const info = await describeModelDownload(d.name);
+            if (info.incomplete) {
+                const st = info.downloadState || {};
+                partials.push({
+                    modelName: d.name,
+                    percent: Math.round(st.percent || 0),
+                    resumable: !!st.resumable
+                });
+            }
+        } catch (err) {
+            console.warn(`[Downloads] boot scan skipped ${d.name}: ${err.message}`);
+        }
+    }
+
+    if (partials.length) {
+        console.log(`[Downloads] ${partials.length} partial download(s): ` +
+            partials.map(p => `${p.modelName} ${p.percent}%${p.resumable ? '' : ' (not resumable)'}`).join(', '));
+    }
+    return partials;
+}
+
 // Start a new model download
-app.post('/api/models/pull', requireAuth, (req, res) => {
+app.post('/api/models/pull', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'models')) {
         return res.status(403).json({ error: 'Models permission required' });
     }
 
-    const { ggufRepo, ggufFile } = req.body;
+    let { ggufRepo, ggufFile } = req.body;
+    const resumeModelName = typeof req.body?.modelName === 'string' ? req.body.modelName : null;
+
+    // Resume form: the UI knows only WHICH model is half-downloaded, not the
+    // repo/file it came from — recover both from that dir's manifest so a
+    // "Continue" button needs no extra state.
+    if ((!ggufRepo || !ggufFile) && resumeModelName) {
+        if (!isValidModelName(resumeModelName)) {
+            return res.status(400).json({ error: 'Invalid model name' });
+        }
+        const state = await downloadState.readState(path.join('/models', resumeModelName));
+        if (!state || !state.repo || !state.requestedFile) {
+            return res.status(400).json({
+                error: `No resumable download record for ${resumeModelName} — the original repo/file is unknown, so it must be re-downloaded from the Discover page.`,
+                resumable: false
+            });
+        }
+        ggufRepo = state.repo;
+        ggufFile = state.requestedFile;
+    }
 
     if (!ggufRepo || !ggufFile) {
-        return res.status(400).json({ error: 'ggufRepo and ggufFile are required' });
+        return res.status(400).json({ error: 'ggufRepo and ggufFile are required (or modelName for a resume)' });
     }
+
+    // Never run two downloads of the SAME remote object: they would write the
+    // same file, and the ranged resume logic in download_model.py would see the
+    // other process's bytes as its own progress.
+    for (const d of activeDownloads.values()) {
+        if (d.ggufRepo === ggufRepo && d.ggufFile === ggufFile &&
+            (d.status === 'downloading' || d.status === 'cancelling')) {
+            return res.status(409).json({
+                error: `A download of ${ggufFile} from ${ggufRepo} is already in progress`,
+                downloadId: d.downloadId,
+                modelName: d.modelName,
+                progress: d.overallPct || d.progress || 0
+            });
+        }
+    }
+
+    // How many bytes are already on disk — the download resumes from here.
+    const pullModelName = resumeModelName || (ggufRepo.match(/\/(.+)$/) || [])[1] || ggufRepo;
+    let resumedFrom = 0;
+    try {
+        const summary = await downloadState.summarize(path.join('/models', pullModelName));
+        if (summary && summary.status !== 'complete') resumedFrom = summary.downloadedBytes || 0;
+        else if (!summary) {
+            // No manifest (legacy/aborted) — fall back to the file itself.
+            const st = await fs.stat(path.join('/models', pullModelName, path.basename(ggufFile))).catch(() => null);
+            if (st && st.isFile()) resumedFrom = st.size;
+        }
+    } catch (_) { resumedFrom = 0; }
+    downloadState.invalidate(path.join('/models', pullModelName));
 
     // Generate unique download ID
     const downloadId = crypto.randomUUID();
@@ -4004,6 +4221,8 @@ app.post('/api/models/pull', requireAuth, (req, res) => {
         fileSize: 0,
         startTime: Date.now(),
         childProcess: child,
+        isResume: resumedFrom > 0,
+        resumedFrom,
         modelName: null // Will be extracted from repo name
     };
 
@@ -4021,8 +4240,13 @@ app.post('/api/models/pull', requireAuth, (req, res) => {
         downloadId,
         ggufRepo,
         ggufFile,
-        modelName: downloadInfo.modelName
+        modelName: downloadInfo.modelName,
+        isResume: downloadInfo.isResume,
+        resumedFrom
     });
+    if (resumedFrom > 0) {
+        console.log(`[Download ${downloadId}] resuming ${ggufFile} from ${resumedFrom} bytes already on disk`);
+    }
 
     // Parse structured progress from stdout. The download script emits lines
     // of the form `__PROGRESS__{json}` alongside regular log output. We buffer
@@ -4190,10 +4414,13 @@ app.post('/api/models/pull', requireAuth, (req, res) => {
     });
 
     res.status(202).json({
-        message: 'Download started',
+        message: resumedFrom > 0 ? 'Download resumed' : 'Download started',
         downloadId,
         ggufRepo,
-        ggufFile
+        ggufFile,
+        modelName: downloadInfo.modelName,
+        isResume: resumedFrom > 0,
+        resumedFrom
     });
 });
 
@@ -4225,6 +4452,60 @@ app.get('/api/downloads', requireAuth, (req, res) => {
         startTime: d.startTime
     }));
     res.json(downloads);
+});
+
+// List partial / interrupted / truncated downloads that can be continued.
+// Deliberately EXCLUDES anything currently downloading — this is the "pick up
+// where it left off" list, not a progress view (that is GET /api/downloads).
+app.get('/api/downloads/partial', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const modelsDir = '/models';
+    try {
+        let entries = [];
+        try {
+            entries = await fs.readdir(modelsDir, { withFileTypes: true });
+        } catch (err) {
+            if (err.code === 'ENOENT') return res.json({ partials: [] });
+            throw err;
+        }
+        const dirs = entries.filter(e =>
+            e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('models--'));
+
+        const partials = [];
+        for (const d of dirs) {
+            let info;
+            try {
+                info = await describeModelDownload(d.name);
+            } catch (err) {
+                console.warn(`[Downloads] partial scan failed for ${d.name}:`, err.message);
+                continue;
+            }
+            if (!info.incomplete) continue;          // healthy or actively downloading
+            const st = info.downloadState || {};
+            partials.push({
+                modelName: d.name,
+                repo: st.repo || null,
+                file: st.file || null,
+                status: st.status || 'incomplete',
+                percent: st.percent != null ? st.percent : null,
+                downloadedBytes: st.downloadedBytes || 0,
+                totalBytes: st.totalBytes || 0,
+                updatedAt: st.updatedAt || null,
+                error: st.error || null,
+                resumable: !!st.resumable,
+                reason: st.reason || 'incomplete download',
+                integrity: info.integrity,
+                files: st.files || []
+            });
+        }
+        partials.sort((a, b) => (b.percent || 0) - (a.percent || 0));
+        res.json({ partials });
+    } catch (error) {
+        console.error('Error listing partial downloads:', error.message);
+        res.status(500).json({ error: 'Failed to list partial downloads' });
+    }
 });
 
 // Cancel a download
@@ -4367,9 +4648,29 @@ app.get('/api/models', requireAuth, async (req, res) => {
                 }
             }
 
+            // Download integrity: a partial .gguf looks identical to a complete
+            // one on disk, so consult the manifest + the GGUF tensor table
+            // before claiming the model is downloaded. Only override the status
+            // when NO instance is running (a loaded model is self-evidently OK).
+            let dl = { downloadState: { status: 'complete' }, integrity: null, incomplete: false, statusLabel: null };
+            try {
+                // Pass only `files` — the helper picks the PRIMARY weight file
+                // (shard 1 of a split, never the mmproj sidecar), which is what a
+                // truncation check must look at.
+                dl = await describeModelDownload(modelName, { files });
+            } catch (err) {
+                console.warn(`[Downloads] state check failed for ${modelName}:`, err.message);
+            }
+            if (!instance && dl.statusLabel) {
+                status = dl.statusLabel;
+            }
+
             return {
                 name: modelName,
                 status,
+                incomplete: dl.incomplete,
+                downloadState: dl.downloadState,
+                integrity: dl.integrity,
                 instanceStatus: instance?.status,
                 format: hasGGUF ? 'GGUF' : 'Unknown',
                 targetBackend: instance?.backend || 'llamacpp',
@@ -4703,6 +5004,103 @@ app.get('/api/models/hf-cache', requireAuth, async (req, res) => {
 
 // Delete a single cached HF repo to reclaim disk. Refuses if the repo is
 // currently loaded (must stop the instance first).
+// Delete ONLY an incomplete download (the leftovers of an interrupted pull).
+//
+// Deliberately NARROW: `DELETE /api/models/:modelName` already exists and wipes
+// the whole model directory — it is documented as destructive and must stay the
+// only way to remove a healthy model. This route refuses (409) unless the model
+// is provably incomplete (manifest says interrupted/failed, or the GGUF tensor
+// table proves the file is short), and it removes only weight parts + the
+// manifest, never anything else the dir happens to hold.
+app.delete('/api/models/:modelName/partial', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const { modelName } = req.params;
+    // 'hf-cache' is a sibling route's literal segment, not a model dir.
+    if (!isValidModelName(modelName) || modelName === 'hf-cache') {
+        return res.status(400).json({ error: 'Invalid model name' });
+    }
+    const modelDir = path.join('/models', modelName);
+
+    try {
+        try {
+            const st = await fs.stat(modelDir);
+            if (!st.isDirectory()) return res.status(404).json({ error: `Model ${modelName} not found` });
+        } catch {
+            return res.status(404).json({ error: `Model ${modelName} not found` });
+        }
+
+        const active = activeDownloadFor(modelName);
+        if (active) {
+            return res.status(409).json({
+                error: `A download for ${modelName} is currently running — cancel it first (DELETE /api/downloads/${active.downloadId})`,
+                downloadId: active.downloadId
+            });
+        }
+        if (modelInstances.has(modelName)) {
+            return res.status(409).json({ error: `${modelName} is loaded in a running instance — it is not an incomplete download` });
+        }
+
+        const info = await describeModelDownload(modelName);
+        if (!info.incomplete) {
+            return res.status(409).json({
+                error: `${modelName} is not an incomplete download — refusing to delete. Use DELETE /api/models/${encodeURIComponent(modelName)} to remove a healthy model.`,
+                downloadState: info.downloadState,
+                integrity: info.integrity
+            });
+        }
+
+        // Weight parts + the manifest only.
+        const PART_RE = /\.(gguf|safetensors|bin)(\.part\d*|\.tmp|\.partial|\.incomplete|\.download)?$|\.(part\d*|tmp|partial|incomplete|download)$/i;
+        let entries = [];
+        try { entries = await fs.readdir(modelDir, { withFileTypes: true }); } catch (_) {}
+
+        const removed = [];
+        let freedBytes = 0;
+        for (const e of entries) {
+            if (!e.isFile()) continue;
+            const isManifest = e.name === downloadState.STATE_FILE;
+            if (!isManifest && !PART_RE.test(e.name)) continue;
+            const full = path.join(modelDir, e.name);
+            try {
+                const st = await fs.stat(full);
+                await fs.unlink(full);
+                removed.push(e.name);
+                freedBytes += st.size;
+            } catch (err) {
+                console.warn(`[Downloads] could not remove ${full}: ${err.message}`);
+            }
+        }
+
+        // Drop the directory when nothing is left, so the stale entry disappears
+        // from the models list instead of lingering as an empty shell.
+        let removedDir = false;
+        try {
+            const left = await fs.readdir(modelDir);
+            if (left.length === 0) { await fs.rmdir(modelDir); removedDir = true; }
+        } catch (_) {}
+
+        downloadState.invalidate(modelDir);
+        const summary = `[Downloads] removed partial download for ${modelName}: ${removed.length} file(s), ${freedBytes} bytes${removedDir ? ' (directory removed)' : ''}${removed.length ? ` — ${removed.join(', ')}` : ''}`;
+        console.log(summary);
+        broadcast({ type: 'log', message: summary });
+
+        res.json({
+            message: `Removed incomplete download for ${modelName}`,
+            modelName,
+            removed,
+            freedBytes,
+            removedDirectory: removedDir,
+            wasStatus: info.downloadState?.status || 'incomplete',
+            reason: info.downloadState?.reason || null
+        });
+    } catch (error) {
+        console.error(`Error removing partial download ${modelName}:`, error.message);
+        res.status(500).json({ error: `Failed to remove partial download: ${error.message}` });
+    }
+});
+
 app.delete('/api/models/hf-cache/:dirName', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'models')) {
         return res.status(403).json({ error: 'Models permission required' });
@@ -28723,6 +29121,14 @@ server.listen(PORT, async () => {
 
     hostModelsPath = detectedPath;
     console.log(`Host models path configured: ${hostModelsPath}`);
+
+    // Reconcile download manifests killed by the last restart and report what
+    // is sitting half-downloaded. Never auto-resumes.
+    try {
+        await scanPartialDownloadsAtBoot();
+    } catch (e) {
+        console.warn('[Downloads] boot scan failed (non-fatal):', e.message);
+    }
 
     // Sandbox runner needs the host path to stage scratch dirs that sibling
     // tool-exec containers can mount. Tell it now that hostModelsPath is known.

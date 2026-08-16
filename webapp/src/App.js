@@ -532,6 +532,10 @@ const App = () => {
 
     // Download management state
     const [activeDownloads, setActiveDownloads] = useState([]);
+    // Interrupted / partially-downloaded models (GET /api/downloads/partial).
+    // Absent on older servers -> stays [] and every partial-download UI hides.
+    const [partialDownloads, setPartialDownloads] = useState([]);
+    const [resumingModel, setResumingModel] = useState(null);
 
     // Apps management state
     const [apps, setApps] = useState([]);
@@ -821,6 +825,7 @@ const App = () => {
         fetchInstances();
         fetchApiKeys();
         fetchDownloads();
+        fetchPartialDownloads();
         fetchApps();
         fetchHfCache();
         fetchAgents();
@@ -902,6 +907,7 @@ const App = () => {
                         setLoading(false);
                     } else if (data.type === 'download_started') {
                         fetchDownloads();
+                        fetchPartialDownloads();
                         showSnackbar(`Download started: ${data.modelName}`, 'info');
                     } else if (data.type === 'system_stats') {
                         // Push into a bounded ring buffer. The resource panel
@@ -935,6 +941,7 @@ const App = () => {
                         ));
                     } else if (data.type === 'download_finished') {
                         fetchDownloads();
+                        fetchPartialDownloads();
                         fetchModels();
                         if (data.success) {
                             showSnackbar(data.message, 'success');
@@ -943,9 +950,11 @@ const App = () => {
                         }
                     } else if (data.type === 'download_cancelled') {
                         fetchDownloads();
+                        fetchPartialDownloads();
                         showSnackbar(data.message, 'warning');
                     } else if (data.type === 'download_removed') {
                         setActiveDownloads(prev => prev.filter(d => d.downloadId !== data.downloadId));
+                        fetchPartialDownloads();
                     } else if (data.type === 'service_status_changed') {
                         fetchApps();
                     }
@@ -1028,6 +1037,15 @@ const App = () => {
             .then(res => res.json())
             .then(data => setActiveDownloads(data))
             .catch(error => console.error('Error fetching downloads:', error));
+    };
+
+    // Partially-downloaded / interrupted models. Tolerates an older server
+    // that doesn't have the route yet (404 -> empty list, no error toast).
+    const fetchPartialDownloads = () => {
+        fetch('/api/downloads/partial', { credentials: 'include' })
+            .then(res => (res.ok ? res.json() : null))
+            .then(data => setPartialDownloads(Array.isArray(data?.partials) ? data.partials : []))
+            .catch(() => setPartialDownloads([]));
     };
 
     const fetchApps = () => {
@@ -8916,6 +8934,73 @@ console.log(chip);`
         .catch(error => showSnackbar(error.message, 'error'));
     };
 
+    // --- Interrupted-download handlers -------------------------------------
+    // Resume: POST /api/models/pull { modelName }. The existing Active
+    // Downloads card + download_* WebSocket frames take over from there.
+    const handleResumeDownload = (modelName) => {
+        if (!modelName) return;
+        setResumingModel(modelName);
+        fetch('/api/models/pull', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ modelName }),
+        })
+        .then(async response => {
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(body.error || (response.status === 409
+                    ? 'A download for this model is already running'
+                    : `Failed to resume download (HTTP ${response.status})`));
+            }
+            return body;
+        })
+        .then(data => {
+            const from = data.resumedFrom ? ` (resuming from ${formatBytes(data.resumedFrom)})` : '';
+            showSnackbar(data.message || `Resuming download: ${modelName}${from}`, 'success');
+            fetchDownloads();
+            fetchPartialDownloads();
+        })
+        .catch(error => showSnackbar(error.message, 'error'))
+        .finally(() => setResumingModel(null));
+    };
+
+    // Discard: DELETE /api/models/:name/partial (409 = model is actually healthy).
+    const handleDiscardPartial = (modelName) => {
+        if (!modelName) return;
+        if (!window.confirm(`Discard the incomplete download for "${modelName}"?\n\nThe partial files are deleted. You'd have to download it again from the start.`)) return;
+        fetch(`/api/models/${encodeURIComponent(modelName)}/partial`, {
+            method: 'DELETE',
+            credentials: 'include',
+        })
+        .then(async response => {
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(body.error || `Failed to discard (HTTP ${response.status})`);
+            return body;
+        })
+        .then(data => {
+            showSnackbar(data.message || `Discarded incomplete download: ${modelName}`, 'success');
+            fetchPartialDownloads();
+            fetchModels();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
+    };
+
+    // "3 hours ago" for a partial's updatedAt (ISO string or epoch ms).
+    const timeAgo = (ts) => {
+        if (!ts) return null;
+        const then = typeof ts === 'number' ? ts : Date.parse(ts);
+        if (!then || Number.isNaN(then)) return null;
+        const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+        if (secs < 60) return 'just now';
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `${mins} min ago`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return `${hrs} hour${hrs > 1 ? 's' : ''} ago`;
+        const days = Math.floor(hrs / 24);
+        return `${days} day${days > 1 ? 's' : ''} ago`;
+    };
+
     // Download handlers
     const handleCancelDownload = (downloadId) => {
         fetch(`/api/downloads/${downloadId}`, {
@@ -9736,6 +9821,121 @@ console.log(chip);`
                                                 ))}
                                             </Box>
 
+                                            {/* Resumable / partially-downloaded models.
+                                                Hidden entirely when the server doesn't report any
+                                                (incl. older servers without /api/downloads/partial). */}
+                                            {partialDownloads.length > 0 && (
+                                                <Box sx={{ mt: 3, p: 2, borderRadius: 2, border: '1px solid', borderColor: 'warning.main', bgcolor: 'rgba(245, 158, 11, 0.06)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                                                        <WarningIcon sx={{ fontSize: 18, color: 'warning.main' }} />
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>
+                                                            Partially downloaded
+                                                        </Typography>
+                                                        <Chip
+                                                            label={`${partialDownloads.length} incomplete`}
+                                                            size="small"
+                                                            color="warning"
+                                                            variant="outlined"
+                                                            sx={{ height: 20, fontSize: '0.68rem' }}
+                                                        />
+                                                    </Box>
+                                                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.5 }}>
+                                                        These downloads were interrupted. Resume one to continue where it stopped — an incomplete file will fail to load.
+                                                    </Typography>
+                                                    {partialDownloads.map(partial => {
+                                                        const pct = Math.max(0, Math.min(100, Math.round(partial.percent || 0)));
+                                                        const stopped = timeAgo(partial.updatedAt);
+                                                        const canResume = partial.resumable !== false;
+                                                        const busy = resumingModel === partial.modelName;
+                                                        return (
+                                                            <Box
+                                                                key={partial.modelName}
+                                                                sx={{
+                                                                    mb: 1, p: 1.5, borderRadius: 1.5,
+                                                                    border: '1px solid', borderColor: 'divider',
+                                                                    bgcolor: 'var(--bg-tertiary)',
+                                                                }}
+                                                            >
+                                                                <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1.5, flexWrap: 'wrap' }}>
+                                                                    <Box sx={{ flex: 1, minWidth: 200, overflow: 'hidden' }}>
+                                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                                            {partial.modelName}
+                                                                        </Typography>
+                                                                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', wordBreak: 'break-all' }}>
+                                                                            {partial.repo}{partial.file ? ` · ${partial.file}` : ''}
+                                                                        </Typography>
+                                                                    </Box>
+                                                                    <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+                                                                        {canResume ? (
+                                                                            <Button
+                                                                                size="small"
+                                                                                variant="contained"
+                                                                                startIcon={busy ? <CircularProgress size={14} /> : <RestartAltIcon sx={{ fontSize: 16 }} />}
+                                                                                onClick={() => handleResumeDownload(partial.modelName)}
+                                                                                disabled={busy}
+                                                                                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+                                                                            >
+                                                                                {busy ? 'Resuming…' : `Resume (${pct}%)`}
+                                                                            </Button>
+                                                                        ) : (
+                                                                            <Tooltip title="This download can't be continued — it has to be downloaded again from the start. Discard it, then search for the model above.">
+                                                                                <Chip
+                                                                                    label="Not resumable"
+                                                                                    size="small"
+                                                                                    color="warning"
+                                                                                    variant="outlined"
+                                                                                    sx={{ height: 26 }}
+                                                                                />
+                                                                            </Tooltip>
+                                                                        )}
+                                                                        <Tooltip title="Discard the partial files">
+                                                                            <Button
+                                                                                size="small"
+                                                                                variant="outlined"
+                                                                                color="error"
+                                                                                startIcon={<DeleteIcon sx={{ fontSize: 16 }} />}
+                                                                                onClick={() => handleDiscardPartial(partial.modelName)}
+                                                                                sx={{ textTransform: 'none', borderRadius: 2 }}
+                                                                            >
+                                                                                Discard
+                                                                            </Button>
+                                                                        </Tooltip>
+                                                                    </Box>
+                                                                </Box>
+                                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                                                                    <LinearProgress
+                                                                        variant="determinate"
+                                                                        value={pct}
+                                                                        color="warning"
+                                                                        sx={{ flex: 1, height: 8, borderRadius: 4 }}
+                                                                    />
+                                                                    <Typography variant="caption" sx={{ color: 'text.secondary', minWidth: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                                        {pct}%
+                                                                    </Typography>
+                                                                </Box>
+                                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 0.75, alignItems: 'center' }}>
+                                                                    {partial.totalBytes > 0 && (
+                                                                        <Typography variant="caption" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                                                                            {formatBytes(partial.downloadedBytes)} / {formatBytes(partial.totalBytes)}
+                                                                        </Typography>
+                                                                    )}
+                                                                    {stopped && (
+                                                                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                                            stopped {stopped}
+                                                                        </Typography>
+                                                                    )}
+                                                                    {partial.reason && (
+                                                                        <Typography variant="caption" sx={{ color: 'warning.main' }}>
+                                                                            {partial.reason}
+                                                                        </Typography>
+                                                                    )}
+                                                                </Box>
+                                                            </Box>
+                                                        );
+                                                    })}
+                                                </Box>
+                                            )}
+
                                             {/* Search Results */}
                                             {searchResults.length > 0 && (() => {
                                                 const totalPages = Math.ceil(searchResults.length / ITEMS_PER_PAGE);
@@ -9815,6 +10015,11 @@ console.log(chip);`
                                                                 return num;
                                                             };
                                                             const typeTags = getModelTypeTags(model.id, model.tags);
+                                                            // An interrupted download of this exact repo -> offer Resume
+                                                            // where the user would otherwise start a fresh download.
+                                                            const partialMatch = partialDownloads.find(
+                                                                pp => (pp.repo || '').toLowerCase() === (model.id || '').toLowerCase()
+                                                            );
                                                             return (
                                                                 <Grid item xs={12} sm={6} md={4} key={model.id}>
                                                                     <Card
@@ -9871,6 +10076,32 @@ console.log(chip);`
                                                                             <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1, fontSize: '0.7rem' }}>
                                                                                 {model.id.split('/')[0]}
                                                                             </Typography>
+                                                                            {partialMatch && (
+                                                                                <Box sx={{ mb: 1 }} onClick={(e) => e.stopPropagation()}>
+                                                                                    <Tooltip title={partialMatch.resumable === false
+                                                                                        ? `Partially downloaded (${Math.round(partialMatch.percent || 0)}%) but not resumable — discard it in "Partially downloaded" above and download again.`
+                                                                                        : `Interrupted at ${Math.round(partialMatch.percent || 0)}% — continue where it stopped`}>
+                                                                                        <span>
+                                                                                            <Button
+                                                                                                size="small"
+                                                                                                variant="outlined"
+                                                                                                color="warning"
+                                                                                                fullWidth
+                                                                                                disabled={partialMatch.resumable === false || resumingModel === partialMatch.modelName}
+                                                                                                startIcon={resumingModel === partialMatch.modelName
+                                                                                                    ? <CircularProgress size={13} />
+                                                                                                    : <RestartAltIcon sx={{ fontSize: 15 }} />}
+                                                                                                onClick={() => handleResumeDownload(partialMatch.modelName)}
+                                                                                                sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.72rem', py: 0.25, borderRadius: 1.5 }}
+                                                                                            >
+                                                                                                {partialMatch.resumable === false
+                                                                                                    ? `Incomplete (${Math.round(partialMatch.percent || 0)}%)`
+                                                                                                    : `Resume (${Math.round(partialMatch.percent || 0)}%)`}
+                                                                                            </Button>
+                                                                                        </span>
+                                                                                    </Tooltip>
+                                                                                </Box>
+                                                                            )}
                                                                             {/* Format + Type Tags */}
                                                                             {(() => {
                                                                                 const FORMAT_STYLES = {
@@ -10265,6 +10496,28 @@ console.log(chip);`
 
                                             {/* Download button — pinned at bottom */}
                                             <Box sx={{ p: 2.5, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                                                {(() => {
+                                                    const drawerPartial = partialDownloads.find(
+                                                        pp => (pp.repo || '').toLowerCase() === (ggufRepo || '').toLowerCase()
+                                                            && pp.resumable !== false
+                                                    );
+                                                    if (!drawerPartial) return null;
+                                                    return (
+                                                        <Button
+                                                            variant="outlined"
+                                                            color="warning"
+                                                            fullWidth
+                                                            startIcon={resumingModel === drawerPartial.modelName
+                                                                ? <CircularProgress size={16} />
+                                                                : <RestartAltIcon />}
+                                                            disabled={resumingModel === drawerPartial.modelName}
+                                                            onClick={() => handleResumeDownload(drawerPartial.modelName)}
+                                                            sx={{ mb: 1.5, borderRadius: 2, textTransform: 'none', fontWeight: 600, py: 1 }}
+                                                        >
+                                                            {`Resume (${Math.round(drawerPartial.percent || 0)}%)`}
+                                                        </Button>
+                                                    );
+                                                })()}
                                                 {ggufFile ? (
                                                     <>
                                                         <Typography sx={{ color: 'text.secondary', fontSize: '0.8rem', display: 'block', mb: 1.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -10770,6 +11023,17 @@ console.log(chip);`
                                                         const isCrashed = model.instanceStatus === 'stopped' || model.instanceStatus === 'oom_killed';
                                                         const isRunning = !isCrashed && (model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp');
                                                         const isLoading = model.status.includes('Starting') || model.status.includes('Loading');
+                                                        // Interrupted / truncated download: never let it look healthy.
+                                                        const ds = model.downloadState || {};
+                                                        const isIncomplete = model.incomplete === true;
+                                                        const incompletePct = Number.isFinite(ds.percent) ? Math.round(ds.percent) : null;
+                                                        // Prefer the download percentage when we have one — it's the
+                                                        // actionable number; fall back to the integrity verdict.
+                                                        const hasPct = incompletePct !== null && incompletePct < 100;
+                                                        const incompleteLabel = hasPct
+                                                            ? `Incomplete ${incompletePct}%`
+                                                            : (model.integrity?.truncated === true ? 'Truncated file' : 'Incomplete');
+                                                        const canResumeModel = isIncomplete && ds.resumable !== false;
                                                         return (
                                                             <Grid item xs={12} sm={6} md={4} key={model.name}>
                                                                 <Card variant="outlined" sx={{
@@ -10790,15 +11054,36 @@ console.log(chip);`
                                                                                 {model.name}
                                                                             </Typography>
                                                                             <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                                                                {canResumeModel && (
+                                                                                    <Tooltip title={`Resume this download${incompletePct !== null ? ` (${incompletePct}%)` : ''}`}>
+                                                                                        <span>
+                                                                                            <IconButton
+                                                                                                size="small"
+                                                                                                onClick={() => handleResumeDownload(model.name)}
+                                                                                                disabled={resumingModel === model.name}
+                                                                                                sx={{ color: 'warning.main' }}
+                                                                                            >
+                                                                                                {resumingModel === model.name
+                                                                                                    ? <CircularProgress size={16} />
+                                                                                                    : <RestartAltIcon fontSize="small" />}
+                                                                                            </IconButton>
+                                                                                        </span>
+                                                                                    </Tooltip>
+                                                                                )}
                                                                                 {!isRunning && !isLoading && (
-                                                                                    <Tooltip title="Load Model">
-                                                                                        <IconButton
-                                                                                            size="small"
-                                                                                            onClick={() => handleLoadModel(model.name)}
-                                                                                            sx={{ color: 'primary.main' }}
-                                                                                        >
-                                                                                            <PlayArrowIcon fontSize="small" />
-                                                                                        </IconButton>
+                                                                                    <Tooltip title={isIncomplete
+                                                                                        ? 'This download is incomplete — resume it from Discover'
+                                                                                        : 'Load Model'}>
+                                                                                        <span>
+                                                                                            <IconButton
+                                                                                                size="small"
+                                                                                                onClick={() => handleLoadModel(model.name)}
+                                                                                                disabled={isIncomplete}
+                                                                                                sx={{ color: 'primary.main' }}
+                                                                                            >
+                                                                                                <PlayArrowIcon fontSize="small" />
+                                                                                            </IconButton>
+                                                                                        </span>
                                                                                     </Tooltip>
                                                                                 )}
                                                                                 <Tooltip title="Delete Model">
@@ -10834,18 +11119,32 @@ console.log(chip);`
                                                                                     />
                                                                                 </Tooltip>
                                                                             )}
-                                                                            <Chip
-                                                                                label={model.status}
-                                                                                size="small"
-                                                                                color={
-                                                                                    isRunning ? 'success' :
-                                                                                    isCrashed ? 'error' :
-                                                                                    isLoading ? 'info' :
-                                                                                    model.status.includes('Slow') ? 'warning' :
-                                                                                    'default'
-                                                                                }
-                                                                                variant={isRunning ? 'filled' : 'outlined'}
-                                                                            />
+                                                                            {isIncomplete ? (
+                                                                                <Tooltip title={ds.resumable === false
+                                                                                    ? `${model.status} — this download can't be continued; discard it and download again from Discover`
+                                                                                    : `${model.status} — resume it from Discover to finish it`}>
+                                                                                    <Chip
+                                                                                        icon={<WarningIcon sx={{ fontSize: 14 }} />}
+                                                                                        label={incompleteLabel}
+                                                                                        size="small"
+                                                                                        color="warning"
+                                                                                        variant="filled"
+                                                                                    />
+                                                                                </Tooltip>
+                                                                            ) : (
+                                                                                <Chip
+                                                                                    label={model.status}
+                                                                                    size="small"
+                                                                                    color={
+                                                                                        isRunning ? 'success' :
+                                                                                        isCrashed ? 'error' :
+                                                                                        isLoading ? 'info' :
+                                                                                        model.status.includes('Slow') ? 'warning' :
+                                                                                        'default'
+                                                                                    }
+                                                                                    variant={isRunning ? 'filled' : 'outlined'}
+                                                                                />
+                                                                            )}
                                                                             {model.port && (
                                                                                 <Chip
                                                                                     label={`Port ${model.port}`}
