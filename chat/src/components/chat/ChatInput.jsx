@@ -19,7 +19,7 @@ import {
     Circle,
     Eye,
     Clock,
-    Brain,
+    Gauge,
 } from 'lucide-react';
 
 const EFFORT_LEVELS = [
@@ -954,7 +954,7 @@ export default function ChatInput({
                                         aria-label="Reasoning effort"
                                         title={effortIsSet ? `Reasoning effort: ${effortLevel.label}` : 'Reasoning effort'}
                                     >
-                                        <Brain className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
+                                        <Gauge className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
                                         {!compactChips && (
                                             <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                                 {effortIsSet ? effortLevel.label : 'Effort'}
