@@ -8,9 +8,9 @@ import React from 'react';
  */
 export default function ThinkingIndicator({ label }) {
     return (
-        <div className="flex items-center gap-2 py-2">
+        <div className="flex items-center gap-2.5" style={{ minHeight: 28, padding: '2px 0' }}>
             {label ? (
-                <span className="text-sm" style={{ color: 'var(--ink-3)' }}>{label}</span>
+                <span style={{ color: 'var(--ink-3)', '--fs': '13.5px', fontWeight: 500 }}>{label}</span>
             ) : null}
             <div className="flex items-center gap-1">
                 <div className="thinking-dot" style={{ animationDelay: '0s' }} />

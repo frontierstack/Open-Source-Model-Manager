@@ -129,115 +129,57 @@ export default function ToolCallBlock({ tool }) {
             : status === 'success' ? 'var(--ok)'
             : 'var(--danger)';
 
-    // Tighter, content-sized chip. flex-direction column lets the header
-    // stay compact while the expanded body stretches to the chip's natural
-    // (content-driven) width. Charts force the chip to take full width so
-    // the chart has room to breathe.
-    const wrap = {
-        display: (isChart || isImage || isVideo) ? 'flex' : 'inline-flex',
-        flexDirection: 'column',
-        width: (isChart || isImage || isVideo) ? '100%' : undefined,
-        maxWidth: '100%',
-        border: `1px solid ${isFailed ? 'color-mix(in oklab, var(--danger) 45%, var(--rule))' : 'var(--rule)'}`,
-        borderRadius: 8,
-        background: isFailed
-            ? 'color-mix(in oklab, var(--danger) 6%, var(--bg-2))'
-            : 'var(--bg-2)',
-        margin: 0,
-        fontSize: 12.5,
-        overflow: 'hidden',
-        verticalAlign: 'top',
-    };
-    const header = {
-        display: 'inline-flex', alignItems: 'center', gap: 8,
-        padding: '5px 10px',
-        textAlign: 'left',
-        color: 'var(--ink-2)',
-        background: 'transparent', border: 0,
-        cursor: hasDetail ? 'pointer' : 'default',
-        transition: 'background .08s',
-        minWidth: 0,
-    };
-    const statusDot = {
-        width: 14, height: 14, borderRadius: '50%',
-        background: statusColor, color: '#fff',
-        display: 'grid', placeItems: 'center',
-        flexShrink: 0,
-    };
-    const toolNameStyle = {
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11.5,
-        color: 'var(--ink)',
-        whiteSpace: 'nowrap',
-    };
-    const summaryStyle = {
-        color: 'var(--ink-3)',
-        fontSize: 11.5,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        maxWidth: 280,
-    };
-    const body = {
-        borderTop: `1px solid ${isFailed ? 'color-mix(in oklab, var(--danger) 30%, var(--rule))' : 'var(--rule)'}`,
-        padding: '6px 10px 8px',
-        display: 'flex', flexDirection: 'column', gap: 6,
-        background: 'var(--bg)',
-    };
+    const chipClass = `tool-chip${isFailed ? ' is-failed' : ''}${isRunning ? ' is-running' : ''}`;
 
     return (
-        <div style={wrap}>
+        <div className={chipClass}>
             <button
-                style={header}
+                type="button"
+                className={`tool-chip-header${hasDetail ? ' has-detail' : ''}`}
                 onClick={() => hasDetail && setOpen(o => !o)}
-                onMouseEnter={(e) => { if (hasDetail) e.currentTarget.style.background = 'var(--bg-3, var(--bg))'; }}
-                onMouseLeave={(e) => { if (hasDetail) e.currentTarget.style.background = 'transparent'; }}
+                aria-expanded={hasDetail ? open : undefined}
+                tabIndex={hasDetail ? 0 : -1}
             >
-                <span style={statusDot}>
+                <span className="tool-chip-status" style={{ background: statusColor }}>
                     {isRunning
-                        ? <Loader2 className="animate-spin" style={{ width: 10, height: 10 }} strokeWidth={2.5} />
+                        ? <Loader2 className="animate-spin" strokeWidth={2.5} />
                         : status === 'success'
-                        ? <Check style={{ width: 9, height: 9 }} strokeWidth={3} />
-                        : <AlertCircle style={{ width: 10, height: 10 }} strokeWidth={2.25} />}
+                        ? <Check strokeWidth={3} />
+                        : <AlertCircle strokeWidth={2.25} />}
                 </span>
-                <IconComponent style={{ width: 12, height: 12, color: 'var(--ink-3)', flexShrink: 0 }} strokeWidth={1.75} />
-                <code style={toolNameStyle}>{toolName}</code>
+                <IconComponent className="tool-chip-icon" strokeWidth={1.75} />
+                <code className="tool-chip-name">{toolName}</code>
                 {sandboxed === true && (
                     <span
                         title={
                             'Ran inside the gVisor sandbox' +
                             (sandboxNetwork ? ` · network=${sandboxNetwork}` : '')
                         }
+                        className="tool-chip-badge"
                         style={badgeStyle('var(--ok, #22c55e)', 12, 30)}
                     >
-                        <Shield style={{ width: 8, height: 8 }} strokeWidth={2.5} />
+                        <Shield strokeWidth={2.5} />
                         sandboxed
                     </span>
                 )}
                 {sandboxed === false && (
                     <span
                         title="Ran in-process in the webapp container (not sandboxed)"
+                        className="tool-chip-badge"
                         style={badgeStyle('var(--warning, #f59e0b)', 10, 28)}
                     >
                         in-process
                     </span>
                 )}
-                {caption && <span style={summaryStyle}>{caption}</span>}
+                {caption && <span className="tool-chip-caption">{caption}</span>}
                 {hasDetail && (
-                    <span style={{
-                        marginLeft: 6,
-                        color: 'var(--ink-4)',
-                        display: 'inline-flex',
-                        transform: open ? 'rotate(180deg)' : 'none',
-                        transition: 'transform .15s',
-                        flexShrink: 0,
-                    }}>
-                        <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
+                    <span className={`tool-chip-chevron${open ? ' is-open' : ''}`}>
+                        <ChevronDown strokeWidth={2} />
                     </span>
                 )}
             </button>
             {open && hasDetail && (
-                <div style={body}>
+                <div className="tool-chip-body">
                     {chartSpec && (
                         <ChartBlock spec={chartSpec} summary={chartSummary || ''} />
                     )}
@@ -254,22 +196,16 @@ export default function ToolCallBlock({ tool }) {
                         argEntries && argEntries.length > 0 ? (
                             <ArgsTable entries={argEntries} />
                         ) : (
-                            <div style={argLineStyle}>
-                                <span style={argKeyStyle}>args</span>
-                                <span style={argValStyle}>{query}</span>
+                            <div className="tool-chip-args">
+                                <span className="tool-chip-argk">args</span>
+                                <span className="tool-chip-argv">{query}</span>
                             </div>
                         )
                     )}
                     {isFailed && error && <ErrorBlock error={error} toolName={toolName} />}
                     {hasSources && <SearchSources sources={sourceList} />}
                     {preview && !isFailed && !hasSources && !chartSpec && !imageSpec && !videoSpec && (
-                        <pre style={{
-                            margin: 0,
-                            fontFamily: 'var(--font-mono)', fontSize: 11.5,
-                            color: 'var(--ink-2)',
-                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                            maxHeight: 360, overflow: 'auto',
-                        }}>{preview}</pre>
+                        <pre className="tool-chip-pre">{preview}</pre>
                     )}
                 </div>
             )}
@@ -280,33 +216,17 @@ export default function ToolCallBlock({ tool }) {
 // Pill style helper. `pct` = bg opacity, `borderPct` = border opacity (in %).
 function badgeStyle(color, pct, borderPct) {
     return {
-        display: 'inline-flex', alignItems: 'center', gap: 3,
-        padding: '0 5px', height: 16, lineHeight: '16px',
-        borderRadius: 9, fontSize: 9.5, fontWeight: 500,
-        color, background: `color-mix(in oklab, ${color} ${pct}%, transparent)`,
+        color,
+        background: `color-mix(in oklab, ${color} ${pct}%, transparent)`,
         border: `1px solid color-mix(in oklab, ${color} ${borderPct}%, transparent)`,
-        flexShrink: 0,
     };
 }
 
 // Compact key: value table for tool arguments. Long values get wrapped &
 // monospaced; the key column auto-sizes to the longest key.
-const argLineStyle = {
-    display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 10px',
-    alignItems: 'baseline',
-};
-const argKeyStyle = {
-    fontFamily: 'var(--font-mono)', fontSize: 10.5,
-    color: 'var(--ink-4)', textTransform: 'lowercase',
-};
-const argValStyle = {
-    fontFamily: 'var(--font-mono)', fontSize: 11,
-    color: 'var(--ink-2)', wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-};
-
 function ArgsTable({ entries }) {
     return (
-        <div style={argLineStyle}>
+        <div className="tool-chip-args">
             {entries.map(([k, v]) => {
                 let display;
                 if (v == null) display = String(v);
@@ -317,8 +237,8 @@ function ArgsTable({ entries }) {
                 if (display.length > 600) display = display.slice(0, 600) + '…';
                 return (
                     <React.Fragment key={k}>
-                        <span style={argKeyStyle}>{k}</span>
-                        <span style={argValStyle}>{display}</span>
+                        <span className="tool-chip-argk">{k}</span>
+                        <span className="tool-chip-argv">{display}</span>
                     </React.Fragment>
                 );
             })}
@@ -348,25 +268,13 @@ function ErrorBlock({ error, toolName }) {
     } catch (_) { /* not JSON, keep raw */ }
     const isLoop = kind === 'loop';
     return (
-        <div style={{
-            display: 'flex', alignItems: 'flex-start', gap: 8,
-            padding: '6px 8px',
-            borderRadius: 6,
-            background: 'color-mix(in oklab, var(--danger) 8%, transparent)',
-            border: '1px solid color-mix(in oklab, var(--danger) 22%, transparent)',
-        }}>
-            <AlertCircle style={{ width: 13, height: 13, marginTop: 1, color: 'var(--danger)', flexShrink: 0 }} strokeWidth={2} />
-            <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 2 }}>
+        <div className="tool-chip-error">
+            <AlertCircle strokeWidth={2} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="tool-chip-error-title">
                     {isLoop ? 'loop detected' : `${toolName} failed`}
                 </div>
-                <pre style={{
-                    margin: 0,
-                    fontFamily: 'var(--font-mono)', fontSize: 11.5,
-                    color: 'var(--ink)',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    maxHeight: 240, overflow: 'auto',
-                }}>{display}</pre>
+                <pre>{display}</pre>
             </div>
         </div>
     );

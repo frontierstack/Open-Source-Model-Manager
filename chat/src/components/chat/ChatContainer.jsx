@@ -633,6 +633,9 @@ export default function ChatContainer({
                             port: inst.port,
                             // Include context size from config for accurate context tracking
                             contextSize: inst.config?.contextSize || inst.contextSize,
+                            // Reasoning-effort capability hints (newer servers only)
+                            effortSupport: inst.effortSupport,
+                            thinkingLoadedOff: inst.thinkingLoadedOff,
                         });
                     });
                 }
@@ -649,6 +652,8 @@ export default function ChatContainer({
                             port: inst.port,
                             // Include context size from config for accurate context tracking
                             contextSize: inst.config?.contextSize || inst.contextSize,
+                            effortSupport: inst.effortSupport,
+                            thinkingLoadedOff: inst.thinkingLoadedOff,
                         });
                     });
                 }
@@ -1577,6 +1582,8 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
+                // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
+                reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
@@ -2466,6 +2473,8 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
+                // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
+                reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
             };
@@ -2832,6 +2841,8 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                reasoningEffort={settings.reasoningEffort || 'default'}
+                                onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
                                 queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
                                 onQueueMessage={handleQueueMessage}
                                 onRemoveQueued={removeQueuedMessage}
@@ -2886,6 +2897,8 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                reasoningEffort={settings.reasoningEffort || 'default'}
+                                onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
                                 queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
                                 onQueueMessage={handleQueueMessage}
                                 onRemoveQueued={removeQueuedMessage}

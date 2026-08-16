@@ -34,7 +34,7 @@ export default function ConvoHeader({
     const head = {
         display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
         gap: 16,
-        paddingBottom: 22, marginBottom: 24,
+        paddingBottom: 20, marginBottom: 24,
         borderBottom: '1px solid var(--rule)',
     };
     const titleStyle = {
@@ -61,17 +61,6 @@ export default function ConvoHeader({
         display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
     };
     const sep = { color: 'var(--ink-4)' };
-    const headBtn = {
-        display: 'inline-flex', alignItems: 'center', gap: 5,
-        padding: '6px 10px', borderRadius: 6,
-        border: '1px solid var(--rule)',
-        color: 'var(--ink-2)',
-        fontSize: 12,
-        background: 'var(--surface)',
-        cursor: 'pointer',
-        transition: 'background .1s, border-color .1s',
-    };
-
     return (
         <div style={head}>
             <div style={{ minWidth: 0, flex: 1 }}>
@@ -93,21 +82,20 @@ export default function ConvoHeader({
             {onToggleFavorite && (
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                     <button
+                        type="button"
+                        className="ctl ctl-icon-md"
                         style={{
-                            ...headBtn,
-                            padding: '6px 8px',
-                            color: favorite ? 'var(--warning, #f59e0b)' : 'var(--ink-2)',
+                            border: '1px solid var(--rule)',
+                            background: 'var(--surface)',
+                            color: favorite ? 'var(--warning, #f59e0b)' : undefined,
                         }}
                         onClick={onToggleFavorite}
-                        onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--rule-2)'}
-                        onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--rule)'}
+                        aria-pressed={!!favorite}
+                        aria-label={favorite ? 'Unpin conversation' : 'Pin conversation'}
                         title={favorite ? 'Unpin conversation' : 'Pin conversation'}
                     >
                         <Star
-                            style={{
-                                width: 13, height: 13,
-                                fill: favorite ? 'currentColor' : 'none',
-                            }}
+                            style={{ width: 15, height: 15, fill: favorite ? 'currentColor' : 'none' }}
                             strokeWidth={1.75}
                         />
                     </button>

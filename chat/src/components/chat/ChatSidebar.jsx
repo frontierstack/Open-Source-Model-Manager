@@ -328,7 +328,8 @@ export default function ChatSidebar({
         setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
     };
 
-    // Styles
+    // Styles — sizing/hover/focus live in index.css (`.ctl*`, `.sb-*`);
+    // only layout-level values stay inline here.
     const aside = {
         height: '100%',
         flexShrink: 0,
@@ -346,131 +347,24 @@ export default function ChatSidebar({
     };
     const workspaceHeader = {
         display: 'flex', alignItems: 'center', gap: 10,
-        padding: '14px 14px 12px',
+        padding: '12px 10px 10px 16px',
     };
     const workspaceRow = { display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 };
-    const iconBtn = {
-        width: 26, height: 26, borderRadius: 6,
-        display: 'grid', placeItems: 'center',
-        color: 'var(--ink-3)',
-        background: 'transparent', border: 0, cursor: 'pointer',
-        transition: 'background .1s, color .1s',
-    };
-    const searchRow = { padding: '0 12px 8px' };
-    const searchWrap = {
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '7px 10px',
-        background: 'var(--bg)',
-        border: '1px solid var(--rule)',
-        borderRadius: 8,
-        color: 'var(--ink-3)',
-    };
-    const searchInput = {
-        flex: 1, border: 0, outline: 0, background: 'transparent',
-        fontSize: 12.5, color: 'var(--ink)',
-    };
-    const newChatRow = { padding: '0 12px 6px' };
-    const newChatBtn = {
-        display: 'flex', alignItems: 'center', gap: 8,
-        width: '100%', padding: '5px 10px',
-        minHeight: 28,
-        border: '1px dashed var(--rule-2)',
-        borderRadius: 7,
-        color: 'var(--ink-2)', fontSize: 12, fontWeight: 500,
-        background: 'transparent', cursor: 'pointer',
-        transition: 'background .1s, border-color .1s',
-    };
-    // Primary "New chat" CTA — filled accent so it reads as the main action.
-    const navPrimaryBtn = {
-        ...newChatBtn,
-        justifyContent: 'center',
-        border: '1px solid var(--accent)',
-        background: 'var(--accent)',
-        color: 'var(--accent-ink, #fff)',
-        fontWeight: 600,
-    };
-    // "Automations" navigation entry — solid (not dashed) border so it reads as a
-    // nav item that opens a view, not a "create new" affordance.
-    const navItemBtn = { ...newChatBtn, border: '1px solid var(--rule-2)' };
-    const newFolderRow = { padding: '0 12px 8px' };
-    const newFolderBtn = {
-        display: 'flex', alignItems: 'center', gap: 6,
-        width: '100%', padding: '5px 8px',
-        border: 0,
-        borderRadius: 6,
-        color: 'var(--ink-3)', fontSize: 11.5, fontWeight: 500,
-        background: 'transparent', cursor: 'pointer',
-        transition: 'background .1s, color .1s',
-    };
+    const searchRow = { padding: '0 12px 10px' };
+    const navRow = { padding: '0 12px 6px' };
+    const newFolderRow = { padding: '2px 12px 6px' };
     const scroll = {
         flex: 1, overflowY: 'auto',
-        padding: '4px 8px 8px',
-    };
-    const folderHeader = {
-        display: 'flex', alignItems: 'center', gap: 7,
-        width: '100%', padding: '6px 8px',
-        color: 'var(--ink-2)', fontSize: 12,
-        borderRadius: 6,
-        background: 'transparent', border: 0, cursor: 'pointer',
-        transition: 'background .08s',
-        position: 'relative',
-    };
-    const count = {
-        marginLeft: 'auto',
-        fontSize: 10.5, color: 'var(--ink-4)',
-        fontVariantNumeric: 'tabular-nums',
-    };
-    const chatRow = (active) => ({
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 10px 6px 14px',
-        textAlign: 'left',
-        borderRadius: '0 6px 6px 0',
-        marginLeft: 6,
-        background: active ? 'var(--accent-soft)' : 'transparent',
-        color: active ? 'var(--ink)' : 'var(--ink-2)',
-        borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
-        cursor: 'pointer',
-        position: 'relative',
-        transition: 'background .08s',
-    });
-    const footer = {
-        borderTop: '1px solid var(--rule)',
-        padding: '10px 12px',
-        display: 'flex', alignItems: 'center', gap: 10,
-        flexShrink: 0,
-    };
-    const avatar = {
-        width: 28, height: 28, borderRadius: '50%',
-        background: 'var(--accent)', color: 'var(--accent-ink)',
-        display: 'grid', placeItems: 'center',
-        fontSize: 11, fontWeight: 600,
-        flexShrink: 0,
+        padding: '2px 8px 8px',
     };
     const popover = {
         position: 'absolute',
         right: 0,
         top: '100%',
         marginTop: 4,
-        minWidth: 160,
-        background: 'var(--surface)',
-        border: '1px solid var(--rule)',
-        borderRadius: 8,
-        boxShadow: '0 8px 24px color-mix(in oklab, var(--ink) 18%, transparent)',
-        padding: 4,
+        minWidth: 168,
         zIndex: 100,
         display: 'flex', flexDirection: 'column', gap: 1,
-    };
-    const popoverItem = {
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 8px',
-        fontSize: 12,
-        color: 'var(--ink-2)',
-        background: 'transparent', border: 0,
-        borderRadius: 4,
-        textAlign: 'left',
-        cursor: 'pointer',
-        width: '100%',
-        transition: 'background .08s, color .08s',
     };
 
     const renderChatRow = (conv) => {
@@ -483,13 +377,15 @@ export default function ChatSidebar({
             <div
                 key={conv.id}
                 onClick={() => !isEditing && handleSelectConversation(conv.id)}
-                style={{
-                    ...chatRow(active),
-                    opacity: isDragging ? 0.45 : 1,
+                onKeyDown={(e) => {
+                    if (isEditing) return;
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectConversation(conv.id); }
                 }}
-                onMouseEnter={(e) => { if (!active && !isEditing) e.currentTarget.style.background = 'var(--bg-3, var(--bg))'; }}
-                onMouseLeave={(e) => { if (!active && !isEditing) e.currentTarget.style.background = 'transparent'; }}
-                className="sidebar-chat-row"
+                role="button"
+                tabIndex={isEditing ? -1 : 0}
+                aria-current={active ? 'true' : undefined}
+                style={{ opacity: isDragging ? 0.45 : 1 }}
+                className={`sb-row sidebar-chat-row${active ? ' is-active' : ''}`}
                 draggable={!isEditing}
                 onDragStart={handleChatDragStart(conv)}
                 onDragEnd={handleChatDragEnd}
@@ -504,43 +400,38 @@ export default function ChatSidebar({
                                 if (e.key === 'Enter') handleSaveEdit(conv.id);
                                 if (e.key === 'Escape') handleCancelEdit();
                             }}
-                            style={{
-                                flex: 1, padding: '4px 6px',
-                                fontSize: 12.5, color: 'var(--ink)',
-                                background: 'var(--surface)',
-                                border: '1px solid var(--accent)',
-                                borderRadius: 4,
-                                outline: 0,
-                            }}
+                            className="sb-inline-input"
+                            aria-label="Conversation title"
                             autoFocus
                         />
                         <button
+                            type="button"
                             onClick={() => handleSaveEdit(conv.id)}
-                            style={{ ...iconBtn, width: 22, height: 22, color: 'var(--ok)' }}
+                            className="ctl ctl-icon-xs"
+                            style={{ color: 'var(--ok)' }}
                             title="Save"
+                            aria-label="Save title"
                         >
-                            <Check style={{ width: 13, height: 13 }} strokeWidth={2} />
+                            <Check strokeWidth={2} />
                         </button>
                         <button
+                            type="button"
                             onClick={handleCancelEdit}
-                            style={{ ...iconBtn, width: 22, height: 22 }}
+                            className="ctl ctl-icon-xs"
                             title="Cancel"
+                            aria-label="Cancel rename"
                         >
-                            <X style={{ width: 13, height: 13 }} strokeWidth={2} />
+                            <X strokeWidth={2} />
                         </button>
                     </div>
                 ) : (
                     <>
-                        <span style={{
-                            flex: 1, minWidth: 0,
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            fontSize: 12.5,
-                            fontWeight: active ? 500 : 400,
-                        }}>
+                        <span className="sb-row-title">
                             {conv.title || 'New Conversation'}
                         </span>
                         {conv.favorite && (
                             <Star
+                                aria-hidden="true"
                                 style={{
                                     width: 11, height: 11,
                                     fill: 'var(--warning)',
@@ -550,65 +441,47 @@ export default function ChatSidebar({
                             />
                         )}
                         {/* Hover actions */}
-                        <div
-                            className="chat-row-actions"
-                            style={{
-                                position: 'absolute', right: 4, top: '50%',
-                                transform: 'translateY(-50%)',
-                                display: 'flex', alignItems: 'center', gap: 1,
-                                background: 'var(--surface)',
-                                border: '1px solid var(--rule)',
-                                borderRadius: 5,
-                                padding: 1,
-                                opacity: moveMenuOpen ? 1 : 0,
-                                transition: 'opacity .1s',
-                            }}
-                        >
+                        <div className={`chat-row-actions${moveMenuOpen ? ' is-open' : ''}`}>
                             <button
+                                type="button"
                                 onClick={(e) => handleToggleFavorite(conv.id, e)}
-                                style={{
-                                    ...iconBtn,
-                                    width: 20, height: 20,
-                                    color: conv.favorite ? 'var(--warning)' : 'var(--ink-3)',
-                                }}
+                                className="ctl ctl-icon-xs"
+                                style={{ color: conv.favorite ? 'var(--warning)' : undefined }}
                                 title={conv.favorite ? 'Unfavorite' : 'Favorite'}
+                                aria-label={conv.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                                aria-pressed={!!conv.favorite}
                             >
                                 <Star
-                                    style={{
-                                        width: 11, height: 11,
-                                        fill: conv.favorite ? 'currentColor' : 'none',
-                                    }}
+                                    style={{ fill: conv.favorite ? 'currentColor' : 'none' }}
                                     strokeWidth={1.75}
                                 />
                             </button>
                             <div style={{ position: 'relative' }} ref={moveMenuOpen ? moveMenuRef : null}>
                                 <button
+                                    type="button"
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         setMoveMenuConvId(moveMenuOpen ? null : conv.id);
                                     }}
-                                    style={{ ...iconBtn, width: 20, height: 20 }}
+                                    className="ctl ctl-icon-xs"
                                     title="Move to folder"
+                                    aria-label="Move to folder"
+                                    aria-haspopup="menu"
+                                    aria-expanded={moveMenuOpen}
                                 >
-                                    <FolderInput style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                                    <FolderInput strokeWidth={1.75} />
                                 </button>
                                 {moveMenuOpen && (
                                     <div
+                                        className="ctl-pop"
+                                        role="menu"
                                         style={{ ...popover, right: 0, maxHeight: 240, overflowY: 'auto' }}
                                         onClick={(e) => e.stopPropagation()}
                                     >
-                                        <div style={{
-                                            padding: '4px 8px 6px',
-                                            fontSize: 10.5, fontWeight: 600,
-                                            color: 'var(--ink-4)',
-                                            textTransform: 'uppercase',
-                                            letterSpacing: 0.4,
-                                        }}>
-                                            Move to
-                                        </div>
+                                        <div className="ctl-pop-label">Move to</div>
                                         {sortedFolders.length === 0 ? (
                                             <div style={{
-                                                padding: '6px 8px',
+                                                padding: '6px 10px',
                                                 fontSize: 11.5,
                                                 color: 'var(--ink-4)',
                                                 fontStyle: 'italic',
@@ -620,21 +493,14 @@ export default function ChatSidebar({
                                                 const isCurrent = currentFolderId === f.id;
                                                 return (
                                                     <button
+                                                        type="button"
+                                                        role="menuitem"
                                                         key={f.id}
                                                         onClick={() => handleMoveToFolder(conv.id, f.id)}
-                                                        style={{
-                                                            ...popoverItem,
-                                                            background: isCurrent ? 'var(--accent-soft)' : 'transparent',
-                                                            color: isCurrent ? 'var(--ink)' : 'var(--ink-2)',
-                                                        }}
-                                                        onMouseEnter={(e) => {
-                                                            if (!isCurrent) e.currentTarget.style.background = 'var(--bg-3, var(--bg))';
-                                                        }}
-                                                        onMouseLeave={(e) => {
-                                                            if (!isCurrent) e.currentTarget.style.background = 'transparent';
-                                                        }}
+                                                        className={`ctl-pop-item${isCurrent ? ' is-active' : ''}`}
+                                                        style={{ color: isCurrent ? 'var(--ink)' : 'var(--ink-2)', minHeight: 30 }}
                                                     >
-                                                        <Folder style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                                                        <Folder strokeWidth={1.75} />
                                                         <span style={{
                                                             flex: 1, minWidth: 0,
                                                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -646,24 +512,15 @@ export default function ChatSidebar({
                                                 );
                                             })
                                         )}
-                                        <div style={{
-                                            height: 1, background: 'var(--rule)', margin: '4px 2px',
-                                        }} />
+                                        <div className="ctl-pop-sep" />
                                         <button
+                                            type="button"
+                                            role="menuitem"
                                             onClick={() => handleMoveToFolder(conv.id, null)}
-                                            style={{
-                                                ...popoverItem,
-                                                color: currentFolderId == null ? 'var(--ink)' : 'var(--ink-3)',
-                                                background: currentFolderId == null ? 'var(--accent-soft)' : 'transparent',
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                if (currentFolderId != null) e.currentTarget.style.background = 'var(--bg-3, var(--bg))';
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                if (currentFolderId != null) e.currentTarget.style.background = 'transparent';
-                                            }}
+                                            className={`ctl-pop-item${currentFolderId == null ? ' is-active' : ''}`}
+                                            style={{ color: currentFolderId == null ? 'var(--ink)' : 'var(--ink-3)', minHeight: 30 }}
                                         >
-                                            <X style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                                            <X strokeWidth={1.75} />
                                             <span style={{ flex: 1 }}>Unassigned</span>
                                             {currentFolderId == null && (
                                                 <Check style={{ width: 11, height: 11, color: 'var(--accent)' }} strokeWidth={2.25} />
@@ -673,20 +530,22 @@ export default function ChatSidebar({
                                 )}
                             </div>
                             <button
+                                type="button"
                                 onClick={(e) => handleStartEdit(conv, e)}
-                                style={{ ...iconBtn, width: 20, height: 20 }}
+                                className="ctl ctl-icon-xs"
                                 title="Rename"
+                                aria-label="Rename conversation"
                             >
-                                <Edit3 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                                <Edit3 strokeWidth={1.75} />
                             </button>
                             <button
+                                type="button"
                                 onClick={(e) => handleDelete(conv.id, e)}
-                                style={{ ...iconBtn, width: 20, height: 20, color: 'var(--ink-3)' }}
+                                className="ctl ctl-icon-xs ctl-danger-hover"
                                 title="Delete"
-                                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--danger)'}
-                                onMouseLeave={(e) => e.currentTarget.style.color = 'var(--ink-3)'}
+                                aria-label="Delete conversation"
                             >
-                                <Trash2 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                                <Trash2 strokeWidth={1.75} />
                             </button>
                         </div>
                     </>
@@ -702,10 +561,10 @@ export default function ChatSidebar({
         return (
             <div key={key} style={{ marginBottom: 4, marginLeft: indented ? 8 : 0 }}>
                 <button
+                    type="button"
                     onClick={() => toggleGroup(key)}
-                    style={folderHeader}
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    className="sb-folder"
+                    aria-expanded={open}
                 >
                     <span style={{
                         display: 'inline-flex',
@@ -713,18 +572,18 @@ export default function ChatSidebar({
                         transition: 'transform .15s',
                         color: 'var(--ink-4)',
                     }}>
-                        <ChevronDown style={{ width: 11, height: 11 }} strokeWidth={2} />
+                        <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
                     </span>
                     <Icon
                         style={{
-                            width: 13, height: 13,
+                            width: 14, height: 14,
                             color: accent ? 'var(--warning)' : 'var(--ink-3)',
                             ...(accent ? { fill: 'var(--warning)' } : {}),
                         }}
                         strokeWidth={1.75}
                     />
                     <span style={{ fontWeight: 500 }}>{label}</span>
-                    <span style={count}>{items.length}</span>
+                    <span className="sb-count">{items.length}</span>
                 </button>
                 {open && (
                     <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: 4 }}>
@@ -753,11 +612,11 @@ export default function ChatSidebar({
                 style={{
                     marginBottom: 4,
                     position: 'relative',
-                    borderRadius: 6,
+                    borderRadius: 8,
                     outline: isDropTarget ? '1.5px dashed var(--accent)' : '1.5px dashed transparent',
                     outlineOffset: -1,
                     background: isDropTarget ? 'var(--accent-soft)' : 'transparent',
-                    transition: 'background .1s, outline-color .1s',
+                    transition: 'background .15s, outline-color .15s',
                 }}
                 {...dropTargetProps(folder.id)}
             >
@@ -765,11 +624,11 @@ export default function ChatSidebar({
                     <div
                         style={{
                             display: 'flex', alignItems: 'center', gap: 4,
-                            padding: '4px 8px',
+                            padding: '3px 8px',
                         }}
                         onClick={e => e.stopPropagation()}
                     >
-                        <Folder style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
+                        <Folder style={{ width: 14, height: 14, color: 'var(--ink-3)' }} strokeWidth={1.75} />
                         <input
                             type="text"
                             value={editingFolderName}
@@ -793,29 +652,28 @@ export default function ChatSidebar({
                                     handleCancelFolderRename();
                                 }
                             }}
-                            style={{
-                                flex: 1, padding: '3px 6px',
-                                fontSize: 12, color: 'var(--ink)',
-                                background: 'var(--surface)',
-                                border: '1px solid var(--accent)',
-                                borderRadius: 4,
-                                outline: 0,
-                            }}
+                            className="sb-inline-input"
+                            aria-label="Folder name"
                             autoFocus
                         />
                         <button
+                            type="button"
                             onClick={() => handleSaveFolderRename(folder.id)}
-                            style={{ ...iconBtn, width: 20, height: 20, color: 'var(--ok)' }}
+                            className="ctl ctl-icon-xs"
+                            style={{ color: 'var(--ok)' }}
                             title="Save"
+                            aria-label="Save folder name"
                         >
-                            <Check style={{ width: 11, height: 11 }} strokeWidth={2} />
+                            <Check strokeWidth={2} />
                         </button>
                         <button
+                            type="button"
                             onClick={handleCancelFolderRename}
-                            style={{ ...iconBtn, width: 20, height: 20 }}
+                            className="ctl ctl-icon-xs"
                             title="Cancel"
+                            aria-label="Cancel rename"
                         >
-                            <X style={{ width: 11, height: 11 }} strokeWidth={2} />
+                            <X strokeWidth={2} />
                         </button>
                     </div>
                 ) : (
@@ -824,15 +682,15 @@ export default function ChatSidebar({
                         style={{ position: 'relative' }}
                     >
                         <button
+                            type="button"
                             // Folders default closed; toggle flips between
                             // explicit-open (false) and explicit-closed (true).
                             // Plain `!prev[key]` would land on `true` after the
                             // first click against an undefined entry, leaving
                             // the folder still closed.
                             onClick={() => setCollapsedGroups(prev => ({ ...prev, [key]: prev[key] === false }))}
-                            style={folderHeader}
-                            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                            className="sb-folder"
+                            aria-expanded={open}
                         >
                             <span style={{
                                 display: 'inline-flex',
@@ -840,51 +698,43 @@ export default function ChatSidebar({
                                 transition: 'transform .15s',
                                 color: 'var(--ink-4)',
                             }}>
-                                <ChevronDown style={{ width: 11, height: 11 }} strokeWidth={2} />
+                                <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
                             </span>
-                            <Icon style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
+                            <Icon style={{ width: 14, height: 14, color: 'var(--ink-3)' }} strokeWidth={1.75} />
                             <span style={{
                                 fontWeight: 500,
                                 flex: 1, minWidth: 0,
                                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                 textAlign: 'left',
                             }}>{folder.name}</span>
-                            <span style={{ ...count, paddingRight: 46 }}>{items.length}</span>
+                            <span className="sb-count" style={{ paddingRight: 50 }}>{items.length}</span>
                         </button>
-                        {/* Direct Rename + Delete — always visible so users
+                        {/* Rename + Delete — revealed on hover/focus so users
                             can delete a folder regardless of its contents. */}
-                        <div
-                            className="folder-menu-trigger"
-                            style={{
-                                position: 'absolute',
-                                right: 4, top: '50%', transform: 'translateY(-50%)',
-                                display: 'flex', alignItems: 'center', gap: 1,
-                                background: 'var(--bg-2)',
-                                borderRadius: 5,
-                                padding: 1,
-                            }}
-                        >
+                        <div className="folder-menu-trigger sb-folder-actions">
                             <button
+                                type="button"
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     handleStartFolderRename(folder);
                                 }}
-                                style={{ ...iconBtn, width: 20, height: 20 }}
+                                className="ctl ctl-icon-xs"
                                 title="Rename folder"
+                                aria-label="Rename folder"
                             >
-                                <Edit3 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                                <Edit3 strokeWidth={1.75} />
                             </button>
                             <button
+                                type="button"
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     handleDeleteFolder(folder);
                                 }}
-                                style={{ ...iconBtn, width: 20, height: 20, color: 'var(--ink-3)' }}
+                                className="ctl ctl-icon-xs ctl-danger-hover"
                                 title="Delete folder"
-                                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--danger)'}
-                                onMouseLeave={(e) => e.currentTarget.style.color = 'var(--ink-3)'}
+                                aria-label="Delete folder"
                             >
-                                <Trash2 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                                <Trash2 strokeWidth={1.75} />
                             </button>
                         </div>
                     </div>
@@ -896,7 +746,7 @@ export default function ChatSidebar({
                         </div>
                     ) : (
                         <div style={{
-                            padding: '4px 8px 6px 26px',
+                            padding: '4px 8px 6px 30px',
                             fontSize: 11,
                             color: 'var(--ink-4)',
                             fontStyle: 'italic',
@@ -915,83 +765,76 @@ export default function ChatSidebar({
             <div style={workspaceHeader}>
                 <div style={workspaceRow}>
                     <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--ink)' }}>
-                            Model Chat
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 1 }}>
+                        <div className="sb-title">Model Chat</div>
+                        <div className="sb-subtitle">
                             {totalChats} conversation{totalChats === 1 ? '' : 's'}
                         </div>
                     </div>
                 </div>
                 <button
+                    type="button"
                     onClick={() => {
                         if (isMobileOpen && onMobileClose) onMobileClose();
                         else if (onToggleCollapsed) onToggleCollapsed();
                     }}
-                    style={iconBtn}
+                    className="ctl ctl-icon-md"
                     title="Collapse sidebar"
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    aria-label="Collapse sidebar"
                 >
-                    <PanelLeftClose style={{ width: 15, height: 15 }} strokeWidth={1.75} />
+                    <PanelLeftClose strokeWidth={1.75} />
                 </button>
             </div>
 
             {/* Search */}
             <div style={searchRow}>
-                <div style={searchWrap}>
-                    <Search style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                <div className="sb-search" role="search">
+                    <Search strokeWidth={1.75} aria-hidden="true" />
                     <input
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search chats…"
-                        style={searchInput}
+                        aria-label="Search chats"
+                        type="search"
+                        autoComplete="off"
                     />
                     {searchQuery && (
                         <button
+                            type="button"
                             onClick={() => setSearchQuery('')}
-                            style={{ ...iconBtn, width: 16, height: 16 }}
+                            className="ctl ctl-icon-xs"
                             title="Clear"
+                            aria-label="Clear search"
                         >
-                            <X style={{ width: 11, height: 11 }} strokeWidth={2} />
+                            <X strokeWidth={2} />
                         </button>
                     )}
                 </div>
             </div>
 
             {/* New chat — primary action */}
-            <div style={newChatRow}>
+            <div style={navRow}>
                 <button
+                    type="button"
                     onClick={handleNewConversation}
-                    style={navPrimaryBtn}
-                    onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
+                    className="ctl ctl-primary"
+                    style={{ width: '100%' }}
                 >
-                    <Plus style={{ width: 13, height: 13 }} strokeWidth={2.25} />
+                    <Plus strokeWidth={2.25} />
                     <span>New chat</span>
                 </button>
             </div>
 
             {/* Automations — navigates to the full-screen workflow editor */}
-            <div style={newChatRow}>
+            <div style={navRow}>
                 <button
+                    type="button"
                     onClick={() => { setView('automation'); if (onMobileClose) onMobileClose(); }}
-                    style={navItemBtn}
+                    className="ctl ctl-secondary ctl-row"
                     title="Build & manage automations"
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--accent-soft)';
-                        e.currentTarget.style.borderColor = 'var(--accent)';
-                        e.currentTarget.style.color = 'var(--accent)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                        e.currentTarget.style.borderColor = 'var(--rule-2)';
-                        e.currentTarget.style.color = 'var(--ink-2)';
-                    }}
                 >
-                    <Workflow style={{ width: 13, height: 13 }} strokeWidth={2} />
+                    <Workflow strokeWidth={1.9} />
                     <span>Automations</span>
-                    <ChevronRight style={{ width: 13, height: 13, marginLeft: 'auto', opacity: 0.55 }} strokeWidth={2} />
+                    <ChevronRight style={{ width: 14, height: 14, marginLeft: 'auto', opacity: 0.55 }} strokeWidth={2} />
                 </button>
             </div>
 
@@ -1001,34 +844,23 @@ export default function ChatSidebar({
                 each one individually. */}
             <div style={{ ...newFolderRow, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <button
+                    type="button"
                     onClick={handleCreateFolder}
-                    style={{ ...newFolderBtn, flex: 1 }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--bg-3, var(--bg))';
-                        e.currentTarget.style.color = 'var(--ink-2)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                        e.currentTarget.style.color = 'var(--ink-3)';
-                    }}
+                    className="ctl ctl-ghost"
+                    style={{ flex: 1 }}
                 >
-                    <FolderPlus style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                    <FolderPlus strokeWidth={1.75} />
                     <span>New folder</span>
                 </button>
                 {orphanCount > 1 && (
                     <button
+                        type="button"
                         onClick={handleClearOrphanFolders}
-                        style={{
-                            ...newFolderBtn,
-                            width: 'auto',
-                            padding: '5px 8px',
-                            color: 'var(--danger)',
-                            fontSize: 10.5,
-                            flex: 'initial',
-                        }}
+                        className="ctl ctl-ghost ctl-danger"
+                        style={{ fontSize: 11 }}
                         title={`Delete ${orphanCount} unnamed folders`}
                     >
-                        <Trash2 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                        <Trash2 strokeWidth={1.75} style={{ width: 12, height: 12 }} />
                         <span>Clear {orphanCount}</span>
                     </button>
                 )}
@@ -1064,8 +896,8 @@ export default function ChatSidebar({
                     <div
                         key="unassigned"
                         style={{
-                            marginTop: 4,
-                            borderRadius: 6,
+                            marginTop: 2,
+                            borderRadius: 8,
                             outline: dragOverTarget === 'unassigned'
                                 ? '1.5px dashed var(--accent)'
                                 : '1.5px dashed transparent',
@@ -1073,7 +905,7 @@ export default function ChatSidebar({
                             background: dragOverTarget === 'unassigned'
                                 ? 'var(--accent-soft)'
                                 : 'transparent',
-                            transition: 'background .1s, outline-color .1s',
+                            transition: 'background .15s, outline-color .15s',
                         }}
                         {...dropTargetProps('unassigned')}
                     >
@@ -1082,16 +914,7 @@ export default function ChatSidebar({
                             if (!items.length) return null;
                             return (
                                 <div key={`unassigned:${name}`} style={{ marginBottom: 2 }}>
-                                    <div style={{
-                                        padding: '8px 10px 3px',
-                                        fontSize: 10,
-                                        fontWeight: 600,
-                                        letterSpacing: 0.5,
-                                        textTransform: 'uppercase',
-                                        color: 'var(--ink-4)',
-                                    }}>
-                                        {name}
-                                    </div>
+                                    <div className="sb-group-label">{name}</div>
                                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                                         {items.map(renderChatRow)}
                                     </div>
@@ -1103,33 +926,21 @@ export default function ChatSidebar({
             </div>
 
             {/* User footer */}
-            <div style={footer}>
-                <div style={avatar}>{userInitial}</div>
+            <div className="sb-footer">
+                <div className="sb-avatar" aria-hidden="true">{userInitial}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
-                        fontSize: 12, fontWeight: 500, color: 'var(--ink)',
+                        fontSize: 12.5, fontWeight: 500, color: 'var(--ink)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        lineHeight: 1.25,
                     }}>
                         {displayName}
                     </div>
-                    <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 1, fontVariantNumeric: 'tabular-nums' }}>
                         {totalChats} chat{totalChats === 1 ? '' : 's'}
                     </div>
                 </div>
             </div>
-
-            <style>{`
-                .sidebar-chat-row:hover .chat-row-actions { opacity: 1 !important; }
-                .sidebar-scroll::-webkit-scrollbar { width: 6px; }
-                .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
-                .sidebar-scroll::-webkit-scrollbar-thumb {
-                    background: var(--rule-2);
-                    border-radius: 3px;
-                }
-                .sidebar-scroll::-webkit-scrollbar-thumb:hover {
-                    background: var(--rule);
-                }
-            `}</style>
         </>
     );
 

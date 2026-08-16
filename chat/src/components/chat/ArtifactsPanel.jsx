@@ -307,17 +307,14 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
         }
         : { ...panel, position: 'relative', width: docW };
     const header = {
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '12px 14px',
+        display: 'flex', alignItems: 'center', gap: 4,
+        padding: '10px 10px 10px 16px',
+        minHeight: 56,
         borderBottom: '1px solid var(--rule)',
     };
-    const iconBtn = {
-        width: 26, height: 26, borderRadius: 6,
-        display: 'grid', placeItems: 'center',
-        color: 'var(--ink-3)',
-        background: 'transparent', border: 0, cursor: 'pointer',
-        transition: 'background .1s, color .1s',
-    };
+    // Icon buttons share the .ui-icon-btn family (28px, 14px glyph); this
+    // object only carries the bits the class doesn't (link reset).
+    const iconBtn = { textDecoration: 'none' };
     const tabs = {
         display: 'flex', alignItems: 'center', gap: 2,
         padding: '0 10px',
@@ -326,32 +323,28 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
     };
     const tabBtn = (active) => ({
         display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '10px 12px',
-        fontSize: 12.5, fontWeight: 500,
+        height: 38, padding: '0 12px',
+        fontSize: 12.5, '--fs': '12.5px', fontWeight: 500,
         color: active ? 'var(--ink)' : 'var(--ink-3)',
-        borderBottom: active ? '1.5px solid var(--accent)' : '1.5px solid transparent',
+        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+        marginBottom: -1,
         background: 'transparent', cursor: 'pointer', border: 0,
+        borderBottomStyle: 'solid',
         transition: 'color .1s, border-color .1s',
     });
     const version = {
-        fontSize: 10.5, color: 'var(--ink-4)',
+        fontSize: 10.5, '--fs': '10.5px', color: 'var(--ink-4)',
         fontFamily: 'var(--font-mono)',
         paddingRight: 4, marginLeft: 'auto',
     };
     const body = { flex: 1, overflowY: 'auto', background: 'var(--bg)' };
     const footer = {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 12px',
+        padding: '10px 14px',
         borderTop: '1px solid var(--rule)',
         background: 'var(--bg-2)',
     };
-    const primaryBtn = {
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '6px 12px', borderRadius: 6,
-        background: 'var(--accent)', color: 'var(--accent-ink)',
-        fontSize: 12, fontWeight: 500,
-        border: 0, cursor: 'pointer',
-    };
+    const primaryBtn = {};
 
     return (
         <>
@@ -383,15 +376,15 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     onMouseDown={detached ? onFloatMove : undefined}
                 >
                     <div style={{
-                        fontSize: 10.5, color: 'var(--ink-3)',
-                        letterSpacing: '.04em', textTransform: 'uppercase',
+                        fontSize: 10.5, '--fs': '10.5px', color: 'var(--ink-3)',
+                        letterSpacing: '.06em', textTransform: 'uppercase', fontWeight: 600,
                     }}>
                         {active ? 'Artifact' : 'Artifacts'}
                     </div>
                     <div style={{
-                        fontSize: 13.5, fontWeight: 600, color: 'var(--ink)',
+                        fontSize: 14, '--fs': '14px', fontWeight: 600, color: 'var(--ink)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        marginTop: 1,
+                        marginTop: 2, letterSpacing: '-.01em',
                     }}>
                         {active ? active.title : `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`}
                     </div>
@@ -431,21 +424,17 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                                 }
                             })();
                         }}
-                        style={{
-                            ...iconBtn,
-                            textDecoration: 'none',
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        className="ui-icon-btn"
+                        style={iconBtn}
                     >
-                        <Download style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                        <Download strokeWidth={1.75} />
                     </a>
                 ) : (
                     // Code-block artifact: build a Blob from the captured
                     // source. The blob URL is data-only and same-origin,
                     // so the click chain doesn't trip download blockers.
                     <button
-                        style={iconBtn}
+                        className="ui-icon-btn"
                         onClick={() => {
                             const blob = new Blob([active.source], { type: 'text/plain' });
                             const url = URL.createObjectURL(blob);
@@ -460,31 +449,26 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                             }, 0);
                         }}
                         title="Download"
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     >
-                        <Download style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                        <Download strokeWidth={1.75} />
                     </button>
                 ))}
                 <button
-                    style={iconBtn}
+                    className="ui-icon-btn"
                     onClick={() => setDetached(d => !d)}
                     title={detached ? 'Dock to side' : 'Detach — float anywhere'}
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 >
                     {detached
-                        ? <Minimize2 style={{ width: 14, height: 14 }} strokeWidth={1.75} />
-                        : <Maximize2 style={{ width: 14, height: 14 }} strokeWidth={1.75} />}
+                        ? <Minimize2 strokeWidth={1.75} />
+                        : <Maximize2 strokeWidth={1.75} />}
                 </button>
                 <button
-                    style={iconBtn}
+                    className="ui-icon-btn ui-icon-btn-lg"
                     onClick={onClose}
                     title="Close"
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    aria-label="Close artifacts panel"
                 >
-                    <X style={{ width: 14, height: 14 }} strokeWidth={2} />
+                    <X strokeWidth={2} />
                 </button>
             </div>
 
@@ -533,13 +517,13 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                         width: 7, height: 7, borderRadius: '50%',
                         background: 'var(--ok)',
                     }} />
-                    <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+                    <span style={{ fontSize: 11.5, '--fs': '11.5px', color: 'var(--ink-3)' }}>
                         Synced with chat
                     </span>
                 </div>
                 {active && (
                     <button
-                        style={primaryBtn}
+                        className="ui-btn ui-btn-sm ui-btn-primary"
                         onClick={async () => {
                             try {
                                 let toCopy = active.source;
@@ -551,7 +535,7 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                             } catch (e) { /* ignore */ }
                         }}
                     >
-                        <Share2 style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                        <Share2 strokeWidth={1.75} />
                         <span>Copy</span>
                     </button>
                 )}
@@ -614,30 +598,25 @@ function RunnablePreview({ code, language }) {
     };
     const stop = () => { if (abortRef.current) abortRef.current.abort(); };
 
-    const btn = {
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 11px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-        border: 0, cursor: 'pointer',
-    };
     const pre = {
         margin: 0, padding: '10px 12px', fontFamily: 'var(--font-mono)',
-        fontSize: 12, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        fontSize: 12, '--fs': '12px', lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
         overflowX: 'auto',
     };
 
     return (
         <div style={{ padding: '14px 16px 40px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontSize: 11, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
+                <span style={{ fontSize: 11, '--fs': '11px', color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
                     {serverLang} · sandbox
                 </span>
                 {state === 'running' ? (
-                    <button style={{ ...btn, background: 'color-mix(in oklab, #ef4444 14%, transparent)', color: '#ef4444' }} onClick={stop}>
-                        <Square style={{ width: 12, height: 12 }} strokeWidth={2.5} /> Stop
+                    <button className="ui-btn ui-btn-sm" style={{ background: 'color-mix(in oklab, var(--danger) 12%, transparent)', color: 'var(--danger)' }} onClick={stop}>
+                        <Square strokeWidth={2.5} /> Stop
                     </button>
                 ) : (
-                    <button style={{ ...btn, background: 'var(--accent)', color: 'var(--accent-ink)' }} onClick={run}>
-                        <Play style={{ width: 12, height: 12 }} strokeWidth={2.5} /> Run
+                    <button className="ui-btn ui-btn-sm ui-btn-primary" onClick={run}>
+                        <Play strokeWidth={2.5} /> Run
                     </button>
                 )}
             </div>
@@ -645,27 +624,27 @@ function RunnablePreview({ code, language }) {
             <CodeBlock code={code} language={language} isStreaming={false} />
 
             {state === 'running' && (
-                <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--ink-3)', fontSize: 12 }}>
+                <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--ink-3)', fontSize: 12, '--fs': '12px' }}>
                     <Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> executing in sandbox…
                 </div>
             )}
 
             {output && (state === 'done' || state === 'error') && (
                 <div style={{ marginTop: 12, border: '1px solid var(--rule)', borderRadius: 8, overflow: 'hidden' }}>
-                    <div style={{ padding: '6px 12px', background: 'var(--bg-2)', fontSize: 10.5, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {state === 'error' && <AlertCircle style={{ width: 12, height: 12, color: '#ef4444' }} />}
+                    <div style={{ padding: '6px 12px', background: 'var(--bg-2)', fontSize: 10.5, '--fs': '10.5px', color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {state === 'error' && <AlertCircle style={{ width: 12, height: 12, color: 'var(--danger)' }} />}
                         output
                         {typeof output.durationMs === 'number' && (
                             <span style={{ marginLeft: 'auto', color: 'var(--ink-4)' }}>{Math.round(output.durationMs)}ms</span>
                         )}
                     </div>
                     {output.stdout && <pre style={{ ...pre, color: 'var(--ink-2)' }}>{output.stdout}</pre>}
-                    {output.stderr && <pre style={{ ...pre, color: '#f87171', borderTop: '1px solid var(--rule)' }}>{output.stderr}</pre>}
+                    {output.stderr && <pre style={{ ...pre, color: 'var(--danger)', borderTop: '1px solid var(--rule)' }}>{output.stderr}</pre>}
                     {output.error && !output.stdout && !output.stderr && (
-                        <pre style={{ ...pre, color: '#f87171' }}>{output.error}</pre>
+                        <pre style={{ ...pre, color: 'var(--danger)' }}>{output.error}</pre>
                     )}
                     {output.timedOut && (
-                        <div style={{ padding: '6px 12px', fontSize: 11, color: '#fbbf24', borderTop: '1px solid var(--rule)' }}>execution timed out</div>
+                        <div style={{ padding: '6px 12px', fontSize: 11, '--fs': '11px', color: 'var(--warning)', borderTop: '1px solid var(--rule)' }}>execution timed out</div>
                     )}
                     {Array.isArray(output.artifacts) && output.artifacts.length > 0 && (
                         <div style={{ borderTop: '1px solid var(--rule)', padding: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -676,7 +655,7 @@ function RunnablePreview({ code, language }) {
                                         {isImage && (
                                             <img src={a.url} alt={a.name} style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 6, border: '1px solid var(--rule)', background: '#fff' }} />
                                         )}
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, '--fs': '10.5px', color: 'var(--ink-3)', fontFamily: 'var(--font-mono)' }}>
                                             <span>{a.name}</span>
                                             <span style={{ color: 'var(--ink-4)' }}>{fmtBytes(a.size)}</span>
                                             <a href={a.url} target="_blank" rel="noreferrer" download={a.name}
@@ -736,10 +715,10 @@ function FilePreviewBody({ active, fileSource }) {
     if (RUNNABLE.includes(active.language)) {
         if (active.kind === 'file') {
             if (fileSource?.loading) {
-                return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading…</div>;
+                return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12, '--fs': '12px' }}>Loading…</div>;
             }
             if (fileSource?.error) {
-                return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load file: {fileSource.error}</div>;
+                return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12, '--fs': '12px' }}>Could not load file: {fileSource.error}</div>;
             }
         }
         const code = active.kind === 'file' ? (fileSource?.text || '') : (active.source || '');
@@ -853,11 +832,11 @@ function FilePreviewBody({ active, fileSource }) {
                 alignItems: 'center', gap: 14, color: 'var(--ink-3)',
             }}>
                 <FileText style={{ width: 40, height: 40, color: 'var(--ink-4)' }} strokeWidth={1.25} />
-                <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>
+                <div style={{ fontSize: 13, '--fs': '13px', color: 'var(--ink-2)' }}>
                     Archive — no inline preview.
                 </div>
                 <a href={active.url} target="_blank" rel="noopener noreferrer"
-                   style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'underline' }}>
+                   style={{ fontSize: 12, '--fs': '12px', color: 'var(--accent)', textDecoration: 'underline' }}>
                     Open / download {active.fileName || active.title}
                 </a>
             </div>
@@ -865,10 +844,10 @@ function FilePreviewBody({ active, fileSource }) {
     }
     // Text-ish file (json, md, py, js, csv, ...). Fetch and render via CodeBlock.
     if (fileSource?.loading) {
-        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading…</div>;
+        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12, '--fs': '12px' }}>Loading…</div>;
     }
     if (fileSource?.error) {
-        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load file: {fileSource.error}</div>;
+        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12, '--fs': '12px' }}>Could not load file: {fileSource.error}</div>;
     }
     const text = fileSource?.text || '';
     return (
@@ -886,7 +865,7 @@ function FileSourceBody({ active, fileSource }) {
         margin: 0,
         padding: '20px 22px',
         fontFamily: 'var(--font-mono)',
-        fontSize: 12.5, lineHeight: 1.6,
+        fontSize: 12.5, '--fs': '12.5px', lineHeight: 1.6,
         color: 'var(--ink-2)',
         whiteSpace: 'pre',
         overflowX: 'auto',
@@ -897,16 +876,16 @@ function FileSourceBody({ active, fileSource }) {
     const lang = active.language;
     if (['image', 'pdf', 'archive', 'audio', 'video'].includes(lang)) {
         return (
-            <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12.5 }}>
+            <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12.5, '--fs': '12.5px' }}>
                 Binary file — no source view. Use Preview or open in a new tab.
             </div>
         );
     }
     if (fileSource?.loading) {
-        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading source…</div>;
+        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12, '--fs': '12px' }}>Loading source…</div>;
     }
     if (fileSource?.error) {
-        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load source: {fileSource.error}</div>;
+        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12, '--fs': '12px' }}>Could not load source: {fileSource.error}</div>;
     }
     return <pre style={preStyle}>{fileSource?.text || ''}</pre>;
 }
@@ -927,10 +906,10 @@ function EmptyState() {
             }}>
                 <Code style={{ width: 24, height: 24 }} strokeWidth={1.5} />
             </div>
-            <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--ink-2)', marginBottom: 6 }}>
+            <div style={{ fontSize: 14, '--fs': '14px', fontWeight: 500, color: 'var(--ink-2)', marginBottom: 6 }}>
                 No artifacts yet
             </div>
-            <div style={{ fontSize: 12.5, color: 'var(--ink-3)', maxWidth: 280, lineHeight: 1.55 }}>
+            <div style={{ fontSize: 12.5, '--fs': '12.5px', color: 'var(--ink-3)', maxWidth: 280, lineHeight: 1.55 }}>
                 Code blocks in assistant responses will appear here.
                 Click one in chat to open it in Preview.
             </div>
@@ -962,7 +941,7 @@ function ArtifactList({ artifacts, activeId, onSelect }) {
                             border: isLatest && a.id !== activeId
                                 ? '1px solid var(--accent)'
                                 : '1px solid var(--rule)',
-                            borderRadius: 8,
+                            borderRadius: 10,
                             textAlign: 'left', cursor: 'pointer',
                             color: 'var(--ink)',
                             transition: 'background .1s, border-color .1s',
@@ -986,7 +965,7 @@ function ArtifactList({ artifacts, activeId, onSelect }) {
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <span style={{
-                                    fontSize: 12.5, fontWeight: 500, color: 'var(--ink)',
+                                    fontSize: 12.5, '--fs': '12.5px', fontWeight: 500, color: 'var(--ink)',
                                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                     minWidth: 0,
                                 }}>
@@ -995,9 +974,9 @@ function ArtifactList({ artifacts, activeId, onSelect }) {
                                 {isLatest && (
                                     <span style={{
                                         flexShrink: 0,
-                                        fontSize: 8, fontWeight: 600, letterSpacing: 0.3,
+                                        fontSize: 9.5, '--fs': '9.5px', fontWeight: 700, letterSpacing: 0.4,
                                         textTransform: 'uppercase',
-                                        padding: '0 4px', lineHeight: '13px', borderRadius: 4,
+                                        padding: '0 5px', lineHeight: '15px', borderRadius: 999,
                                         background: 'var(--accent)', color: 'var(--accent-ink)',
                                     }}>
                                         Latest
@@ -1005,7 +984,7 @@ function ArtifactList({ artifacts, activeId, onSelect }) {
                                 )}
                             </div>
                             <div style={{
-                                fontSize: 11, color: 'var(--ink-3)', marginTop: 2,
+                                fontSize: 11, '--fs': '11px', color: 'var(--ink-3)', marginTop: 2,
                                 display: 'flex', alignItems: 'center', gap: 6,
                                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                             }}>

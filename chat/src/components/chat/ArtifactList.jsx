@@ -75,15 +75,9 @@ export default function ArtifactList({ artifacts }) {
                 return (
                     <div
                         key={(a.runId || '') + ':' + a.name + ':' + i}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 10,
-                            padding: '8px 10px',
-                            border: '1px solid var(--rule)',
-                            borderRadius: 8,
-                            background: 'var(--bg)',
-                        }}
+                        className="artifact-card"
                     >
-                        <Icon style={{ width: 18, height: 18, color: 'var(--accent)', flexShrink: 0 }} strokeWidth={1.8} />
+                        <span className="artifact-card-icon"><Icon strokeWidth={1.8} /></span>
                         <a
                             href={a.url}
                             target="_blank"
@@ -96,14 +90,11 @@ export default function ArtifactList({ artifacts }) {
                             }}
                             title={`Open ${a.name} in a new tab`}
                         >
-                            <span style={{
-                                fontSize: 13, fontWeight: 500,
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>
+                            <span className="artifact-card-name">
                                 {a.name}
                             </span>
                             {sizeText && (
-                                <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{sizeText}</span>
+                                <span className="artifact-card-size">{sizeText}</span>
                             )}
                         </a>
                         <a
@@ -119,26 +110,10 @@ export default function ArtifactList({ artifacts }) {
                                     window.location.href = dlUrl;
                                 });
                             }}
-                            style={{
-                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                width: 30, height: 30,
-                                borderRadius: 6,
-                                color: 'var(--ink-3)',
-                                background: 'transparent',
-                                textDecoration: 'none',
-                                flexShrink: 0,
-                                transition: 'background .12s, color .12s',
-                            }}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.background = 'var(--bg-2)';
-                                e.currentTarget.style.color = 'var(--accent)';
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.background = 'transparent';
-                                e.currentTarget.style.color = 'var(--ink-3)';
-                            }}
+                            className="ui-icon-btn"
+                            style={{ textDecoration: 'none' }}
                         >
-                            <Download style={{ width: 14, height: 14 }} strokeWidth={2} />
+                            <Download strokeWidth={2} />
                         </a>
                     </div>
                 );

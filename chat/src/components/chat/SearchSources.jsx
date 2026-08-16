@@ -220,16 +220,16 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
         <>
             {isValidUrl ? (
                 <span
-                    className="flex-shrink-0 flex items-center justify-center w-4 h-4 rounded-sm text-[8.5px] font-semibold tracking-tight leading-none select-none"
+                    className="src-avatar"
                     style={{ backgroundColor: avatarColor.bg, color: avatarColor.fg }}
                     aria-hidden="true"
                 >
                     {letter}
                 </span>
             ) : (
-                <Globe className="w-3.5 h-3.5 text-dark-300 flex-shrink-0" />
+                <Globe style={{ width: 14, height: 14, color: 'var(--ink-3)', flexShrink: 0 }} />
             )}
-            <span className="text-[10.5px] text-dark-300 truncate max-w-[140px]">
+            <span className="src-host">
                 {displayHost}
             </span>
         </>
@@ -237,7 +237,7 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
 
     const popupContent = (
         <div
-            className="fixed w-80 p-3 rounded-lg bg-dark-900 border border-white/10 shadow-2xl pointer-events-none"
+            className="src-popup"
             style={{
                 left: popupPos?.left ?? 0,
                 top: popupPos?.top ?? 0,
@@ -245,10 +245,10 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
             }}
         >
             {isValidUrl && previewStatus !== 'error' && (
-                <div className="relative w-full h-36 mb-2 rounded-md overflow-hidden bg-white/[0.03] ring-1 ring-white/10">
+                <div className="src-popup-shot">
                     {previewStatus === 'loading' && (
                         <div className="absolute inset-0 flex items-center justify-center">
-                            <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
+                            <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--ink-4)' }} />
                         </div>
                     )}
                     <img
@@ -265,19 +265,19 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
                 </div>
             )}
             {source?.title && (
-                <div className="text-[12px] font-semibold text-white leading-snug mb-1 line-clamp-2">
+                <div className="src-popup-title line-clamp-2">
                     {source.title}
                 </div>
             )}
-            <div className="text-[10.5px] text-dark-400 mb-1.5">{displayHost}</div>
+            <div className="src-popup-host">{displayHost}</div>
             {previewText && (
-                <div className="text-[11.5px] text-dark-200 leading-relaxed line-clamp-4 mb-2">
+                <div className="src-popup-text line-clamp-4">
                     {previewText}
                 </div>
             )}
-            <div className="flex items-center gap-1 text-[10.5px] text-dark-400 pt-1.5 border-t border-white/[0.06]">
+            <div className="src-popup-foot">
                 <span>Click to open</span>
-                <ExternalLink className="w-2.5 h-2.5" />
+                <ExternalLink />
             </div>
         </div>
     );
@@ -294,12 +294,12 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
                     href={source.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 h-6 px-2 rounded-full bg-white/[0.04] border border-white/[0.06] hover:bg-white/[0.08] transition-colors"
+                    className="src-chip"
                 >
                     {chipInner}
                 </a>
             ) : (
-                <span className="inline-flex items-center gap-1.5 h-6 px-2 rounded-full bg-white/[0.04] border border-white/[0.06]">
+                <span className="src-chip">
                     {chipInner}
                 </span>
             )}
@@ -336,7 +336,7 @@ export default function SearchSources({ sources, maxVisible = 8 }) {
     const overflow = sources.length - visible.length;
 
     return (
-        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        <div className="src-chips">
             {visible.map((source, idx) => (
                 <SourceChip
                     key={`${source?.url || 'src'}-${idx}`}
@@ -347,7 +347,7 @@ export default function SearchSources({ sources, maxVisible = 8 }) {
                 />
             ))}
             {overflow > 0 && (
-                <span className="inline-flex items-center h-6 px-2 rounded-full bg-white/[0.04] border border-white/[0.06] text-[10.5px] text-dark-300">
+                <span className="src-chip src-chip-more">
                     + {overflow} more
                 </span>
             )}

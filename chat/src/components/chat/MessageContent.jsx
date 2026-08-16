@@ -51,10 +51,7 @@ const makeCodeComponent = (isStreaming) => function CodeRenderer({ node, inline,
     }
 
     return (
-        <code
-            className="px-1.5 py-0.5 mx-0.5 bg-white/10 rounded text-accent-400 font-mono text-[0.85em]"
-            {...props}
-        >
+        <code {...props}>
             {children}
         </code>
     );
@@ -62,16 +59,16 @@ const makeCodeComponent = (isStreaming) => function CodeRenderer({ node, inline,
 
 const sharedMarkdownComponents = {
     p({ children }) {
-        return <p className="mb-4 leading-relaxed last:mb-0">{children}</p>;
+        return <p>{children}</p>;
     },
     h1({ children }) {
-        return <h1 className="text-xl font-semibold mt-6 mb-3 text-dark-100">{children}</h1>;
+        return <h1>{children}</h1>;
     },
     h2({ children }) {
-        return <h2 className="text-lg font-semibold mt-5 mb-2 text-dark-100">{children}</h2>;
+        return <h2>{children}</h2>;
     },
     h3({ children }) {
-        return <h3 className="text-base font-semibold mt-4 mb-2 text-dark-100">{children}</h3>;
+        return <h3>{children}</h3>;
     },
     a({ href, children }) {
         // A model-emitted video link (YouTube/Vimeo/Dailymotion or a direct
@@ -82,7 +79,7 @@ const sharedMarkdownComponents = {
         const vid = videoDescriptorFromUrl(href, childrenToText(children));
         if (vid) return <InlineVideoLink video={vid} />;
         return (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline break-all" style={{ color: 'var(--accent)' }}>
+            <a href={href} target="_blank" rel="noopener noreferrer" className="break-all">
                 {children}
             </a>
         );
@@ -103,26 +100,23 @@ const sharedMarkdownComponents = {
                     src={safeSrc}
                     alt={alt || ''}
                     loading="lazy"
-                    className="rounded-lg max-w-full h-auto"
-                    style={{ maxHeight: 420, border: '1px solid var(--rule-2)' }}
+                    className="md-img max-w-full h-auto"
                 />
             </a>
         );
     },
     ul({ children }) {
-        return <ul className="pl-5 mb-4 list-disc marker:text-dark-500">{children}</ul>;
+        return <ul className="list-disc">{children}</ul>;
     },
     ol({ children }) {
-        return <ol className="pl-5 mb-4 list-decimal marker:text-dark-500">{children}</ol>;
+        return <ol className="list-decimal">{children}</ol>;
     },
     li({ children }) {
-        return <li className="mb-1.5 text-dark-200">{children}</li>;
+        return <li>{children}</li>;
     },
     blockquote({ children }) {
         return (
-            <blockquote className="border-l-3 pl-4 py-1 my-4 text-dark-400 italic" style={{ borderColor: 'color-mix(in oklab, var(--accent) 50%, transparent)' }}>
-                {children}
-            </blockquote>
+            <blockquote>{children}</blockquote>
         );
     },
     table({ children }) {
@@ -130,13 +124,13 @@ const sharedMarkdownComponents = {
         // borders read badly in layouts like Slack that already frame the
         // message. Keep horizontal scroll for wide tables.
         return (
-            <div className="overflow-x-auto my-4">
-                <table className="w-full border-collapse min-w-max">{children}</table>
+            <div className="md-table-wrap">
+                <table>{children}</table>
             </div>
         );
     },
     thead({ children }) {
-        return <thead style={{ background: 'var(--bg-2)' }}>{children}</thead>;
+        return <thead>{children}</thead>;
     },
     tbody({ children }) {
         return <tbody>{children}</tbody>;
@@ -146,29 +140,19 @@ const sharedMarkdownComponents = {
     },
     th({ children }) {
         return (
-            <th
-                className="px-4 py-3 text-left font-semibold text-sm whitespace-nowrap"
-                style={{ color: 'var(--ink)', borderBottom: '1px solid var(--rule)' }}
-            >
-                {children}
-            </th>
+            <th>{children}</th>
         );
     },
     td({ children }) {
         return (
-            <td
-                className="px-4 py-3 text-sm"
-                style={{ color: 'var(--ink-2)', borderBottom: '1px solid var(--rule-2)' }}
-            >
-                {children}
-            </td>
+            <td>{children}</td>
         );
     },
     hr() {
-        return <hr className="border-white/10 my-6" />;
+        return <hr />;
     },
     strong({ children }) {
-        return <strong className="font-semibold text-dark-100">{children}</strong>;
+        return <strong>{children}</strong>;
     },
     em({ children }) {
         return <em className="italic">{children}</em>;

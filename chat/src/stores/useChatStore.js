@@ -154,6 +154,8 @@ export const useChatStore = create(
             model: null,
             temperature: 0.7,
             topP: 1.0,
+            // Reasoning effort for thinking models: 'default' | 'off' | 'low' | 'medium' | 'high'
+            reasoningEffort: 'default',
             maxTokens: null,  // null = use model's context window dynamically
             selectedSystemPromptId: null,
             fontSize: 'medium',

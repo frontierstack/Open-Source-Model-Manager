@@ -210,23 +210,6 @@ export default React.memo(function ChatMessage({
         : '';
 
     // Shared inline styles that use the design palette bridge.
-    const aiBadge = {
-        width: 18, height: 18, borderRadius: '50%',
-        background: 'var(--ink)', color: 'var(--bg)',
-        display: 'grid', placeItems: 'center',
-        flexShrink: 0,
-    };
-    const userBadge = {
-        ...aiBadge,
-        background: 'var(--accent)', color: 'var(--accent-ink)',
-    };
-    const metaRow = {
-        display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 11.5, color: 'var(--ink-3)',
-        marginBottom: 6,
-    };
-    const metaName = { color: 'var(--ink-2)', fontWeight: 500 };
-    const metaTime = { color: 'var(--ink-4)' };
     const aiBubble = {
         background: 'var(--bubble-ai-bg)',
         color: 'var(--ink)',
@@ -234,8 +217,6 @@ export default React.memo(function ChatMessage({
         borderRadius: 'var(--bubble-radius)',
         padding: 'var(--bubble-pad-y) var(--bubble-pad-x)',
         boxShadow: 'var(--bubble-shadow)',
-        fontSize: 14.5,
-        lineHeight: 1.62,
         alignSelf: 'stretch',
         maxWidth: '100%',
         // Same overflow guard as the user bubble — a long unbroken token in
@@ -251,10 +232,9 @@ export default React.memo(function ChatMessage({
     const userBubble = {
         background: 'var(--bubble-user-bg)',
         color: 'var(--bubble-user-ink)',
-        borderRadius: 14,
-        padding: '10px 16px',
-        fontSize: 14.5,
-        lineHeight: 1.6,
+        borderRadius: 16,
+        borderBottomRightRadius: 6,
+        padding: '10px 15px',
         maxWidth: '78%',
         alignSelf: 'flex-end',
         // Long unbroken pastes (URLs, hashes, base64, file paths) have no
@@ -266,35 +246,12 @@ export default React.memo(function ChatMessage({
         wordBreak: 'break-word',
     };
     const collapseBtn = {
-        marginLeft: 'auto',
-        display: 'inline-flex', alignItems: 'center', gap: 4,
-        padding: '2px 7px', borderRadius: 4,
-        color: 'var(--ink-3)', fontSize: 10.5,
-        transition: 'opacity .12s, background .1s',
-        background: 'transparent', border: 0, cursor: 'pointer',
-        opacity: hovered || bodyCollapsed ? 1 : 0.35,
+        transition: 'opacity .12s, background .12s, color .12s',
+        opacity: hovered || bodyCollapsed ? 1 : 0.4,
     };
     const actionsRow = {
-        display: 'flex', alignItems: 'center', gap: 2,
-        marginTop: 4,
         transition: 'opacity .12s',
         opacity: hovered ? 1 : 0,
-    };
-    const actionBtn = {
-        display: 'inline-flex', alignItems: 'center', gap: 5,
-        padding: '4px 8px', borderRadius: 5,
-        color: 'var(--ink-3)', fontSize: 11,
-        background: 'transparent', border: 0, cursor: 'pointer',
-        transition: 'background .1s, color .1s',
-    };
-    const actionBtnActive = {
-        ...actionBtn,
-        color: 'var(--ok)',
-        background: 'color-mix(in oklab, var(--ok) 15%, transparent)',
-    };
-    const tokenCountStyle = {
-        fontSize: 10.5, color: 'var(--ink-4)',
-        fontFamily: 'var(--font-mono)',
     };
 
     return (
@@ -304,7 +261,7 @@ export default React.memo(function ChatMessage({
                 width: '100%',
                 marginBottom: 'var(--msg-gap)',
             }}
-            className={`flex flex-col min-w-0 ${isUser ? 'items-end' : 'items-start'} ${isStreaming ? '' : 'animate-fade-in'}`}
+            className={`msg-root flex flex-col min-w-0 ${isUser ? 'items-end' : 'items-start'} ${isStreaming ? '' : 'animate-fade-in'}`}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
         >
@@ -313,19 +270,12 @@ export default React.memo(function ChatMessage({
                 attachment carries previewable data (content / dataUrl /
                 sheets); old conversations may have only a filename stub. */}
             {isUser && attachments && attachments.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2, maxWidth: '85%' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 2, maxWidth: '85%', justifyContent: 'flex-end' }}>
                     {attachments.map((att, i) => {
                         const previewable = isAttachmentPreviewable(att);
-                        const baseStyle = {
-                            display: 'inline-flex', alignItems: 'center', gap: 5,
-                            padding: '2px 8px', borderRadius: 6,
-                            background: 'var(--accent-soft)',
-                            border: '1px solid var(--accent)',
-                            fontSize: 11, color: 'var(--accent)',
-                        };
                         if (!previewable) {
                             return (
-                                <div key={i} style={baseStyle}>
+                                <div key={i} className="msg-attach-chip" title={att.filename || att.name}>
                                     <span>{att.filename || att.name}</span>
                                 </div>
                             );
@@ -335,11 +285,11 @@ export default React.memo(function ChatMessage({
                                 key={i}
                                 type="button"
                                 onClick={() => setPreviewAttachment(att)}
-                                style={{ ...baseStyle, cursor: 'pointer' }}
+                                className="msg-attach-chip"
                                 title="Click to preview"
                             >
                                 <span>{att.filename || att.name}</span>
-                                <Eye style={{ width: 11, height: 11, opacity: 0.7 }} strokeWidth={1.75} />
+                                <Eye strokeWidth={1.75} />
                             </button>
                         );
                     })}
@@ -347,33 +297,31 @@ export default React.memo(function ChatMessage({
             )}
 
             {/* Meta row: badge + name + time + collapse toggle */}
-            <div style={{
-                ...metaRow,
+            <div className="msg-meta" style={{
                 alignSelf: isUser ? 'flex-end' : 'flex-start',
                 flexDirection: isUser ? 'row-reverse' : 'row',
+                width: isUser ? undefined : '100%',
             }}>
                 {isUser ? (
-                    <div style={userBadge}>
-                        <User style={{ width: 10, height: 10 }} strokeWidth={2} />
+                    <div className="msg-badge msg-badge-user">
+                        <User strokeWidth={2.25} />
                     </div>
                 ) : (
-                    <div style={aiBadge}>
-                        <Sparkles style={{ width: 10, height: 10 }} strokeWidth={2} />
+                    <div className="msg-badge msg-badge-ai">
+                        <Sparkles strokeWidth={2} />
                     </div>
                 )}
-                <span style={metaName}>{isUser ? 'You' : (modelName || 'Assistant')}</span>
-                {timeStr && <span style={metaTime}>{timeStr}</span>}
+                <span className="msg-name">{isUser ? 'You' : (modelName || 'Assistant')}</span>
+                {timeStr && <span className="msg-time">{timeStr}</span>}
                 {!isUser && displayContent && !isStreaming && collapseKey && (
                     <button
                         onClick={() => toggleMessageCollapsed(collapseKey)}
-                        className="message-collapse-btn"
+                        className="message-collapse-btn msg-collapse-btn ui-chip-btn"
                         style={collapseBtn}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-2)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                         title={bodyCollapsed ? 'Expand response' : 'Collapse response'}
                     >
                         <span style={{ display: 'inline-flex', transform: bodyCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform .15s' }}>
-                            <ChevronDown style={{ width: 11, height: 11 }} strokeWidth={2} />
+                            <ChevronDown strokeWidth={2} />
                         </span>
                         <span>{bodyCollapsed ? 'Expand' : 'Collapse'}</span>
                     </button>
@@ -385,77 +333,36 @@ export default React.memo(function ChatMessage({
                 <div style={isUser ? userBubble : aiBubble} className={isUser ? 'message-user' : 'message-assistant'}>
                     {/* Reasoning / thinking dropdown */}
                     {displayReasoning && (
-                        <div ref={reasoningRef} style={{ marginBottom: 8 }}>
+                        <div ref={reasoningRef} style={{ marginBottom: 10, marginLeft: -6 }}>
                             <button
                                 onClick={handleToggleReasoning}
-                                style={{
-                                    display: 'inline-flex', alignItems: 'center', gap: 4,
-                                    color: 'var(--ink-4)',
-                                    fontSize: 11.5, fontWeight: 500,
-                                    background: 'transparent', border: 0, cursor: 'pointer',
-                                    padding: 0,
-                                }}
+                                className="msg-thinking-toggle"
+                                aria-expanded={reasoningExpanded}
                             >
-                                <span>Thinking</span>
-                                <span style={{ color: 'var(--ink-4)', fontSize: 10.5 }}>({displayReasoning.length})</span>
+                                <Sparkles strokeWidth={1.75} style={{ opacity: 0.7 }} />
+                                <span>{isStreaming && !displayContent ? 'Thinking' : 'Thought process'}</span>
+                                <span className="msg-thinking-count">· {displayReasoning.length.toLocaleString()} chars</span>
                                 {reasoningExpanded
-                                    ? <ChevronUp style={{ width: 12, height: 12 }} strokeWidth={2} />
-                                    : <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
+                                    ? <ChevronUp strokeWidth={2} />
+                                    : <ChevronDown strokeWidth={2} />
                                 }
                             </button>
                             {reasoningExpanded && (() => {
                                 const steps = splitReasoningIntoSteps(displayReasoning);
                                 const structured = steps.length >= 3;
                                 return (
-                                    <div style={{
-                                        marginTop: 6,
-                                        padding: '10px 12px',
-                                        borderRadius: 6,
-                                        background: 'var(--bg-2)',
-                                        border: '1px solid var(--rule-2)',
-                                        maxHeight: 320,
-                                        overflowY: 'auto',
-                                    }}>
+                                    <div className="msg-thinking-panel" style={{ marginLeft: 6 }}>
                                         {structured ? (
-                                            <ol style={{
-                                                listStyle: 'none',
-                                                margin: 0,
-                                                padding: 0,
-                                                fontSize: 13,
-                                                color: 'var(--ink-3)',
-                                                fontStyle: 'italic',
-                                                lineHeight: 1.55,
-                                            }}>
+                                            <ol>
                                                 {steps.map((step, i) => (
-                                                    <li key={i} style={{
-                                                        display: 'flex',
-                                                        gap: 10,
-                                                        padding: '6px 0',
-                                                        borderTop: i === 0 ? 0 : '1px dashed var(--rule-2)',
-                                                    }}>
-                                                        <span style={{
-                                                            flexShrink: 0,
-                                                            color: 'var(--ink-4)',
-                                                            fontStyle: 'normal',
-                                                            fontVariantNumeric: 'tabular-nums',
-                                                            fontSize: 11,
-                                                            minWidth: 18,
-                                                            paddingTop: 2,
-                                                        }}>{i + 1}.</span>
+                                                    <li key={i}>
+                                                        <span className="msg-thinking-n">{i + 1}.</span>
                                                         <span style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{step}</span>
                                                     </li>
                                                 ))}
                                             </ol>
                                         ) : (
-                                            <p style={{
-                                                fontSize: 13, color: 'var(--ink-3)',
-                                                fontStyle: 'italic',
-                                                whiteSpace: 'pre-wrap',
-                                                lineHeight: 1.55,
-                                                margin: 0,
-                                            }}>
-                                                {displayReasoning}
-                                            </p>
+                                            <p>{displayReasoning}</p>
                                         )}
                                     </div>
                                 );
@@ -501,20 +408,12 @@ export default React.memo(function ChatMessage({
                             return (
                                 <button
                                     onClick={() => collapseKey && setMessageCollapsed(collapseKey, false)}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                                        padding: '9px 12px',
-                                        border: '1px dashed var(--rule-2)', borderRadius: 8,
-                                        background: 'transparent', textAlign: 'left', cursor: 'pointer',
-                                        transition: 'background .1s',
-                                    }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-2)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                                    className="msg-collapsed-preview"
                                 >
-                                    <span style={{ flex: 1, textAlign: 'left', color: 'var(--ink-3)', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                         {preview || 'Collapsed response'}
                                     </span>
-                                    <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>
+                                    <span style={{ color: 'var(--ink-4)', '--fs': '11.5px', flexShrink: 0 }}>
                                         {chars.toLocaleString()} chars · click to expand
                                     </span>
                                 </button>
@@ -544,12 +443,12 @@ export default React.memo(function ChatMessage({
                                     alignItems: 'center',
                                     gap: 8,
                                     marginTop: 10,
-                                    padding: '4px 10px 4px 8px',
+                                    padding: '0 10px 0 8px',
                                     borderRadius: 999,
                                     background: 'color-mix(in oklab, var(--accent, #6366f1) 10%, transparent)',
                                     border: '1px solid color-mix(in oklab, var(--accent, #6366f1) 22%, transparent)',
                                     color: 'var(--ink-3)',
-                                    fontSize: 11.5,
+                                    '--fs': '12px',
                                     lineHeight: 1,
                                     maxWidth: '100%',
                                 }}
@@ -646,49 +545,27 @@ export default React.memo(function ChatMessage({
                         return (
                             <button
                                 onClick={onOpenArtifacts}
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                                    padding: '10px 12px',
-                                    marginTop: 10,
-                                    background: 'var(--bg-2)',
-                                    border: '1px solid var(--rule)',
-                                    borderRadius: 8,
-                                    textAlign: 'left', cursor: 'pointer',
-                                    color: 'var(--ink)',
-                                    transition: 'border-color .12s, background .12s',
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--accent)';
-                                    e.currentTarget.style.background = 'var(--accent-soft)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--rule)';
-                                    e.currentTarget.style.background = 'var(--bg-2)';
-                                }}
+                                className="msg-artifact-card"
                             >
-                                <div style={{
-                                    width: 28, height: 28, borderRadius: 6,
-                                    background: 'var(--accent-soft)', color: 'var(--accent)',
-                                    display: 'grid', placeItems: 'center', flexShrink: 0,
-                                }}>
-                                    <CodeIcon style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                                <div className="msg-artifact-icon">
+                                    <CodeIcon strokeWidth={1.75} />
                                 </div>
                                 <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                                    <div style={{ fontWeight: 500, fontSize: 13 }}>
+                                    <div className="msg-artifact-title">
                                         {count} code artifact{count === 1 ? '' : 's'}
                                     </div>
-                                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                    <div className="msg-artifact-sub">
                                         {lang}{count > 1 ? ` + ${count - 1} more` : ''} · Open in panel
                                     </div>
                                 </div>
-                                <Eye style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
+                                <Eye style={{ width: 14, height: 14, color: 'var(--ink-3)', flexShrink: 0 }} strokeWidth={1.75} />
                             </button>
                         );
                     })()}
 
                     {/* Search source chips */}
                     {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(searchResults) && searchResults.length > 0 && (
-                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
                             <SearchSources sources={searchResults} />
                         </div>
                     )}
@@ -711,36 +588,23 @@ export default React.memo(function ChatMessage({
                             .map(([n, c]) => c > 1 ? `${n} ×${c}` : n)
                             .join(', ');
                         return (
-                            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                            <div className="msg-tools-section">
                                 <button
                                     type="button"
                                     onClick={() => setToolsExpanded(v => !v)}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 6,
-                                        padding: '4px 10px',
-                                        borderRadius: 6,
-                                        background: 'color-mix(in oklab, var(--accent, #6366f1) 10%, transparent)',
-                                        border: '1px solid color-mix(in oklab, var(--accent, #6366f1) 25%, transparent)',
-                                        color: 'var(--text-secondary)',
-                                        fontSize: 11,
-                                        cursor: 'pointer',
-                                    }}
+                                    className="msg-tools-toggle"
                                     aria-expanded={toolsExpanded}
                                     aria-label={toolsExpanded ? 'Collapse tool calls' : 'Expand tool calls'}
                                 >
-                                    {toolsExpanded
-                                        ? <ChevronUp style={{ width: 12, height: 12 }} />
-                                        : <ChevronDown style={{ width: 12, height: 12 }} />}
-                                    <span style={{ fontWeight: 500 }}>
+                                    <ChevronDown strokeWidth={2} />
+                                    <span className="msg-tools-count">
                                         {toolCalls.length} tool {toolCalls.length === 1 ? 'call' : 'calls'}
                                     </span>
-                                    <span style={{ opacity: 0.75 }}>·</span>
-                                    <span style={{ opacity: 0.85 }}>{summary}</span>
+                                    <span style={{ color: 'var(--ink-4)' }}>·</span>
+                                    <span className="msg-tools-summary">{summary}</span>
                                 </button>
                                 {toolsExpanded && (
-                                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6, marginTop: 8 }}>
+                                    <div className="msg-tools-list">
                                         {toolCalls.map((tc, idx) => (
                                             <ToolCallBlock key={idx} tool={tc} />
                                         ))}
@@ -752,18 +616,9 @@ export default React.memo(function ChatMessage({
 
                     {/* Partial / interrupted indicator */}
                     {!isUser && !isStreaming && (needsContinuation || isPartial) && (
-                        <div style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 6,
-                            marginTop: 8,
-                            padding: '4px 10px',
-                            borderRadius: 6,
-                            background: 'color-mix(in oklab, var(--warning, #f59e0b) 12%, transparent)',
-                            border: '1px solid color-mix(in oklab, var(--warning, #f59e0b) 30%, transparent)',
-                        }}>
-                            <AlertCircle style={{ width: 12, height: 12, color: 'var(--warning, #f59e0b)', flexShrink: 0 }} />
-                            <span style={{ fontSize: 11, color: 'var(--warning, #f59e0b)' }}>
-                                Response cut off
-                            </span>
+                        <div className="msg-partial-banner">
+                            <AlertCircle strokeWidth={2} />
+                            <span>Response cut off</span>
                         </div>
                     )}
                 </div>
@@ -771,15 +626,13 @@ export default React.memo(function ChatMessage({
 
             {/* Hover-revealed action row (assistant messages) */}
             {!isUser && displayContent && !isStreaming && (
-                <div className="message-actions-row" style={{ ...actionsRow, alignSelf: 'stretch' }}>
+                <div className="message-actions-row" style={{ ...actionsRow, alignSelf: 'stretch', marginLeft: -8 }}>
                     <button
                         onClick={handleCopy}
-                        style={copied ? actionBtnActive : actionBtn}
-                        onMouseEnter={(e) => { if (!copied) e.currentTarget.style.background = 'var(--bg-2)'; }}
-                        onMouseLeave={(e) => { if (!copied) e.currentTarget.style.background = 'transparent'; }}
+                        className={`ui-chip-btn ${copied ? 'is-active' : ''}`}
                         title={copied ? 'Copied!' : 'Copy response'}
                     >
-                        {copied ? <Check style={{ width: 13, height: 13 }} strokeWidth={2} /> : <Copy style={{ width: 13, height: 13 }} strokeWidth={1.75} />}
+                        {copied ? <Check strokeWidth={2.25} /> : <Copy strokeWidth={1.75} />}
                         <span>{copied ? 'Copied' : 'Copy'}</span>
                     </button>
 
@@ -787,31 +640,24 @@ export default React.memo(function ChatMessage({
                         <button
                             onClick={() => onContinue(id, content)}
                             disabled={isLoading}
-                            style={{
-                                ...actionBtn,
-                                color: isLoading ? 'var(--ink-4)' : 'var(--accent)',
-                                background: isLoading ? 'transparent' : 'var(--accent-soft)',
-                                cursor: isLoading ? 'not-allowed' : 'pointer',
-                            }}
+                            className={`ui-chip-btn ${isLoading ? '' : 'is-accent'}`}
                             title="Continue generating"
                         >
-                            <PlayCircle style={{ width: 13, height: 13 }} strokeWidth={1.75} className={isLoading ? 'animate-pulse' : ''} />
+                            <PlayCircle strokeWidth={1.75} className={isLoading ? 'animate-pulse' : ''} />
                             <span>{isLoading ? 'Continuing…' : 'Continue'}</span>
                         </button>
                     )}
 
-                    <div style={{ flex: 1 }} />
-
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span className="msg-stats">
                         {responseTime && (
-                            <span style={{ ...tokenCountStyle, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                                <Clock style={{ width: 10, height: 10 }} strokeWidth={1.75} />
+                            <span title="Response time">
+                                <Clock strokeWidth={1.75} />
                                 {responseTime < 1000 ? `${responseTime}ms` : `${(responseTime / 1000).toFixed(1)}s`}
                             </span>
                         )}
                         {tokenCount && (
-                            <span style={{ ...tokenCountStyle, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                                <Zap style={{ width: 10, height: 10 }} strokeWidth={1.75} />
+                            <span title="Tokens">
+                                <Zap strokeWidth={1.75} />
                                 {tokenCount.toLocaleString?.() || tokenCount}
                             </span>
                         )}

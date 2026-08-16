@@ -65,40 +65,38 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
     const showCollapseToggle = true;
 
     return (
-        <div className="code-block my-4">
+        <div className="code-block my-3.5">
             {/* Header with language, line count, collapse toggle and copy button */}
             <div className="code-header">
-                <span className="text-xs text-dark-400 uppercase font-medium tracking-wider">
+                <span className="code-header-lang">
                     {normalizedLanguage}
-                    <span className="ml-2 normal-case tracking-normal text-dark-500 font-normal">
-                        · {lineCount} {lineCount === 1 ? 'line' : 'lines'}
+                    <span className="code-header-lines">
+                        {lineCount} {lineCount === 1 ? 'line' : 'lines'}
                     </span>
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5">
                     {collapsed && showCollapseToggle && (
-                        <span className="text-xs text-dark-500 italic">
+                        <span className="code-header-hidden">
                             {lineCount} {lineCount === 1 ? 'line' : 'lines'} hidden
                         </span>
                     )}
                     {showCollapseToggle && (
                         <button
                             onClick={handleToggleCollapsed}
-                            className="p-1.5 rounded-lg transition-colors text-dark-400 hover:text-dark-200 hover:bg-white/10"
+                            className="code-hbtn"
                             title={collapsed ? 'Expand code' : 'Collapse code'}
+                            aria-label={collapsed ? 'Expand code' : 'Collapse code'}
                         >
-                            {collapsed ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
+                            {collapsed ? <Maximize2 strokeWidth={1.75} /> : <Minimize2 strokeWidth={1.75} />}
                         </button>
                     )}
                     <button
                         onClick={handleCopy}
-                        className={`p-1.5 rounded-lg transition-colors ${
-                            copied
-                                ? 'text-green-400'
-                                : 'text-dark-400 hover:text-dark-200 hover:bg-white/10'
-                        }`}
+                        className={`code-hbtn${copied ? ' is-active' : ''}`}
                         title={copied ? 'Copied!' : 'Copy code'}
+                        aria-label="Copy code"
                     >
-                        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                        {copied ? <Check strokeWidth={2.25} /> : <Copy strokeWidth={1.75} />}
                     </button>
                 </div>
             </div>
@@ -107,22 +105,19 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
                 streaming use Prism syntax highlighting (pretty). */}
             {!collapsed && (
                 isStreaming ? (
-                    <pre className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed text-dark-200">
+                    <pre className="code-pre" style={{ color: 'var(--ink-2)' }}>
                         {code.trim()}
                     </pre>
                 ) : (
                     <Highlight theme={prismTheme} code={code.trim()} language={normalizedLanguage}>
                         {({ className, style, tokens, getLineProps, getTokenProps }) => (
                             <pre
-                                className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed"
+                                className="code-pre"
                                 style={{ ...style, backgroundColor: 'transparent' }}
                             >
                                 {tokens.map((line, i) => (
                                     <div key={i} {...getLineProps({ line })}>
-                                        <span
-                                            className="inline-block w-8 text-right pr-4 select-none"
-                                            style={{ color: isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.2)' }}
-                                        >
+                                        <span className="code-ln">
                                             {i + 1}
                                         </span>
                                         {line.map((token, key) => (

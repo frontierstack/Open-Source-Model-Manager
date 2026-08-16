@@ -120,6 +120,7 @@ export default function ChatSettings({
         maxTokens = contextSize,  // Default to model's context window
         selectedSystemPromptId = null,
         topP = 1.0,
+        reasoningEffort = 'default',
         frequencyPenalty = 0,
         presencePenalty = 0,
         fontSize = 'medium',
@@ -378,38 +379,40 @@ export default function ChatSettings({
         <>
             {/* Backdrop */}
             <div
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+                className="dlg-backdrop z-40"
                 onClick={onClose}
             />
 
             {/* Modal */}
-            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[min(720px,calc(100vw-2rem))] md:max-h-[90vh] bg-dark-900 border border-white/10 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="chat-settings-title"
+                className="dlg set-dlg fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 z-50 animate-fade-in"
+            >
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5">
-                    <h2 className="text-sm font-semibold text-dark-100">Settings</h2>
+                <div className="dlg-header">
+                    <h2 id="chat-settings-title" className="dlg-title flex-1">Settings</h2>
                     <button
                         onClick={onClose}
-                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                        className="ui-icon-btn ui-icon-btn-lg"
+                        aria-label="Close settings"
                     >
-                        <X className="w-4 h-4" />
+                        <X strokeWidth={2} />
                     </button>
                 </div>
 
                 {/* Tabs */}
-                <div className="flex border-b border-white/5 px-1">
+                <div className="set-tabs">
                     {tabs.map((tab) => {
                         const Icon = tab.icon;
                         return (
                             <button
                                 key={tab.id}
                                 onClick={() => setActiveTab(tab.id)}
-                                className={`flex items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] min-w-[40px] text-xs font-medium border-b-2 transition-colors ${
-                                    activeTab === tab.id
-                                        ? 'text-primary-400 border-primary-500'
-                                        : 'text-dark-400 border-transparent hover:text-dark-200 hover:border-white/10'
-                                }`}
+                                className={`set-tab ${activeTab === tab.id ? 'is-active' : ''}`}
                             >
-                                <Icon className="w-3.5 h-3.5" />
+                                <Icon strokeWidth={1.75} />
                                 <span className="hidden sm:inline">{tab.label}</span>
                             </button>
                         );
@@ -417,20 +420,20 @@ export default function ChatSettings({
                 </div>
 
                 {/* Tab Content */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="dlg-body set-body">
                     {/* Chat Settings Tab */}
                     {activeTab === 'chat' && (
                         <>
                             {/* System Prompt Selector */}
                             <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-1.5">
+                                <label className="set-label">
                                     Active System Prompt
                                 </label>
                                 <div className="relative">
                                     <select
                                         value={selectedSystemPromptId || ''}
                                         onChange={(e) => onUpdateSettings({ selectedSystemPromptId: e.target.value || null })}
-                                        className="w-full px-3 py-2 bg-dark-800/80 border border-white/10 rounded-lg text-dark-200 text-xs appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                        className="set-select"
                                     >
                                         <option value="">None (default behavior)</option>
                                         {promptsList.map((prompt) => (
@@ -439,27 +442,27 @@ export default function ChatSettings({
                                             </option>
                                         ))}
                                     </select>
-                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
+                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--ink-4)' }} />
                                 </div>
                             </div>
 
-                            <div className="border-t border-white/5" />
+                            <div className="set-divider" />
 
                             {/* Temperature */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
-                                    <label className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                    <label className="set-label-inline">
                                         Temperature
                                         <span className="group relative">
-                                            <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <svg className="set-help-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                             </svg>
-                                            <span className="absolute left-0 top-full mt-1.5 px-2.5 py-2 text-[10px] leading-relaxed text-dark-100 bg-dark-800 border border-dark-700 rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none w-52 max-w-[calc(100vw-3rem)] z-50">
+                                            <span className="set-tooltip">
                                                 How "creative" the responses are. Low values give predictable, consistent answers (good for facts, code, math). High values give more varied, imaginative responses (good for stories, brainstorming).
                                             </span>
                                         </span>
                                     </label>
-                                    <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
+                                    <span className="set-value">
                                         {temperature.toFixed(2)}
                                     </span>
                                 </div>
@@ -470,21 +473,9 @@ export default function ChatSettings({
                                     min={0}
                                     max={2}
                                     step={0.01}
-                                    className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
-                                               [&::-webkit-slider-thumb]:appearance-none
-                                               [&::-webkit-slider-thumb]:w-4
-                                               [&::-webkit-slider-thumb]:h-4
-                                               [&::-webkit-slider-thumb]:rounded-full
-                                               [&::-webkit-slider-thumb]:bg-primary-500
-                                               [&::-webkit-slider-thumb]:shadow-lg
-                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
-                                               [&::-webkit-slider-thumb]:cursor-pointer
-                                               [&::-webkit-slider-thumb]:border-2
-                                               [&::-webkit-slider-thumb]:border-dark-900
-                                               [&::-webkit-slider-thumb]:transition-transform
-                                               [&::-webkit-slider-thumb]:hover:scale-110"
+                                    className="set-range"
                                 />
-                                <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
+                                <div className="set-range-ends">
                                     <span>Precise</span>
                                     <span>Creative</span>
                                 </div>
@@ -493,18 +484,18 @@ export default function ChatSettings({
                             {/* Top P */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
-                                    <label className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                    <label className="set-label-inline">
                                         Top P
                                         <span className="group relative">
-                                            <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <svg className="set-help-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                             </svg>
-                                            <span className="absolute left-0 top-full mt-1.5 px-2.5 py-2 text-[10px] leading-relaxed text-dark-100 bg-dark-800 border border-dark-700 rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none w-52 max-w-[calc(100vw-3rem)] z-50">
+                                            <span className="set-tooltip">
                                                 Limits which words the model considers. At 1.0 all words are possible. Lower values (0.5-0.9) make the model only pick from the most likely words, giving more focused and on-topic responses.
                                             </span>
                                         </span>
                                     </label>
-                                    <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
+                                    <span className="set-value">
                                         {topP.toFixed(2)}
                                     </span>
                                 </div>
@@ -515,32 +506,53 @@ export default function ChatSettings({
                                     min={0}
                                     max={1}
                                     step={0.01}
-                                    className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
-                                               [&::-webkit-slider-thumb]:appearance-none
-                                               [&::-webkit-slider-thumb]:w-4
-                                               [&::-webkit-slider-thumb]:h-4
-                                               [&::-webkit-slider-thumb]:rounded-full
-                                               [&::-webkit-slider-thumb]:bg-primary-500
-                                               [&::-webkit-slider-thumb]:shadow-lg
-                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
-                                               [&::-webkit-slider-thumb]:cursor-pointer
-                                               [&::-webkit-slider-thumb]:border-2
-                                               [&::-webkit-slider-thumb]:border-dark-900"
+                                    className="set-range"
                                 />
-                                <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
+                                <div className="set-range-ends">
                                     <span>Focused</span>
                                     <span>Diverse</span>
                                 </div>
                             </div>
 
+                            {/* Reasoning effort — same setting as the composer's Effort chip */}
+                            <div>
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="set-label-inline">
+                                        Reasoning effort
+                                        <span className="group relative">
+                                            <svg className="set-help-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span className="set-tooltip">
+                                                How much the model thinks before answering. Off disables the thinking trace; Low/Medium cap it (fast); High lets it reason at length. Default keeps the model's own setting. Applied natively where the model supports it, otherwise as a prompt hint.
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div className="set-seg" role="radiogroup" aria-label="Reasoning effort">
+                                    {[['default','Default'],['off','Off'],['low','Low'],['medium','Medium'],['high','High']].map(([v, label]) => (
+                                        <button
+                                            key={v}
+                                            type="button"
+                                            role="radio"
+                                            aria-checked={reasoningEffort === v}
+                                            className={`set-seg-btn${reasoningEffort === v ? ' is-active' : ''}`}
+                                            onClick={() => onUpdateSettings({ reasoningEffort: v })}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
                             {/* Live code preview — default OFF; opt in per session. */}
-                            <div className="pt-2 mt-2 border-t border-white/5">
+                            <div className="set-divider" style={{ paddingTop: 16 }}>
                                 <label className="flex items-start justify-between gap-3 cursor-pointer">
                                     <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                        <div className="set-row-title">
                                             Live code preview
                                         </div>
-                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                        <div className="set-row-help">
                                             Adds a Run button to Python and HTML code blocks the assistant writes. Python executes in the gVisor sandbox; HTML renders in an isolated iframe. Off by default — when off, no Run button and no preview is rendered.
                                         </div>
                                     </div>
@@ -549,24 +561,22 @@ export default function ChatSettings({
                                         role="switch"
                                         aria-checked={!!settings?.codePreviewEnabled}
                                         onClick={() => onUpdateSettings({ codePreviewEnabled: !settings?.codePreviewEnabled })}
-                                        className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors mt-0.5 ${settings?.codePreviewEnabled ? 'bg-primary-500' : 'bg-dark-700'}`}
+                                        className={`set-toggle ${settings?.codePreviewEnabled ? 'is-on' : ''}`}
                                     >
-                                        <span
-                                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${settings?.codePreviewEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`}
-                                        />
+                                        <span className="set-toggle-knob" />
                                     </button>
                                 </label>
                             </div>
 
                             {/* Account memory — on by default. Management lives in the
                                 webapp Memory tab; here we only offer the on/off switch. */}
-                            <div className="pt-2 mt-2 border-t border-white/5">
+                            <div className="set-divider" style={{ paddingTop: 16 }}>
                                 <label className="flex items-start justify-between gap-3 cursor-pointer">
                                     <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                        <div className="set-row-title">
                                             Account memory
                                         </div>
-                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                        <div className="set-row-help">
                                             Lets the assistant remember preferences, facts, and lessons across all your chats and pull the most relevant into each reply. Manage what's stored from the Memory tab in the main app. Turn off to stop using, extracting, and recording memories.
                                         </div>
                                     </div>
@@ -575,27 +585,25 @@ export default function ChatSettings({
                                         role="switch"
                                         aria-checked={!settings?.memoryDisabled}
                                         onClick={() => onUpdateSettings({ memoryDisabled: !settings?.memoryDisabled })}
-                                        className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors mt-0.5 ${!settings?.memoryDisabled ? 'bg-primary-500' : 'bg-dark-700'}`}
+                                        className={`set-toggle ${!settings?.memoryDisabled ? 'is-on' : ''}`}
                                     >
-                                        <span
-                                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${!settings?.memoryDisabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`}
-                                        />
+                                        <span className="set-toggle-knob" />
                                     </button>
                                 </label>
                             </div>
 
                             {/* Upload size limit — server-wide; editable by admins only. */}
-                            <div className="pt-2 mt-2 border-t border-white/5">
+                            <div className="set-divider" style={{ paddingTop: 16 }}>
                                 <div className="flex items-start justify-between gap-3">
                                     <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-medium text-dark-200">Max upload size</div>
-                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                        <div className="set-row-title">Max upload size</div>
+                                        <div className="set-row-help">
                                             {uploadLimitEditable
                                                 ? 'Largest file that can be attached to a chat or knowledge base. Applies to everyone on this server.'
                                                 : 'Largest file that can be attached to a chat or knowledge base. Set by an administrator.'}
                                         </div>
                                         {uploadLimitError && (
-                                            <div className="text-[10px] text-red-400 mt-1">{uploadLimitError}</div>
+                                            <div className="mt-1" style={{ '--fs': '11.5px', color: 'var(--danger)' }}>{uploadLimitError}</div>
                                         )}
                                     </div>
                                     {uploadLimitEditable ? (
@@ -607,21 +615,21 @@ export default function ChatSettings({
                                                 value={uploadMaxDraft}
                                                 onChange={(e) => setUploadMaxDraft(e.target.value)}
                                                 onKeyDown={(e) => { if (e.key === 'Enter') saveUploadLimit(); }}
-                                                className="w-16 px-2 py-1 text-xs text-right bg-dark-800 border border-dark-700 rounded-md text-dark-100 focus:outline-none focus:border-primary-500"
+                                                className="set-input set-input-sm w-16 text-right"
                                             />
-                                            <span className="text-[10px] text-dark-500">MB</span>
+                                            <span style={{ '--fs': '12px', color: 'var(--ink-3)' }}>MB</span>
                                             {uploadMaxMb != null && String(uploadMaxMb) !== uploadMaxDraft.trim() && (
                                                 <button
                                                     onClick={saveUploadLimit}
                                                     disabled={uploadLimitSaving}
-                                                    className="px-2 py-1 text-[10px] font-medium rounded-md bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all disabled:opacity-50"
+                                                    className="ui-btn ui-btn-sm ui-btn-soft"
                                                 >
                                                     {uploadLimitSaving ? 'Saving…' : 'Save'}
                                                 </button>
                                             )}
                                         </div>
                                     ) : (
-                                        <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded mt-0.5">
+                                        <span className="set-value mt-0.5">
                                             {uploadMaxMb != null ? `${uploadMaxMb} MB` : '—'}
                                         </span>
                                     )}
@@ -637,18 +645,19 @@ export default function ChatSettings({
                             {!isCreatingPrompt && !editingPrompt && (
                                 <button
                                     onClick={() => setIsCreatingPrompt(true)}
-                                    className="flex items-center gap-1.5 w-full px-3 py-2 rounded-lg bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all"
+                                    className="ui-btn ui-btn-soft w-full"
+                                    style={{ justifyContent: 'center' }}
                                 >
-                                    <Plus className="w-3.5 h-3.5" />
-                                    <span className="text-xs font-medium">Create New Prompt</span>
+                                    <Plus />
+                                    <span>Create New Prompt</span>
                                 </button>
                             )}
 
                             {/* Prompt Editor */}
                             {(isCreatingPrompt || editingPrompt) && (
-                                <div className="space-y-3 p-3 bg-dark-800/50 rounded-lg border border-white/10">
+                                <div className="set-editor">
                                     <div>
-                                        <label className="block text-xs font-medium text-dark-200 mb-1.5">
+                                        <label className="set-label" style={{ marginBottom: 6 }}>
                                             Prompt Name
                                         </label>
                                         <input
@@ -656,11 +665,11 @@ export default function ChatSettings({
                                             value={newPromptName}
                                             onChange={(e) => setNewPromptName(e.target.value)}
                                             placeholder="e.g., Code Assistant, Creative Writer..."
-                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20"
+                                            className="set-input w-full"
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-medium text-dark-200 mb-1.5">
+                                        <label className="set-label" style={{ marginBottom: 6 }}>
                                             Prompt Content
                                         </label>
                                         <textarea
@@ -668,16 +677,16 @@ export default function ChatSettings({
                                             onChange={(e) => setNewPromptContent(e.target.value)}
                                             placeholder="Enter the system prompt content..."
                                             rows={10}
-                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-y min-h-[120px] max-h-[400px]"
+                                            className="set-input w-full min-h-[120px] max-h-[400px]"
                                         />
                                     </div>
                                     <div className="flex gap-2">
                                         <button
                                             onClick={handleSavePrompt}
                                             disabled={!newPromptName.trim()}
-                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-500 text-white font-medium text-xs hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                            className="ui-btn ui-btn-primary"
                                         >
-                                            <Save className="w-3.5 h-3.5" />
+                                            <Save />
                                             Save
                                         </button>
                                         <button
@@ -687,7 +696,7 @@ export default function ChatSettings({
                                                 setNewPromptName('');
                                                 setNewPromptContent('');
                                             }}
-                                            className="px-3 py-1.5 rounded-md bg-dark-700 text-dark-300 font-medium text-xs hover:bg-dark-600 transition-colors"
+                                            className="ui-btn ui-btn-secondary"
                                         >
                                             Cancel
                                         </button>
@@ -699,59 +708,51 @@ export default function ChatSettings({
                             {!isCreatingPrompt && !editingPrompt && (
                                 <div className="space-y-1.5">
                                     {promptsList.length === 0 ? (
-                                        <div className="text-center py-6">
-                                            <div className="w-10 h-10 rounded-full bg-dark-800 flex items-center justify-center mx-auto mb-2">
-                                                <MessageSquare className="w-4 h-4 text-dark-500" />
+                                        <div className="set-empty">
+                                            <div className="set-empty-icon">
+                                                <MessageSquare />
                                             </div>
-                                            <p className="text-xs text-dark-400">No system prompts yet</p>
-                                            <p className="text-[10px] text-dark-500 mt-0.5">Create one to customize AI behavior</p>
+                                            <p>No system prompts yet</p>
+                                            <p>Create one to customize AI behavior</p>
                                         </div>
                                     ) : (
                                         promptsList.map((prompt) => (
                                             <div
                                                 key={prompt.id}
-                                                className={`group flex items-start justify-between p-2.5 rounded-lg border transition-all ${
-                                                    selectedSystemPromptId === prompt.id
-                                                        ? 'bg-primary-500/10 border-primary-500/30'
-                                                        : 'bg-dark-800/50 border-white/5 hover:border-white/10'
-                                                }`}
+                                                className={`group set-prompt-row ${selectedSystemPromptId === prompt.id ? 'is-active' : ''}`}
                                             >
                                                 <div
                                                     className="flex-1 min-w-0 cursor-pointer"
                                                     onClick={() => onUpdateSettings({ selectedSystemPromptId: prompt.id })}
                                                 >
                                                     <div className="flex items-center gap-1.5">
-                                                        <span className={`text-xs font-medium ${
-                                                            selectedSystemPromptId === prompt.id ? 'text-primary-300' : 'text-dark-200'
-                                                        }`}>
+                                                        <span className="set-prompt-name">
                                                             {prompt.name || prompt.id}
                                                         </span>
                                                         {selectedSystemPromptId === prompt.id && (
-                                                            <span className="text-[10px] bg-primary-500/20 text-primary-400 px-1.5 py-0.5 rounded">
-                                                                Active
-                                                            </span>
+                                                            <span className="set-pill">Active</span>
                                                         )}
                                                     </div>
                                                     {prompt.content && (
-                                                        <p className="text-[10px] text-dark-500 mt-0.5 truncate">
+                                                        <p className="set-prompt-preview">
                                                             {prompt.content.substring(0, 80)}...
                                                         </p>
                                                     )}
                                                 </div>
-                                                <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity ml-2">
+                                                <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity ml-2" style={{ marginTop: -2 }}>
                                                     <button
                                                         onClick={() => handleStartEdit(prompt)}
-                                                        className="p-2 sm:p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                                                        className="ui-icon-btn"
                                                         title="Edit"
                                                     >
-                                                        <Edit3 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                                                        <Edit3 />
                                                     </button>
                                                     <button
                                                         onClick={() => handleDeletePrompt(prompt.id)}
-                                                        className="p-2 sm:p-1.5 rounded-md hover:bg-red-500/20 text-dark-400 hover:text-red-400 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                                                        className="ui-icon-btn is-danger"
                                                         title="Delete"
                                                     >
-                                                        <Trash2 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                                                        <Trash2 />
                                                     </button>
                                                 </div>
                                             </div>
@@ -766,13 +767,13 @@ export default function ChatSettings({
                     {activeTab === 'appearance' && (
                         <>
                             <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-2">
+                                <label className="set-label">
                                     Theme
                                 </label>
                                 <div className="space-y-3">
                                     {themeOptions.map((group) => (
                                         <div key={group.label}>
-                                            <div className="text-[10px] font-medium text-dark-400 uppercase tracking-wider mb-1.5">{group.label}</div>
+                                            <div className="set-group-label">{group.label}</div>
                                             <div className="grid grid-cols-4 gap-2">
                                                 {group.options.map((option) => {
                                                     const isActive = currentTheme === option.value;
@@ -780,17 +781,12 @@ export default function ChatSettings({
                                                         <button
                                                             key={option.value}
                                                             onClick={() => onThemeChange?.(option.value)}
-                                                            className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all duration-200 ${
-                                                                isActive
-                                                                    ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                                    : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                            }`}
+                                                            className={`set-card ${isActive ? 'is-active' : ''}`}
+                                                            style={{ minHeight: 36, padding: '6px 10px' }}
                                                         >
-                                                            <div className="text-center">
-                                                                <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
-                                                                    {option.label}
-                                                                    {isActive && <Check className="w-2.5 h-2.5" />}
-                                                                </div>
+                                                            <div className="set-card-title">
+                                                                {option.label}
+                                                                {isActive && <Check strokeWidth={2.5} />}
                                                             </div>
                                                         </button>
                                                     );
@@ -801,11 +797,11 @@ export default function ChatSettings({
                                 </div>
                             </div>
 
-                            <div className="border-t border-white/5" />
+                            <div className="set-divider" />
 
                             {/* Chat Layout Style */}
                             <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-2">
+                                <label className="set-label">
                                     Chat Layout
                                 </label>
                                 <div className="grid grid-cols-3 gap-2">
@@ -816,21 +812,18 @@ export default function ChatSettings({
                                             <button
                                                 key={option.value}
                                                 onClick={() => onUpdateSettings({ chatStyle: option.value })}
-                                                className={`flex flex-col items-center gap-1.5 p-2.5 rounded-lg border transition-all duration-200 ${
-                                                    isActive
-                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                }`}
+                                                className={`set-card ${isActive ? 'is-active' : ''}`}
+                                                style={{ padding: '10px 10px 9px' }}
                                             >
-                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
-                                                    <Icon className="w-4 h-4" />
+                                                <div className="set-card-icon">
+                                                    <Icon strokeWidth={1.75} />
                                                 </div>
                                                 <div className="text-center">
-                                                    <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
+                                                    <div className="set-card-title justify-center">
                                                         {option.label}
-                                                        {isActive && <Check className="w-2.5 h-2.5" />}
+                                                        {isActive && <Check strokeWidth={2.5} />}
                                                     </div>
-                                                    <div className="text-[9px] text-dark-500 mt-0.5">
+                                                    <div className="set-card-sub">
                                                         {option.description}
                                                     </div>
                                                 </div>
@@ -843,13 +836,13 @@ export default function ChatSettings({
                             {/* Message Border Strength - applies to all chat layouts */}
                             {true && (
                                 <>
-                                    <div className="border-t border-white/5" />
+                                    <div className="set-divider" />
                                     <div>
                                         <div className="flex justify-between items-center mb-2">
-                                            <label className="text-xs font-medium text-dark-200">
+                                            <label className="set-label-inline">
                                                 Message Borders
                                             </label>
-                                            <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
+                                            <span className="set-value">
                                                 {messageBorderStrength}%
                                             </span>
                                         </div>
@@ -860,19 +853,9 @@ export default function ChatSettings({
                                             min={0}
                                             max={40}
                                             step={1}
-                                            className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
-                                                       [&::-webkit-slider-thumb]:appearance-none
-                                                       [&::-webkit-slider-thumb]:w-4
-                                                       [&::-webkit-slider-thumb]:h-4
-                                                       [&::-webkit-slider-thumb]:rounded-full
-                                                       [&::-webkit-slider-thumb]:bg-primary-500
-                                                       [&::-webkit-slider-thumb]:shadow-lg
-                                                       [&::-webkit-slider-thumb]:shadow-primary-500/30
-                                                       [&::-webkit-slider-thumb]:cursor-pointer
-                                                       [&::-webkit-slider-thumb]:border-2
-                                                       [&::-webkit-slider-thumb]:border-dark-900"
+                                            className="set-range"
                                         />
-                                        <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
+                                        <div className="set-range-ends">
                                             <span>Subtle</span>
                                             <span>Strong</span>
                                         </div>
@@ -880,11 +863,11 @@ export default function ChatSettings({
                                 </>
                             )}
 
-                            <div className="border-t border-white/5" />
+                            <div className="set-divider" />
 
                             {/* Font Size */}
                             <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-2">
+                                <label className="set-label">
                                     Font Size
                                 </label>
                                 <div className="grid grid-cols-3 gap-2">
@@ -894,24 +877,18 @@ export default function ChatSettings({
                                             <button
                                                 key={option.value}
                                                 onClick={() => onUpdateSettings({ fontSize: option.value })}
-                                                className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-all duration-200 ${
-                                                    isActive
-                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                }`}
+                                                className={`set-card ${isActive ? 'is-active' : ''}`}
+                                                style={{ padding: '10px 10px 9px' }}
                                             >
-                                                <span className={`font-medium ${
-                                                    option.value === 'small' ? 'text-[10px]' :
-                                                    option.value === 'large' ? 'text-sm' : 'text-xs'
-                                                }`}>
+                                                <span style={{ fontWeight: 600, lineHeight: 1, '--fs': option.value === 'small' ? '13px' : option.value === 'large' ? '19px' : '16px', height: 20, display: 'inline-flex', alignItems: 'flex-end' }}>
                                                     Aa
                                                 </span>
                                                 <div className="text-center">
-                                                    <div className="text-[10px] font-medium flex items-center gap-0.5 justify-center">
+                                                    <div className="set-card-title justify-center">
                                                         {option.label}
-                                                        {isActive && <Check className="w-2.5 h-2.5" />}
+                                                        {isActive && <Check strokeWidth={2.5} />}
                                                     </div>
-                                                    <div className="text-[9px] text-dark-500">
+                                                    <div className="set-card-sub">
                                                         {option.description}
                                                     </div>
                                                 </div>
@@ -923,7 +900,7 @@ export default function ChatSettings({
 
                             {/* Font Family - Custom dropdown with live preview */}
                             <div ref={fontDropdownRef}>
-                                <label className="block text-xs font-medium text-dark-200 mb-1.5">
+                                <label className="set-label" style={{ marginBottom: 6 }}>
                                     Font Family
                                 </label>
                                 <div className="relative">
@@ -936,30 +913,30 @@ export default function ChatSettings({
                                             }
                                             setFontDropdownOpen(!fontDropdownOpen);
                                         }}
-                                        className="w-full flex items-center justify-between px-3 py-2 bg-dark-800/80 border border-white/10 rounded-md text-dark-200 text-sm cursor-pointer hover:border-white/20 transition-all"
-                                        style={{ fontFamily: fontCssMap[fontFamily] || 'inherit' }}
+                                        className="set-select w-full flex items-center justify-between"
+                                        style={{ fontFamily: fontCssMap[fontFamily] || 'inherit', paddingRight: 12 }}
                                     >
                                         <div className="flex items-center gap-2 min-w-0">
-                                            <Type className="w-3.5 h-3.5 text-dark-400 flex-shrink-0" />
+                                            <Type className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--ink-4)' }} />
                                             <span className="truncate">{fontFamilyOptions.find(f => f.value === fontFamily)?.label || 'System Default'}</span>
-                                            <span className="text-[9px] uppercase px-1 py-0.5 rounded bg-white/5 text-dark-400 flex-shrink-0">
+                                            <span className="set-pill" style={{ textTransform: 'uppercase', letterSpacing: '.04em', background: 'color-mix(in oklab, var(--ink) 8%, transparent)', color: 'var(--ink-3)' }}>
                                                 {fontFamilyOptions.find(f => f.value === fontFamily)?.category || 'sans'}
                                             </span>
                                         </div>
-                                        <ChevronDown className={`w-3.5 h-3.5 text-dark-400 flex-shrink-0 transition-transform ${fontDropdownOpen ? 'rotate-180' : ''}`} />
+                                        <ChevronDown className={`w-4 h-4 flex-shrink-0 transition-transform ${fontDropdownOpen ? 'rotate-180' : ''}`} style={{ color: 'var(--ink-4)' }} />
                                     </button>
 
                                     {/* Font dropdown list */}
                                     {fontDropdownOpen && (
-                                        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-dark-900/98 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl overflow-hidden">
+                                        <div className="set-dropdown">
                                             {/* Search */}
-                                            <div className="p-2 border-b border-white/5">
+                                            <div className="set-dropdown-search">
                                                 <input
                                                     type="text"
                                                     value={fontSearch}
                                                     onChange={(e) => setFontSearch(e.target.value)}
                                                     placeholder="Search fonts..."
-                                                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-white/10 rounded text-xs text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/20"
+                                                    className="set-input set-input-sm w-full"
                                                     autoFocus
                                                 />
                                             </div>
@@ -972,7 +949,7 @@ export default function ChatSettings({
                                                     if (filtered.length === 0) return null;
                                                     return (
                                                         <div key={cat}>
-                                                            <div className="px-3 py-1 text-[9px] uppercase tracking-wider text-dark-500 font-semibold bg-dark-800/40 sticky top-0">
+                                                            <div className="set-dropdown-group">
                                                                 {cat === 'sans' ? 'Sans-Serif' : cat === 'serif' ? 'Serif' : 'Monospace'}
                                                             </div>
                                                             {filtered.map(option => (
@@ -983,10 +960,10 @@ export default function ChatSettings({
                                                                         setFontDropdownOpen(false);
                                                                         setFontSearch('');
                                                                     }}
-                                                                    className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-white/5 transition-colors ${fontFamily === option.value ? 'bg-white/8' : ''}`}
+                                                                    className={`set-dropdown-item ${fontFamily === option.value ? 'is-active' : ''}`}
                                                                     style={{ fontFamily: fontCssMap[option.value] || 'inherit' }}
                                                                 >
-                                                                    <span className={`truncate ${fontFamily === option.value ? 'text-dark-100' : 'text-dark-300'}`}>
+                                                                    <span className="truncate">
                                                                         {option.label}
                                                                     </span>
                                                                     {fontFamily === option.value && (
@@ -1003,42 +980,30 @@ export default function ChatSettings({
                                 </div>
                             </div>
 
-                            <div className="border-t border-white/5" />
+                            <div className="set-divider" />
 
                             {/* Theme Preview */}
                             <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-2">
+                                <label className="set-label">
                                     Preview
                                 </label>
-                                <div className={`p-3 rounded-lg border ${
-                                    currentTheme === 'light'
-                                        ? 'bg-white border-gray-200'
-                                        : 'bg-dark-800 border-white/10'
-                                }`}>
+                                <div className="set-preview">
                                     <div className="flex items-start gap-2 mb-2">
-                                        <div className={`w-6 h-6 rounded-md flex items-center justify-center ${
-                                            currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
-                                        }`}>
-                                            <MessageSquare className={`w-3 h-3 ${
-                                                currentTheme === 'light' ? 'text-gray-500' : 'text-dark-400'
-                                            }`} />
+                                        <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'color-mix(in oklab, var(--ink) 12%, transparent)', color: 'var(--ink)' }}>
+                                            <MessageSquare className="w-3 h-3" />
                                         </div>
-                                        <div className={`flex-1 p-2 rounded-md ${
-                                            currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
-                                        }`}>
-                                            <p className={`text-xs ${
-                                                currentTheme === 'light' ? 'text-gray-700' : 'text-dark-300'
-                                            }`}>
+                                        <div className="flex-1 py-1 pr-2" style={{ color: 'var(--ink)' }}>
+                                            <p style={{ '--fs': '13px', lineHeight: 1.5 }}>
                                                 Messages in {currentTheme === 'system' ? 'system' : currentTheme} mode.
                                             </p>
                                         </div>
                                     </div>
                                     <div className="flex items-start gap-2 flex-row-reverse">
-                                        <div className="w-6 h-6 rounded-md bg-primary-500 flex items-center justify-center">
-                                            <span className="text-[10px] font-bold text-white">U</span>
+                                        <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>
+                                            <span style={{ '--fs': '10.5px', fontWeight: 700 }}>U</span>
                                         </div>
-                                        <div className="flex-1 p-2 rounded-md bg-primary-500/20">
-                                            <p className="text-xs text-primary-300">
+                                        <div className="px-3 py-1.5" style={{ background: 'var(--bubble-user-bg)', color: 'var(--bubble-user-ink)', borderRadius: '14px 14px 4px 14px' }}>
+                                            <p style={{ '--fs': '13px', lineHeight: 1.5 }}>
                                                 Your messages look like this.
                                             </p>
                                         </div>

@@ -220,7 +220,7 @@ export default function ToolMilestones({ toolCalls }) {
                                 borderRadius: 7,
                                 background: 'color-mix(in oklab, var(--accent, #6366f1) 14%, transparent)',
                                 color: 'var(--accent, #6366f1)',
-                                fontSize: 10.5,
+                                fontSize: 10.5, '--fs': '10.5px',
                                 fontWeight: 600,
                                 fontVariantNumeric: 'tabular-nums',
                             }}>×{count}</span>
@@ -232,7 +232,7 @@ export default function ToolMilestones({ toolCalls }) {
                                     style={{
                                         color: 'var(--ink-2)',
                                         fontFamily: 'var(--font-mono)',
-                                        fontSize: 11.5,
+                                        fontSize: 12, '--fs': '12px',
                                         overflow: 'hidden',
                                         textOverflow: 'ellipsis',
                                         whiteSpace: 'nowrap',
@@ -247,11 +247,11 @@ export default function ToolMilestones({ toolCalls }) {
                         {detail && (
                             <>
                                 <span style={{ color: 'var(--ink-4)' }}>·</span>
-                                <span style={{ color: 'var(--ink-3)', fontSize: 11.5 }}>{detail}</span>
+                                <span style={{ color: 'var(--ink-3)', fontSize: 12, '--fs': '12px' }}>{detail}</span>
                             </>
                         )}
                         {dur && (
-                            <span style={{ color: 'var(--ink-4)', fontSize: 11, marginLeft: 'auto' }}>{dur}</span>
+                            <span style={{ color: 'var(--ink-4)', fontSize: 11.5, '--fs': '11.5px', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{dur}</span>
                         )}
                     </div>
                 );

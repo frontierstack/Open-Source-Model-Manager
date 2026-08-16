@@ -6,9 +6,15 @@ import {
     PanelLeft,
     Eye,
     Menu,
-    User,
 } from 'lucide-react';
 
+/**
+ * ChatHeader — the app toolbar above the conversation.
+ *
+ * All controls use the shared `.ctl` proportion system from index.css
+ * (icon buttons 32px / chips 28px) so the header, sidebar and composer
+ * read as one family. Hover / focus states are CSS-driven.
+ */
 export default function ChatHeader({
     onSettingsClick,
     user,
@@ -33,182 +39,120 @@ export default function ChatHeader({
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const displayName = user?.username || user?.name || 'User';
+    useEffect(() => {
+        if (!userDropdownOpen) return;
+        const onKey = (e) => { if (e.key === 'Escape') setUserDropdownOpen(false); };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [userDropdownOpen]);
 
-    // Shared styles using the design palette bridge
-    const topBtn = {
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 9px', borderRadius: 6,
-        color: 'var(--ink-3)', fontSize: 12,
-        background: 'transparent', border: 0, cursor: 'pointer',
-        transition: 'background .1s, color .1s',
-    };
-    const topBtnActive = {
-        ...topBtn,
-        background: 'var(--accent-soft)',
-        color: 'var(--accent)',
-    };
-    const modelChip = {
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 10px', borderRadius: 8,
-        background: 'var(--surface)',
-        border: '1px solid var(--rule)',
-        color: 'var(--ink-2)', fontSize: 12, fontWeight: 500,
-        cursor: 'pointer',
-        transition: 'border-color .1s, background .1s',
-    };
-    const dropdown = {
-        position: 'absolute', top: 'calc(100% + 4px)',
-        minWidth: 240,
-        background: 'var(--surface)',
-        border: '1px solid var(--rule)',
-        borderRadius: 10,
-        boxShadow: '0 10px 30px -10px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.15)',
-        padding: 6,
-        zIndex: 50,
-    };
-    const popItem = {
-        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-        padding: '7px 10px', borderRadius: 6,
-        textAlign: 'left',
-        background: 'transparent', border: 0, cursor: 'pointer',
-        color: 'var(--ink)',
-        transition: 'background .08s',
-    };
+    const displayName = user?.username || user?.name || 'User';
+    const userInitial = displayName.charAt(0).toUpperCase();
 
     return (
-        <header
-            style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: 'calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 10px calc(16px + env(safe-area-inset-left))',
-                borderBottom: '1px solid var(--rule)',
-                background: 'var(--bg)',
-                flexShrink: 0,
-                position: 'sticky',
-                top: 0,
-                zIndex: 30,
-            }}
-        >
+        <header className="app-toolbar">
             {/* Left: sidebar toggle + breadcrumb */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1, overflow: 'hidden' }}>
                 {/* Mobile hamburger — only visible <768px */}
                 {onOpenMobileSidebar && (
-                    <button
-                        onClick={onOpenMobileSidebar}
-                        className="md:hidden tap-feedback"
-                        style={{ ...topBtn, padding: '8px', minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }}
-                        aria-label="Open sidebar"
-                        title="Open sidebar"
-                    >
-                        <Menu style={{ width: 18, height: 18 }} strokeWidth={1.75} />
-                    </button>
+                    <span className="md:hidden">
+                        <button
+                            type="button"
+                            onClick={onOpenMobileSidebar}
+                            className="ctl ctl-icon-md tap-feedback"
+                            aria-label="Open sidebar"
+                            title="Open sidebar"
+                        >
+                            <Menu strokeWidth={1.75} />
+                        </button>
+                    </span>
                 )}
                 {/* Desktop show-sidebar button when collapsed */}
                 {sidebarCollapsed && onOpenSidebar && (
-                    <button
-                        onClick={onOpenSidebar}
-                        className="hidden md:inline-flex"
-                        style={{ ...topBtn, padding: '6px 7px' }}
-                        title="Show sidebar"
-                    >
-                        <PanelLeft style={{ width: 15, height: 15 }} strokeWidth={1.75} />
-                    </button>
+                    <span className="hidden md:inline-flex">
+                        <button
+                            type="button"
+                            onClick={onOpenSidebar}
+                            className="ctl ctl-icon-md"
+                            aria-label="Show sidebar"
+                            title="Show sidebar"
+                        >
+                            <PanelLeft strokeWidth={1.75} />
+                        </button>
+                    </span>
                 )}
 
                 {/* Breadcrumb */}
                 {breadcrumb && breadcrumb.length > 0 && (
-                    <div style={{
-                        display: 'flex', alignItems: 'center', gap: 6,
-                        fontSize: 12.5, color: 'var(--ink)',
-                        maxWidth: 360, minWidth: 0, overflow: 'hidden',
-                    }}>
+                    <nav className="app-toolbar-crumbs" aria-label="Breadcrumb">
                         {breadcrumb.map((item, i) => (
                             <React.Fragment key={i}>
-                                <span className="breadcrumb-item" style={{
-                                    color: i === breadcrumb.length - 1 ? 'var(--ink)' : 'var(--ink-3)',
-                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    maxWidth: 160,
-                                }}>
+                                <span
+                                    className="breadcrumb-item"
+                                    aria-current={i === breadcrumb.length - 1 ? 'page' : undefined}
+                                >
                                     {item}
                                 </span>
-                                {i < breadcrumb.length - 1 && <span className="breadcrumb-spacer" style={{ color: 'var(--ink-4)' }}>/</span>}
+                                {i < breadcrumb.length - 1 && <span className="breadcrumb-spacer" aria-hidden="true">/</span>}
                             </React.Fragment>
                         ))}
-                    </div>
+                    </nav>
                 )}
-
             </div>
 
             {/* Right: artifacts toggle + settings + user */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div className="app-toolbar-right">
                 {onToggleArtifacts && (
                     <button
+                        type="button"
                         onClick={onToggleArtifacts}
-                        style={artifactsOpen ? topBtnActive : topBtn}
-                        onMouseEnter={(e) => { if (!artifactsOpen) e.currentTarget.style.background = 'var(--bg-2)'; }}
-                        onMouseLeave={(e) => { if (!artifactsOpen) e.currentTarget.style.background = 'transparent'; }}
+                        className={`ctl ctl-chip${artifactsOpen ? ' is-active' : ''}`}
+                        aria-pressed={!!artifactsOpen}
+                        aria-label="Toggle artifacts panel"
                         title="Toggle artifacts panel"
                     >
-                        <Eye style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                        <Eye strokeWidth={1.75} />
                         <span className="artifacts-toggle-label">Artifacts</span>
                     </button>
                 )}
 
                 <button
+                    type="button"
                     onClick={onSettingsClick}
-                    style={{ ...topBtn, padding: '6px 7px' }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    className="ctl ctl-icon-md"
+                    aria-label="Settings"
                     title="Settings"
                 >
-                    <Settings style={{ width: 15, height: 15 }} strokeWidth={1.75} />
+                    <Settings strokeWidth={1.75} />
                 </button>
 
                 <div style={{ position: 'relative' }} ref={userDropdownRef}>
                     <button
+                        type="button"
                         onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                        style={{ ...topBtn, padding: '3px 3px 3px 6px' }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        className="ctl app-toolbar-user"
+                        aria-label={`Account menu — ${displayName}`}
+                        aria-haspopup="menu"
+                        aria-expanded={userDropdownOpen}
+                        title={displayName}
                     >
-                        <div
-                            style={{
-                                width: 24, height: 24, borderRadius: '50%',
-                                background: 'transparent',
-                                color: 'var(--ink-2)',
-                                border: '1px solid var(--rule)',
-                                display: 'grid', placeItems: 'center',
-                            }}
-                        >
-                            <User style={{ width: 13, height: 13 }} strokeWidth={1.75} />
-                        </div>
-                        <ChevronDown
-                            style={{
-                                width: 12, height: 12, color: 'var(--ink-4)',
-                                transform: userDropdownOpen ? 'rotate(180deg)' : 'none',
-                                transition: 'transform .15s',
-                            }}
-                            strokeWidth={2}
-                        />
+                        <span className="app-avatar" aria-hidden="true">{userInitial}</span>
+                        <ChevronDown className="app-chev" strokeWidth={2} />
                     </button>
 
                     {userDropdownOpen && (
-                        <div style={{ ...dropdown, right: 0, minWidth: 160 }}>
-                            <div style={{
-                                padding: '8px 10px',
-                                borderBottom: '1px solid var(--rule-2)',
-                            }}>
-                                <p style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--ink-2)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {displayName}
-                                </p>
+                        <div className="ctl-pop app-toolbar-menu" role="menu">
+                            <div className="app-toolbar-menu-head">
+                                <p>{displayName}</p>
+                                <span>Signed in</span>
                             </div>
                             <button
+                                type="button"
+                                role="menuitem"
                                 onClick={() => { setUserDropdownOpen(false); onLogout(); }}
-                                style={{ ...popItem, color: 'var(--danger)', fontSize: 11.5 }}
-                                onMouseEnter={(e) => e.currentTarget.style.background = 'color-mix(in oklab, var(--danger) 12%, transparent)'}
-                                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                className="ctl-pop-item is-danger"
                             >
-                                <LogOut style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                                <LogOut strokeWidth={1.75} />
                                 Sign out
                             </button>
                         </div>

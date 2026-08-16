@@ -4,42 +4,13 @@ import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 // Toast Context
 const ToastContext = createContext(null);
 
-// Toast types configuration
+// Toast types configuration — colours come from the theme tokens via the
+// .toast-item.is-* rules (index.css, message-area block).
 const toastConfig = {
-    success: {
-        icon: CheckCircle,
-        bgClass: 'bg-emerald-500/10',
-        borderClass: 'border-emerald-500/30',
-        iconClass: 'text-emerald-400',
-        progressClass: 'bg-emerald-500',
-    },
-    error: {
-        icon: XCircle,
-        bgClass: 'bg-red-500/10',
-        borderClass: 'border-red-500/30',
-        iconClass: 'text-red-400',
-        progressClass: 'bg-red-500',
-    },
-    warning: {
-        icon: AlertTriangle,
-        bgClass: 'bg-amber-500/10',
-        borderClass: 'border-amber-500/30',
-        iconClass: 'text-amber-400',
-        progressClass: 'bg-amber-500',
-    },
-    info: {
-        icon: Info,
-        bgClass: '',
-        borderClass: '',
-        iconClass: '',
-        progressClass: '',
-        containerStyle: {
-            background: 'color-mix(in oklab, var(--accent) 10%, transparent)',
-            borderColor: 'color-mix(in oklab, var(--accent) 30%, transparent)',
-        },
-        iconStyle: { color: 'var(--accent)' },
-        progressStyle: { background: 'var(--accent)' },
-    },
+    success: { icon: CheckCircle,   cls: 'is-success' },
+    error:   { icon: XCircle,       cls: 'is-error' },
+    warning: { icon: AlertTriangle, cls: 'is-warning' },
+    info:    { icon: Info,          cls: 'is-info' },
 };
 
 // Individual Toast component
@@ -84,50 +55,32 @@ function ToastItem({ toast, onDismiss }) {
 
     return (
         <div
-            className={`
-                relative overflow-hidden
-                flex items-start gap-3
-                min-w-[320px] max-w-[420px]
-                p-4 pr-10
-                rounded-xl
-                border
-                backdrop-blur-xl
-                shadow-lg shadow-black/20
-                ${config.bgClass}
-                ${config.borderClass}
-                ${isExiting ? 'animate-toast-exit' : 'animate-toast-enter'}
-            `}
-            style={config.containerStyle}
+            className={`toast-item ${config.cls} ${isExiting ? 'animate-toast-exit' : 'animate-toast-enter'}`}
             role="alert"
             aria-live="polite"
         >
             {/* Icon */}
-            <div className={`flex-shrink-0 mt-0.5 ${config.iconClass}`} style={config.iconStyle}>
-                <Icon className="w-5 h-5" />
+            <div className="toast-icon">
+                <Icon strokeWidth={2} />
             </div>
 
             {/* Content */}
             <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[var(--text-primary)] leading-relaxed">
-                    {toast.message}
-                </p>
+                <p className="toast-msg">{toast.message}</p>
             </div>
 
             {/* Close button */}
             <button
                 onClick={handleDismiss}
-                className="absolute top-3 right-3 p-1 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/10 transition-colors"
+                className="ui-icon-btn toast-close"
                 aria-label="Dismiss notification"
             >
-                <X className="w-4 h-4" />
+                <X strokeWidth={2} />
             </button>
 
             {/* Progress bar */}
-            <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/10">
-                <div
-                    className={`h-full transition-none ${config.progressClass}`}
-                    style={{ width: `${progress}%`, opacity: 0.6, ...(config.progressStyle || {}) }}
-                />
+            <div className="toast-bar">
+                <div style={{ width: `${progress}%` }} />
             </div>
         </div>
     );

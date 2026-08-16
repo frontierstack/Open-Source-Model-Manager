@@ -68,8 +68,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # again before the layer ends so they don't bloat the image.
         curl \
         gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+    # Node 22 LTS via NodeSource. The base image moved to Debian 13 (trixie);
+    # when NodeSource has no repo for the running distro its setup script
+    # falls through and `apt-get install nodejs` picks Debian's OWN nodejs
+    # package, which ships WITHOUT npm — the /opt/sandbox-node layer below
+    # then died with `npm: not found` (live-reported 2026-08-16). So: don't
+    # let a NodeSource hiccup abort the layer, and install Debian's `npm`
+    # whenever the nodejs we ended up with has no npm next to it.
+    && (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - || echo "[WARN] NodeSource setup failed; falling back to distro nodejs") \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && (command -v npm >/dev/null 2>&1 || apt-get install -y --no-install-recommends npm) \
+    && node --version && npm --version \
     && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/*
 

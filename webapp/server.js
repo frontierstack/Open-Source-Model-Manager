@@ -159,6 +159,7 @@ const memoryService = require('./services/memoryService');
 const memoryIndex = require('./services/memoryIndex');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
+const reasoningEffort = require('./services/reasoningEffort');
 
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
@@ -5710,7 +5711,9 @@ app.get('/api/sglang/instances', requireAuth, (req, res) => {
         .filter(([name, info]) => info.backend === 'sglang')
         .map(([name, info]) => ({
             name,
-            ...info
+            ...info,
+            effortSupport: reasoningEffort.detectEffortSupport(info.modelName || name),
+            thinkingLoadedOff: !!(info.config && info.config.disableThinking),
         }));
     res.json(instances);
 });
@@ -5807,7 +5810,9 @@ app.get('/api/llamacpp/instances', requireAuth, (req, res) => {
         .filter(([name, info]) => info.backend === 'llamacpp')
         .map(([name, info]) => ({
             name,
-            ...info
+            ...info,
+            effortSupport: reasoningEffort.detectEffortSupport(info.modelName || name),
+            thinkingLoadedOff: !!(info.config && info.config.disableThinking),
         }));
     res.json(instances);
 });
@@ -17341,8 +17346,27 @@ app.get('/api/attachments/:id/meta', requireAuth, async (req, res) => {
 // ============================================================================
 
 // Simplified chat endpoint - wraps OpenAI API
+// Non-streaming completion POST that retries ONCE without the reasoning-
+// effort fields when the backend 4xxs (a template/backend that rejects
+// `chat_template_kwargs` or `reasoning_effort`).
+async function postChatCompletionWithEffortFallback(url, requestBody, effortBodyFields) {
+    try {
+        return await axios.post(url, requestBody);
+    } catch (err) {
+        const status = err?.response?.status;
+        if (effortBodyFields && Object.keys(effortBodyFields).length && status >= 400 && status < 500) {
+            console.warn(`[Chat] Reasoning-effort fields rejected (${status}) — retrying without them`);
+            const stripped = { ...requestBody };
+            for (const k of Object.keys(effortBodyFields)) delete stripped[k];
+            return await axios.post(url, stripped);
+        }
+        throw err;
+    }
+}
+
 app.post('/api/chat', requireAuth, async (req, res) => {
     const { message, model, temperature, maxTokens, stream } = req.body;
+    const requestedEffort = reasoningEffort.normalizeEffort(req.body.reasoningEffort ?? req.body.reasoning_effort ?? req.body.effort);
 
     // If streaming requested, delegate to stream endpoint
     if (stream) {
@@ -17386,12 +17410,22 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
+        // Per-request reasoning effort (see services/reasoningEffort.js).
+        const effortDirectives = reasoningEffort.buildEffortDirectives({
+            effort: requestedEffort, modelName: targetModel, backend: targetInstance.backend,
+            loadedThinkingOff: disableThinking, supportsNoThinkPrefix: modelSupportsNoThinkPrefix,
+        });
+        const effortBodyFields = effortDirectives.effort ? {
+            ...effortDirectives.requestFields,
+            ...(Object.keys(effortDirectives.templateKwargs).length ? { chat_template_kwargs: effortDirectives.templateKwargs } : {}),
+        } : {};
+        if (effortDirectives.effort) console.log(`[Chat] Effort: ${effortDirectives.effort} (${effortDirectives.support}) → ${reasoningEffort.describeDirectives(effortDirectives)}`);
 
         // Apply thinking mode control — only models that recognise the
         // /no_think control prefix (Qwen3, DeepSeek-R1) get it. Other
         // families would surface it as literal text in the response.
         let userContent = message;
-        if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
+        if ((disableThinking && modelSupportsNoThinkPrefix(targetModel)) || effortDirectives.noThinkPrefix) {
             userContent = `/no_think\n${message}`;
         }
 
@@ -17400,7 +17434,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         // The store is USER-NAMESPACED on write (prompts[userId][modelName]) but was
         // read flat, so systemPrompts[targetModel] was always undefined and the
         // per-model system prompt silently never applied on this path.
-        const systemPrompt = resolveSystemPromptFor(systemPrompts, req.userId, targetModel);
+        let systemPrompt = resolveSystemPromptFor(systemPrompts, req.userId, targetModel);
+        if (effortDirectives.systemHint) systemPrompt = systemPrompt ? `${systemPrompt}\n\n${effortDirectives.systemHint}` : effortDirectives.systemHint;
 
         // Estimate token count (rough estimate: 1 token ≈ 4 characters)
         const estimateTokens = (text) => Math.ceil(text.length / 4);
@@ -17451,10 +17486,11 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                         // Always clamped to contextSize - inputTokens to prevent
                         // sglang's "0 input tokens" SglangValidationError.
                         max_tokens: responseReserve,
-                        stop: DEFAULT_STOP_STRINGS
+                        stop: DEFAULT_STOP_STRINGS,
+                        ...effortBodyFields,
                     };
 
-                    const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
+                    const response = await postChatCompletionWithEffortFallback(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody, effortBodyFields);
                     const choice = response.data.choices[0];
                     const messageData = choice.message;
                     let reply = messageData.content || messageData.reasoning_content || '';
@@ -17503,10 +17539,11 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             // "0 input tokens" SglangValidationError when the caller sends a
             // raw max_tokens value equal to contextSize.
             max_tokens: responseReserve,
-            stop: DEFAULT_STOP_STRINGS
+            stop: DEFAULT_STOP_STRINGS,
+            ...effortBodyFields,
         };
 
-        const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
+        const response = await postChatCompletionWithEffortFallback(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody, effortBodyFields);
 
         // Extract response - handle reasoning models
         const choice = response.data.choices[0];
@@ -17778,6 +17815,9 @@ function parseProhibitedToolNames(text, knownNames) {
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
     const { message, messages: inputMessages, model, temperature, top_p, topP, maxTokens, max_tokens, conversationId, continueProcessing, chunkingStrategy } = req.body;
+    // Per-request reasoning effort: 'off'|'low'|'medium'|'high' (absent /
+    // 'default' = leave the model's own default). See services/reasoningEffort.js.
+    const requestedEffort = reasoningEffort.normalizeEffort(req.body.reasoningEffort ?? req.body.reasoning_effort ?? req.body.effort);
     const effectiveTopP = top_p !== undefined ? top_p : (topP !== undefined ? topP : 1.0);
     // Chunking strategy: 'auto' (default), 'map-reduce', 'truncate', 'none'
     const effectiveChunkingStrategy = chunkingStrategy || 'auto';
@@ -17950,6 +17990,30 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
+        // Reasoning-effort directives, computed once per turn and merged into
+        // EVERY round's request body (streamOneRequest). `effortNoThink`
+        // makes effort=off ride the same /no_think path as disableThinking.
+        const effortDirectives = reasoningEffort.buildEffortDirectives({
+            effort: requestedEffort, modelName: targetModel, backend: targetInstance.backend,
+            loadedThinkingOff: disableThinking, supportsNoThinkPrefix: modelSupportsNoThinkPrefix,
+        });
+        const effortActive = !!effortDirectives.effort;
+        const effortNoThink = effortDirectives.noThinkPrefix;
+        // An instance loaded with reasoning off hides the reasoning stream
+        // (display-only `disableThinking`). An explicit Low/Medium/High effort
+        // re-enables thinking per request (verified on llama.cpp: per-request
+        // enable_thinking overrides `--reasoning off`), so the trace must be
+        // SHOWN again — otherwise the user picks High and sees no Thinking
+        // dropdown while the model silently thinks.
+        const hideReasoning = disableThinking && !(effortActive && effortDirectives.effort !== 'off');
+        // Flipped when a backend 4xx'd the effort fields and the retry without
+        // them succeeded — later rounds then skip them instead of paying the
+        // round-trip again.
+        let effortFieldsRejected = false;
+        if (effortActive) {
+            console.log(`[Chat Stream] Effort: ${effortDirectives.effort} (${effortDirectives.support}) → ${reasoningEffort.describeDirectives(effortDirectives)}`);
+            for (const w of effortDirectives.warnings) console.warn(`[Chat Stream] Effort: ${w}`);
+        }
 
         // Estimate token count - use conservative ratio for safety.
         // Number-heavy content (prices, dates) tokenizes at ~2-3 chars/token, not 4.
@@ -17982,7 +18046,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Apply thinking mode control to the last user message if
             // disableThinking is enabled AND the model actually recognises
             // /no_think (Qwen3 / DeepSeek-R1). Other models echo it.
-            if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
+            // effort=off (effortNoThink) takes the same path.
+            if ((disableThinking && modelSupportsNoThinkPrefix(targetModel)) || effortNoThink) {
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
                     if (chatMessages[i].role === 'user') {
                         const content = chatMessages[i].content;
@@ -18002,7 +18067,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         } else {
             // Legacy single message format
             let userContent = message;
-            if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
+            if ((disableThinking && modelSupportsNoThinkPrefix(targetModel)) || effortNoThink) {
                 userContent = `/no_think\n${message}`;
             }
 
@@ -18153,7 +18218,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // and without this nudge they reach for find_patterns / get_timestamp
         // instead of web_search on "current news" style prompts.
         try {
-            const prelude = buildChatRuntimePrelude();
+            const prelude = effortDirectives.systemHint
+                ? `${buildChatRuntimePrelude()}\n${effortDirectives.systemHint}`
+                : buildChatRuntimePrelude();
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
                 if (typeof existing === 'string') {
@@ -18994,7 +19061,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Announce reasoning mode so the client can suppress the Thinking
         // dropdown even if a leaked <think>...</think> survives the per-delta
         // scrub (tags split across SSE chunks re-assemble on the client).
-        if (disableThinking) {
+        if (hideReasoning) {
             try { res.write(`data: ${JSON.stringify({ type: 'reasoning_mode', disabled: true })}\n\n`); } catch {}
         }
         if (pendingMemoryNotice) {
@@ -20178,16 +20245,51 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // template honors (same as requestModelCompletion). A
                         // template that doesn't read it ignores the kwarg; one
                         // that 4xxs on it is retried without (see catch below).
-                        ...(options.forceNoThink ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+                        // Per-request reasoning effort (top-level fields +
+                        // template kwargs). forceNoThink WINS: it is merged
+                        // LAST so a forced-synthesis round stays thinking-off
+                        // even under effort=high.
+                        ...(effortActive && !effortFieldsRejected ? effortDirectives.requestFields : {}),
+                        ...(() => {
+                            const kw = {
+                                ...(effortActive && !effortFieldsRejected ? effortDirectives.templateKwargs : {}),
+                                ...(options.forceNoThink ? { enable_thinking: false } : {}),
+                            };
+                            return Object.keys(kw).length ? { chat_template_kwargs: kw } : {};
+                        })(),
                     };
 
-                    const response = await axios({
+                    const postRound = (body) => axios({
                         method: 'post',
                         url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
-                        data: requestBody,
+                        data: body,
                         responseType: 'stream',
                         signal: roundAbortController.signal
                     });
+                    let response;
+                    try {
+                        response = await postRound(requestBody);
+                    } catch (reqErr) {
+                        // A backend/template that rejects the effort fields
+                        // (unknown top-level key, unsupported kwarg) 4xxs
+                        // before streaming anything: retry ONCE with every
+                        // effort-derived key stripped (forceNoThink's own
+                        // enable_thinking:false is kept — its caller has its
+                        // own retry). Only a SUCCESSFUL retry marks the fields
+                        // rejected for the rest of the turn; a second 4xx was
+                        // something else (context overflow etc.) and rethrows.
+                        const status = reqErr?.response?.status;
+                        const sentEffort = effortActive && !effortFieldsRejected && (
+                            Object.keys(effortDirectives.requestFields).length || Object.keys(effortDirectives.templateKwargs).length);
+                        if (!(sentEffort && status >= 400 && status < 500)) throw reqErr;
+                        const stripped = { ...requestBody };
+                        for (const k of reasoningEffort.EFFORT_REQUEST_KEYS) delete stripped[k];
+                        delete stripped.chat_template_kwargs;
+                        if (options.forceNoThink) stripped.chat_template_kwargs = { enable_thinking: false };
+                        console.warn(`[Chat Stream] Effort fields rejected by backend (${status}) — retrying this round without them`);
+                        response = await postRound(stripped);
+                        effortFieldsRejected = true;
+                    }
 
                     // Persistent buffer across chunks — TCP packet boundaries do not
                     // align with SSE line boundaries. Without buffering, a frame split
@@ -20238,7 +20340,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             // it sometimes leaks), suppress it client-bound so the
                                             // Thinking dropdown doesn't appear. Also strip stray
                                             // <think>...</think> from content for the same reason.
-                                            if (disableThinking) {
+                                            if (hideReasoning) {
                                                 reasoning = '';
                                                 if (rawContent) {
                                                     rawContent = rawContent.replace(/<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi, '');
@@ -20388,7 +20490,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     if (delta) {
                                         let rawContent = scrubHarmonyTokens(delta.content || '');
                                         let reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
-                                        if (disableThinking) {
+                                        if (hideReasoning) {
                                             reasoning = '';
                                             if (rawContent) {
                                                 rawContent = rawContent.replace(/<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi, '');
@@ -22637,6 +22739,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // foreground commit does this client-side; this is the
                         // parity for the server-side save.
                         toolCalls: persistedToolChips.length ? persistedToolChips : undefined,
+                        reasoningEffort: effortActive ? effortDirectives.effort : undefined,
                         backgroundCompleted: !clientConnected
                     };
                     conversationMsgs.push(assistantMessage);

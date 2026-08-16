@@ -108,66 +108,62 @@ function ServerRunBlock({ code, language, serverLang = 'python' }) {
     };
 
     return (
-        <div className="my-3">
-            <div className="flex items-center justify-between mb-1.5 pl-1">
-                <span className="text-[11px] text-dark-400 font-mono">{serverLang} · sandbox</span>
+        <div className="code-run my-3">
+            <div className="code-run-bar">
+                <span className="code-run-label">{serverLang} · sandbox</span>
                 {state === 'running' ? (
                     <button
                         onClick={stop}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                        className="ui-btn ui-btn-sm"
+                        style={{ background: 'color-mix(in oklab, var(--danger) 12%, transparent)', color: 'var(--danger)', height: 26 }}
                     >
-                        <Square className="w-2.5 h-2.5" strokeWidth={2.5} /> Stop
+                        <Square strokeWidth={2.5} style={{ width: 11, height: 11 }} /> Stop
                     </button>
                 ) : (
                     <button
                         onClick={run}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 transition-colors"
+                        className="ui-btn ui-btn-sm ui-btn-soft"
+                        style={{ height: 26 }}
                     >
-                        <Play className="w-2.5 h-2.5" strokeWidth={2.5} /> Run
+                        <Play strokeWidth={2.5} style={{ width: 11, height: 11 }} /> Run
                     </button>
                 )}
             </div>
             <CodeBlock code={code} language={language} isStreaming={false} />
             {state === 'running' && (
-                <div className="mt-1.5 px-3 py-2 rounded-md bg-dark-800/60 border border-white/5 text-[11px] text-dark-300 inline-flex items-center gap-2">
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                <div className="code-run-status">
+                    <Loader2 className="animate-spin" />
                     <span>executing in sandbox…</span>
-                    <span className="ml-auto font-mono text-dark-400">
+                    <span className="code-run-elapsed">
                         {(elapsedMs / 1000).toFixed(1)}s
                     </span>
                 </div>
             )}
             {output && (state === 'done' || state === 'error') && (
-                <div className="mt-1.5 rounded-md overflow-hidden border border-white/5">
-                    <div className="px-3 py-1 bg-dark-800/80 text-[10px] text-dark-400 font-mono flex items-center gap-2">
-                        {state === 'error' && <AlertCircle className="w-3 h-3 text-red-400" />}
+                <div className="code-run-out">
+                    <div className="code-run-out-head">
+                        {state === 'error' && <AlertCircle style={{ color: 'var(--danger)' }} />}
                         output
                         {typeof output.durationMs === 'number' && (
-                            <span className="ml-auto text-dark-500">{Math.round(output.durationMs)}ms</span>
+                            <span className="ml-auto" style={{ color: 'var(--ink-4)' }}>{Math.round(output.durationMs)}ms</span>
                         )}
                     </div>
                     {output.stdout && (
-                        <pre className="px-3 py-2 bg-dark-900/40 text-[11.5px] text-dark-200 font-mono whitespace-pre-wrap break-words overflow-x-auto">
-                            {output.stdout}
-                        </pre>
+                        <pre>{output.stdout}</pre>
                     )}
                     {output.stderr && (
-                        <pre className="px-3 py-2 bg-red-500/5 text-[11.5px] text-red-300 font-mono whitespace-pre-wrap break-words overflow-x-auto border-t border-white/5">
-                            {output.stderr}
-                        </pre>
+                        <pre className="is-err">{output.stderr}</pre>
                     )}
                     {output.error && !output.stdout && !output.stderr && (
-                        <pre className="px-3 py-2 bg-red-500/5 text-[11.5px] text-red-300 font-mono whitespace-pre-wrap break-words">
-                            {output.error}
-                        </pre>
+                        <pre className="is-err">{output.error}</pre>
                     )}
                     {output.timedOut && (
-                        <div className="px-3 py-1.5 bg-amber-500/5 text-[11px] text-amber-300 border-t border-white/5">
+                        <div className="code-run-timeout">
                             execution timed out
                         </div>
                     )}
                     {Array.isArray(output.artifacts) && output.artifacts.length > 0 && (
-                        <div className="border-t border-white/5 p-2 bg-dark-900/60 space-y-2">
+                        <div className="p-2 space-y-2" style={{ borderTop: '1px solid var(--rule-2)' }}>
                             {output.artifacts.map(a => {
                                 const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(a.name);
                                 return (
@@ -176,18 +172,20 @@ function ServerRunBlock({ code, language, serverLang = 'python' }) {
                                             <img
                                                 src={a.url}
                                                 alt={a.name}
-                                                className="max-h-64 max-w-full rounded border border-white/10 bg-white/5 block"
+                                                className="max-h-64 max-w-full rounded-md block"
+                                                style={{ border: '1px solid var(--rule)', background: '#fff' }}
                                             />
                                         )}
-                                        <div className="flex items-center gap-2 text-[10px] text-dark-400 font-mono">
+                                        <div className="flex items-center gap-2 font-mono" style={{ '--fs': '11.5px', color: 'var(--ink-3)' }}>
                                             <span>{a.name}</span>
-                                            <span className="text-dark-500">{formatBytes(a.size)}</span>
+                                            <span style={{ color: 'var(--ink-4)' }}>{formatBytes(a.size)}</span>
                                             <a
                                                 href={a.url}
                                                 target="_blank"
                                                 rel="noreferrer"
                                                 download={a.name}
-                                                className="ml-auto px-1.5 py-0.5 rounded bg-dark-800 hover:bg-dark-700 text-dark-300 border border-white/10"
+                                                className="ui-btn ui-btn-secondary ml-auto"
+                                                style={{ height: 24, padding: '0 8px', '--fs': '11px', textDecoration: 'none' }}
                                             >
                                                 download
                                             </a>

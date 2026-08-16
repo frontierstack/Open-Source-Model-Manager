@@ -94,35 +94,27 @@ export default function FilePreviewModal({ attachment, onClose }) {
     return (
         <>
             <div
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9998] animate-in"
+                className="dlg-backdrop z-[9998] animate-in"
                 onClick={onClose}
             />
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
                 <div
-                    className="w-full max-w-5xl flex flex-col rounded-2xl shadow-2xl shadow-black/40 overflow-hidden animate-scale-in"
-                    style={{
-                        background: 'var(--surface)',
-                        border: '1px solid var(--rule)',
-                        maxHeight: '90vh',
-                    }}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={filename ? `Preview of ${filename}` : 'File preview'}
+                    className="dlg w-full max-w-5xl animate-scale-in"
+                    style={{ maxHeight: '90vh' }}
                     onClick={(e) => e.stopPropagation()}
                 >
                     {/* Header */}
-                    <div
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 12,
-                            padding: '14px 18px',
-                            borderBottom: '1px solid var(--rule-2)',
-                            background: 'var(--bg-2)',
-                        }}
-                    >
+                    <div className="dlg-header" style={{ height: 'auto', minHeight: 60, padding: '10px 12px 10px 18px' }}>
                         <PreviewIcon type={type} filename={filename} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <div className="dlg-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {filename || 'Preview'}
                             </div>
                             {headerMeta.length > 0 && (
-                                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2 }}>
+                                <div style={{ fontSize: 12, '--fs': '12px', color: 'var(--ink-3)', marginTop: 2 }}>
                                     {headerMeta.join(' · ')}
                                 </div>
                             )}
@@ -130,21 +122,14 @@ export default function FilePreviewModal({ attachment, onClose }) {
                         <button
                             onClick={onClose}
                             aria-label="Close preview"
-                            style={{
-                                width: 32, height: 32, borderRadius: 8,
-                                display: 'grid', placeItems: 'center',
-                                background: 'transparent', border: 0,
-                                color: 'var(--ink-3)', cursor: 'pointer',
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-3, var(--bg))'; e.currentTarget.style.color = 'var(--ink)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-3)'; }}
+                            className="ui-icon-btn ui-icon-btn-lg"
                         >
-                            <X style={{ width: 18, height: 18 }} />
+                            <X strokeWidth={2} />
                         </button>
                     </div>
 
                     {/* Body */}
-                    <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 18, background: 'var(--bg)' }}>
+                    <div className="dlg-body" style={{ padding: 18, background: 'var(--bg)' }}>
                         <PreviewBody attachment={attachment} />
                     </div>
                 </div>
@@ -206,7 +191,7 @@ function PreviewBody({ attachment }) {
         // somehow triggers the modal, explain instead of leaking the
         // tool-call marker text.
         return (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink-3)', fontSize: 13 }}>
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink-3)', fontSize: 13, '--fs': '13px' }}>
                 Archives can't be previewed inline. Ask the model to extract this file — it'll use the <code style={{ fontFamily: 'var(--font-mono)' }}>extract_archive</code> tool.
             </div>
         );
@@ -249,7 +234,7 @@ function PreviewBody({ attachment }) {
         // Unknown binary — offer download.
         return (
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink-3)' }}>
-                <div style={{ marginBottom: 12, fontSize: 13 }}>No inline preview available for this file type.</div>
+                <div style={{ marginBottom: 12, fontSize: 13, '--fs': '13px' }}>No inline preview available for this file type.</div>
                 <a
                     href={dataUrl}
                     download={filename || 'download'}
@@ -257,7 +242,7 @@ function PreviewBody({ attachment }) {
                         display: 'inline-block',
                         padding: '8px 14px', borderRadius: 8,
                         background: 'var(--accent)', color: 'var(--accent-ink)',
-                        fontSize: 13, fontWeight: 500, textDecoration: 'none',
+                        fontSize: 13, '--fs': '13px', fontWeight: 500, textDecoration: 'none',
                     }}
                 >
                     Download {filename || 'file'}
@@ -349,12 +334,12 @@ function EmailPreview({ content }) {
                     border: '1px solid var(--rule-2)',
                 }}>
                     {subject && (
-                        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink)', marginBottom: headerEntries.length > 1 ? 10 : 0, lineHeight: 1.3 }}>
+                        <div style={{ fontSize: 16, '--fs': '16px', fontWeight: 600, color: 'var(--ink)', marginBottom: headerEntries.length > 1 ? 10 : 0, lineHeight: 1.3 }}>
                             {subject}
                         </div>
                     )}
                     {headerEntries.length > (subject ? 1 : 0) && (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 4, fontSize: 12.5 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 4, fontSize: 12.5, '--fs': '12.5px' }}>
                             {headerEntries.filter(([k]) => k !== 'Subject').map(([k, v]) => (
                                 <React.Fragment key={k}>
                                     <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>{k}</span>
@@ -365,19 +350,19 @@ function EmailPreview({ content }) {
                     )}
                     {links.length > 0 && (
                         <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
-                            <div style={{ fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 6 }}>
+                            <div style={{ fontSize: 11, '--fs': '11px', color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 6 }}>
                                 {links.length} link{links.length === 1 ? '' : 's'}
                             </div>
                             <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
                                 {links.slice(0, 25).map((l, i) => (
-                                    <li key={i} style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    <li key={i} style={{ fontSize: 12.5, '--fs': '12.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                         <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
                                             {l.text}
                                         </a>
                                     </li>
                                 ))}
                                 {links.length > 25 && (
-                                    <li style={{ fontSize: 11, color: 'var(--ink-3)' }}>… and {links.length - 25} more</li>
+                                    <li style={{ fontSize: 11, '--fs': '11px', color: 'var(--ink-3)' }}>… and {links.length - 25} more</li>
                                 )}
                             </ul>
                         </div>
@@ -386,7 +371,7 @@ function EmailPreview({ content }) {
             )}
             <PlainText text={body || content} />
             {footer && (
-                <details style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                <details style={{ fontSize: 12, '--fs': '12px', color: 'var(--ink-3)' }}>
                     <summary style={{ cursor: 'pointer', padding: '4px 0' }}>Attachments / footer</summary>
                     <div style={{ marginTop: 6 }}>
                         <PlainText text={footer} muted />
@@ -403,7 +388,7 @@ function PlainText({ text, muted }) {
             style={{
                 margin: 0,
                 fontFamily: 'var(--font-mono)',
-                fontSize: 12.5,
+                fontSize: 12.5, '--fs': '12.5px',
                 lineHeight: 1.55,
                 color: muted ? 'var(--ink-3)' : 'var(--ink)',
                 whiteSpace: 'pre-wrap',
@@ -427,7 +412,7 @@ function CodePreview({ code, language }) {
                 {({ className, style, tokens, getLineProps, getTokenProps }) => (
                     <pre
                         className={className}
-                        style={{ ...style, margin: 0, padding: '14px 16px', fontSize: 12.5, lineHeight: 1.55, overflow: 'auto', background: 'transparent' }}
+                        style={{ ...style, margin: 0, padding: '14px 16px', fontSize: 12.5, '--fs': '12.5px', lineHeight: 1.55, overflow: 'auto', background: 'transparent' }}
                     >
                         {tokens.map((line, i) => {
                             const lineProps = getLineProps({ line });
@@ -504,7 +489,7 @@ function SpreadsheetPreview({ sheets }) {
                             onClick={() => setActive(i)}
                             style={{
                                 padding: '5px 10px', borderRadius: 6,
-                                fontSize: 12, fontWeight: 500,
+                                fontSize: 12, '--fs': '12px', fontWeight: 500,
                                 background: i === active ? 'var(--accent)' : 'var(--surface)',
                                 color: i === active ? 'var(--accent-ink)' : 'var(--ink-2)',
                                 border: '1px solid ' + (i === active ? 'var(--accent)' : 'var(--rule-2)'),
@@ -517,7 +502,7 @@ function SpreadsheetPreview({ sheets }) {
                 </div>
             )}
             {sheet?.truncated && (
-                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginBottom: 8 }}>
+                <div style={{ fontSize: 11.5, '--fs': '11.5px', color: 'var(--ink-3)', marginBottom: 8 }}>
                     Showing first {sheet.rows.length.toLocaleString()} of {sheet.rowCount.toLocaleString()} rows. Full data is sent to the model.
                 </div>
             )}
@@ -532,7 +517,7 @@ function DataTable({ rows }) {
     const body = rows.slice(1);
     return (
         <div style={{ overflow: 'auto', maxHeight: '70vh', border: '1px solid var(--rule-2)', borderRadius: 8 }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5, minWidth: 'max-content' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5, '--fs': '12.5px', minWidth: 'max-content' }}>
                 <thead>
                     <tr style={{ background: 'var(--bg-2)', position: 'sticky', top: 0, zIndex: 1 }}>
                         <th style={cellStyleHeader}>#</th>
@@ -649,7 +634,7 @@ function PdfPreview({ dataUrl }) {
 
     if (renderError) {
         return (
-            <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>
+            <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13, '--fs': '13px' }}>
                 Failed to render PDF: {renderError}
             </div>
         );
@@ -658,7 +643,7 @@ function PdfPreview({ dataUrl }) {
         return (
             <div style={{ display: 'grid', placeItems: 'center', padding: 60, color: 'var(--ink-3)' }}>
                 <Loader2 className="animate-spin" style={{ width: 20, height: 20, marginBottom: 8 }} />
-                <span style={{ fontSize: 12 }}>Loading PDF…</span>
+                <span style={{ fontSize: 12, '--fs': '12px' }}>Loading PDF…</span>
             </div>
         );
     }
@@ -684,7 +669,7 @@ function PdfPreview({ dataUrl }) {
                 >
                     <ChevronLeft style={{ width: 14, height: 14 }} />
                 </button>
-                <span style={{ fontSize: 12, color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
+                <span style={{ fontSize: 12, '--fs': '12px', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
                     Page {pageNum} of {total}
                 </span>
                 <button
@@ -705,7 +690,7 @@ function PdfPreview({ dataUrl }) {
 
 function pdfNavBtn(disabled) {
     return {
-        width: 28, height: 28, borderRadius: 6,
+        width: 28, height: 28, borderRadius: 7,
         display: 'grid', placeItems: 'center',
         background: 'transparent', border: '1px solid var(--rule)',
         color: 'var(--ink-3)', cursor: disabled ? 'default' : 'pointer',
@@ -745,13 +730,13 @@ function PdfPreviewFromStore({ attachmentId }) {
         };
     }, [attachmentId]);
     if (error) {
-        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>Failed to load PDF: {error}</div>;
+        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13, '--fs': '13px' }}>Failed to load PDF: {error}</div>;
     }
     if (!blobUrl) {
         return (
             <div style={{ display: 'grid', placeItems: 'center', padding: 60, color: 'var(--ink-3)' }}>
                 <Loader2 className="animate-spin" style={{ width: 20, height: 20, marginBottom: 8 }} />
-                <span style={{ fontSize: 12 }}>Fetching PDF…</span>
+                <span style={{ fontSize: 12, '--fs': '12px' }}>Fetching PDF…</span>
             </div>
         );
     }
@@ -785,13 +770,13 @@ function TextPreviewFromStore({ attachment }) {
         return () => { cancelled = true; };
     }, [attachment.attachmentId]);
     if (error) {
-        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>Failed to load file: {error}</div>;
+        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13, '--fs': '13px' }}>Failed to load file: {error}</div>;
     }
     if (text == null) {
         return (
             <div style={{ display: 'grid', placeItems: 'center', padding: 60, color: 'var(--ink-3)' }}>
                 <Loader2 className="animate-spin" style={{ width: 20, height: 20, marginBottom: 8 }} />
-                <span style={{ fontSize: 12 }}>Fetching file…</span>
+                <span style={{ fontSize: 12, '--fs': '12px' }}>Fetching file…</span>
             </div>
         );
     }
@@ -821,13 +806,13 @@ function SpreadsheetPreviewFromStore({ attachmentId }) {
         return () => { cancelled = true; };
     }, [attachmentId]);
     if (error) {
-        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>Failed to load spreadsheet: {error}</div>;
+        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13, '--fs': '13px' }}>Failed to load spreadsheet: {error}</div>;
     }
     if (!sheets) {
         return (
             <div style={{ display: 'grid', placeItems: 'center', padding: 60, color: 'var(--ink-3)' }}>
                 <Loader2 className="animate-spin" style={{ width: 20, height: 20, marginBottom: 8 }} />
-                <span style={{ fontSize: 12 }}>Fetching sheet data…</span>
+                <span style={{ fontSize: 12, '--fs': '12px' }}>Fetching sheet data…</span>
             </div>
         );
     }

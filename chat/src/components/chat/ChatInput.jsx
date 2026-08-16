@@ -19,7 +19,21 @@ import {
     Circle,
     Eye,
     Clock,
+    Brain,
 } from 'lucide-react';
+
+const EFFORT_LEVELS = [
+    { id: 'default', label: 'Default', desc: "Use the model's own setting" },
+    { id: 'off',     label: 'Off',     desc: 'Answer directly, no thinking trace' },
+    { id: 'low',     label: 'Low',     desc: 'Brief thinking, fastest' },
+    { id: 'medium',  label: 'Medium',  desc: 'Balanced' },
+    { id: 'high',    label: 'High',    desc: 'Deep, thorough reasoning — slowest' },
+];
+const EFFORT_SUPPORT_NOTE = {
+    native: 'Native effort control',
+    toggle: 'Thinking on/off + budget hint',
+    hint: 'Guided by prompt only',
+};
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 
 
@@ -55,6 +69,8 @@ export default function ChatInput({
     models = [],
     selectedModel,
     onModelChange,
+    reasoningEffort = 'default',
+    onReasoningEffortChange,
     queuedMessages = [],
     onQueueMessage,
     onRemoveQueued,
@@ -65,12 +81,24 @@ export default function ChatInput({
     const [uploadingFiles, setUploadingFiles] = useState([]);
     const [promptDropdownOpen, setPromptDropdownOpen] = useState(false);
     const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+    const [effortDropdownOpen, setEffortDropdownOpen] = useState(false);
     const [previewAttachment, setPreviewAttachment] = useState(null);
     const fileInputRef = useRef(null);
     const textareaRef = useRef(null);
     const dragCounterRef = useRef(0);
     const promptDropdownRef = useRef(null);
     const modelDropdownRef = useRef(null);
+    const effortDropdownRef = useRef(null);
+    // Compact viewport → the effort chip drops its text label (icon only) so it
+    // never squeezes the persona/model chips or the send button.
+    const [compactChips, setCompactChips] = useState(() => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(max-width: 640px)').matches : false));
+    useEffect(() => {
+        if (typeof window === 'undefined' || !window.matchMedia) return;
+        const mq = window.matchMedia('(max-width: 640px)');
+        const onChange = (e) => setCompactChips(e.matches);
+        if (mq.addEventListener) mq.addEventListener('change', onChange); else mq.addListener(onChange);
+        return () => { if (mq.removeEventListener) mq.removeEventListener('change', onChange); else mq.removeListener(onChange); };
+    }, []);
 
     const contextStats = useMemo(() => {
         let totalChars = 0;
@@ -148,15 +176,22 @@ export default function ChatInput({
             if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
                 setModelDropdownOpen(false);
             }
+            if (effortDropdownRef.current && !effortDropdownRef.current.contains(e.target)) {
+                setEffortDropdownOpen(false);
+            }
         };
-        if (promptDropdownOpen || modelDropdownOpen) {
+        if (promptDropdownOpen || modelDropdownOpen || effortDropdownOpen) {
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
         }
-    }, [promptDropdownOpen, modelDropdownOpen]);
+    }, [promptDropdownOpen, modelDropdownOpen, effortDropdownOpen]);
 
     const runningModels = Array.isArray(models) ? models.filter(m => m.status === 'running') : [];
     const selectedModelData = Array.isArray(models) ? models.find(m => m.name === selectedModel) : null;
+    const effortLevel = EFFORT_LEVELS.find(l => l.id === reasoningEffort) || EFFORT_LEVELS[0];
+    const effortIsSet = effortLevel.id !== 'default';
+    const effortSupportNote = EFFORT_SUPPORT_NOTE[selectedModelData?.effortSupport] || null;
+    const effortLoadedOff = !!selectedModelData?.thinkingLoadedOff;
     const getModelStatusColor = (status) => {
         if (status === 'running') return 'var(--ok)';
         if (status === 'loading' || status === 'starting') return 'var(--warning, #f59e0b)';
@@ -396,15 +431,19 @@ export default function ChatInput({
     const canSend = hasContent && !isStreaming && !disabled;
     const canQueue = hasContent && isStreaming && !disabled && !!onQueueMessage;
 
-    // Style objects — use CSS variables so they respect the active theme
+    // Style objects — use CSS variables so they respect the active theme.
+    // Sizes follow the shell-wide control system (index.css "Console
+    // control system"): icon buttons 32px, chips 28px, send/stop 32px.
     const iconChip = {
-        width: 30, height: 30, borderRadius: 8,
+        width: 'var(--ctl-h-md, 32px)', height: 'var(--ctl-h-md, 32px)',
+        borderRadius: 'var(--ctl-r-md, 8px)',
         display: 'grid', placeItems: 'center',
         color: 'var(--ink-3)',
-        transition: 'background .1s, color .1s',
+        transition: 'background-color var(--ctl-ease, .16s), color var(--ctl-ease, .16s), opacity var(--ctl-ease, .16s)',
         cursor: 'pointer',
         border: 0,
         background: 'transparent',
+        flexShrink: 0,
     };
     const iconChipActive = (activeColor) => ({
         ...iconChip,
@@ -413,12 +452,15 @@ export default function ChatInput({
     });
     const chip = {
         display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '6px 10px', borderRadius: 8,
+        height: 'var(--ctl-h-sm, 28px)',
+        padding: '0 10px', borderRadius: 'var(--ctl-r-md, 8px)',
         color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500,
-        transition: 'background .1s',
+        lineHeight: 1,
+        transition: 'background-color var(--ctl-ease, .16s), color var(--ctl-ease, .16s), opacity var(--ctl-ease, .16s)',
         cursor: 'pointer',
         border: 0,
         background: 'transparent',
+        whiteSpace: 'nowrap',
     };
     const chipActive = {
         ...chip,
@@ -426,20 +468,26 @@ export default function ChatInput({
         background: 'var(--accent-soft)',
     };
     const sendBtn = {
-        width: 32, height: 32, borderRadius: 8,
+        width: 'var(--ctl-h-md, 32px)', height: 'var(--ctl-h-md, 32px)',
+        borderRadius: 'var(--ctl-r-lg, 10px)',
         background: 'var(--accent)',
         color: 'var(--accent-ink)',
         display: 'grid', placeItems: 'center',
-        transition: 'transform .1s, opacity .1s',
+        transition: 'transform var(--ctl-ease, .16s), opacity var(--ctl-ease, .16s), background-color var(--ctl-ease, .16s)',
+        boxShadow: '0 1px 2px color-mix(in oklab, var(--accent) 35%, transparent), inset 0 1px 0 color-mix(in oklab, white 14%, transparent)',
         border: 0,
+        flexShrink: 0,
     };
     const stopBtn = {
-        width: 32, height: 32, borderRadius: 8,
-        background: 'var(--danger)',
-        color: '#fff',
+        width: 'var(--ctl-h-md, 32px)', height: 'var(--ctl-h-md, 32px)',
+        borderRadius: 'var(--ctl-r-lg, 10px)',
+        background: 'color-mix(in oklab, var(--danger) 16%, transparent)',
+        color: 'var(--danger)',
         display: 'grid', placeItems: 'center',
-        border: 0,
+        border: '1px solid color-mix(in oklab, var(--danger) 40%, transparent)',
+        transition: 'transform var(--ctl-ease, .16s), background-color var(--ctl-ease, .16s)',
         cursor: 'pointer',
+        flexShrink: 0,
     };
     const kbdStyle = {
         border: '1px solid var(--rule)', borderRadius: 3,
@@ -450,26 +498,26 @@ export default function ChatInput({
     };
     const popover = {
         position: 'absolute',
-        bottom: 'calc(100% + 6px)',
+        bottom: 'calc(100% + 8px)',
         left: 0,
         minWidth: 280,
         maxWidth: 360,
         background: 'var(--surface)',
         border: '1px solid var(--rule)',
-        borderRadius: 10,
-        boxShadow: '0 10px 30px -10px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.15)',
+        borderRadius: 12,
+        boxShadow: 'var(--ctl-shadow-pop, 0 10px 30px -10px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.15))',
         padding: 6,
         zIndex: 20,
     };
     const popHeader = {
-        fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase',
-        color: 'var(--ink-3)', fontWeight: 600,
+        fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase',
+        color: 'var(--ink-4)', fontWeight: 600,
         padding: '6px 10px 4px',
     };
     const popItem = {
         display: 'block', width: '100%', textAlign: 'left',
-        padding: '8px 10px', borderRadius: 6,
-        transition: 'background .08s',
+        padding: '8px 10px', borderRadius: 8,
+        transition: 'background-color var(--ctl-ease, .16s)',
         cursor: 'pointer',
         border: 0,
         background: 'transparent',
@@ -822,7 +870,7 @@ export default function ChatInput({
                             {onModelChange && (
                                 <div style={{ position: 'relative' }} ref={modelDropdownRef}>
                                     <button
-                                        onClick={() => { setModelDropdownOpen(o => !o); setPromptDropdownOpen(false); }}
+                                        onClick={() => { setModelDropdownOpen(o => !o); setPromptDropdownOpen(false); setEffortDropdownOpen(false); }}
                                         disabled={disabled || isStreaming}
                                         className="composer-chip-model"
                                         style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220, minWidth: 0 }}
@@ -890,6 +938,55 @@ export default function ChatInput({
                                                     </button>
                                                 ))}
                                             </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Reasoning effort chip */}
+                            {onReasoningEffortChange && (
+                                <div style={{ position: 'relative' }} ref={effortDropdownRef}>
+                                    <button
+                                        onClick={() => { setEffortDropdownOpen(o => !o); setModelDropdownOpen(false); setPromptDropdownOpen(false); }}
+                                        disabled={disabled || isStreaming}
+                                        className="composer-chip-persona composer-chip-effort"
+                                        style={{ ...(effortIsSet ? chipActive : chip), opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 120, minWidth: 0 }}
+                                        aria-label="Reasoning effort"
+                                        title={effortIsSet ? `Reasoning effort: ${effortLevel.label}` : 'Reasoning effort'}
+                                    >
+                                        <Brain className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
+                                        {!compactChips && (
+                                            <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {effortIsSet ? effortLevel.label : 'Effort'}
+                                            </span>
+                                        )}
+                                        <ChevronDown className={`w-[11px] h-[11px] transition-transform duration-150 ${effortDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.75} />
+                                    </button>
+                                    {effortDropdownOpen && (
+                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="animate-slide-up">
+                                            <div style={popHeader}>Reasoning effort</div>
+                                            <div>
+                                                {EFFORT_LEVELS.map((lvl) => (
+                                                    <button
+                                                        key={lvl.id}
+                                                        onClick={() => { onReasoningEffortChange(lvl.id); setEffortDropdownOpen(false); }}
+                                                        style={effortLevel.id === lvl.id ? popItemActive : popItem}
+                                                        onMouseEnter={(e) => { if (effortLevel.id !== lvl.id) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                                        onMouseLeave={(e) => { if (effortLevel.id !== lvl.id) e.currentTarget.style.background = 'transparent'; }}
+                                                    >
+                                                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
+                                                            <span style={{ fontSize: 12.5, fontWeight: 500, flexShrink: 0, minWidth: 52 }}>{lvl.label}</span>
+                                                            <span style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lvl.desc}</span>
+                                                        </div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            {(effortSupportNote || effortLoadedOff) && (
+                                                <div style={{ borderTop: '1px solid var(--rule)', marginTop: 4, padding: '6px 10px 4px', fontSize: 10.5, color: 'var(--ink-3)', lineHeight: 1.4 }}>
+                                                    {effortSupportNote && <div>{effortSupportNote}</div>}
+                                                    {effortLoadedOff && <div>Model was loaded with thinking off — Low/Medium/High turn it on per request</div>}
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
