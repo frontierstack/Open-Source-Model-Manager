@@ -819,7 +819,6 @@ export default function ChatSidebar({
                     className="ctl ctl-primary"
                     style={{ width: '100%' }}
                 >
-                    <Plus strokeWidth={2.25} />
                     <span>New chat</span>
                 </button>
             </div>
