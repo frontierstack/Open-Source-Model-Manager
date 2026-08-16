@@ -16,6 +16,9 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Shared network / certificate helpers (host IP detection, SAN list, WSL mode).
+. "$SCRIPT_DIR/lib/netaccess.sh"
+
 # Build state tracking directory
 BUILD_STATE_DIR="$PROJECT_DIR/.build-state"
 mkdir -p "$BUILD_STATE_DIR"
@@ -502,24 +505,21 @@ PY
 
 section "Prerequisites"
 
-# SSL certificates
+# SSL certificates. The SAN list covers localhost AND this host's real
+# addresses (see scripts/lib/netaccess.sh) so the UI also loads over the LAN
+# IP instead of failing with ERR_CERT_COMMON_NAME_INVALID.
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
     start_spinner "Generating SSL certificates"
-    mkdir -p "$PROJECT_DIR/certs"
     if [ -f "$PROJECT_DIR/certs/generate-certs.sh" ]; then
         chmod +x "$PROJECT_DIR/certs/generate-certs.sh"
-        "$PROJECT_DIR/certs/generate-certs.sh" >/dev/null 2>&1
+        "$PROJECT_DIR/certs/generate-certs.sh" >/dev/null 2>&1 || ms_generate_certs "$PROJECT_DIR/certs"
     else
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$PROJECT_DIR/certs/server.key" \
-            -out "$PROJECT_DIR/certs/server.crt" \
-            -subj "/C=US/ST=Local/L=Local/O=ModelServer/OU=Development/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
-        chmod 600 "$PROJECT_DIR/certs/server.key"
-        chmod 644 "$PROJECT_DIR/certs/server.crt"
+        ms_generate_certs "$PROJECT_DIR/certs"
     fi
     stop_spinner
     log_success "SSL certificates generated"
+elif ! ms_cert_is_current "$PROJECT_DIR/certs/server.crt"; then
+    log_warning "SSL certificate doesn't cover this host's IP — ./start.sh will refresh it"
 else
     log_success "SSL certificates found"
 fi
@@ -1034,4 +1034,10 @@ if [ "$SSL_INSPECTION_DETECTED" = true ]; then
 fi
 echo ""
 echo -e "  Next: ${BOLD}./start.sh${NC}"
+if ms_is_wsl && [ "$(ms_wsl_networking_mode)" != "mirrored" ]; then
+    echo ""
+    echo -e "  ${DIM}WSL detected: the UI will be reachable at https://localhost:3001 on this${NC}"
+    echo -e "  ${DIM}machine only. To reach it from other devices on your network, run${NC}"
+    echo -e "  ${DIM}${BOLD}sudo ./wsl-expose.sh${NC}${DIM} after ./start.sh.${NC}"
+fi
 echo ""

@@ -28693,7 +28693,19 @@ const HTTP_REDIRECT_PORT = process.env.HTTP_REDIRECT_PORT || 3080;
 
 server.listen(PORT, async () => {
     const protocol = useHttps ? 'https' : 'http';
-    console.log(`Server is listening on ${protocol}://localhost:${PORT}`);
+    // Node binds every interface here (no host argument), and compose publishes
+    // the port on 0.0.0.0 — so log the host's own addresses too. Logging only
+    // "localhost" is what made LAN access look unsupported.
+    const lanAddrs = [];
+    try {
+        for (const list of Object.values(os.networkInterfaces() || {})) {
+            for (const ni of list || []) {
+                if (ni.family === 'IPv4' && !ni.internal) lanAddrs.push(ni.address);
+            }
+        }
+    } catch {}
+    console.log(`Server is listening on 0.0.0.0:${PORT} — ${protocol}://localhost:${PORT}`
+        + (lanAddrs.length ? ` (container addresses: ${lanAddrs.join(', ')})` : ''));
 
     // Parallel initialization for faster startup
     console.log('Starting parallel initialization...');

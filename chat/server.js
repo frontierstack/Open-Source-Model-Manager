@@ -155,10 +155,23 @@ const startServer = () => {
         fs.mkdirSync(certPath, { recursive: true });
 
         try {
-            execSync(`openssl req -x509 -newkey rsa:4096 -keyout ${keyFile} -out ${certFile} -days 365 -nodes -subj "/CN=localhost"`, {
+            // A CN-only certificate has no Subject Alternative Name, and every
+            // modern browser rejects those outright — so the emergency cert
+            // must carry SANs for localhost plus whatever addresses this host
+            // actually answers on, or the UI is unreachable over the LAN.
+            const os = require('os');
+            const sans = ['DNS:localhost', 'DNS:host.docker.internal', 'IP:127.0.0.1'];
+            for (const list of Object.values(os.networkInterfaces() || {})) {
+                for (const ni of list || []) {
+                    if (ni.family === 'IPv4' && !ni.internal && !sans.includes(`IP:${ni.address}`)) {
+                        sans.push(`IP:${ni.address}`);
+                    }
+                }
+            }
+            execSync(`openssl req -x509 -newkey rsa:4096 -keyout ${keyFile} -out ${certFile} -days 365 -nodes -subj "/CN=localhost" -addext "subjectAltName=${sans.join(',')}"`, {
                 stdio: 'pipe'
             });
-            console.log('SSL certificates generated successfully');
+            console.log(`SSL certificates generated successfully (SAN: ${sans.join(',')})`);
         } catch (error) {
             console.error('Failed to generate SSL certificates:', error.message);
             console.log('Falling back to HTTP...');
@@ -179,7 +192,10 @@ const startServer = () => {
     const server = https.createServer(httpsOptions, app);
 
     server.listen(PORT, '0.0.0.0', () => {
-        console.log(`Chat webapp running on https://localhost:${PORT}`);
+        // Bound on 0.0.0.0 — reachable at localhost AND at this host's own
+        // addresses. Logged explicitly because "localhost" alone made LAN
+        // access look unsupported.
+        console.log(`Chat webapp listening on 0.0.0.0:${PORT} — https://localhost:${PORT}`);
     });
 
     // Handle WebSocket upgrade

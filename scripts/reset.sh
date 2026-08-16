@@ -16,6 +16,9 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Shared network / certificate helpers.
+. "$SCRIPT_DIR/lib/netaccess.sh"
+
 # ============================================================================
 # TERMINAL OUTPUT HELPERS
 # ============================================================================
@@ -192,17 +195,11 @@ fi
 
 section "Restart"
 
-# SSL certificates
+# SSL certificates (SAN list from scripts/lib/netaccess.sh — covers localhost
+# and this host's real addresses).
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
     start_spinner "Generating SSL certificates"
-    mkdir -p "$PROJECT_DIR/certs"
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$PROJECT_DIR/certs/server.key" \
-        -out "$PROJECT_DIR/certs/server.crt" \
-        -subj "/C=US/ST=Local/L=Local/O=ModelServer/OU=Development/CN=localhost" \
-        -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
-    chmod 600 "$PROJECT_DIR/certs/server.key"
-    chmod 644 "$PROJECT_DIR/certs/server.crt"
+    ms_generate_certs "$PROJECT_DIR/certs"
     stop_spinner
     log_success "SSL certificates generated"
 else

@@ -16,6 +16,9 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Shared network / certificate helpers (host IP detection, SAN list, WSL mode).
+. "$SCRIPT_DIR/lib/netaccess.sh"
+
 # ============================================================================
 # TERMINAL OUTPUT HELPERS
 # ============================================================================
@@ -105,27 +108,37 @@ if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
 fi
 log_success "Docker images found"
 
-# SSL certificates
+# SSL certificates. Regenerated when they don't cover this host's current
+# addresses — a cert with only localhost/127.0.0.1 in its SAN makes
+# https://<lan-ip>:3001 fail with ERR_CERT_COMMON_NAME_INVALID, which reads
+# as "the server isn't listening" even though it is.
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
     start_spinner "Generating SSL certificates"
-    mkdir -p "$PROJECT_DIR/certs"
-    if [ -f "$PROJECT_DIR/certs/generate-certs.sh" ]; then
-        chmod +x "$PROJECT_DIR/certs/generate-certs.sh"
-        "$PROJECT_DIR/certs/generate-certs.sh" >/dev/null 2>&1
+    if ms_generate_certs "$PROJECT_DIR/certs"; then
+        stop_spinner; log_success "SSL certificates generated"
     else
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$PROJECT_DIR/certs/server.key" \
-            -out "$PROJECT_DIR/certs/server.crt" \
-            -subj "/C=US/ST=Local/L=Local/O=ModelServer/OU=Development/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
-        chmod 600 "$PROJECT_DIR/certs/server.key"
-        chmod 644 "$PROJECT_DIR/certs/server.crt"
+        stop_spinner; log_warning "SSL certificate generation failed — check that openssl is installed"
     fi
-    stop_spinner
-    log_success "SSL certificates generated"
+elif ! ms_cert_is_current "$PROJECT_DIR/certs/server.crt"; then
+    start_spinner "Refreshing SSL certificate for this host's addresses"
+    cp "$PROJECT_DIR/certs/server.crt" "$PROJECT_DIR/certs/server.crt.bak" 2>/dev/null || true
+    cp "$PROJECT_DIR/certs/server.key" "$PROJECT_DIR/certs/server.key.bak" 2>/dev/null || true
+    if ms_generate_certs "$PROJECT_DIR/certs"; then
+        stop_spinner
+        log_success "SSL certificate refreshed — now valid for $(ms_host_ipv4s | tr '\n' ' ')"
+        log_step "Browsers that trusted the old certificate will ask again (previous cert kept as certs/server.crt.bak)"
+        CERTS_REFRESHED=true
+    else
+        stop_spinner; log_warning "Certificate refresh failed — keeping the existing one"
+    fi
 else
     log_success "SSL certificates found"
 fi
+
+# HOST_IP is consumed by the webapp for host-facing URLs. Documented as
+# auto-detected; nothing actually wrote it until now.
+_seeded_ip=$(ms_seed_env_host_ip "$PROJECT_DIR/.env" || true)
+if [ -n "$_seeded_ip" ]; then log_success "HOST_IP=$_seeded_ip written to .env"; fi
 
 # ============================================================================
 # START SERVICES
@@ -134,6 +147,11 @@ fi
 section "Starting Services"
 
 log_step "Creating containers"
+if [ "${CERTS_REFRESHED:-false}" = true ]; then
+    # The servers read the cert once at boot, so a refreshed cert only takes
+    # effect after the containers are recreated.
+    docker compose up -d --force-recreate webapp chat >/dev/null 2>&1 || true
+fi
 docker compose up -d 2>&1 | while IFS= read -r line; do
     # Show container lifecycle events
     if echo "$line" | grep -qiE '(created|started|running|pulling|recreat)'; then
@@ -181,10 +199,9 @@ fi
 
 section "Ready"
 
-echo -e "  ${BOLD}Webapp${NC}   https://localhost:3001"
-echo -e "  ${BOLD}Chat UI${NC}  https://localhost:3002"
+ms_print_access_urls
 echo ""
-echo -e "  ${DIM}Your browser will show a certificate warning — this is expected.${NC}"
+echo -e "  ${DIM}The certificate is self-signed — your browser will warn once per address.${NC}"
 echo ""
 echo -e "  ${DIM}Logs:   docker compose logs -f${NC}"
 echo -e "  ${DIM}Stop:   ./stop.sh${NC}"

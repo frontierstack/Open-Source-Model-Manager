@@ -169,6 +169,25 @@ echo "HUGGING_FACE_HUB_TOKEN=hf_xxx" > .env
 | Web UI | https://localhost:3001 |
 | Chat UI | https://localhost:3002 |
 
+### Access from other devices
+
+Both services publish on `0.0.0.0`, so they are reachable at this machine's own
+address (`https://<host-ip>:3001` / `:3002`) as well as at `localhost`.
+`./start.sh` prints every working URL, live-checks each one, and puts the host's
+IP addresses in the TLS certificate — without that the LAN URL fails with
+`ERR_CERT_COMMON_NAME_INVALID` even though the port is open. If the certificate
+predates the change, `./start.sh` refreshes it automatically (the old one is
+kept as `certs/server.crt.bak`; browsers will ask to trust the new one once).
+
+On a Linux host, allow the ports if a firewall is active:
+
+```bash
+sudo ufw allow 3001/tcp && sudo ufw allow 3002/tcp      # ufw
+sudo firewall-cmd --add-port=3001/tcp --add-port=3002/tcp --permanent && sudo firewall-cmd --reload
+```
+
+**On WSL2 this needs one extra step** — see below.
+
 ### Build Options
 
 ```bash
@@ -191,7 +210,27 @@ sudo ./wsl-setup.sh --cleanup -y    # Same, no confirmation prompt
 
 The script is idempotent. If it needs to enable systemd in `/etc/wsl.conf`, it prints the exact `wsl --shutdown` command to run from PowerShell and exits — re-run after the distro restart and it picks up where it left off.
 
-**LAN access from other computers** (so other machines on the network can reach `https://<windows-ip>:3001`) requires WSL2 mirrored networking. On the Windows host, create `%UserProfile%\.wslconfig`:
+**LAN access from other computers.** WSL2's default NAT networking forwards only
+`localhost` into the distro, so published ports are invisible to the rest of the
+network — this is the usual reason a fresh WSL install "only works on localhost".
+Run:
+
+```bash
+sudo ./wsl-expose.sh                 # detect mode, then do the right thing
+./wsl-expose.sh --status            # what's forwarded now (flags stale entries)
+./wsl-expose.sh --use-mirrored      # switch to mirrored networking (durable fix)
+./wsl-expose.sh --undo              # remove the forwards + firewall rule
+./wsl-expose.sh --dry-run           # print the Windows commands, change nothing
+```
+
+In NAT mode it adds `netsh interface portproxy` rules plus one inbound firewall
+rule (via an elevated PowerShell — expect a UAC prompt) and starts the IP Helper
+service if it is stopped. Note the WSL VM IP changes on every `wsl --shutdown`,
+which breaks the forwards; re-run the script, or switch to mirrored networking
+once and forget about it. In mirrored mode it skips portproxy entirely (the VM
+shares the Windows IP) and just opens the Windows and Hyper-V VM firewalls.
+
+To set up mirrored networking by hand instead, create `%UserProfile%\.wslconfig`:
 
 ```ini
 [wsl2]
