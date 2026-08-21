@@ -514,6 +514,12 @@ export default async function (pi: ExtensionAPI) {
     pi.on("session_compact", () => {
         justCompacted = true;
         invalidateWorkspaceInventory();
+        // Prewarm: fetch the fresh inventory NOW (fire-and-forget) so the
+        // next turn's system-prompt block reflects post-compaction reality
+        // without spending its 4s fetch window — the first turn after a
+        // compaction is exactly when the agent most needs an accurate,
+        // fast sandbox listing.
+        void fetchWorkspaceInventory().catch(() => { /* next turn falls back */ });
     });
 
     // ---- host <-> server-workspace bridge -----------------------------------

@@ -160,6 +160,7 @@ const memoryIndex = require('./services/memoryIndex');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
 const reasoningEffort = require('./services/reasoningEffort');
+const v1ContextGuard = require('./services/v1ContextGuard');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
 // manifest scripts/download_model.py writes into each model dir (and applies
@@ -16125,6 +16126,17 @@ async function injectPersonaForV1(req, instance) {
     const latestUserText = v1LatestUserText(messages);
     if (!latestUserText) return null;
 
+    // Pi-internal utility calls are NOT agent turns. The compaction/branch
+    // summarizer sends the serialized conversation as a single-shot completion
+    // through this same proxy — injecting the persona there both pollutes the
+    // generated summary with persona text and wastes budget on a request that
+    // is usually already near the window. Fingerprint: Pi's summarization
+    // system prompt opens with a fixed sentence.
+    const sys0c = messages[0]?.role === 'system' ? messages[0].content : null;
+    const sys0Text = typeof sys0c === 'string' ? sys0c
+        : (Array.isArray(sys0c) ? sys0c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
+    if (/^You are a (?:context )?summarization assistant/i.test(sys0Text.trim())) return null;
+
     // Activity hint = the most recent tool the model has been using this session
     // + the ask. Front-loads the matching experience.
     const toolLabels = [];
@@ -17860,9 +17872,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                 const targetMessageLength = userContent.length - (excessTokens * 4);
 
                 if (targetMessageLength > 0) {
-                    // Truncate message and add indicator
-                    const truncatedMessage = userContent.substring(0, targetMessageLength) +
-                        '\n\n[...input truncated due to context limit...]';
+                    // Truncate the MIDDLE (keep head 30% + tail 70%): the
+                    // user's actual question usually follows the pasted
+                    // content, so a head-keep used to cut it off.
+                    const headLen = Math.floor(targetMessageLength * 0.3);
+                    const tailLen = Math.max(0, targetMessageLength - headLen);
+                    const truncatedMessage = userContent.substring(0, headLen) +
+                        '\n\n[...middle of input truncated due to context limit...]\n\n' +
+                        userContent.substring(userContent.length - tailLen);
                     console.log(`Input truncated: ${userContent.length} -> ${truncatedMessage.length} chars`);
 
                     // Use truncated message
@@ -18515,6 +18532,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // a real read_document_chunk chip instead of the model's first response
         // appearing to materialize from nowhere.
         let pendingPrimedToolEvents = null;
+        // Context-shift notice (history trimmed to fit the window) — emitted
+        // once SSE is live so the trim is visible instead of silent.
+        let pendingContextShiftNotice = null;
         try {
             const chatUserId = chatMemId;
             const rawConvId = conversationId || req.body.conversationId;
@@ -19210,8 +19230,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // Keep messages from the end (most recent) until we run out of space
                     const keptMessages = [];
                     let conversationTokens = 0;
+                    let lastMessageTruncated = false;
 
-                    // Start from the most recent message and work backwards
+                    // Start from the most recent message and work backwards.
+                    // The kept window is CONTIGUOUS: once an older message no
+                    // longer fits we stop, rather than cherry-picking smaller
+                    // still-older messages around it — holes in the middle of
+                    // a conversation (an assistant reply whose user question
+                    // was dropped) read as non-sequiturs to the model.
                     for (let i = conversationMessages.length - 1; i >= 0; i--) {
                         const msg = conversationMessages[i];
                         const msgTokens = estimateTokens(msg.content);
@@ -19225,10 +19251,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             const targetLength = Math.max(100, msg.content.length - (excessTokens * 4));
 
                             if (typeof msg.content === 'string') {
-                                const truncatedContent = msg.content.substring(0, targetLength) +
-                                    '\n\n[...input truncated due to context limit...]';
+                                // Keep head 30% + tail 70%: in a pasted-content
+                                // message the user's actual question usually sits
+                                // at the END — a pure head-keep used to cut it off.
+                                const marker = '\n\n[...middle of input truncated due to context limit...]\n\n';
+                                const headLen = Math.floor(targetLength * 0.3);
+                                const tailLen = Math.max(0, targetLength - headLen);
+                                const truncatedContent = msg.content.substring(0, headLen) + marker +
+                                    msg.content.substring(msg.content.length - tailLen);
                                 keptMessages.unshift({ ...msg, content: truncatedContent });
                                 conversationTokens += estimateTokens(truncatedContent);
+                                lastMessageTruncated = true;
                             } else {
                                 // Array format (vision) - truncate text part
                                 const newContent = msg.content.map(part => {
@@ -19241,10 +19274,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     return part;
                                 });
                                 keptMessages.unshift({ ...msg, content: newContent });
-                                conversationTokens += estimateTokens(targetLength);
+                                // estimateTokens() takes content (string/array), not a
+                                // length — passing the number returned 0 and the
+                                // truncated vision message was counted as free.
+                                conversationTokens += estimateTokensFromLength(targetLength);
+                                lastMessageTruncated = true;
                             }
+                        } else {
+                            // An older message no longer fits: stop here so the
+                            // kept window stays contiguous (no mid-history holes).
+                            break;
                         }
-                        // else: skip this older message (context shift removes it)
                     }
 
                     // If we couldn't keep any messages, error out
@@ -19265,6 +19305,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     totalInputTokens = systemTokens + conversationTokens;
 
                     console.log(`[Chat Stream] Context shift removed ${removedCount} old messages. New total: ${totalInputTokens} tokens`);
+                    // Surface the shift to the user: an SSE notice once the
+                    // stream opens (clients that don't know the type ignore
+                    // it) + a Logs-tab line. Silent history loss is exactly
+                    // the failure mode users report as "the model forgot".
+                    if (removedCount > 0 || lastMessageTruncated) {
+                        pendingContextShiftNotice = {
+                            type: 'context_shift',
+                            removedMessages: removedCount,
+                            truncatedLastMessage: lastMessageTruncated,
+                            totalInputTokens,
+                            contextSize,
+                            message: removedCount > 0
+                                ? `Trimmed ${removedCount} oldest message${removedCount === 1 ? '' : 's'} to fit the model's context window`
+                                : 'Truncated the middle of the latest message to fit the model\'s context window',
+                        };
+                        try {
+                            logUserActivity(req.userId || userId,
+                                `Context shift: ${removedCount > 0 ? `dropped ${removedCount} oldest message(s)` : 'kept all messages'}${lastMessageTruncated ? ' + truncated the latest message' : ''} — input now ~${totalInputTokens.toLocaleString()} of ${contextSize.toLocaleString()} tokens`);
+                        } catch (_) { /* logging must never break the stream */ }
+                    }
                 } else if (!agenticFallbackOk && !useMapReduce) {
                     clearStreamingJob();
                     return res.status(400).json({
@@ -19469,6 +19529,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (pendingAgenticNotice) {
             try { res.write(`data: ${JSON.stringify(pendingAgenticNotice)}\n\n`); } catch {}
             pendingAgenticNotice = null;
+        }
+        if (pendingContextShiftNotice) {
+            try { res.write(`data: ${JSON.stringify(pendingContextShiftNotice)}\n\n`); } catch {}
+            pendingContextShiftNotice = null;
         }
         if (pendingPrimedToolEvents) {
             for (const evt of pendingPrimedToolEvents) {
@@ -24799,8 +24863,18 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // `model` field if the client sent one — keeps multi-instance setups
         // routing predictably.
         const requestedModel = req.body && typeof req.body.model === 'string' ? req.body.model : null;
+        // Match by every id a client can plausibly have copied: the HF repo id,
+        // the container-name-derived short name, the instance's model name, or
+        // the model FILE PATH that llama.cpp's own /v1/models advertises
+        // ("/models/<name>/<file>.gguf" — what Pi sends back verbatim).
+        // Without the path rule, a multi-instance setup routed Pi's requests
+        // to whichever instance happened to be first in the Map.
         const matched = requestedModel
-            ? instances.find(i => i.config?.hfRepoId === requestedModel || i.containerName === `sglang-${requestedModel}` || i.containerName === `llamacpp-${requestedModel}`)
+            ? instances.find(i => i.config?.hfRepoId === requestedModel
+                || i.containerName === `sglang-${requestedModel}`
+                || i.containerName === `llamacpp-${requestedModel}`
+                || i.modelName === requestedModel
+                || (i.modelName && requestedModel.startsWith(`/models/${i.modelName}/`)))
             : null;
         const firstInstance = matched || instances[0];
         // Use container name to reach sglang via Docker network
@@ -24819,31 +24893,45 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // instance config so Pi's status line reflects reality.
         if (req.method === 'GET' && req.path === '/v1/models') {
             try {
-                const upstream = await axios.get(targetUrl, { timeout: 8000 });
-                const ctxFromConfig = firstInstance.config?.contextSize
-                    || firstInstance.config?.maxModelLen
-                    || null;
-                const data = upstream.data;
-                if (data && Array.isArray(data.data) && ctxFromConfig) {
-                    data.data = data.data.map((m) => ({
-                        context_window: ctxFromConfig,
-                        max_tokens: Math.max(1024, Math.floor(ctxFromConfig / 8)),
+                // Aggregate across ALL running instances — the old code asked
+                // only the first instance, so with several models loaded a
+                // client (Pi) could neither see nor address the others.
+                const settled = await Promise.allSettled(instances.map(async (inst) => {
+                    const host = inst.containerName || 'host.docker.internal';
+                    const port = inst.internalPort || inst.port;
+                    const upstream = await axios.get(`http://${host}:${port}${req.originalUrl}`, { timeout: 8000 });
+                    // Effective PER-REQUEST window: llama.cpp splits --ctx-size
+                    // across --parallel slots, so reporting the raw contextSize
+                    // on a multi-slot instance makes clients (Pi's
+                    // auto-compaction math) overshoot the real window.
+                    const ctx = v1ContextGuard.effectiveContextSize(inst)
+                        || inst.config?.contextSize
+                        || inst.config?.maxModelLen
+                        || null;
+                    const entries = Array.isArray(upstream.data?.data) ? upstream.data.data : [];
+                    return entries.map((m) => (ctx ? {
                         ...m,
-                        // Re-set after spread so a backend-supplied value
-                        // doesn't override our authoritative one when it's
-                        // the stale 32768 default.
-                        context_window: ctxFromConfig,
-                        max_tokens: Math.max(1024, Math.floor(ctxFromConfig / 8)),
-                    }));
-                }
-                Object.entries(upstream.headers || {}).forEach(([k, v]) => {
-                    if (!['transfer-encoding','content-length','connection','keep-alive'].includes(k.toLowerCase())) {
-                        res.setHeader(k, v);
+                        // Set after spread so a backend-supplied stale default
+                        // (32768) doesn't override our authoritative value.
+                        context_window: ctx,
+                        max_tokens: Math.max(1024, Math.floor(ctx / 8)),
+                    } : m));
+                }));
+                const merged = [];
+                const seenIds = new Set();
+                for (const s of settled) {
+                    if (s.status !== 'fulfilled') continue;
+                    for (const m of s.value) {
+                        const id = m?.id || JSON.stringify(m);
+                        if (seenIds.has(id)) continue;
+                        seenIds.add(id);
+                        merged.push(m);
                     }
-                });
-                return res.status(upstream.status).json(data);
+                }
+                if (!merged.length) throw new Error('no instance answered /v1/models');
+                return res.status(200).json({ object: 'list', data: merged });
             } catch (err) {
-                console.warn(`[Proxy] /v1/models augmentation failed (${err.message}); falling through to passthrough`);
+                console.warn(`[Proxy] /v1/models aggregation failed (${err.message}); falling through to passthrough`);
                 // fall through to the generic non-streaming path below
             }
         }
@@ -24902,6 +24990,58 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         (injected.activityHint ? ` [activity: ${injected.activityHint}]` : ''));
                 }
             } catch (e) { console.warn('[Pi/Memory] injection skipped:', e.message); }
+        }
+
+        // ── /v1 context guard (all API callers) ─────────────────────────────
+        // Runs AFTER persona injection so the estimate sees the final body.
+        // Clamps/injects max_tokens to the real headroom (prevents llama.cpp's
+        // silent mid-generation context shift and sglang's input+max 400s),
+        // rejects definitely-oversized inputs with an error Pi's
+        // auto-compaction recognizes, and middle-truncates Pi's own
+        // compaction-summarizer call when IT overflows (otherwise overflow
+        // recovery wedges: every compact attempt fails on its own summary
+        // request). See services/v1ContextGuard.js.
+        const proxyEffCtx = v1ContextGuard.effectiveContextSize(firstInstance);
+        if (req.method === 'POST' && req.path === '/v1/chat/completions' && Array.isArray(req.body?.messages)) {
+            let guard = null;
+            try {
+                guard = v1ContextGuard.applyContextGuard(req.body, firstInstance, { bearerOnly: req.apiKeyData?.bearerOnly === true });
+            } catch (e) { console.warn('[Proxy] context guard skipped:', e.message); }
+            if (guard && guard.action !== 'ok') {
+                const pct = guard.effCtx ? Math.round((guard.estTokens / guard.effCtx) * 100) : 0;
+                const detail = guard.action === 'reject' ? `rejected (~${guard.estTokens} est tokens vs ${guard.effCtx} window)`
+                    : guard.action === 'rescued' ? `middle-truncated single-shot request (removed ~${guard.removedChars} chars) to fit ${guard.effCtx} window`
+                    : guard.action === 'clamped' ? `max_tokens ${guard.from} → ${guard.maxTokens} (~${pct}% of window used by input)`
+                    : `max_tokens capped at ${guard.maxTokens} (~${pct}% of window used by input)`;
+                console.log(`[Proxy] Context guard: ${detail} for ${authName}`);
+                // capped-at-huge-headroom is the no-op common case — only
+                // surface user-visible frames for the meaningful actions.
+                if (guard.action !== 'capped' || guard.nearFull) {
+                    try {
+                        broadcast({
+                            type: 'log',
+                            message: `[Pi/API] Context guard: ${detail}`,
+                            level: guard.action === 'reject' ? 'warning' : 'info',
+                            targetUserId: req.userId,
+                        });
+                    } catch (_) { /* ignore */ }
+                }
+                if (guard.action === 'reject') {
+                    return res.status(400).json(guard.payload);
+                }
+            }
+            // Heads-up when a bearer (Pi) context is approaching the window —
+            // auto-compaction is expected on the next few turns.
+            if (guard && guard.nearFull && req.apiKeyData?.bearerOnly === true) {
+                try {
+                    broadcast({
+                        type: 'log',
+                        message: `[Pi/API] Context ~${Math.round((guard.estTokens / guard.effCtx) * 100)}% full (${guard.estTokens}/${guard.effCtx} est tokens) — Pi auto-compaction expected soon`,
+                        level: 'info',
+                        targetUserId: req.userId,
+                    });
+                } catch (_) { /* ignore */ }
+            }
         }
 
         if (isStreaming) {
@@ -25028,6 +25168,22 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // requests recording 0 tokens against the API key.
             response.data.on('end', () => {
                 upstreamDone = true;
+                // Silent-shift detection: llama.cpp with --context-shift can
+                // finish a generation whose total exceeds the window by
+                // dropping the oldest KV (system prompt) without any error.
+                // The guard's max_tokens clamp should prevent this; if it
+                // still happens (estimate drift), at least make it VISIBLE.
+                if (lastSeenTotalTokens != null && proxyEffCtx && lastSeenTotalTokens > proxyEffCtx) {
+                    console.warn(`[Proxy] Context window exceeded during generation: ${lastSeenTotalTokens} total tokens > ${proxyEffCtx} window — oldest context was silently shifted out`);
+                    try {
+                        broadcast({
+                            type: 'log',
+                            message: `[Pi/API] Generation ran past the context window (${lastSeenTotalTokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
+                            level: 'warning',
+                            targetUserId: req.userId,
+                        });
+                    } catch (_) { /* ignore */ }
+                }
                 if (lastSeenTotalTokens != null && req.apiKeyData) {
                     const stats = apiKeyUsageStats.get(req.apiKeyData.id);
                     if (stats && stats.requests.length > 0) {
@@ -25064,6 +25220,17 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // Track token usage
             if (response.data && (response.data.usage || response.data.tokens)) {
                 const tokens = response.data.usage?.total_tokens || response.data.tokens?.total_tokens || 0;
+                if (tokens && proxyEffCtx && tokens > proxyEffCtx) {
+                    console.warn(`[Proxy] Context window exceeded during generation: ${tokens} total tokens > ${proxyEffCtx} window — oldest context was silently shifted out`);
+                    try {
+                        broadcast({
+                            type: 'log',
+                            message: `[Pi/API] Generation ran past the context window (${tokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
+                            level: 'warning',
+                            targetUserId: req.userId,
+                        });
+                    } catch (_) { /* ignore */ }
+                }
                 if (tokens > 0 && req.apiKeyData) {
                     const stats = apiKeyUsageStats.get(req.apiKeyData.id) || {
                         requestCount: 0,
@@ -25121,6 +25288,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 });
                 try { data = JSON.parse(data); } catch (_) { /* keep as raw text */ }
             }
+            // If the backend phrased a context-overflow rejection in wording no
+            // client's auto-compaction would recognize, append the canonical
+            // "context length exceeded" phrase so recovery (Pi compact+retry)
+            // still triggers. Known backends pass through untouched.
+            data = v1ContextGuard.normalizeOverflowErrorBody(status, data);
             try {
                 console.error('[Proxy] Response data:', typeof data === 'string' ? data : JSON.stringify(data));
             } catch (_) { /* never let logging crash the handler */ }

@@ -1947,6 +1947,19 @@ export default function ChatContainer({
                                 continue;
                             }
 
+                            // Context shift notice: the server trimmed the oldest
+                            // history (and/or truncated the latest message) to fit
+                            // the model's context window. Surface it — silent
+                            // history loss reads as "the model forgot".
+                            if (parsed.type === 'context_shift') {
+                                const removed = parsed.removedMessages || 0;
+                                const msg = parsed.message || (removed > 0
+                                    ? `Trimmed ${removed} oldest message${removed === 1 ? '' : 's'} to fit the model's context window`
+                                    : "Trimmed the conversation to fit the model's context window");
+                                showSnackbar(msg, 'warning');
+                                continue;
+                            }
+
                             // Handle map-reduce completion info
                             if (parsed.mapReduce?.enabled) {
                                 const mr = parsed.mapReduce;
