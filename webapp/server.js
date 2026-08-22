@@ -21,6 +21,37 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encryption');
 
+// ---- llama.cpp speed defaults (top-level so the boot-time container sync can
+// read them too). Measured 2026-08-21 on 2×RTX 5060 Ti 16 GB / Qwen3.8-27B
+// UD-Q4_K_M @131k ctx, q8_0 KV, FA on, MTP spec decode — see CLAUDE.md
+// "llama.cpp speed defaults". Env-overridable without a rebuild.
+//   - ubatch 512 (llama.cpp's default) — NOT bigger. The received wisdom
+//     "larger ubatch = faster prefill" is a single-GPU result; with the model
+//     layer-split across 2 GPUs llama.cpp pipelines ubatches across the cards,
+//     and a bigger ubatch pipelines WORSE: measured prefill 907 → 815 → 691
+//     tok/s at ub 512 → 1024 → 2048 (16k prompt; 797 → 734 → 596 at 48k),
+//     decode identical, and each step costs ~0.6–1.3 GB more VRAM per card.
+//     optimal-settings keeps the bigger-ubatch tiers for SINGLE-GPU hosts only.
+//   - draft n-max: the MTP sweep's best single-stream value on this class of
+//     card; models without MTP heads ignore it.
+const LLAMACPP_UBATCH_DEFAULT = Math.max(128, parseInt(process.env.LLAMACPP_UBATCH_DEFAULT || '512', 10) || 512);
+const LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT = Math.max(1, Math.min(16, parseInt(process.env.LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT || '3', 10) || 3));
+
+// Prompt-cache RAM (llama-server --cache-ram, MiB). The cache holds saved
+// slot states so a request that switches conversations (Pi ↔ web chat on one
+// slot) restores in seconds instead of re-prefilling; a 100k-token q8_0 entry
+// is ~5 GB, so llama.cpp's default 8192 holds one such entry. Scale with host
+// RAM; undefined = leave llama.cpp's default. Env LLAMACPP_CACHE_RAM_MIB wins.
+function defaultLlamaCacheRamMiB() {
+    const env = process.env.LLAMACPP_CACHE_RAM_MIB;
+    if (env !== undefined && env !== '') { const n = parseInt(env, 10); return Number.isFinite(n) ? n : undefined; }
+    const totalGiB = os.totalmem() / (1024 ** 3);
+    if (totalGiB >= 120) return 32768;
+    if (totalGiB >= 60) return 24576;
+    if (totalGiB >= 28) return 16384;
+    return undefined;
+}
+
 // ============================================================================
 // SSL INSPECTION BYPASS CONFIGURATION
 // ============================================================================
@@ -2447,8 +2478,10 @@ async function syncModelInstances() {
                     threads: parseInt(getEnvValue('LLAMA_THREADS') || '0'),
                     parallelSlots: parseInt(getEnvValue('LLAMA_PARALLEL') || '1'),
                     batchSize: parseInt(getEnvValue('LLAMA_BATCH_SIZE') || '2048'),
-                    ubatchSize: parseInt(getEnvValue('LLAMA_UBATCH_SIZE') || '512'),
-                    repeatPenalty: parseFloat(getEnvValue('LLAMA_REPEAT_PENALTY') || '1.1'),
+                    ubatchSize: parseInt(getEnvValue('LLAMA_UBATCH_SIZE') || String(LLAMACPP_UBATCH_DEFAULT)),
+                    repeatPenalty: parseFloat(getEnvValue('LLAMA_REPEAT_PENALTY') || '1.0'),
+                    cacheRam: getEnvValue('LLAMA_CACHE_RAM') ? parseInt(getEnvValue('LLAMA_CACHE_RAM'), 10) : undefined,
+                    specDraftPMin: getEnvValue('LLAMA_SPEC_DRAFT_P_MIN') ? parseFloat(getEnvValue('LLAMA_SPEC_DRAFT_P_MIN')) : null,
                     repeatLastN: parseInt(getEnvValue('LLAMA_REPEAT_LAST_N') || '64'),
                     presencePenalty: parseFloat(getEnvValue('LLAMA_PRESENCE_PENALTY') || '0.0'),
                     frequencyPenalty: parseFloat(getEnvValue('LLAMA_FREQUENCY_PENALTY') || '0.0'),
@@ -4920,19 +4953,30 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 threads: req.body.threads || 0,
                 parallelSlots: req.body.parallelSlots || 1,
                 batchSize: req.body.batchSize || 2048,
-                ubatchSize: req.body.ubatchSize || 512,
-                repeatPenalty: req.body.repeatPenalty ?? 1.1,
+                // 512 — measured best on a multi-GPU layer split (see
+                // LLAMACPP_UBATCH_DEFAULT; bigger is SLOWER there).
+                ubatchSize: req.body.ubatchSize || LLAMACPP_UBATCH_DEFAULT,
+                // 1.0 = repetition penalty OFF (upstream llama.cpp default and
+                // Qwen's published Qwen3.x setting). The old 1.1 penalized
+                // the tokens code legitimately repeats; the chat stream adds
+                // DRY sampling per request for real repetition control.
+                repeatPenalty: req.body.repeatPenalty ?? 1.0,
                 repeatLastN: req.body.repeatLastN || 64,
                 presencePenalty: req.body.presencePenalty ?? 0.0,
                 frequencyPenalty: req.body.frequencyPenalty ?? 0.0,
                 disableThinking: req.body.disableThinking ?? false,
                 compressMemory: req.body.compressMemory ?? false,
                 swaFull: req.body.swaFull === true,
+                // Host-RAM prompt-cache budget (MiB) — lets the single slot
+                // switch between conversations (Pi ↔ web chat) by restoring a
+                // saved state instead of re-prefilling. Scaled to host RAM.
+                cacheRam: req.body.cacheRam ?? defaultLlamaCacheRamMiB(),
                 // Speculative decoding controls. specType ∈ {none, draft-mtp,
                 // draft-simple}; specDraftModel is a path inside the container
                 // (under /models) and is only used when specType=draft-simple.
                 specType: req.body.specType || 'none',
-                specDraftNMax: req.body.specDraftNMax ?? 3,
+                specDraftNMax: req.body.specDraftNMax ?? LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT,
+                specDraftPMin: req.body.specDraftPMin ?? null,
                 specDraftModel: req.body.specDraftModel || ''
             };
 
@@ -5465,10 +5509,25 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             // Qwen3.5/3.6-MTP — no second model needed). 'draft-simple' =
             // classic speculative with a separate smaller draft GGUF.
             `LLAMA_SPEC_TYPE=${config.specType || 'none'}`,
-            `LLAMA_SPEC_DRAFT_N_MAX=${config.specDraftNMax ?? 3}`
+            `LLAMA_SPEC_DRAFT_N_MAX=${config.specDraftNMax ?? LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT}`
         ];
         if (config.specType === 'draft-simple' && config.specDraftModel) {
             envVars.push(`LLAMA_SPEC_DRAFT_MODEL=${config.specDraftModel}`);
+        }
+        // Both knobs are passed twice on purpose: LLAMA_* is what the
+        // entrypoint translates into an explicit flag, and LLAMA_ARG_* is
+        // llama-server's OWN env binding for the same option — so an image
+        // whose entrypoint predates these knobs still honors them (CLI flag
+        // and env carry the same value, so there is no conflict).
+        if (config.specDraftPMin != null && config.specDraftPMin !== '' && Number.isFinite(Number(config.specDraftPMin))) {
+            const pmin = Math.max(0, Math.min(1, Number(config.specDraftPMin)));
+            envVars.push(`LLAMA_SPEC_DRAFT_P_MIN=${pmin}`, `LLAMA_ARG_SPEC_DRAFT_P_MIN=${pmin}`);
+        }
+        // Prompt-cache RAM: only pass when set so an older image/binary keeps
+        // its default; the entrypoint only adds --cache-ram when non-empty.
+        if (config.cacheRam != null && config.cacheRam !== '' && Number.isFinite(Number(config.cacheRam))) {
+            const cr = Math.trunc(Number(config.cacheRam));
+            envVars.push(`LLAMA_CACHE_RAM=${cr}`, `LLAMA_ARG_CACHE_RAM=${cr}`);
         }
 
         // Only add threads if explicitly set (non-zero)
@@ -7359,7 +7418,7 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 parallelSlots: 1,
                 batchSize: 2048,
                 ubatchSize: 1024,
-                repeatPenalty: 1.1,
+                repeatPenalty: 1.0,         // OFF — upstream default; 1.1 degrades instruct/coding output
                 repeatLastN: 64,
                 presencePenalty: 0.0,
                 frequencyPenalty: 0.0,
@@ -7505,7 +7564,16 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 const headroomGB =
                     symmetricBudgetGB - modelSizeGB - predictedKvForBatch -
                     perCardReserveGB * Math.max(1, gpuCount);
-                if (headroomGB >= 4) {
+                if (gpuCount > 1) {
+                    // Multi-GPU layer split pipelines ubatches ACROSS the
+                    // cards, and a larger ubatch pipelines worse: measured on
+                    // 2×RTX 5060 Ti / Qwen3.8-27B, prefill 907 → 815 → 691
+                    // tok/s at ub 512 → 1024 → 2048 (decode unchanged), plus
+                    // ~0.6–1.3 GB more VRAM per card per step. Keep upstream's
+                    // 512 here regardless of headroom.
+                    llamacppSettings.batchSize = 2048;
+                    llamacppSettings.ubatchSize = 512;
+                } else if (headroomGB >= 4) {
                     llamacppSettings.batchSize = 4096;
                     llamacppSettings.ubatchSize = 2048;
                 } else if (headroomGB >= 1.5) {
@@ -16101,20 +16169,73 @@ const PI_MEMORY_BUDGET = 800;        // fallback budget — Pi runs near the lim
 const PI_MEMORY_RESERVE = 2048;      // headroom for the response
 const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorded — anti-double-record guard
 
-function v1LatestUserText(messages) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i]?.role === 'user') {
-            const c = messages[i].content;
-            if (typeof c === 'string') return c;
-            if (Array.isArray(c)) return c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n');
-            return '';
-        }
+// Marker the Pi extension uses when it appends the live sandbox inventory to
+// the latest user message (see pi-extension/modelserver.ts `context` hook).
+// Everything from the marker on is runtime context, not the user's ask — strip
+// it before memory retrieval / activity classification so the listing never
+// dilutes the embedding.
+const PI_SANDBOX_INVENTORY_MARKER = '[MODEL SERVER SANDBOX';
+const PI_PERSONA_MARKER = '[MODEL SERVER MEMORY';
+function stripPiRuntimeContext(text) {
+    if (typeof text !== 'string') return '';
+    let t = text;
+    for (const mk of [PI_SANDBOX_INVENTORY_MARKER, PI_PERSONA_MARKER]) {
+        const i = t.indexOf('\n' + mk);
+        if (i >= 0) t = t.slice(0, i);
+        else if (t.startsWith(mk)) { const j = t.indexOf(']\n'); t = j >= 0 ? t.slice(j + 2) : ''; }
     }
+    return t;
+}
+
+function v1LatestUserIndex(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === 'user') return i;
+    return -1;
+}
+function v1LatestUserText(messages) {
+    const i = v1LatestUserIndex(messages);
+    if (i < 0) return '';
+    const c = messages[i].content;
+    if (typeof c === 'string') return stripPiRuntimeContext(c);
+    if (Array.isArray(c)) return stripPiRuntimeContext(c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n'));
     return '';
+}
+
+// Per-task persona cache. Pi resends the whole history on EVERY tool round and
+// llama.cpp reuses the KV cache only for the longest common PREFIX, so the
+// injected block must be byte-identical across the rounds of one task (and the
+// retrieval must not depend on anything that changes mid-task, e.g. the tools
+// the model has called so far). Keyed on (account, key, user-message count,
+// latest user text); bounded + TTL'd so a long-running Pi process can't grow
+// it without limit.
+const V1_PERSONA_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+const V1_PERSONA_CACHE_MAX = 256;
+const v1PersonaCache = new Map(); // key -> { at, result }
+function v1PersonaCacheGet(key) {
+    const e = v1PersonaCache.get(key);
+    if (!e) return null;
+    if (Date.now() - e.at > V1_PERSONA_CACHE_TTL_MS) { v1PersonaCache.delete(key); return null; }
+    return e.result;
+}
+function v1PersonaCacheSet(key, result) {
+    if (v1PersonaCache.size >= V1_PERSONA_CACHE_MAX) {
+        const oldest = v1PersonaCache.keys().next().value;
+        if (oldest !== undefined) v1PersonaCache.delete(oldest);
+    }
+    v1PersonaCache.set(key, { at: Date.now(), result });
 }
 
 // Inject the persona/experience block into req.body.messages (mutates in place;
 // both passthrough branches read req.body). Returns a short summary or null.
+//
+// PLACEMENT (don't regress): the block goes INTO THE LATEST USER MESSAGE, not
+// the system message. Pi resends the entire history on every request and the
+// backend reuses the KV cache only for the longest common prefix — a system
+// message that differs per turn (this block used to be appended there, and its
+// retrieval varied with the ask AND with the tools called so far) invalidated
+// the whole context: live logs showed 77% of a 99k-token Pi prompt re-prefilled
+// (~75 s at ~1k tok/s) on turns that should have cost a few hundred tokens.
+// Appended to the latest user message, the history before it stays cached and
+// the block itself is stable for the whole task (see v1PersonaCache).
 async function injectPersonaForV1(req, instance) {
     // Account id when the key is associated with one (real Pi keys created in a
     // web session are) — unifies with web-chat memory. Falls back to the key id
@@ -16123,8 +16244,9 @@ async function injectPersonaForV1(req, instance) {
     const messages = req.body?.messages;
     if (!userId || userId === 'default' || !Array.isArray(messages) || !messages.length) return null;
     if (await isMemoryDisabledForUser(userId)) return null;
+    const latestUserIdx = v1LatestUserIndex(messages);
     const latestUserText = v1LatestUserText(messages);
-    if (!latestUserText) return null;
+    if (latestUserIdx < 0 || !latestUserText) return null;
 
     // Pi-internal utility calls are NOT agent turns. The compaction/branch
     // summarizer sends the serialized conversation as a single-shot completion
@@ -16137,15 +16259,19 @@ async function injectPersonaForV1(req, instance) {
         : (Array.isArray(sys0c) ? sys0c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
     if (/^You are a (?:context )?summarization assistant/i.test(sys0Text.trim())) return null;
 
-    // Activity hint = the most recent tool the model has been using this session
-    // + the ask. Front-loads the matching experience.
+    // Activity hint = the tools the model used BEFORE this task's user message
+    // + the ask. Deliberately excludes the current task's own tool rounds: the
+    // hint (and so the retrieved block) must stay constant for the whole task,
+    // else round k+1's prompt differs from round k's and the prefix cache dies.
     const toolLabels = [];
-    for (const m of messages) {
-        if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+    let userMsgCount = 0;
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (m?.role === 'user') userMsgCount++;
+        if (i < latestUserIdx && m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
             for (const tc of m.tool_calls) { const n = tc?.function?.name; if (n) toolLabels.push(n); }
         }
     }
-    const activityHint = (classifyTurnActivity({ toolLabels, userText: latestUserText, attachmentKinds: new Set() }) || {}).activity || null;
 
     // Room-check: never push an already-large Pi context past the model window.
     const ctx = instance?.config?.contextSize || instance?.config?.maxModelLen || 131072;
@@ -16156,17 +16282,26 @@ async function injectPersonaForV1(req, instance) {
     try { inputEst = estimateTokenCount(JSON.stringify(messages)); } catch (_) { inputEst = 0; }
     if (inputEst + piBudget + PI_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
 
-    const mem = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { activityHint });
-    if (!mem || !mem.block) return null;
+    const cacheKey = `${userId}|${req.apiKeyData?.id || '-'}|${userMsgCount}|${piBudget}|` +
+        crypto.createHash('sha1').update(latestUserText).digest('hex');
+    let mem = v1PersonaCacheGet(cacheKey);
+    let activityHint = mem ? mem.activityHint : null;
+    if (!mem) {
+        activityHint = (classifyTurnActivity({ toolLabels, userText: latestUserText, attachmentKinds: new Set() }) || {}).activity || null;
+        const fresh = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { activityHint });
+        mem = fresh && fresh.block ? { ...fresh, activityHint } : { block: null, activityHint };
+        v1PersonaCacheSet(cacheKey, mem);
+    }
+    if (!mem.block) return null;
 
-    const sys = messages[0];
-    if (sys && sys.role === 'system' && typeof sys.content === 'string') {
-        messages[0] = { ...sys, content: `${sys.content}\n\n${mem.block}` };
-    } else if (sys && sys.role === 'system' && Array.isArray(sys.content)) {
-        // Vision-format system message — append a text part rather than a 2nd system msg.
-        messages[0] = { ...sys, content: [...sys.content, { type: 'text', text: '\n\n' + mem.block }] };
+    const block = `${PI_PERSONA_MARKER} — account persona and experience for this task; runtime context, not part of the user's message]\n${mem.block}`;
+    const um = messages[latestUserIdx];
+    if (typeof um.content === 'string') {
+        messages[latestUserIdx] = { ...um, content: `${um.content}\n\n${block}` };
+    } else if (Array.isArray(um.content)) {
+        messages[latestUserIdx] = { ...um, content: [...um.content, { type: 'text', text: `\n\n${block}` }] };
     } else {
-        messages.unshift({ role: 'system', content: mem.block });
+        return null;
     }
     return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint };
 }
@@ -18590,27 +18725,48 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         );
                     }
                     if (memoryResult && memoryResult.block) {
-                        const memoryBlock = memoryResult.block;
-                        // Append to existing system message if one exists,
-                        // otherwise insert a new system message at position 0.
-                        if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
-                            const existing = chatMessages[0].content;
-                            if (typeof existing === 'string') {
-                                chatMessages[0] = {
-                                    ...chatMessages[0],
-                                    content: `${existing}\n\n${memoryBlock}`,
-                                };
-                            } else if (Array.isArray(existing)) {
-                                // Vision-format system message — append a text part
-                                // rather than dropping the memory block (mirrors
-                                // injectPersonaForV1 / the KB nudge).
-                                chatMessages[0] = {
-                                    ...chatMessages[0],
-                                    content: [...existing, { type: 'text', text: `\n\n${memoryBlock}` }],
-                                };
+                        // PLACEMENT (don't regress): prepend the block to the
+                        // LATEST USER MESSAGE (same slot as the KB/workspace
+                        // pre-flight notes), NOT the leading system message.
+                        // The backend reuses its KV cache only for the longest
+                        // common PREFIX of consecutive requests, and this block
+                        // differs every turn (it is retrieved against the new
+                        // ask) — appended to the system message it invalidated
+                        // the entire conversation prefix, so every turn of a
+                        // 25k-token chat re-prefilled ~all of it (measured
+                        // f_keep≈0.5 on llama.cpp; tens of seconds of dead
+                        // "Thinking…" per turn). On hybrid/recurrent models
+                        // (Qwen3.5/3.6/3.8) there is no KV-shift fallback at
+                        // all, so a stable prefix is the only thing that works.
+                        // In the user slot the whole history before it stays
+                        // cached and only the new turn is prefilled. A leading
+                        // `/no_think` / `/think` soft switch (added above) is
+                        // kept at the very start of the message.
+                        const memoryNote =
+                            '[SYSTEM: Account memory for this user — persona, standing instructions and relevant facts. ' +
+                            'Apply it to the request that follows; it is runtime context, not part of the user\'s message.\n' +
+                            memoryResult.block + ']\n\n';
+                        const lastUserIdxForMemory = chatMessages.map(m => m.role).lastIndexOf('user');
+                        const prependKeepingSwitch = (text) => {
+                            const sw = /^\/(?:no_)?think\b[ \t]*\n?/i.exec(text);
+                            return sw ? sw[0] + memoryNote + text.slice(sw[0].length) : memoryNote + text;
+                        };
+                        if (lastUserIdxForMemory >= 0) {
+                            const um = chatMessages[lastUserIdxForMemory];
+                            if (typeof um.content === 'string') {
+                                chatMessages[lastUserIdxForMemory] = { ...um, content: prependKeepingSwitch(um.content) };
+                            } else if (Array.isArray(um.content)) {
+                                const parts = um.content.map(p => ({ ...p }));
+                                const tIdx = parts.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                                if (tIdx >= 0) parts[tIdx].text = prependKeepingSwitch(parts[tIdx].text);
+                                else parts.unshift({ type: 'text', text: memoryNote });
+                                chatMessages[lastUserIdxForMemory] = { ...um, content: parts };
                             }
+                        } else if (chatMessages.length > 0 && chatMessages[0].role === 'system' && typeof chatMessages[0].content === 'string') {
+                            // No user message at all (degenerate caller) — fall back to the system slot.
+                            chatMessages[0] = { ...chatMessages[0], content: `${chatMessages[0].content}\n\n${memoryResult.block}` };
                         } else {
-                            chatMessages.unshift({ role: 'system', content: memoryBlock });
+                            chatMessages.unshift({ role: 'system', content: memoryResult.block });
                         }
                         // Defer the SSE notice — at this point the response
                         // is still in pre-stream mode (headers not yet set).

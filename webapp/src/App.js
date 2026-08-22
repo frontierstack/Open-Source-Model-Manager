@@ -481,7 +481,9 @@ const App = () => {
         parallelSlots: 1,
         batchSize: 2048,
         ubatchSize: 512,
-        repeatPenalty: 1.1,
+        // 1.0 = repetition penalty OFF (llama.cpp upstream default + Qwen's
+        // published Qwen3.x setting; 1.1 degrades instruct/coding output).
+        repeatPenalty: 1.0,
         repeatLastN: 64,
         presencePenalty: 0.0,
         frequencyPenalty: 0.0,
@@ -12977,7 +12979,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>parallelSlots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Concurrent requests</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>batchSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>2048</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Prompt batch size</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ubatchSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>512</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Micro-batch size</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1.1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatLastN</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>64</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty window</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>presencePenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Presence penalty</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>frequencyPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Frequency penalty</TableCell></TableRow>

@@ -20,8 +20,22 @@
 # - LLAMA_PARALLEL: Number of parallel slots (default: 1)
 # - LLAMA_BATCH_SIZE: Batch size for prompt processing (default: 2048)
 # - LLAMA_UBATCH_SIZE: Micro-batch size (default: 512)
-# - LLAMA_REPEAT_PENALTY: Repetition penalty (default: 1.1)
+# - LLAMA_REPEAT_PENALTY: Repetition penalty (default: 1.0 = disabled — the
+#   upstream llama.cpp default and what Qwen/Unsloth publish for Qwen3.x;
+#   1.1 measurably degrades instruct/coding output by penalizing the tokens
+#   code legitimately repeats — braces, indentation, identifiers. The chat
+#   pipeline layers DRY sampling per request for real repetition control.)
 # - LLAMA_REPEAT_LAST_N: Last N tokens for repetition penalty (default: 64)
+# - LLAMA_CACHE_RAM: Host-RAM budget (MiB) for the server's prompt cache —
+#   saved slot states that let a request SWITCH between conversations (Pi
+#   and the web chat alternating on one slot) restore in seconds instead
+#   of re-prefilling 100k tokens. Empty = llama.cpp's default (8192 MiB),
+#   -1 = unlimited, 0 = disabled. A 100k-token q8_0 entry is ~5 GB, so the
+#   webapp raises this on hosts with spare RAM.
+# - LLAMA_SPEC_DRAFT_P_MIN: Minimum draft-token probability (greedy) for
+#   speculative decoding (default: llama.cpp's 0.0 — draft the full
+#   n-max every step). Raising it (0.6–0.75) drafts fewer low-confidence
+#   tokens; only worth it on bandwidth-starved GPUs — measure, don't assume.
 # - LLAMA_PRESENCE_PENALTY: Presence penalty (default: 0.0)
 # - LLAMA_FREQUENCY_PENALTY: Frequency penalty (default: 0.0)
 # - LLAMA_CTX_CHECKPOINTS: Max SWA/context checkpoints stored per slot
@@ -61,8 +75,10 @@ THREADS=${LLAMA_THREADS:-}
 PARALLEL=${LLAMA_PARALLEL:-1}
 BATCH_SIZE=${LLAMA_BATCH_SIZE:-2048}
 UBATCH_SIZE=${LLAMA_UBATCH_SIZE:-512}
-REPEAT_PENALTY=${LLAMA_REPEAT_PENALTY:-1.1}
+REPEAT_PENALTY=${LLAMA_REPEAT_PENALTY:-1.0}
 REPEAT_LAST_N=${LLAMA_REPEAT_LAST_N:-64}
+CACHE_RAM=${LLAMA_CACHE_RAM:-}
+SPEC_DRAFT_P_MIN=${LLAMA_SPEC_DRAFT_P_MIN:-}
 PRESENCE_PENALTY=${LLAMA_PRESENCE_PENALTY:-0.0}
 FREQUENCY_PENALTY=${LLAMA_FREQUENCY_PENALTY:-0.0}
 CTX_CHECKPOINTS=${LLAMA_CTX_CHECKPOINTS:-2}
@@ -90,7 +106,8 @@ echo "    Presence Penalty: $PRESENCE_PENALTY"
 echo "    Frequency Penalty: $FREQUENCY_PENALTY"
 echo "    Context Checkpoints: $CTX_CHECKPOINTS"
 echo "    SWA Full: $SWA_FULL"
-echo "    Speculative Decoding: $SPEC_TYPE${SPEC_TYPE:+ (draft-n-max=$SPEC_DRAFT_N_MAX${SPEC_DRAFT_MODEL:+, draft-model=$SPEC_DRAFT_MODEL})}"
+echo "    Speculative Decoding: $SPEC_TYPE${SPEC_TYPE:+ (draft-n-max=$SPEC_DRAFT_N_MAX${SPEC_DRAFT_P_MIN:+, draft-p-min=$SPEC_DRAFT_P_MIN}${SPEC_DRAFT_MODEL:+, draft-model=$SPEC_DRAFT_MODEL})}"
+echo "    Prompt cache RAM: ${CACHE_RAM:-default (8192 MiB)}"
 
 # Build command arguments
 # -1 no longer means "all layers" upstream: --n-gpu-layers now takes an exact
@@ -126,6 +143,13 @@ CMD_ARGS=(
 if [ -n "$THREADS" ]; then
     CMD_ARGS+=(--threads "$THREADS")
     echo "    [Threads set to $THREADS]"
+fi
+
+# Prompt-cache RAM budget. Only pass the flag when set so the image keeps
+# working against a llama-server that predates --cache-ram.
+if [ -n "$CACHE_RAM" ]; then
+    CMD_ARGS+=(--cache-ram "$CACHE_RAM")
+    echo "    [Prompt cache RAM: $CACHE_RAM MiB]"
 fi
 
 # Context shift. Upstream FLIPPED the default: --context-shift is now
@@ -179,20 +203,22 @@ esac
 # #22673) and unifies the previous --draft-model / --draft-max world.
 # Only pass the flag when the user explicitly opted in; "none" lets older
 # llama-server binaries keep working without the flag.
+SPEC_PMIN_ARGS=()
+[ -n "$SPEC_DRAFT_P_MIN" ] && SPEC_PMIN_ARGS=(--spec-draft-p-min "$SPEC_DRAFT_P_MIN")
 case "$SPEC_TYPE" in
     draft-mtp)
         # Native multi-token-prediction heads — the model's own GGUF
         # carries them, so no separate draft GGUF is required.
-        CMD_ARGS+=(--spec-type draft-mtp --spec-draft-n-max "$SPEC_DRAFT_N_MAX")
-        echo "    [MTP speculative decoding ENABLED: --spec-type draft-mtp --spec-draft-n-max $SPEC_DRAFT_N_MAX]"
+        CMD_ARGS+=(--spec-type draft-mtp --spec-draft-n-max "$SPEC_DRAFT_N_MAX" "${SPEC_PMIN_ARGS[@]}")
+        echo "    [MTP speculative decoding ENABLED: --spec-type draft-mtp --spec-draft-n-max $SPEC_DRAFT_N_MAX${SPEC_DRAFT_P_MIN:+ --spec-draft-p-min $SPEC_DRAFT_P_MIN}]"
         ;;
     draft-simple)
         # Classic speculative decoding — must supply a smaller draft GGUF.
         if [ -z "$SPEC_DRAFT_MODEL" ] || [ ! -r "$SPEC_DRAFT_MODEL" ]; then
             echo "    [WARN] draft-simple requested but LLAMA_SPEC_DRAFT_MODEL=$SPEC_DRAFT_MODEL is empty or unreadable; ignoring."
         else
-            CMD_ARGS+=(--spec-type draft-simple --spec-draft-model "$SPEC_DRAFT_MODEL" --spec-draft-n-max "$SPEC_DRAFT_N_MAX")
-            echo "    [Speculative decoding ENABLED: --spec-type draft-simple --spec-draft-model $SPEC_DRAFT_MODEL --spec-draft-n-max $SPEC_DRAFT_N_MAX]"
+            CMD_ARGS+=(--spec-type draft-simple --spec-draft-model "$SPEC_DRAFT_MODEL" --spec-draft-n-max "$SPEC_DRAFT_N_MAX" "${SPEC_PMIN_ARGS[@]}")
+            echo "    [Speculative decoding ENABLED: --spec-type draft-simple --spec-draft-model $SPEC_DRAFT_MODEL --spec-draft-n-max $SPEC_DRAFT_N_MAX${SPEC_DRAFT_P_MIN:+ --spec-draft-p-min $SPEC_DRAFT_P_MIN}]"
         fi
         ;;
 esac

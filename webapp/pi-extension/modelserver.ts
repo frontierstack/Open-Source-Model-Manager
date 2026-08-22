@@ -329,18 +329,63 @@ const MAX_LISTED_WORKSPACE_FILES = 40;
  * The system prompt is rebuilt and re-sent on every request, so state stated
  * here survives compaction by construction.
  */
-export function renderSandboxStateBlock(
-    inv: WorkspaceInventory | null,
-    opts: { hostHasWorkspaceDir: boolean; justCompacted: boolean; unreachable: boolean }
-): string {
+/**
+ * PREFIX-CACHE SPLIT (don't regress). The block used to be ONE string in the
+ * system prompt, inventory included. Pi resends the whole history on every LLM
+ * call and llama.cpp (like every server) reuses its KV cache only for the
+ * longest common PREFIX of consecutive requests — so any byte that changes at
+ * the top of the prompt re-prefills the ENTIRE context. The inventory changes
+ * whenever a file is written (sizes, counts, new names), and the
+ * "just compacted" note flips on for one turn and off again — each flip cost a
+ * full re-prefill (measured: ~75 s on a 99k-token Pi context at ~1k tok/s).
+ *
+ * Now the STATIC doctrine (what the sandbox is, how to reach it, the host
+ * /workspace warning) stays in the system prompt, byte-identical every turn,
+ * and the VOLATILE inventory listing rides in the LATEST USER MESSAGE via the
+ * `context` hook (frozen per turn — see below), where a change only re-prefills
+ * the current turn. Survives compaction exactly as before: the doctrine is in
+ * the system prompt, and the listing is re-attached on every call.
+ */
+export function renderSandboxStaticBlock(opts: { hostHasWorkspaceDir: boolean }): string {
     const L: string[] = [];
-    L.push("[MODEL SERVER SANDBOX — live inventory, re-read every turn]");
+    L.push("[MODEL SERVER SANDBOX]");
     L.push(
         "This is a SECOND filesystem, separate from the host that your built-in " +
         "read / write / edit / ls / grep / bash act on. It belongs to your API key and " +
-        "PERSISTS for the whole session: across turns, across compaction, across restarts."
+        "PERSISTS for the whole session: across turns, across compaction, across restarts. " +
+        "Its CURRENT contents are listed at the end of the latest user message under " +
+        "\"[MODEL SERVER SANDBOX — live inventory]\"; that listing is re-read every turn."
     );
+    L.push("");
+    L.push("Reaching it:");
+    L.push("  workspace_list()                    re-read the inventory");
+    L.push("  workspace_get(wsPath, hostPath)     copy sandbox -> host (deliver a result)");
+    L.push("  workspace_put(hostPath[, wsPath])   copy host -> sandbox (also automatic whenever");
+    L.push("                                      you pass a host path to a server skill)");
+    L.push(
+        "  server skills (read_pdf, create_pdf, sandbox_bash, query_sqlite, …) see these paths directly."
+    );
+    L.push(
+        "Your OWN read / write / edit / ls / grep / bash CANNOT see any of it — they run on the host. " +
+        "A /workspace path handed to one of them is a bug, not a missing file."
+    );
+    if (opts.hostHasWorkspaceDir) {
+        L.push("");
+        L.push(
+            "WARNING: this host ALSO has a directory literally named /workspace. It is a DIFFERENT " +
+            "directory with different contents from the sandbox. Listing it with your own bash " +
+            "tells you nothing about the sandbox — the two are unrelated despite the identical path."
+        );
+    }
+    return L.join("\n");
+}
 
+export function renderSandboxInventoryBlock(
+    inv: WorkspaceInventory | null,
+    opts: { justCompacted: boolean; unreachable: boolean }
+): string {
+    const L: string[] = [];
+    L.push("[MODEL SERVER SANDBOX — live inventory]");
     if (opts.justCompacted) {
         L.push(
             "NOTE: the conversation was just compacted. Older tool output is no longer in your " +
@@ -382,32 +427,42 @@ export function renderSandboxStateBlock(
             if (hidden > 0) L.push(`  …and ${hidden} more — call workspace_list for the full listing.`);
             if (inv.truncated) L.push("  (server-side listing was truncated; workspace_list can show more)");
         }
+    } else {
+        L.push("(no inventory available — call workspace_list to read the sandbox)");
     }
-
-    L.push("");
-    L.push("Reaching it:");
-    L.push("  workspace_list()                    re-read this inventory");
-    L.push("  workspace_get(wsPath, hostPath)     copy sandbox -> host (deliver a result)");
-    L.push("  workspace_put(hostPath[, wsPath])   copy host -> sandbox (also automatic whenever");
-    L.push("                                      you pass a host path to a server skill)");
-    L.push(
-        "  server skills (read_pdf, create_pdf, sandbox_bash, query_sqlite, …) see these paths directly."
-    );
-    L.push(
-        "Your OWN read / write / edit / ls / grep / bash CANNOT see any of it — they run on the host. " +
-        "A /workspace path handed to one of them is a bug, not a missing file."
-    );
-
-    if (opts.hostHasWorkspaceDir) {
-        L.push("");
-        L.push(
-            "WARNING: this host ALSO has a directory literally named /workspace. It is a DIFFERENT " +
-            "directory with different contents from the sandbox above. Listing it with your own bash " +
-            "tells you nothing about the sandbox — the two are unrelated despite the identical path."
-        );
-    }
-
+    L.push("(Server skills see these paths directly; your own read/write/bash cannot — see the system prompt.)");
     return L.join("\n");
+}
+
+/** Back-compat: the old single-block renderer (static doctrine + inventory). */
+export function renderSandboxStateBlock(
+    inv: WorkspaceInventory | null,
+    opts: { hostHasWorkspaceDir: boolean; justCompacted: boolean; unreachable: boolean }
+): string {
+    return renderSandboxStaticBlock({ hostHasWorkspaceDir: opts.hostHasWorkspaceDir }) + "\n\n" +
+        renderSandboxInventoryBlock(inv, { justCompacted: opts.justCompacted, unreachable: opts.unreachable });
+}
+
+/**
+ * Append `text` to the LAST user message of a Pi `context` snapshot (a deep
+ * copy — safe to mutate). Returns true when it found one. Pi user messages are
+ * `{ role: "user", content: string | (TextContent | ImageContent)[] }`.
+ */
+export function appendToLatestUserMessage(messages: any[], text: string): boolean {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!m || m.role !== "user") continue;
+        if (typeof m.content === "string") {
+            m.content = `${m.content}\n\n${text}`;
+            return true;
+        }
+        if (Array.isArray(m.content)) {
+            m.content = [...m.content, { type: "text", text: `\n\n${text}` }];
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -486,40 +541,71 @@ export default async function (pi: ExtensionAPI) {
         return inv;
     };
 
-    const sandboxStateBlock = async (): Promise<string> => {
+    // The inventory block is rendered ONCE per turn and reused verbatim for
+    // every LLM call of that turn (tool rounds), so the prompt prefix — system
+    // prompt + history + the user message carrying the listing — stays
+    // byte-identical across rounds and the server's KV cache keeps hitting.
+    // Mid-turn writes are visible to the agent through the tool results
+    // anyway; the listing refreshes at the next turn (or right after a
+    // compaction, when the history was rewritten regardless).
+    let turnInventoryBlock: string | null = null;
+    const renderTurnInventoryBlock = async (): Promise<string> => {
         const inv = await fetchWorkspaceInventory();
-        return renderSandboxStateBlock(inv || lastGoodInventory, {
-            hostHasWorkspaceDir,
+        return renderSandboxInventoryBlock(inv || lastGoodInventory, {
             justCompacted,
             unreachable: !inv,
         });
     };
+    const staticSandboxBlock = renderSandboxStaticBlock({ hostHasWorkspaceDir });
 
     // Never let a slow or broken server break the user's turn: on any failure the
-    // block is simply omitted for that turn.
+    // block is simply omitted for that turn. The system-prompt part is STATIC
+    // (same bytes every turn — see renderSandboxStaticBlock).
     pi.on("before_agent_start", async (event: any) => {
         try {
-            const block = await sandboxStateBlock();
+            turnInventoryBlock = await renderTurnInventoryBlock();
             justCompacted = false;
-            return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+            return { systemPrompt: `${event.systemPrompt}\n\n${staticSandboxBlock}` };
         } catch (e) {
             console.error("[modelserver] sandbox state injection failed:", (e as Error).message);
             return undefined;
         }
     });
 
+    // Attach the (per-turn frozen) inventory listing to the latest user message
+    // of every LLM call. event.messages is a deep copy, so the session itself is
+    // never modified and the user never sees the listing in their transcript.
+    pi.on("context", async (event: any) => {
+        try {
+            if (!Array.isArray(event?.messages) || !event.messages.length) return undefined;
+            if (turnInventoryBlock == null) {
+                // First call after a compaction (or a run that skipped
+                // before_agent_start): render now, then freeze for the turn.
+                turnInventoryBlock = await renderTurnInventoryBlock();
+                justCompacted = false;
+            }
+            const messages = event.messages;
+            if (!appendToLatestUserMessage(messages, turnInventoryBlock)) return undefined;
+            return { messages };
+        } catch (e) {
+            console.error("[modelserver] sandbox inventory attach failed:", (e as Error).message);
+            return undefined;
+        }
+    });
+
     // Compaction is precisely when the agent loses the thread. Re-read the
-    // inventory and flag the next system prompt so it says, in as many words,
-    // that the sandbox was not touched.
+    // inventory and flag the next block so it says, in as many words, that
+    // the sandbox was not touched. The history was just rewritten, so the
+    // re-render costs nothing extra cache-wise.
     pi.on("session_compact", () => {
         justCompacted = true;
+        turnInventoryBlock = null;
         invalidateWorkspaceInventory();
         // Prewarm: fetch the fresh inventory NOW (fire-and-forget) so the
-        // next turn's system-prompt block reflects post-compaction reality
-        // without spending its 4s fetch window — the first turn after a
-        // compaction is exactly when the agent most needs an accurate,
-        // fast sandbox listing.
-        void fetchWorkspaceInventory().catch(() => { /* next turn falls back */ });
+        // next call's block reflects post-compaction reality without
+        // spending its 4s fetch window — the first call after a compaction
+        // is exactly when the agent most needs an accurate, fast listing.
+        void fetchWorkspaceInventory().catch(() => { /* next call falls back */ });
     });
 
     // ---- host <-> server-workspace bridge -----------------------------------
