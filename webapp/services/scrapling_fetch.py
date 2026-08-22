@@ -143,6 +143,21 @@ def extract_main_content(page) -> str:
     return page.get_all_text(separator='\n', strip=True) or ''
 
 
+# An error page is not content. Scrapling happily returns the body of a 404/410
+# ("Page Not Found – The Hacker News", 603 chars of newsletter chrome) with no
+# indication anything went wrong, so the cascade published it as the page and the
+# model — told it had "read" the URL — went hunting for mirrors instead of
+# retrying the real one. The Playwright layer has always thrown on >= 400; this
+# brings the stealth layer in line so a hard status is a hard failure at EVERY
+# layer of the cascade.
+def _status_of(page):
+    for attr in ('status', 'status_code'):
+        v = getattr(page, attr, None)
+        if isinstance(v, int) and v > 0:
+            return v
+    return None
+
+
 def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
               timeout: int = 30000, extract_links: bool = False) -> dict:
     """
@@ -167,6 +182,7 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
             'content': '',
             'title': '',
             'links': [],
+            'httpStatus': None,
             'error': None
         }
 
@@ -185,6 +201,11 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
 
             # Try StealthyFetcher first for captcha evasion
             page = StealthyFetcher.fetch(url, **fetcher_opts)
+            result['httpStatus'] = _status_of(page)
+            if result['httpStatus'] is not None and result['httpStatus'] >= 400:
+                result['success'] = False
+                result['error'] = f"HTTP {result['httpStatus']}"
+                return result
 
             # Extract main content, stripping navigation chrome
             text_content = extract_main_content(page)
@@ -232,6 +253,11 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
 
                 fetcher = Fetcher()
                 page = fetcher.get(url, **fallback_opts)
+                result['httpStatus'] = _status_of(page)
+                if result['httpStatus'] is not None and result['httpStatus'] >= 400:
+                    result['success'] = False
+                    result['error'] = f"HTTP {result['httpStatus']}"
+                    return result
                 text_content = extract_main_content(page)
                 result['content'] = text_content[:50000] if text_content else ''
 

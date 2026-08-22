@@ -172,7 +172,8 @@ const attachmentStore = require('./services/attachmentStore');
 
 // "Is this actually content?" — shared with the browser service and the
 // automation engine so every layer draws the line in the same place.
-const { unusableContentReason: contentUnusableReason } = require('./services/contentQuality');
+const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
+const urlRecovery = require('./services/urlRecovery');
 
 // Automation engine (in-process DAG executor) + per-user run-history store.
 const automationEngine = require('./services/automationEngine');
@@ -26419,6 +26420,26 @@ app.use((req, res) => {
                 if (!def || typeof def.execute !== 'function') return Promise.resolve({ error: `web: inner tool "${name}" unavailable` });
                 return def.execute(routedArgs, ctx);
             };
+
+            // ---- URL recovery -------------------------------------------
+            // The model does not COPY a URL, it regenerates it from meaning —
+            // the user's pasted `…/14-trojanized-npm-packages-drop-redc2.html`
+            // came back as `…-npm-registry-packs-…`, `…-npmpackages-…` and
+            // `…-pacakges-…` in one turn. Each mangle is a new string, so the
+            // fingerprint-keyed loop guards never fire: 17 web calls / 262 s,
+            // and the article the user had pasted was never read. Same class as
+            // the archive-id / clone-dir / workspace-path recoveries.
+            //
+            // The pool is only what the model has demonstrably SEEN: URLs in
+            // the user's own message and URLs returned by this turn's searches.
+            // Correction runs ONLY after a read has already failed, so a
+            // legitimately different page on a host it has read before (the one
+            // false positive that matters) is never touched on the happy path.
+            if (!ctx._webSeenUrls) {
+                ctx._webSeenUrls = new Set(urlRecovery.extractUrls(ctx.latestUserText || ''));
+            }
+            const seenUrls = ctx._webSeenUrls;
+            const noteSeen = (u) => { if (u && typeof u === 'string') seenUrls.add(u); };
             const mode = a.mode || 'auto';
             const hasUrl = !!(a.url || (Array.isArray(a.urls) && a.urls.length));
             const wantSearch = mode === 'search' || (mode === 'auto' && a.query && !hasUrl);
@@ -26441,8 +26462,10 @@ app.use((req, res) => {
                     const reads = await Promise.all(top.map(r =>
                         run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
                     top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
+                    copied.forEach(r => noteSeen(r && r.url));
                     return { mode: 'search', ...sr, results: copied };
                 }
+                if (sr && Array.isArray(sr.results)) sr.results.forEach(r => noteSeen(r && r.url));
                 return { mode: 'search', ...(sr || {}) };
             }
 
@@ -26455,12 +26478,50 @@ app.use((req, res) => {
             // download path parses the file and self-escalates to a browser download
             // capture when the host 403s non-browser clients (Akamai/Cloudflare).
             const isBinaryDocUrl = (url) => /\.(pdf|docx?|xlsx?)(?:[?#]|$)/i.test(String(url || '').split('?')[0]);
-            const readOne = (url) => {
+            const readOnce = (url) => {
                 if (isBinaryDocUrl(url)) return run('fetch_url', { url, maxLength: a.maxLength });
                 if (mode === 'stealth') return run('scrapling_fetch', { url, maxLength: a.maxLength, timeout: a.timeout });
                 if (mode === 'browser' || want === 'images') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true });
                 if (want === 'links') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true, includeLinks: true });
                 return run('fetch_url', { url, maxLength: a.maxLength });
+            };
+            // Did this read actually deliver the page? A hard failure is
+            // obvious; a soft 404 (the site answers 200 with "Page Not Found")
+            // is the one that misleads — the model is told it READ the URL and
+            // concludes the article does not exist.
+            const readMissed = (r) => {
+                if (!r || r.error || r.success === false) return true;
+                return !!contentErrorPageReason(r.content, r.title);
+            };
+            const readOne = async (url) => {
+                const first = await readOnce(url);
+                if (!readMissed(first)) { noteSeen(url); return first; }
+                const fix = urlRecovery.pickBestUrlMatch(url, seenUrls);
+                if (!fix) {
+                    // Nothing to correct to — make a soft 404 read as the
+                    // failure it is, so the loop guards and the model both see
+                    // a dead URL instead of a page that "loaded fine".
+                    const soft = first && !first.error && first.success !== false
+                        ? contentErrorPageReason(first.content, first.title) : null;
+                    if (soft) {
+                        return {
+                            url, success: false,
+                            error: `HTTP 404 — ${soft}`,
+                            hint: 'Do NOT retype the URL from memory — that is how it broke. Copy it character-for-character from the user\'s message or from a search result, or search for the title instead.',
+                        };
+                    }
+                    return first;
+                }
+                console.log(`[web] URL recovery: "${url}" → "${fix.url}" (score ${fix.score.toFixed(3)})`);
+                const second = await readOnce(fix.url);
+                if (readMissed(second)) return first;
+                noteSeen(fix.url);
+                return {
+                    ...second,
+                    url: fix.url,
+                    resolvedFrom: url,
+                    note: `The URL you passed did not exist; it was auto-corrected to "${fix.url}" — the URL as it actually appears in this conversation. Use that exact string from now on (copy it, do not retype it).`,
+                };
             };
             if (a.url && isBinaryDocUrl(a.url) && (mode === 'interact' || mode === 'crawl')) {
                 return { mode: 'read', ...(await readOne(a.url)) };

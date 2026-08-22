@@ -144,6 +144,26 @@ function unusableContentReason(text, { minRatio = 0.15, noiseFloor = 200, signal
     return null;
 }
 
+// An error page served with a 200 (or presented as content by a fetch layer that
+// dropped the status). Deliberately TITLE-anchored and length-gated: a real
+// article about HTTP status codes says "404" in its body all day, but a page
+// whose <title> is "Page Not Found" is not the article anyone asked for. This is
+// what let a model conclude a URL was dead — and go hunting for mirrors —
+// while the correct URL sat one transcription error away.
+const ERROR_PAGE_TITLE_RE = /(page not found|404 not found|not found\s*[-–|]|error 404|\b404\b\s*[-–|:]|page (?:doesn't|does not) exist|no longer (?:available|exists)|page unavailable|oops[!,. ].{0,20}(?:not found|wrong))/i;
+
+/**
+ * Why this looks like an error page rather than the requested content, or null.
+ * `title` is the strong signal; the body is only used to keep a long, real
+ * article from being judged by a sloppy title.
+ */
+function errorPageReason(text, title, { maxSignal = 1800 } = {}) {
+    const t = String(title || '');
+    if (!t || !ERROR_PAGE_TITLE_RE.test(t)) return null;
+    if (signalText(text).length >= maxSignal) return null;
+    return `the page returned an error page ("${t.trim().slice(0, 80)}"), not the requested content`;
+}
+
 module.exports = {
     maskVolatile,
     signalText,
@@ -153,5 +173,7 @@ module.exports = {
     isNonContentUrl,
     isPlumbingPayload,
     unusableContentReason,
+    errorPageReason,
+    ERROR_PAGE_TITLE_RE,
     BOT_WALL_RE,
 };
