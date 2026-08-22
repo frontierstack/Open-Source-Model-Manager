@@ -22570,9 +22570,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             let parsedArgsForChip = null, argPreview = '';
                             try {
                                 parsedArgsForChip = JSON.parse(call.function.arguments || '{}');
+                                // Ellipsis matters: without it a cut-off URL reads as a URL
+                                // the model actually sent short, which is exactly how a
+                                // garbled-URL turn gets misdiagnosed from the chip alone.
                                 argPreview = Object.entries(parsedArgsForChip)
-                                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`).join(', ');
-                            } catch { argPreview = String(call.function.arguments || '').slice(0, 80); }
+                                    .map(([k, v]) => { const s = String(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '\u2026' : s}`; }).join(', ');
+                            } catch {
+                                const raw = String(call.function.arguments || '');
+                                argPreview = raw.length > 80 ? raw.slice(0, 80) + '\u2026' : raw;
+                            }
                             const failedChip = !!(parsedForChip && (parsedForChip.error || parsedForChip.success === false));
                             const chipArtifacts = (parsedForChip && Array.isArray(parsedForChip._artifacts))
                                 ? parsedForChip._artifacts

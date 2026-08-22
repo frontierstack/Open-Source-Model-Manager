@@ -258,10 +258,10 @@ function buildNativeChipEntries(streamingToolCalls) {
             try {
                 parsedArgsForChip = JSON.parse(tc.arguments);
                 const pairs = Object.entries(parsedArgsForChip)
-                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`);
+                    .map(([k, v]) => { const s = String(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`; });
                 argPreview = pairs.join(', ');
             } catch (_) {
-                argPreview = String(tc.arguments).slice(0, 80);
+                argPreview = (String(tc.arguments).length > 80 ? String(tc.arguments).slice(0, 80) + '…' : String(tc.arguments));
             }
         }
         const sources = extractSources(tc.name, tc.result);

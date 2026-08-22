@@ -22,9 +22,9 @@ function StreamingMessage() {
             try {
                 const args = JSON.parse(tc.arguments);
                 argPreview = Object.entries(args)
-                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`)
+                    .map(([k, v]) => { const s = String(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`; })
                     .join(', ');
-            } catch (_) { argPreview = String(tc.arguments).slice(0, 80); }
+            } catch (_) { argPreview = (String(tc.arguments).length > 80 ? String(tc.arguments).slice(0, 80) + '…' : String(tc.arguments)); }
         }
         // Surface link references for web_search / fetch_url live too.
         let sources = null;
