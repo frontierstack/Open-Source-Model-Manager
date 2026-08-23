@@ -212,6 +212,9 @@ try {
         scraplingEnabled = available;
         if (available) {
             console.log('Scrapling service loaded - captcha evasion enabled');
+            // Warm the resident web engine (warm stealth browsers + impersonate
+            // HTTP layer) off the request path so the first web call is fast.
+            try { scraplingService.warmUp && scraplingService.warmUp(); } catch (_) {}
         } else {
             console.log('Scrapling Python module not available - using fallback');
         }
@@ -12990,8 +12993,24 @@ app.get('/api/search', requireAuth, async (req, res) => {
         const seenUrls = new Set(); // Deduplication
         let searchSource = 'duckduckgo';
 
-        // Try DuckDuckGo first, fall back to Jina if CAPTCHA detected
+        // Resident-engine multi-backend search FIRST (fast, impersonated). Falls
+        // through to the legacy DDG→Scrapling→Brave chain on miss/unavailable.
         try {
+            if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
+                const engines = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => !backendCoolingDown(e));
+                if (engines.length) {
+                    const er = await scraplingService.search(enhancedQuery, parseInt(limit), { engines });
+                    if (Array.isArray(er?.tried)) for (const t of er.tried) { if (t.blocked) noteBackendBlocked(t.engine); else if (t.count > 0) noteBackendOk(t.engine); }
+                    if (er && er.success && Array.isArray(er.results) && er.results.length) {
+                        for (const r of er.results) { if (r.url && !seenUrls.has(r.url)) { seenUrls.add(r.url); results.push({ title: r.title || 'No title', url: r.url, snippet: r.snippet || 'No description available', content: null }); } }
+                        searchSource = `engine:${er.engine}`;
+                    }
+                }
+            }
+        } catch (_) { /* fall through */ }
+
+        // Try DuckDuckGo first, fall back to Jina if CAPTCHA detected
+        if (!results.length) try {
             // Skip DDG entirely while it's cooling down from a recent block — the
             // catch below runs the Scrapling→Brave→Playwright fallback chain.
             if (backendCoolingDown('ddg')) throw new Error('DDG_COOLING');
@@ -14309,7 +14328,67 @@ async function fetchUrlContent(url, options = {}) {
                 const probed = await fetchUrlAsFile(url, { timeout, maxLength });
                 if (probed) return probed;
             }
-        } catch (_) { /* fall through to the Scrapling → Playwright cascade */ }
+        } catch (_) { /* fall through to the impersonate → Scrapling → Playwright cascade */ }
+    }
+
+    // ---- Impersonate layer (curl_cffi Chrome TLS/JA3, NO browser) ---------
+    // The gap between the axios fast path and the (browser-backed) Scrapling
+    // layer: a large class of hosts 403 Node's axios purely on its TLS/HTTP2
+    // fingerprint, then serve a real Chrome fingerprint in ~0.3-0.6 s with no
+    // browser at all (bleepingcomputer 3.4s→0.5s, nytimes 6.8s→0.4s, zillow
+    // 9.2s→0.6s measured). It runs when axios did NOT already serve the page
+    // and the page is NOT a proven JS SPA shell (impersonate can't run JS, so a
+    // shell would just come back thin and waste the round-trip → straight to the
+    // browser instead). memoLayer 'impersonate' jumps here directly next time.
+    // Note: runs EVEN when axios flagged an SPA shell (forceBrowser) — curl_cffi's
+    // real Chrome fingerprint frequently receives server-rendered HTML that the
+    // fingerprint-blocked axios GET did not (nytimes: axios shell → impersonate
+    // 5.6k readable chars, ~6s saved vs the browser). isContentTooThin still
+    // routes a genuine JS SPA (vuejs: impersonate shell → thin → browser) onward.
+    if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()
+        && memoLayer !== 'playwright' && memoLayer !== 'scrapling') {
+        try {
+            const imp = await scraplingService.fetchImpersonated(url, {
+                timeout: Math.min(timeout, 15000), maxLength, extractLinks: !!options.includeLinks,
+            });
+            const impText = String(imp && imp.content || '');
+            const impLen = impText.trim().length;
+            const impStatus = imp && imp.httpStatus;
+            const impWaf = imp ? challengeFromHeaders(impStatus || 0, imp.headers) : null;
+            const impChallenged = looksLikeChallenge(`${imp && imp.title || ''}\n${imp && imp.bodyHead || impText}`, { strongOnly: true });
+            // Shell decision from the engine's TRUE full-markup stats — bodyHead is
+            // capped at 6k, so htmlShellSignal() over it can't see a JS app-shell's
+            // real size/script-count and would serve a 690-char nav shell as success
+            // (vuejs). Same formula as htmlShellSignal.isShell. A shell whose text is
+            // under the floor is rejected → browser; a low-ratio-but-substantial page
+            // (nytimes 5.6k headlines) clears the floor and is served fast.
+            const impShell = imp && imp.htmlLen
+                ? ((imp.spaMarker || (impLen / imp.htmlLen) < 0.05)
+                   && (imp.htmlLen > 30000 || (imp.scriptCount || 0) >= 8)
+                   && (impLen / imp.htmlLen) < 0.08)
+                : false;
+            const impThin = !impText || isContentTooThin(impText, url) || (impShell && impLen < SHELL_TEXT_FLOOR);
+            if (imp && imp.success && impText && !impThin && !impChallenged) {
+                setHostMemo(url, 'impersonate');   // skip axios+scrapling here next time
+                clearHostBotWall(url);
+                return {
+                    success: true, url,
+                    content: smartTruncate(impText, maxLength),
+                    title: imp.title || '',
+                    links: Array.isArray(imp.links) ? imp.links : [],
+                    source: 'impersonate',
+                };
+            }
+            // A hard bot-status or a challenge body here is real evidence the host
+            // walls non-browser clients — record it so a genuine wall fast-fails,
+            // but keep cascading to the stealth BROWSER, which passes many of these.
+            if (imp && (impWaf || impChallenged || [401, 403, 406, 429, 503].includes(impStatus))) {
+                if (impStatus === 503 && !impWaf) { /* transient — let the browser try, no strike yet */ }
+                // strike only on a strong signal; the browser attempt below may still succeed
+            }
+            // If the impersonate body proves an SPA shell, skip straight to the browser.
+            if (impShell) forceBrowser = true;
+        } catch (_) { /* fall through to Scrapling → Playwright */ }
     }
 
     // Try Scrapling first if available (best CAPTCHA evasion). Skipped when the
@@ -26147,6 +26226,31 @@ app.use((req, res) => {
             const cacheReturn = (out) => { searchCache.set(cacheKey, { data: out, limit, timestamp: Date.now() }); return out; };
             const retryAfterOf = (e) => parseRetryAfter(e && e.response && e.response.headers && e.response.headers['retry-after']);
             const rateLimited = { error: 'search rate-limited; all search backends (DuckDuckGo, Brave, Scrapling) are temporarily blocked. Read the target page directly with a url, or try again shortly.', retryable: true, source: 'rate-limited', query: q };
+
+            // Resident-engine multi-backend search FIRST (impersonated HTTP to
+            // ddg → bing → yahoo → brave, ~0.3-0.9 s). It reliably returns where
+            // the axios DDG path below CAPTCHAs on nearly every hit (measured:
+            // engine ddg 200/5 results in 0.72 s vs the serial axios chain's
+            // 3.5-26 s). Its per-engine `tried[]` updates the shared cooldown
+            // memos so the legacy chain and this stay in sync. On engine miss/down
+            // we fall through to the exact DDG→Brave→Scrapling chain below.
+            try {
+                if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
+                    const skip = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => backendCoolingDown(e === 'ddg' ? 'ddg' : e));
+                    const engines = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => !skip.includes(e));
+                    if (engines.length) {
+                        const er = await scraplingService.search(q, limit, { engines });
+                        if (Array.isArray(er?.tried)) for (const t of er.tried) {
+                            const key = t.engine;
+                            if (t.blocked) noteBackendBlocked(key); else if (t.count > 0) noteBackendOk(key);
+                        }
+                        if (er && er.success && Array.isArray(er.results) && er.results.length) {
+                            return cacheReturn({ query: q, source: `engine:${er.engine}`, count: er.results.length,
+                                results: er.results.slice(0, limit).map(r => ({ title: r.title || 'No title', url: r.url, snippet: r.snippet || '' })) });
+                        }
+                    }
+                }
+            } catch (_) { /* fall through to the legacy DDG→Brave→Scrapling chain */ }
             // Brave FIRST (cheap axios HTML GET, produces results post-DDG-CAPTCHA),
             // then Scrapling. Each backend is skipped while it's cooling down and only
             // cooled on a THROW (403/429/network) — never on a 0-result parse, which
