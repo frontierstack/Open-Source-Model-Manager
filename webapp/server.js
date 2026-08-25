@@ -18927,6 +18927,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         for (const msg of chatMessages) {
             totalInputTokens += estimateTokens(msg.content);
         }
+        // Measured exact/estimate token ratio, set by the /tokenize refinement
+        // below (1 until measured, never below 1). Dense content — ANSI escape
+        // codes in a pasted server log, unicode, base64, minified code —
+        // tokenizes at ~1.5-2 chars/token, far under the estimator's 3. Every
+        // downstream trim (context shift, condensation, fitMessagesToContext,
+        // pre-clamp) re-measures with the estimator, so without this scale
+        // they concluded "fits" on a prompt /tokenize had just proven was
+        // over the window ("removed 0 old messages") and the backend 400'd.
+        let tokenScale = 1;
+        const scaledEstimate = (content) => Math.ceil(estimateTokens(content) * tokenScale);
+        const scaledEstimateFromLength = (len) => Math.ceil(estimateTokensFromLength(len) * tokenScale);
+        // Chars to shed per token that must go, at the measured density.
+        const charsPerScaledToken = () => CHAT_STREAM_CHARS_PER_TOKEN / (CHAT_STREAM_SAFETY_MARGIN * tokenScale);
 
         // Response reserve: input gets priority, response gets what's left (capped by max_tokens)
         // This matches OpenAI-compatible semantics where max_tokens caps generation length
@@ -19057,6 +19070,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     if (Math.abs(refinedTotal - totalInputTokens) > 50) {
                         console.log(`[Chat Stream] Token count refined via /tokenize: estimate=${totalInputTokens} → exact=${refinedTotal} (raw=${exactCount}, template=${templateOverhead}, images=${imageOverhead})`);
                     }
+                    if (totalInputTokens > 0 && refinedTotal > totalInputTokens) {
+                        tokenScale = refinedTotal / totalInputTokens;
+                        if (tokenScale > 1.15) {
+                            console.log(`[Chat Stream] Dense content: tokenizer ratio ${tokenScale.toFixed(2)}× the char estimate — scaling all trim math by it`);
+                        }
+                    }
                     totalInputTokens = refinedTotal;
                 }
             }
@@ -19089,7 +19108,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     if (!textContent) break;
 
                     // Use same estimation as estimateTokens for consistency
-                    const contentTokens = Math.ceil((textContent.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
+                    const contentTokens = Math.ceil((textContent.length / CHARS_PER_TOKEN) * SAFETY_MARGIN * tokenScale);
 
                     // Calculate how much we need to trim
                     const otherTokens = totalInputTokens - contentTokens;
@@ -19443,7 +19462,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // Calculate tokens used by system messages (always kept)
                     let systemTokens = 0;
                     for (const msg of systemMessages) {
-                        systemTokens += estimateTokens(msg.content);
+                        systemTokens += scaledEstimate(msg.content);
                     }
 
                     // Available for conversation after system messages
@@ -19476,7 +19495,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // was dropped) read as non-sequiturs to the model.
                     for (let i = conversationMessages.length - 1; i >= 0; i--) {
                         const msg = conversationMessages[i];
-                        const msgTokens = estimateTokens(msg.content);
+                        const msgTokens = scaledEstimate(msg.content);
 
                         if (conversationTokens + msgTokens <= availableForConversation) {
                             keptMessages.unshift(msg); // Add to front to maintain order
@@ -19484,7 +19503,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else if (i === conversationMessages.length - 1) {
                             // Last user message is too large - truncate it
                             const excessTokens = (conversationTokens + msgTokens) - availableForConversation;
-                            const targetLength = Math.max(100, msg.content.length - (excessTokens * 4));
+                            // Text length, not `.length` of an array (which is
+                            // the PART count on a vision message), and shed
+                            // chars at the MEASURED density — the old fixed
+                            // `* 4` removed 4 chars per excess token when the
+                            // estimator itself counts one per ~2.7, so the
+                            // truncated message still didn't fit.
+                            const textLen = typeof msg.content === 'string'
+                                ? msg.content.length
+                                : (Array.isArray(msg.content)
+                                    ? msg.content.reduce((n, p) => n + (p.type === 'text' && p.text ? p.text.length : 0), 0)
+                                    : 0);
+                            const targetLength = Math.max(100, textLen - Math.ceil(excessTokens * charsPerScaledToken()));
 
                             if (typeof msg.content === 'string') {
                                 // Keep head 30% + tail 70%: in a pasted-content
@@ -19496,7 +19526,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 const truncatedContent = msg.content.substring(0, headLen) + marker +
                                     msg.content.substring(msg.content.length - tailLen);
                                 keptMessages.unshift({ ...msg, content: truncatedContent });
-                                conversationTokens += estimateTokens(truncatedContent);
+                                conversationTokens += scaledEstimate(truncatedContent);
                                 lastMessageTruncated = true;
                             } else {
                                 // Array format (vision) - truncate text part
@@ -19513,7 +19543,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 // estimateTokens() takes content (string/array), not a
                                 // length — passing the number returned 0 and the
                                 // truncated vision message was counted as free.
-                                conversationTokens += estimateTokensFromLength(targetLength);
+                                conversationTokens += scaledEstimateFromLength(targetLength) + 1000 * msg.content.filter(p => p.type === 'image_url').length;
                                 lastMessageTruncated = true;
                             }
                         } else {
@@ -20715,19 +20745,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // if the loop's content-only budgeting undercounts structural overhead,
         // the model still gets a usable output budget instead of a 64-token cap.
         const fitMessagesToContext = (messages, toolsTokens, reserve) => {
-            const estOf = (msgs) => estimateTokensFromLength(JSON.stringify(msgs).length) + toolsTokens;
+            const estOf = (msgs) => scaledEstimateFromLength(JSON.stringify(msgs).length) + toolsTokens;
             // Hand the serialization back on the (overwhelmingly common) no-trim
             // path: the pre-clamp below needs exactly this string, and on a
             // tool-heavy turn re-serializing the whole message array is megabytes
             // of allocation per round.
             const baseJson = JSON.stringify(messages);
-            if (contextSize - (estimateTokensFromLength(baseJson.length) + toolsTokens) - 200 >= reserve) {
+            if (contextSize - (scaledEstimateFromLength(baseJson.length) + toolsTokens) - 200 >= reserve) {
                 return { messages, truncated: 0, json: baseJson };
             }
             let copy = messages.slice();
             let truncated = 0;
             const sizable = copy
-                .map((m, i) => ({ i, t: estimateTokens(m.content) }))
+                .map((m, i) => ({ i, t: scaledEstimate(m.content) }))
                 .filter(x => x.i !== 0 && x.i !== copy.length - 1
                     && typeof copy[x.i].content === 'string' && x.t > 300)
                 .sort((a, b) => b.t - a.t);
@@ -20888,7 +20918,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const toolsJson = toolCatalog.length ? toolCatalogJson : '';  // live-guarded: '' during forced synthesis
                         // Same value as estimateTokens(messagesJson + toolsJson) without
                         // materializing the concatenation of two multi-MB strings.
-                        const inputTokenEstimate = estimateTokensFromLength(messagesJson.length + toolsJson.length);
+                        // Messages carry the measured density; the tool catalog
+                        // is ordinary JSON and keeps the plain estimate.
+                        const inputTokenEstimate = scaledEstimateFromLength(messagesJson.length) + estimateTokensFromLength(toolsJson.length);
                         const headroom = contextSize - inputTokenEstimate - 200;
                         if (actualMaxTokens > headroom) {
                             const clamped = Math.max(64, headroom);
@@ -20917,7 +20949,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         dry_base: Number(process.env.CHAT_DRY_BASE ?? 1.75),
                         dry_allowed_length: Number(process.env.CHAT_DRY_ALLOWED_LENGTH ?? 4),
                         dry_penalty_last_n: Number(process.env.CHAT_DRY_PENALTY_LAST_N ?? 4096),
-                        dry_sequence_breakers: ['\n', ':', '"', '*', '/', '_', '.', ',', '{', '}', '(', ')'],
+                        // '-' and the bracket/operator set were missing: a
+                        // hyphenated filename (`pasted-text-2026-08-25-114656`)
+                        // re-emitted on a retry is one long repeated sequence
+                        // with no breaker inside it, so the penalty grew
+                        // exponentially along the name and the cheapest token
+                        // became the closing quote — live: 13 read_file
+                        // retries, each path exactly one token SHORTER than
+                        // the last (`…-2026-08` → `…-2026-` → … → `p`).
+                        dry_sequence_breakers: ['\n', ':', '"', '*', '/', '_', '.', ',', '{', '}', '(', ')', '-', '[', ']', '=', '?', '&', ';', '<', '>', '|', '\\'],
                     } : {};
 
                     const requestBody = {
@@ -23370,7 +23410,43 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             if (isAborted) {
                 console.log(`[Chat Stream] Stream aborted by user for conversation ${streamingConversationId}`);
             } else {
-                console.error('Stream error:', streamError);
+                // Read the backend's rejection body: with responseType:'stream'
+                // axios hands it over as an unread stream, and the old dump of
+                // the whole AxiosError never showed WHY the request was
+                // refused — a context overflow surfaced to the user as a bare
+                // "Request failed with status code 400" with nothing in the
+                // process logs.
+                const backendStatus = streamError?.response?.status;
+                let backendDetail = '';
+                if (backendStatus) {
+                    try {
+                        const data = streamError.response.data;
+                        let raw = '';
+                        if (data && typeof data.on === 'function') {
+                            raw = await new Promise((resolve) => {
+                                const chunks = [];
+                                const t = setTimeout(() => resolve(Buffer.concat(chunks).toString('utf8')), 1500);
+                                data.on('data', (c) => chunks.push(Buffer.from(c)));
+                                data.on('end', () => { clearTimeout(t); resolve(Buffer.concat(chunks).toString('utf8')); });
+                                data.on('error', () => { clearTimeout(t); resolve(Buffer.concat(chunks).toString('utf8')); });
+                            });
+                        } else if (typeof data === 'string') {
+                            raw = data;
+                        } else if (data && typeof data === 'object') {
+                            raw = JSON.stringify(data);
+                        }
+                        try {
+                            const parsed = JSON.parse(raw);
+                            backendDetail = parsed?.error?.message || parsed?.message || parsed?.detail || parsed?.error || raw;
+                            if (typeof backendDetail !== 'string') backendDetail = JSON.stringify(backendDetail);
+                        } catch (_) { backendDetail = raw; }
+                        backendDetail = String(backendDetail || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+                    } catch (_) { /* best-effort */ }
+                    console.error(`[Chat Stream] Backend rejected request: HTTP ${backendStatus} from ${targetHost}:${targetPort}${backendDetail ? ` — ${backendDetail}` : ''}`);
+                    logChatActivity(`Model backend rejected the request (HTTP ${backendStatus})${backendDetail ? `: ${backendDetail}` : ''}`, 'error');
+                } else {
+                    console.error('Stream error:', streamError);
+                }
                 if (clientConnected && !res.writableEnded) {
                     // Translate DNS failures for the model hostname into an
                     // actionable message. axios/dockerode raises EAI_AGAIN or
@@ -23382,6 +23458,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const isDnsFailure = rawCode === 'EAI_AGAIN' || rawCode === 'ENOTFOUND';
                     const isRefused = rawCode === 'ECONNREFUSED' || rawCode === 'ECONNRESET';
                     let friendly = streamError.message;
+                    if (backendStatus && backendDetail) {
+                        friendly = `Model backend rejected the request (HTTP ${backendStatus}): ${backendDetail}`;
+                    }
                     if (isDnsFailure || isRefused) {
                         const inst = targetInstance;
                         const status = inst?.status;

@@ -1501,13 +1501,20 @@ export default function ChatContainer({
         // Also include search context from previous messages if they had web search results
         // Only include context from last N messages to prevent context overflow
         const MAX_CONTEXT_MESSAGES = 4; // Only include search/url context from last 4 user messages
-        const userMessageIndices = updatedMessages
+        // Error bubbles ("Error: Request failed with status code 400") are
+        // persisted as assistant turns so the user can see them, but they are
+        // NOT model output — sent back as history, a model whose real context
+        // was just trimmed away answers by parroting them verbatim (live:
+        // five saved error bubbles → the model's whole reply was the error
+        // string). Keep them on screen, never in the payload.
+        const modelVisibleMessages = updatedMessages.filter(m => !m.isError);
+        const userMessageIndices = modelVisibleMessages
             .map((m, i) => m.role === 'user' ? i : -1)
             .filter(i => i !== -1);
         const recentUserIndices = new Set(userMessageIndices.slice(-MAX_CONTEXT_MESSAGES));
 
-        const apiMessages = updatedMessages.map((m, idx) => {
-            let msgContent = idx === updatedMessages.length - 1 ? fullContent : (m.apiContent || m.content);
+        const apiMessages = modelVisibleMessages.map((m, idx) => {
+            let msgContent = idx === modelVisibleMessages.length - 1 ? fullContent : (m.apiContent || m.content);
             const isRecentUserMessage = recentUserIndices.has(idx);
 
             // If this is a recent previous user message, include search/URL context
@@ -1519,7 +1526,7 @@ export default function ChatContainer({
             // and the results stream back as tool events) — so we no longer
             // generate these fields on new turns. We still READ them here so old
             // conversations replay correctly.
-            if (m.role === 'user' && idx !== updatedMessages.length - 1 && isRecentUserMessage && !m.apiContent) {
+            if (m.role === 'user' && idx !== modelVisibleMessages.length - 1 && isRecentUserMessage && !m.apiContent) {
                 if (m.searchContext) {
                     msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
                 }
@@ -1529,7 +1536,7 @@ export default function ChatContainer({
             }
 
             // For the current message with image attachments, use OpenAI vision format
-            const isLastMessage = idx === updatedMessages.length - 1;
+            const isLastMessage = idx === modelVisibleMessages.length - 1;
             const imageAttachments = isLastMessage && attachedFiles
                 ? attachedFiles.filter(att => att.type === 'image' && att.dataUrl)
                 : [];
@@ -2445,7 +2452,7 @@ export default function ChatContainer({
         const currentMsgs = useChatStore.getState().messages;
 
         // Build messages array with the continuation prompt
-        const apiMessages = currentMsgs.map(msg => ({
+        const apiMessages = currentMsgs.filter(msg => !msg.isError).map(msg => ({
             role: msg.role,
             content: msg.content
         }));
