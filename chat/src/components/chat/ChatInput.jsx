@@ -336,9 +336,20 @@ export default function ChatInput({
                 return;
             }
         }
-        const pastedText = e.clipboardData?.getData('text/plain');
+        let pastedText = e.clipboardData?.getData('text/plain');
         if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
         e.preventDefault();
+        // Terminal pastes carry ANSI colour/cursor sequences (`ESC[32mINFO ESC[0m`).
+        // They are pure rendering noise to a model, but they (a) tokenize at
+        // ~1.6 chars/token — a 250 KB log came out at 140k tokens and blew a
+        // 131k window — and (b) sit BETWEEN the words a regex expects to be
+        // adjacent, so every grep/parse the model writes against the saved
+        // file silently matches nothing. Strip CSI, OSC and lone ESC sequences
+        // at the source; plain text is untouched.
+        pastedText = pastedText
+            .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')          // CSI: colours, cursor moves
+            .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC: titles, hyperlinks
+            .replace(/\x1b[@-Z\\-_]/g, '');                     // lone 2-byte escapes
         // Deliberately NOT an ISO-8601 shape. The old form was
         // `2026-08-12T19-03-14`, and models "corrected" the dash-separated
         // time back to the colons ISO-8601 uses — asking for

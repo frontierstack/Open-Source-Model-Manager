@@ -22049,6 +22049,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             }
                         }
 
+                        // (2c) Stalled-outcome loop: a QUERY/INTERPRETER tool whose
+                        // last STALL_STREAK calls all had DIFFERENT args yet produced
+                        // ONE byte-identical, NON-empty, successful outcome. (2b)
+                        // needs the outcome to be empty and the fp-keyed arg-repeat
+                        // guard needs identical args, so this shape slipped between
+                        // them — live: run_python ×11 on a pasted log, each call a
+                        // fresh analyzeN.py, every stdout identical ("404 by
+                        // endpoint:" empty) because the model's regex never
+                        // accounted for the ANSI colour codes in the lines it was
+                        // matching. Scoped to tools whose output is a pure function
+                        // of args+data (identical output ⇒ the arg change was
+                        // irrelevant) — never write tools, whose identical receipts
+                        // for N distinct files are a legitimate scaffold.
+                        const STALL_STREAK = parseInt(process.env.LOOP_STALL_STREAK || '3', 10);
+                        const STALL_GUARD_TOOLS = new Set(['run_python', 'run_node', 'grep_code', 'scan_source_files',
+                            'query_sqlite', 'spreadsheet_query', 'csv_describe', 'extract_strings', 'hex_dump',
+                            'web_search', 'fetch_url', 'scrapling_fetch', 'playwright_fetch', 'outline_file']);
+                        let stalledOutcome = false;
+                        if (!unproductiveLoop && STALL_GUARD_TOOLS.has(effName)) {
+                            const sameTool = historySnapshot.filter(h => h.toolName === effName && !h.nudge);
+                            if (sameTool.length >= STALL_STREAK) {
+                                const recent = sameTool.slice(-STALL_STREAK);
+                                const sigs = new Set(recent.map(h => h.outcomeSig));
+                                const fps = new Set(recent.map(h => h.fp));
+                                if (sigs.size === 1 && fps.size === recent.length &&
+                                    recent.every(h => !h.outcomeEmpty && !h.failed)) {
+                                    stalledOutcome = true;
+                                }
+                            }
+                        }
+
                         const callEffName = webEffectiveName(call.function.name, call.function.arguments);
                         const webSearchBlocked = callEffName === 'web_search' &&
                             webSearchBlockedCount >= 2;
@@ -22146,6 +22177,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 previous_call_count: historySnapshot.filter(h => h.toolName === effName).length,
                             };
                             console.warn(`[Chat Stream] Loop detected for ${effName} (unproductive-outcome ×${UNPROD_STREAK}); short-circuited with nudge`);
+                        } else if (stalledOutcome) {
+                            nudge = {
+                                error: 'loop_detected',
+                                message: `Your last ${STALL_STREAK} ${effName} calls used DIFFERENT arguments/code but produced BYTE-IDENTICAL output — the changes you made had no effect on the result, so re-running another variant will not either. Re-read the output you already have: it most likely already contains the answer, OR the data does not look the way your pattern/parsing assumes (common causes: terminal colour/escape codes inside the lines, different quoting or spacing, a different column layout). If you need to look again, print a few RAW lines (repr()) around the target ONCE to see their exact bytes, then adjust — or stop calling tools and give the user the results you already have.`,
+                                previous_call_count: historySnapshot.filter(h => h.toolName === effName).length,
+                            };
+                            console.warn(`[Chat Stream] Loop detected for ${effName} (stalled-outcome ×${STALL_STREAK}, distinct args, identical output); short-circuited with nudge`);
                         } else if (rereadPath) {
                             nudge = {
                                 error: 'loop_detected',
