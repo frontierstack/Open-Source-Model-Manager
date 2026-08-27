@@ -1842,6 +1842,24 @@ export default function ChatContainer({
                                 setStreamingReasoning('');
                                 continue;
                             }
+                            if (parsed.type === 'content_rewind') {
+                                // Server cut a repeating answer back to where the
+                                // repetition began (content-loop guard) and is
+                                // asking the model to continue from there. Mirror
+                                // the shorter buffer so the looped text disappears
+                                // from the bubble; the pump cursor is clamped, and
+                                // the continuation streams in as ordinary tokens.
+                                assistantContent = parsed.content || '';
+                                const rewound = parseThinkTags(assistantContent, true);
+                                pendingContentRef.current = reasoningDisabled
+                                    ? (rewound.content || '').replace(REASONING_TAG_RE, '')
+                                    : (rewound.content || '');
+                                if (displayedContentLenRef.current > pendingContentRef.current.length) {
+                                    displayedContentLenRef.current = pendingContentRef.current.length;
+                                }
+                                setStreamingContent(pendingContentRef.current.slice(0, displayedContentLenRef.current));
+                                continue;
+                            }
 
                             const delta = parsed.choices?.[0]?.delta;
 
@@ -2588,6 +2606,17 @@ export default function ChatContainer({
                                     if (currentActiveId === conversationId) {
                                         setStreamingContent(joinContinuation(originalContent, assistantContent));
                                         setStreamingReasoning(originalReasoning || '');
+                                    }
+                                    continue;
+                                }
+                                if (parsed.type === 'content_rewind') {
+                                    // Continuation-path mirror of the main-stream
+                                    // handler: the server trimmed a repeating answer
+                                    // back to where the repetition began.
+                                    assistantContent = parsed.content || '';
+                                    const currentActiveId = useChatStore.getState().activeConversationId;
+                                    if (currentActiveId === conversationId) {
+                                        setStreamingContent(joinContinuation(originalContent, parseThinkTags(assistantContent, true).content || ''));
                                     }
                                     continue;
                                 }
