@@ -515,6 +515,145 @@ function makeContentLoopDetector() {
     });
 }
 
+
+// --- Tool-call ARGUMENT stream ---------------------------------------------
+// The third place a model can loop, and the one nothing bounded: the JSON
+// arguments of a tool call it is still emitting. Live incident (an OSINT turn,
+// 2026-08-27): a run_python `code` argument grew to 125k chars / 1873 lines of
+// `print("RUST:", len(re.findall(r'\brust\b', html)))` — every line a NEW
+// keyword, so no verbatim-segment detector fires and the word-trigram
+// diversity stays high — until the round hit TOOL_ROUND_MAX_TOKENS (~21 min at
+// local speeds), was EXECUTED (SyntaxError), and then happened AGAIN. Two such
+// rounds put ~64k tokens of garbage into the context and left 1026 tokens of
+// output budget. The user stopped the turn after 50 minutes with no answer.
+//
+// The signal that survives a varying keyword is the SHAPE of the lines: with
+// string/number/identifier literals normalized away, the loop is one shape
+// repeated forever. Legit code has bounded runs of same-shape statements, and
+// DATA rows (a chart array, a CSV, a dict literal) are excluded from the
+// shape test — only STATEMENT lines (identifier-led) count — so an inline
+// dataset never trips it. Three checks, cheapest first, all gated on a
+// minimum size so short calls are never examined:
+//   1. absolute size (TOOL_ARGS_MAX_CHARS) — no chat tool argument is
+//      legitimately this big; the skill prompts say to chunk via
+//      create_file + append_to_file / codeFile;
+//   2. one normalized line verbatim-repeated across most of the tail;
+//   3. the last TOOL_ARGS_SHAPE_WINDOW statement lines collapse to
+//      ≤ TOOL_ARGS_SHAPE_MAX_DISTINCT shapes.
+const TOOL_ARGS_LOOP_MIN_CHARS = envInt('TOOL_ARGS_LOOP_MIN_CHARS', 6000);
+const TOOL_ARGS_MAX_CHARS = envInt('TOOL_ARGS_MAX_CHARS', 80000);
+const TOOL_ARGS_SHAPE_WINDOW = envInt('TOOL_ARGS_SHAPE_WINDOW', 40);
+const TOOL_ARGS_SHAPE_MAX_DISTINCT = envInt('TOOL_ARGS_SHAPE_MAX_DISTINCT', 3);
+const TOOL_ARGS_CHECK_GRANULARITY = 1500;
+const TOOL_ARGS_VERBATIM_MIN = 12;
+const TOOL_ARGS_VERBATIM_RATIO = 0.5;
+
+// Normalize a code/text line to its structural shape: string literals → S,
+// numbers → N, identifiers → I (keywords kept so `print(S, len(I(I, I)))` and
+// `x = foo(S)` differ), whitespace collapsed. Returns null for a line that is
+// not statement-shaped (data rows, brackets, comments, blank) so the shape
+// window only ever counts statements.
+const SHAPE_KEYWORDS = new Set(['print', 'len', 're', 'findall', 'search', 'match', 'sub', 'return', 'if', 'else', 'elif',
+    'for', 'while', 'in', 'and', 'or', 'not', 'import', 'from', 'def', 'class', 'try', 'except', 'with', 'as',
+    'const', 'let', 'var', 'function', 'await', 'async', 'console', 'log', 'require', 'json', 'str', 'int', 'float',
+    'list', 'dict', 'set', 'open', 'read', 'write', 'append', 'push', 'map', 'filter', 'join', 'split', 'strip']);
+function lineShape(line) {
+    const t = String(line || '').trim();
+    if (!t || t.length < 8) return null;
+    if (/^(#|\/\/|\/\*|\*|["'`{}\[\]()0-9,.-])/.test(t)) return null;   // comment / data / bracket line
+    if (!/^[A-Za-z_$][\w$.]*\s*[(=:.\[]/.test(t) && !/^[A-Za-z_$][\w$.]*\s+[A-Za-z_$(]/.test(t)) return null;
+    let s = t
+        .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g, 'S')
+        .replace(/\b\d+(?:\.\d+)?\b/g, 'N')
+        .replace(/\b[A-Za-z_$][\w$]*\b/g, (w) => (SHAPE_KEYWORDS.has(w.toLowerCase()) ? w.toLowerCase() : 'I'))
+        .replace(/\s+/g, '');
+    return s;
+}
+
+// Examine an argument string (or a code body) for degeneration. Returns a
+// reason string or null. Pure; safe on any input size (line-bounded work).
+function toolArgsDegenerationReason(text, opts = {}) {
+    const minChars = opts.minChars ?? TOOL_ARGS_LOOP_MIN_CHARS;
+    const maxChars = opts.maxChars ?? TOOL_ARGS_MAX_CHARS;
+    const window = opts.shapeWindow ?? TOOL_ARGS_SHAPE_WINDOW;
+    const maxDistinct = opts.shapeMaxDistinct ?? TOOL_ARGS_SHAPE_MAX_DISTINCT;
+    const s = String(text || '');
+    if (maxChars > 0 && s.length > maxChars) {
+        return `${s.length} characters of arguments — far beyond what any tool call needs (limit ${maxChars})`;
+    }
+    if (s.length < minChars) return null;
+    // Work on the tail only: the loop is at the end, and this runs on the SSE
+    // hot path. Streamed JSON args carry "\n" as an escape — unescape so the
+    // line structure is visible while the call is still being emitted.
+    const tail = s.slice(-24000).replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    const lines = tail.split('\n');
+    // 2. Verbatim: one normalized line dominating the last 60 lines.
+    const recent = lines.slice(-60).map(l => l.trim().replace(/\s+/g, ' ')).filter(l => l.length >= 16);
+    if (recent.length >= TOOL_ARGS_VERBATIM_MIN) {
+        const counts = new Map();
+        let top = 0, topLine = '';
+        for (const l of recent) { const c = (counts.get(l) || 0) + 1; counts.set(l, c); if (c > top) { top = c; topLine = l; } }
+        if (top >= TOOL_ARGS_VERBATIM_MIN && top / recent.length >= TOOL_ARGS_VERBATIM_RATIO) {
+            return `the same line repeated ${top}x ("${topLine.slice(0, 50)}…")`;
+        }
+    }
+    // 3. Shape: the last `window` STATEMENT lines are near-identical in structure.
+    const shapes = [];
+    for (let i = lines.length - 1; i >= 0 && shapes.length < window; i--) {
+        const sh = lineShape(lines[i]);
+        if (sh) shapes.push(sh);
+    }
+    if (shapes.length >= window) {
+        const distinct = new Set(shapes).size;
+        if (distinct <= maxDistinct) {
+            return `${window} consecutive statements of the same shape (${distinct} distinct pattern${distinct === 1 ? '' : 's'}) — a keyword-enumeration loop, not a program`;
+        }
+    }
+    return null;
+}
+
+/**
+ * Per-round detector over STREAMING tool-call arguments. `detect(index,
+ * name, argsSoFar)` re-examines a call only after TOOL_ARGS_CHECK_GRANULARITY
+ * new chars (per index) and returns `{ reason, name, chars }` or null.
+ */
+function makeToolArgsLoopDetector() {
+    const lastCheck = new Map();
+    return function detect(index, name, args) {
+        const len = String(args || '').length;
+        const prev = lastCheck.get(index) || 0;
+        if (len - prev < TOOL_ARGS_CHECK_GRANULARITY) return null;
+        lastCheck.set(index, len);
+        const reason = toolArgsDegenerationReason(args);
+        return reason ? { reason, name: name || 'tool', chars: len } : null;
+    };
+}
+
+// --- Interpreter usage classifiers ----------------------------------------
+// Does a run_python / run_node program make its own network requests? Used to
+// steer the model to the purpose-built retrieval tools (web / http_request /
+// dns_lookup) instead of hand-rolling HTTP in a sandbox script — the OSINT
+// turn wrote 24 such scripts in a row, each a fresh urllib client with
+// hand-built headers, where one `web` call reads the same page (with TLS,
+// bot-wall and JS handling the script cannot have).
+const NET_CODE_RE = /\b(urllib\.request|urllib\.parse\.urlencode|urlopen\(|http\.client|\brequests\.(get|post|head|put|delete|request|Session)\b|\bhttpx\b|\baiohttp\b|socket\.(create_connection|getaddrinfo|gethostbyname|connect)|ssl\.(create_default_context|_create_unverified_context)|dns\.resolver|\bfetch\s*\(\s*['"`]?https?:|\baxios\b|\bhttps?\.(get|request)\s*\(|require\(['"]node-fetch['"]\)|\bgot\s*\(\s*['"]https?:|\bcurl\s+-|subprocess\.[a-z_]+\([^)]*\b(curl|wget|dig|nslookup|whois)\b|\bwhois\b|\bnslookup\b)/;
+function codeMakesNetworkRequests(code) {
+    const s = String(code || '');
+    if (!s) return false;
+    return NET_CODE_RE.test(s);
+}
+// URLs / hostnames a network script targets (for the "use the web tool on
+// these instead" hint). Bounded and de-duplicated.
+function codeNetworkTargets(code, cap = 8) {
+    const s = String(code || '');
+    const out = [];
+    const seen = new Set();
+    const push = (v) => { if (v && !seen.has(v) && out.length < cap) { seen.add(v); out.push(v); } };
+    for (const m of s.matchAll(/https?:\/\/[^\s"'`<>)\]},{]+/g)) push(m[0].replace(/[.,;:]+$/, ''));
+    for (const m of s.matchAll(/\b(?:host|hostname|domain)\s*=\s*["']([a-z0-9.-]+\.[a-z]{2,})["']/gi)) push(m[1]);
+    return out;
+}
+
 module.exports = {
     canonicalArgs,
     stableStringify,
@@ -527,6 +666,13 @@ module.exports = {
     makeRepetitionDetector,
     makeReasoningLoopDetector,
     makeContentLoopDetector,
+    makeToolArgsLoopDetector,
+    toolArgsDegenerationReason,
+    lineShape,
+    codeMakesNetworkRequests,
+    codeNetworkTargets,
+    TOOL_ARGS_MAX_CHARS,
+    TOOL_ARGS_LOOP_MIN_CHARS,
     REASONING_HARD_CAP,
     REASONING_ABSOLUTE_CAP,
     REASONING_LOOP_MAX_RETRIES,

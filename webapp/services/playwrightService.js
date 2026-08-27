@@ -222,10 +222,13 @@ function getStealthContextOptions() {
         }
     };
 
-    // Enable SSL bypass for corporate proxy environments
-    if (sslBypassEnabled) {
-        options.ignoreHTTPSErrors = true;
-    }
+    // Always tolerate bad certificates. This is a READ-ONLY scraper that never
+    // sends credentials, and the pages worth inspecting (OSINT / phishing /
+    // freshly-registered sites) routinely have a self-signed, expired or
+    // mismatched cert — a hard ERR_CERT_AUTHORITY_INVALID on every browser
+    // mode (read/interact/screenshot) sent a model into 4 failed retries and
+    // no screenshot. The corporate-proxy case (sslBypassEnabled) is subsumed.
+    options.ignoreHTTPSErrors = true;
 
     return options;
 }

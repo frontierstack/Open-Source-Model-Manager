@@ -1142,7 +1142,7 @@ function capToolResultForModel(content, capChars, toolName) {
 // the tail and trigram diversity stays high inside any 4k window). See the
 // module header for the full signal list.
 const loopGuard = require('./services/loopGuard');
-const { REASONING_LOOP_MAX_RETRIES, makeReasoningLoopDetector, makeContentLoopDetector } = loopGuard;
+const { REASONING_LOOP_MAX_RETRIES, makeReasoningLoopDetector, makeContentLoopDetector, makeToolArgsLoopDetector } = loopGuard;
 
 // Textual `<tool_call>` extractor. Some chat templates (notably Qwen3 +
 // Qwen-Coder finetunes running on llama.cpp's OpenAI-compat server)
@@ -1262,6 +1262,7 @@ function makeTextualToolCallExtractor() {
     // flush it as passthrough. If we're inside a block, the model
     // never closed the tool call; discard the partial XML rather than
     // leaking it to the UI.
+    process.pending = function () { return inBlock ? buf : ''; };
     process.flush = function () {
         const out = inBlock ? '' : buf;
         buf = '';
@@ -1292,6 +1293,7 @@ function buildChatRuntimePrelude() {
         `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
+        `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -20545,6 +20547,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let reasoningLoopRetries = 0;
         let reasoningLoopExhausted = false;
         let lastReasoningLoopReason = '';
+        // Set by streamOneRequest when a tool call's ARGUMENTS degenerated
+        // (tool_args_loop sentinel): { name, chars, reason }.
+        let toolArgsLoopInfo = null;
         // Set when a content loop exhausted its retries and the turn ENDS
         // with the text kept before the repetition (a trailing note explains
         // the cut). Excludes the mid-thought synthesis trigger.
@@ -20693,6 +20698,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // WRAPPER_MAX_CHARS or leaves far more than WRAPPER_RESIDUE_CHARS of
         // logic behind once the spawn/imports/prints are stripped.
         const WRITE_TOOLS_FOR_WRAPPER_CHECK = new Set(['create_file', 'append_to_file', 'replace_lines']);
+        // Interpreter steering: after this many run_python/run_node scripts in
+        // ONE turn that hand-roll their own HTTP/DNS (urllib/requests/fetch/
+        // socket/whois…), further ones are REFUSED and pointed at the
+        // purpose-built tools (web / dns_lookup / virustotal_lookup /
+        // http_request) — only while `web` is actually usable this turn. The
+        // OSINT turn wrote 24 such scripts in a row. 0 disables.
+        const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3', 10);
         const WRAPPER_MAX_CHARS = parseInt(process.env.WRAPPER_MAX_CHARS || '900', 10);
         const WRAPPER_RESIDUE_CHARS = parseInt(process.env.WRAPPER_RESIDUE_CHARS || '80', 10);
         // No /g flag — this regex is .test()ed repeatedly and lastIndex would drift.
@@ -20810,6 +20822,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // (see loopSentinel) after fullResponse has been rewound to the
             // start of the repetition.
             const roundContentDetector = makeContentLoopDetector();
+            // Tool-call ARGUMENT twin: the JSON args of a call the model is
+            // still emitting degenerate into a keyword-enumeration loop
+            // (125k-char run_python script, 21 minutes, executed, then
+            // repeated — see loopGuard.toolArgsDegenerationReason). On a hit
+            // this round's tool calls are DISCARDED (never dispatched), the
+            // round aborts with 'tool_args_loop' and the outer loop nudges.
+            const roundArgsDetector = makeToolArgsLoopDetector();
             let loopSentinel = 'reasoning_loop';
             const roundAbortController = new AbortController();
             let loopDetectedThisRound = false;
@@ -20831,6 +20850,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     settled = true;
                     cleanupTurnAbortForward();
                     if (isResolve) resolve(value); else reject(value);
+                };
+                const abortForToolArgsLoop = (hit) => {
+                    loopDetectedThisRound = true;
+                    loopSentinel = 'tool_args_loop';
+                    lastReasoningLoopReason = hit.reason;
+                    toolArgsLoopInfo = { name: hit.name, chars: hit.chars, reason: hit.reason };
+                    const dropped = accumulatedToolCalls.length;
+                    accumulatedToolCalls.length = 0;
+                    console.warn(`[Chat Stream] Tool-call argument loop detected — ${hit.name}: ${hit.reason} at ${hit.chars} chars; discarded ${dropped} pending call(s), aborting round to recover`);
+                    if (clientConnected) {
+                        try {
+                            res.write(`data: ${JSON.stringify({
+                                type: 'status',
+                                message: `Model's ${hit.name} call degenerated into repetition — discarded it and nudging for a short, focused call`,
+                            })}\n\n`);
+                        } catch (_) { clientConnected = false; }
+                    }
+                    roundAbortController.abort();
+                    settle(true, loopSentinel);
                 };
 
                 try {
@@ -21068,6 +21106,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             // tags split across SSE chunks.
                                             const { passthrough, blocks } = textualToolCallExtractor(rawContent);
                                             const content = passthrough;
+                                            {
+                                                // A textual <tool_call> block is held in the extractor until it
+                                                // closes — the same degeneration hides in there.
+                                                const pending = textualToolCallExtractor.pending();
+                                                if (pending) {
+                                                    const tname = (pending.match(/"name"\s*:\s*"([\w.-]+)"/) || pending.match(/<function=([\w.-]+)>/) || [])[1] || 'tool';
+                                                    const hit = roundArgsDetector('textual', tname, pending);
+                                                    if (hit) { abortForToolArgsLoop(hit); return; }
+                                                }
+                                            }
                                             if (blocks.length) {
                                                 for (const tc of blocks) {
                                                     accumulatedToolCalls.push(tc);
@@ -21091,6 +21139,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             // delta fragments; accumulate by index across chunks.
                                             if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
                                                 chatTools.accumulateToolCallDelta(accumulatedToolCalls, delta.tool_calls);
+                                                {
+                                                    const li = accumulatedToolCalls._lastIdx;
+                                                    const cur = typeof li === 'number' ? accumulatedToolCalls[li] : null;
+                                                    const hit = cur ? roundArgsDetector(li, cur.function?.name, cur.function?.arguments) : null;
+                                                    if (hit) { abortForToolArgsLoop(hit); return; }
+                                                }
                                                 if (clientConnected) {
                                                     try {
                                                         res.write(`data: ${JSON.stringify({
@@ -21751,6 +21805,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     break; // exit the tool loop → forced-synthesis block below
                 }
 
+                // --- Tool-call-argument-loop recovery ----------------------
+                // The model's tool call ARGUMENTS degenerated (keyword-
+                // enumeration / verbatim line loop / absurd size). The call was
+                // discarded inside streamOneRequest — it never ran, and its
+                // garbage never enters the context (two such calls once put
+                // ~64k tokens of junk in a 131k window). Nudge for a SHORT
+                // focused call or the answer; shares the reasoning-loop retry
+                // budget, then forced synthesis.
+                if (finishReason === 'tool_args_loop') {
+                    if (streamAbortController.signal.aborted) break;
+                    const info = toolArgsLoopInfo || { name: 'tool', chars: 0, reason: lastReasoningLoopReason };
+                    if (reasoningLoopRetries < REASONING_LOOP_MAX_RETRIES) {
+                        reasoningLoopRetries++;
+                        const escalate = reasoningLoopRetries >= REASONING_LOOP_MAX_RETRIES;
+                        logChatActivity(`Tool-call loop (${info.name}: ${info.reason}) — discarded the call, asking the model for a short focused one (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`);
+                        const nudge =
+                            `Your ${info.name} tool call was DISCARDED and did not run: its arguments degenerated into repetition (${info.reason}) after ${info.chars} characters. ` +
+                            `Do not re-issue it. Tool arguments must be SHORT and focused — a script does ONE thing in well under 80 lines; never enumerate long lists of near-identical lines (one loop over a list of keywords covers them all). ` +
+                            (escalate
+                                ? 'Stop calling tools now and write your answer for the user from everything you have already found, stating plainly what you could not determine.'
+                                : 'Either emit ONE small tool call that makes concrete progress, or — if you already have enough — write your answer now.');
+                        currentMessages = [...currentMessages, { role: 'system', content: nudge }];
+                        console.warn(`[Chat Stream] Tool-call argument loop — re-streaming with ${escalate ? 'escalated ' : ''}nudge (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`);
+                        continuationCount = 0;
+                        continue; // re-stream WITHOUT incrementing toolCallRound
+                    }
+                    reasoningLoopExhausted = true;
+                    console.warn(`[Chat Stream] Tool-call argument loop persisted after ${REASONING_LOOP_MAX_RETRIES} nudge(s) — forcing synthesis`);
+                    break; // exit the tool loop → forced-synthesis block below
+                }
+
                 // Auto-continuation loop: if model hit length limit, keep going.
                 // Skipped when tool calls are accumulated — the slim continuation
                 // request below drops the partial tool_calls context entirely
@@ -22252,8 +22337,56 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             } catch (_) { /* malformed args — let the normal guards handle it */ }
                         }
 
+                        // --- Interpreter guards (run_python / run_node) ---------
+                        // (a) a DEGENERATE script (keyword-enumeration loop / one
+                        //     line repeated / absurd size) is refused instead of
+                        //     executed — the streaming detector catches it while it
+                        //     is still being emitted; this is the dispatch-time
+                        //     backstop for one that arrived whole (textual block,
+                        //     finish_reason length);
+                        // (b) a script that hand-rolls HTTP/DNS is allowed a few
+                        //     times per turn (with an advisory on its result) and
+                        //     then refused in favour of the retrieval tools.
+                        let netScript = false;
+                        let degenerateCode = null;
+                        let netScriptRefusal = null;
+                        if (call.function.name === 'run_python' || call.function.name === 'run_node') {
+                            try {
+                                const a = JSON.parse(call.function.arguments || '{}');
+                                const code = String(a.code || '');
+                                if (code) {
+                                    degenerateCode = loopGuard.toolArgsDegenerationReason(code, { minChars: 4000 });
+                                    netScript = !degenerateCode && loopGuard.codeMakesNetworkRequests(code);
+                                    if (netScript) {
+                                        const priorNet = historySnapshot.filter(h => h.netScript).length;
+                                        const webUsable = fullByName.has('web') && !blockedToolNames.has('web') && !blockedToolNames.has('fetch_url');
+                                        if (INTERP_NET_SCRIPT_MAX > 0 && webUsable && priorNet >= INTERP_NET_SCRIPT_MAX) {
+                                            netScriptRefusal = { priorNet, targets: loopGuard.codeNetworkTargets(code) };
+                                        }
+                                    }
+                                }
+                            } catch (_) { /* malformed args — the normal guards handle it */ }
+                        }
+
                         let nudge = null;
-                        if (webSearchBlocked || scraplingSearchLoop) {
+                        if (degenerateCode) {
+                            nudge = {
+                                error: 'code_degenerate',
+                                message: `This ${call.function.name} call was refused and did not run: the script is not a program — ${degenerateCode}. A script does ONE focused thing in well under 80 lines; loop over a list of keywords instead of writing one statement per keyword. Write a small script, or — if you already have what you need — answer the user now.`,
+                            };
+                            console.warn(`[Chat Stream] Degenerate ${call.function.name} script refused: ${degenerateCode}`);
+                        } else if (netScriptRefusal) {
+                            const t = netScriptRefusal.targets || [];
+                            const tools = ['web', 'dns_lookup', 'virustotal_lookup', 'http_request'].filter(n => fullByName.has(n) && !blockedToolNames.has(n));
+                            nudge = {
+                                error: 'use_web_tool',
+                                message: `Refused: this would be script #${netScriptRefusal.priorNet + 1} this turn that hand-rolls HTTP/DNS in the sandbox. Do NOT write scripts to fetch URLs, APIs or DNS — the \`web\` tool reads any page or JSON API in ONE call (with TLS, JS rendering and bot-wall handling a script cannot have)${t.length ? `: call web with url set to ${t.map(x => `"${x}"`).join(', ')}` : ''}. ${tools.includes('dns_lookup') ? 'dns_lookup returns DNS records; ' : ''}${tools.includes('virustotal_lookup') ? 'virustotal_lookup returns reputation; ' : ''}${tools.includes('http_request') ? 'http_request does POST/custom headers. ' : ''}Reserve ${call.function.name} for computing over data you already have. If you already have enough, write your answer now.`,
+                                use_instead: tools,
+                                ...(t.length ? { targets: t } : {}),
+                            };
+                            for (const n of tools) { try { toolCtx._forcedToolNames?.add(n); } catch (_) { /* best effort */ } }
+                            console.warn(`[Chat Stream] Network script refused: ${call.function.name} #${netScriptRefusal.priorNet + 1} this turn (targets: ${t.join(', ') || 'n/a'}); steering to ${tools.join('/') || 'nothing available'}`);
+                        } else if (webSearchBlocked || scraplingSearchLoop) {
                             let q = '';
                             try {
                                 if (callEffName === 'web_search') {
@@ -22403,7 +22536,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             };
                             console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : readRepeat ? 'read-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
                         }
-                        return { call, policy, fp, nudge };
+                        return { call, policy, fp, nudge, netScript };
                     });
 
                     // Tally refusal nudges this turn (the kinds that BLOCK the
@@ -22579,6 +22712,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     for (let idx = 0; idx < perCall.length; idx++) {
                         const { call, policy, fp, nudge: guardNudge } = perCall[idx];
                         let resultMsg = dispatched[idx];
+                        // Garbled-URL recovery pool: every URL the model has SEEN in a
+                        // tool result this turn (scan output, API JSON, page text) —
+                        // not only search hits — so a UUID/hash-bearing URL it later
+                        // retypes from memory can be corrected against the real one.
+                        try {
+                            if (resultMsg && typeof resultMsg.content === 'string' && resultMsg.content.length <= 300000) {
+                                if (!toolCtx._webSeenUrls) toolCtx._webSeenUrls = new Set(urlRecovery.extractUrls(toolCtx.latestUserText || ''));
+                                if (toolCtx._webSeenUrls.size < 500) {
+                                    for (const u of urlRecovery.extractUrls(resultMsg.content).slice(0, 80)) toolCtx._webSeenUrls.add(u);
+                                }
+                            }
+                        } catch (_) { /* best effort */ }
                         // 'nudge' | 'blocked' | 'prohibited' | null — a refused
                         // call never ran and has no outcome.
                         const refusalKind = guardNudge ? 'nudge' : ((resultMsg && resultMsg._refusal) || null);
@@ -22844,6 +22989,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 resolvedTarget,
                                 readPath,
                                 execPath,
+                                netScript: !!(perCall[idx] && perCall[idx].netScript),
                                 regexFlag,
                                 toolName: recName,
                                 searchBlocked,
@@ -22869,6 +23015,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 resultMsg = attachAdvisory(resultMsg, advisory);
                                 console.warn(`[Chat Stream] Stagnation advisory after ${sum.staleCalls} non-progress call(s) (${sum.text}${sum.byToolText ? `; ${sum.byToolText}` : ''})`);
                                 logChatActivity(`Loop guard: ${sum.staleCalls} tool calls in a row produced nothing new — warned the model to change approach`);
+                            }
+                            // Interpreter advisory: the script ran, but it made its own
+                            // HTTP/DNS requests — tell the model which tool does that
+                            // job and that further ones will be refused.
+                            if (perCall[idx] && perCall[idx].netScript && INTERP_NET_SCRIPT_MAX > 0) {
+                                const soFar = historySnapshot.filter(h => h.netScript).length + 1;
+                                resultMsg = attachAdvisory(resultMsg,
+                                    `Interpreter advisory (${soFar}/${INTERP_NET_SCRIPT_MAX}): this script made its own HTTP/DNS requests. Use the purpose-built tools instead — web (reads a page or JSON API in one call), dns_lookup, virustotal_lookup, http_request — and reserve ${call.function.name} for computation over data you already have. After ${INTERP_NET_SCRIPT_MAX} such scripts in one turn, further ones are refused.`);
+                                logChatActivity(`Interpreter: ${call.function.name} hand-rolled HTTP/DNS (${soFar}/${INTERP_NET_SCRIPT_MAX} this turn) — advised the model to use the web tool`);
                             }
                         } catch (_) { /* */ }
                         if (refusalKind) {
@@ -27595,12 +27750,15 @@ app.use((req, res) => {
                 // Explicit screenshot request: capture the rendered PAGE itself
                 // (full-page, height-capped) instead of extracting its images.
                 // Challenge walls abort service-side; flat frames are dropped.
+                const screenshotFailures = [];
                 if (wantScreenshot && pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.screenshotPageImages === 'function') {
                     for (const pg of pageUrls.slice(0, 2)) {
                         try {
                             const snap = await playwrightService.screenshotPageImages(pg.url, { mode: 'fullpage' });
                             if (!snap || !snap.success) {
-                                if (snap && snap.aborted) console.log(`[find_image] page screenshot aborted (${snap.aborted}): ${String(pg.url).slice(0, 120)}`);
+                                const why = (snap && (snap.aborted ? `${snap.aborted}: ${snap.error || ''}` : snap.error)) || 'no screenshot returned';
+                                screenshotFailures.push({ url: pg.url, reason: String(why).slice(0, 200) });
+                                console.log(`[find_image] page screenshot failed (${String(why).slice(0, 120)}): ${String(pg.url).slice(0, 120)}`);
                                 continue;
                             }
                             let shotIdx = 0;
@@ -27624,8 +27782,15 @@ app.use((req, res) => {
                                 });
                             }
                             console.log(`[find_image] full-page screenshot: ${shotIdx} shot(s) of ${String(pg.url).slice(0, 120)}`);
-                        } catch (_) { /* best-effort per page */ }
+                            if (!shotIdx) screenshotFailures.push({ url: pg.url, reason: 'page rendered but produced no capturable frame' });
+                        } catch (e) {
+                            const why = String((e && e.message) || e).split('\n')[0].slice(0, 200);
+                            screenshotFailures.push({ url: pg.url, reason: why });
+                            console.log(`[find_image] page screenshot threw (${why.slice(0, 120)}): ${String(pg.url).slice(0, 120)}`);
+                        }
                     }
+                } else if (wantScreenshot && pageUrls.length) {
+                    for (const pg of pageUrls.slice(0, 2)) screenshotFailures.push({ url: pg.url, reason: 'browser capture is not available on this server' });
                 }
                 // Extract rendered images from any page URLs via Playwright
                 // (bounded — the pool is small). Largest images first.
@@ -27693,6 +27858,21 @@ app.use((req, res) => {
 
                 const out = await finalize(images, pageUrls.length ? (wantScreenshot ? 'screenshot' : 'page-extract') : 'provided');
                 if (out) return out;
+                // A screenshot ask that captured nothing must FAIL LOUDLY. It used
+                // to fall through to the built-in image SEARCH, which returned a
+                // picture of some unrelated site that the model then presented
+                // as "the screenshot" (live: an OSINT turn showed hazeloconnor.net's
+                // og:image for hazelcolonnade.net). Say what happened per page so
+                // the model can report it instead of retrying.
+                if (wantScreenshot && pageUrls.length) {
+                    const fails = screenshotFailures.length ? screenshotFailures : pageUrls.slice(0, 2).map(pg => ({ url: pg.url, reason: 'no screenshot could be captured' }));
+                    return {
+                        success: false,
+                        error: 'screenshot_failed',
+                        message: `Could not screenshot the page: ${fails.map(f => `${f.url} — ${f.reason}`).join('; ')}. No screenshot is available; tell the user the page did not load / could not be captured and continue with the rest of the task. Do NOT search for images of the site instead, and do not retry the same URL.`,
+                        failures: fails,
+                    };
+                }
                 // Every provided image is already displayed earlier in this
                 // reply — succeed with a note instead of falling through to the
                 // built-in search (which would fetch unrelated pictures).
