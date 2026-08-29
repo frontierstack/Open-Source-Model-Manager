@@ -1293,7 +1293,7 @@ function buildChatRuntimePrelude() {
         `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
-        `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
+        `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. The sandbox has NO web browser and cannot install one (no Chromium, 64 MB /tmp) — playwright/puppeteer/selenium there are refused; to TEST or PREVIEW an HTML/JS/React page you wrote, call preview_html (real headless browser: console errors, exceptions, blank-canvas check, screenshot). When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -20423,6 +20423,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     preflightForcedTools.add('list_directory');
                     preflightForcedTools.add('grep_code');
                     if (ws.repos.length) preflightForcedTools.add('scan_source_files');
+                    // A page the model wrote earlier is the thing a follow-up
+                    // ("it doesn't display", "test it") is about — make sure the
+                    // browser tester is on the table.
+                    if (ws.files.some(f => /\.html?$/i.test(String(f.rel || '')))) preflightForcedTools.add('preview_html');
                     logChatActivity(`Workspace pre-flight: surfaced ${ws.repos.length} repo(s) + ${ws.files.length + ws.dirs.length} path(s) persisting from earlier turns`);
                     console.log(`[Chat Stream] Workspace pre-flight: ${ws.repos.length} repo(s) + ${ws.files.length} file(s) + ${ws.dirs.length} dir(s) surfaced for conv ${String(conversationId).slice(0, 12)}…${ws.truncated ? ' (truncated)' : ''}`);
                 }
@@ -20641,6 +20645,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // the streak, so a wide read of N distinct files or a write→run→fix
         // debug cycle never trips it.
         const progressLedger = loopGuard.makeProgressLedger();
+        // Same-error streak: three consecutive results from one tool carrying the
+        // same error CLASS (ENOSPC, Cannot find module 'x', permission denied…)
+        // are non-progress even when the runner said success:true and the bytes
+        // differ (live: run_node ×5 with ENOSPC, each scored as progress).
+        const errorStreak = loopGuard.makeErrorStreakTracker();
         // Dead rounds: a round whose EVERY call was refused (guard nudge,
         // quarantine, prohibition) did zero work. LOOP_DEAD_ROUNDS_CHECKPOINT in
         // a row spends the checkpoint; LOOP_DEAD_ROUNDS_MAX in a row forces
@@ -22350,13 +22359,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         let netScript = false;
                         let degenerateCode = null;
                         let netScriptRefusal = null;
+                        // (c) a script/install that needs a BROWSER in the sandbox can
+                        //     never work (no Chromium, 64 MB /tmp, gVisor) — refused
+                        //     outright and steered to the server-side browser tools.
+                        let browserRefusal = null;
+                        if (call.function.name === 'run_npm') {
+                            try {
+                                const a = JSON.parse(call.function.arguments || '{}');
+                                if (loopGuard.commandInstallsBrowser(a.command)) browserRefusal = { what: `npm ${String(a.command || '').slice(0, 80)}` };
+                            } catch (_) { /* */ }
+                        }
                         if (call.function.name === 'run_python' || call.function.name === 'run_node') {
                             try {
                                 const a = JSON.parse(call.function.arguments || '{}');
                                 const code = String(a.code || '');
                                 if (code) {
                                     degenerateCode = loopGuard.toolArgsDegenerationReason(code, { minChars: 4000 });
-                                    netScript = !degenerateCode && loopGuard.codeMakesNetworkRequests(code);
+                                    if (!degenerateCode && loopGuard.codeNeedsBrowser(code)) browserRefusal = { what: 'this script (it requires/launches/installs a browser)' };
+                                    netScript = !degenerateCode && !browserRefusal && loopGuard.codeMakesNetworkRequests(code);
                                     if (netScript) {
                                         const priorNet = historySnapshot.filter(h => h.netScript).length;
                                         const webUsable = fullByName.has('web') && !blockedToolNames.has('web') && !blockedToolNames.has('fetch_url');
@@ -22375,6 +22395,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 message: `This ${call.function.name} call was refused and did not run: the script is not a program — ${degenerateCode}. A script does ONE focused thing in well under 80 lines; loop over a list of keywords instead of writing one statement per keyword. Write a small script, or — if you already have what you need — answer the user now.`,
                             };
                             console.warn(`[Chat Stream] Degenerate ${call.function.name} script refused: ${degenerateCode}`);
+                        } else if (browserRefusal) {
+                            const usable = (n) => fullByName.has(n) && !blockedToolNames.has(n);
+                            const steer = ['preview_html', 'web', 'find_image'].filter(usable);
+                            nudge = {
+                                error: 'browser_not_available_in_sandbox',
+                                message: `Refused: ${browserRefusal.what} needs a web browser, and the sandbox has NONE and cannot get one — there is no Chromium/Firefox in the image, /tmp is a 64 MB tmpfs (a Playwright/Puppeteer browser download dies with ENOSPC every time), and no system libraries. playwright, puppeteer and selenium can never run inside run_node/run_python here. ` + (usable('preview_html')
+                                    ? `To test or preview a page YOU wrote, call preview_html with \`path\` set to the workspace file (e.g. /workspace/artifacts/<name>.html) — it renders the page in a real headless browser server-side and returns console errors, uncaught exceptions, failed script loads, a blank-canvas check and a screenshot; add \`actions\` to click/type/drag first. `
+                                    : '') + (usable('web') ? `For a PUBLIC website use web (mode:'browser' or 'interact')${usable('find_image') ? ' or find_image with screenshot:true' : ''}. ` : '') + 'Do NOT retry installing or launching a browser in the sandbox.',
+                                use_instead: steer,
+                            };
+                            for (const n of steer) { try { toolCtx._forcedToolNames?.add(n); } catch (_) { /* best effort */ } }
+                            console.warn(`[Chat Stream] Browser-in-sandbox refused: ${call.function.name} (${browserRefusal.what.slice(0, 60)}); steering to ${steer.join('/') || 'nothing available'}`);
                         } else if (netScriptRefusal) {
                             const t = netScriptRefusal.targets || [];
                             const tools = ['web', 'dns_lookup', 'virustotal_lookup', 'http_request'].filter(n => fullByName.has(n) && !blockedToolNames.has(n));
@@ -22974,6 +23006,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     execPath = JSON.parse(call.function.arguments || '{}').codeFile || null;
                                 } catch (_) { /* */ }
                             }
+                            const errorSig = loopGuard.errorSignature(resultMsg.content);
+                            const errStreak = errorStreak.record(recName, errorSig);
                             toolCallHistory.push({
                                 seq: ++historySeq,
                                 fp,
@@ -22994,6 +23028,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 toolName: recName,
                                 searchBlocked,
                                 searchEngineHost,
+                                errorSig,
                             });
                             if (toolCallHistory.length > 60) toolCallHistory.shift();
                             // Progress ledger (shape-agnostic): did this call teach
@@ -23002,7 +23037,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             // such calls in a row, the result carries a NON-blocking
                             // advisory (the call ran; the model just gets told the
                             // approach is not working and what happens next).
-                            const prog = progressLedger.record({ toolName: recName, resultHash: rh, failed: recFailed, empty: outcomeEmpty });
+                            const prog = progressLedger.record({ toolName: recName, resultHash: rh, failed: recFailed || errStreak.streak >= 2, empty: outcomeEmpty });
+                            if (errStreak.advise) {
+                                resultMsg = attachAdvisory(resultMsg,
+                                    `Loop guard: ${recName} has now hit the SAME error ${errStreak.streak} times in a row — "${errorSig}". Changing the arguments has not changed the outcome; the environment is refusing this operation, not your code. Stop retrying it. ` +
+                                    (errorSig === 'ENOSPC' ? 'ENOSPC here means the sandbox\'s 64 MB /tmp is full — large downloads/installs (browsers, big packages) can never fit; use a purpose-built tool instead. ' : '') +
+                                    (/^module-not-found:/.test(errorSig) ? 'The module is not installed in the sandbox; if run_npm/pip cannot install it, do the job with a built-in or a different tool. ' : '') +
+                                    'Either use a DIFFERENT tool that provides this capability, or answer the user now and say plainly what could not be done.');
+                                console.warn(`[Chat Stream] Same-error streak: ${recName} ×${errStreak.streak} "${errorSig}"`);
+                                logChatActivity(`Loop guard: ${recName} hit the same error ${errStreak.streak}× in a row ("${errorSig}") — told the model to stop retrying`);
+                            }
                             if (!prog.progress && progressLedger.shouldAdvise()) {
                                 progressLedger.markAdvised();
                                 const sum = progressLedger.summary();
@@ -28542,6 +28586,223 @@ app.use((req, res) => {
             } catch (e) {
                 return { url, success: false, error: e.message || String(e) };
             }
+        },
+    });
+
+    // ----- preview_html ---------------------------------------------------
+    // The ONLY browser the platform can offer for testing a page the model
+    // WROTE. The sandbox has no Chromium and cannot get one (no system libs,
+    // 64 MB /tmp tmpfs, gVisor); live-observed: "test it in playwright" →
+    // 17 run_node + 3 run_npm calls npm-installing playwright and downloading
+    // chromium, ENOSPC ×5, zero answer, user hit Stop. This renders the
+    // workspace file in the webapp's real headless Chromium and returns what a
+    // developer would read off DevTools: console errors, uncaught exceptions,
+    // failed CDN/asset loads, a DOM summary, per-canvas blank detection and a
+    // screenshot (displayed inline via imageSpec, like find_image).
+    tools.registerTool({
+        name: 'preview_html',
+        build() {
+            if (!playwrightEnabled || !playwrightService || typeof playwrightService.renderLocalPage !== 'function') return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'preview_html',
+                    description:
+                        'Test/preview an HTML, JS, React or canvas page YOU WROTE in a real headless browser: console errors, exceptions, failed script loads, blank-canvas check, screenshot. ' +
+                        'Pass `path` (a workspace file such as /workspace/artifacts/app.html) or inline `html`. Use this whenever the user says a page you built does not load/display/work, ' +
+                        'asks to test it in a browser/Playwright, or before delivering an interactive page — the sandbox (run_node/run_python) has NO browser and cannot install one. ' +
+                        'Optional `actions` (click/type/hover/press/wait/mouse-drag) exercise the page before the checks; `waitMs` lets animations run. For a PUBLIC website use web/find_image instead.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Workspace path of the page to test, e.g. /workspace/artifacts/lava.html (a bare filename is searched for).' },
+                            html: { type: 'string', description: 'Inline HTML to render instead of a file (small pages only).' },
+                            waitMs: { type: 'integer', description: 'Milliseconds to let the page run after load before inspecting (default 3000, max 15000). Raise for animations/async data.' },
+                            actions: {
+                                type: 'array',
+                                description: 'Interactions to perform after load, in order. Items: {type:"click",selector}, {type:"type",selector,text}, {type:"hover",selector}, {type:"press",key}, {type:"wait",ms}, {type:"mouse",x,y,dx,dy} (press-drag on a canvas).',
+                                items: { type: 'object' },
+                            },
+                            viewport: { type: 'object', description: '{width,height} in CSS px (default 1280×800).' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            if (!playwrightEnabled || !playwrightService || typeof playwrightService.renderLocalPage !== 'function') {
+                return { success: false, error: 'No browser is available on this host (Playwright is not installed in the webapp). Review the code statically instead.' };
+            }
+            const sandbox = require('./services/sandboxRunner');
+            const fsp = require('fs').promises;
+            const pathMod = require('path');
+            const inlineHtml = typeof args?.html === 'string' && args.html.trim() ? String(args.html) : null;
+            const reqPath = String(args?.path || args?.filePath || args?.file || '').trim();
+            let hostPath = null;
+            let displayPath = null;
+            let resolvedNote = null;
+            if (!inlineHtml) {
+                if (!reqPath) return { success: false, error: 'Pass `path` (a workspace .html file) or inline `html`.' };
+                let ws;
+                try {
+                    ws = await sandbox.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId ?? null, ctx?.workspaceBucket ?? null);
+                } catch (e) {
+                    return { success: false, error: `Workspace unavailable: ${e.message}` };
+                }
+                const rel = reqPath.replace(/^\/?workspace\/?/i, '').replace(/^\/+/, '');
+                const norm = pathMod.posix.normalize(rel);
+                if (!norm || norm === '.' || norm.startsWith('..')) return { success: false, error: 'path must be inside /workspace' };
+                const candidate = pathMod.join(ws.localInContainer, norm);
+                if (!candidate.startsWith(ws.localInContainer + pathMod.sep)) return { success: false, error: 'path must be inside /workspace' };
+                let exists = false;
+                try { exists = (await fsp.stat(candidate)).isFile(); } catch (_) { exists = false; }
+                if (exists) { hostPath = candidate; displayPath = '/workspace/' + norm; }
+                else {
+                    // Bounded search for the basename (artifacts/ preferred), so a
+                    // model that remembers "lava.html" but not the directory still
+                    // gets a render instead of a not-found retry loop.
+                    const base = pathMod.posix.basename(norm).toLowerCase();
+                    const hits = [];
+                    const htmlFiles = [];
+                    const toWs = (full) => '/workspace/' + pathMod.relative(ws.localInContainer, full).split(pathMod.sep).join('/');
+                    const walk = async (dir, depth) => {
+                        if (depth > 6 || hits.length > 50) return;
+                        let ents = [];
+                        try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch (_) { return; }
+                        for (const e of ents) {
+                            if (e.name === 'node_modules' || e.name === '.git' || e.name === '.deps') continue;
+                            const full = pathMod.join(dir, e.name);
+                            if (e.isDirectory()) await walk(full, depth + 1);
+                            else {
+                                if (/\.html?$/i.test(e.name) && htmlFiles.length < 40) htmlFiles.push(toWs(full));
+                                if (e.name.toLowerCase() === base) hits.push(full);
+                            }
+                        }
+                    };
+                    await walk(ws.localInContainer, 0);
+                    hits.sort((a, b) => (b.includes('/artifacts/') ? 1 : 0) - (a.includes('/artifacts/') ? 1 : 0));
+                    if (hits.length === 1 || (hits.length > 1 && hits[0].includes('/artifacts/') && !hits[1].includes('/artifacts/'))) {
+                        hostPath = hits[0];
+                        displayPath = toWs(hostPath);
+                        resolvedNote = `"${reqPath}" was not found; rendered ${displayPath} (same filename). Use that exact path from now on.`;
+                    } else {
+                        return {
+                            success: false,
+                            error: `File not found: ${reqPath}`,
+                            ...(hits.length > 1 ? { ambiguous: hits.map(toWs) } : {}),
+                            htmlFilesInWorkspace: htmlFiles,
+                            hint: htmlFiles.length ? 'Pass one of the listed paths verbatim.' : 'No .html files exist in this workspace yet — write the page with create_file first (under /workspace/artifacts/).',
+                        };
+                    }
+                }
+            }
+
+            const waitMs = Math.max(0, Math.min(15000, parseInt(args?.waitMs, 10) || 3000));
+            const actions = Array.isArray(args?.actions) ? args.actions : [];
+            const viewport = (args?.viewport && typeof args.viewport === 'object') ? { width: +args.viewport.width || 1280, height: +args.viewport.height || 800 } : { width: 1280, height: 800 };
+            let r;
+            try {
+                r = await playwrightService.renderLocalPage({ filePath: hostPath, html: inlineHtml, waitMs, actions, viewport, timeout: 20000 });
+            } catch (e) {
+                return { success: false, error: `Render failed: ${String(e && e.message || e).split('\n')[0].slice(0, 300)}`, path: displayPath || undefined };
+            }
+
+            const isBabelNoise = (t) => /in-browser Babel transformer/i.test(t);
+            const consoleErrors = r.console.filter(m => m.type === 'error').slice(0, 20);
+            const consoleWarnings = r.console.filter(m => m.type === 'warning' && !isBabelNoise(m.text));
+            const scriptFailures = r.failedRequests.filter(f => f.resourceType === 'script');
+            const dom = r.dom || {};
+            const canvases = Array.isArray(dom.canvases) ? dom.canvases : [];
+            const visibleCanvases = canvases.filter(c => c.visible);
+            const blankCanvases = visibleCanvases.filter(c => c.blank);
+            const findings = [];
+            for (const e of r.pageErrors.slice(0, 10)) {
+                const frame = e.stack ? (e.stack.split('\n')[1] || '').trim() : '';
+                findings.push(`Uncaught exception: ${e.message}${frame ? ` (${frame})` : ''}`);
+            }
+            for (const f of scriptFailures.slice(0, 10)) findings.push(`Script failed to load: ${f.url} — ${f.error}`);
+            for (const f of r.failedRequests.filter(f => f.resourceType !== 'script').slice(0, 10)) findings.push(`Asset failed to load (${f.resourceType}): ${f.url} — ${f.error}`);
+            for (const m of consoleErrors.slice(0, 10)) if (!/Failed to load resource/i.test(m.text)) findings.push(`console.error: ${m.text}${m.at ? ` [${m.at}]` : ''}`);
+            for (const c of blankCanvases) {
+                findings.push(`Canvas ${c.width}×${c.height} (displayed at ${c.cssWidth}×${c.cssHeight} CSS px) is BLANK — every sampled pixel is the same color ${JSON.stringify(c.firstPixel)}. Nothing is being drawn into the visible canvas: check the draw call's destination coordinates/size against the canvas backing-store size (${c.width}×${c.height}), that the draw loop actually runs (requestAnimationFrame started, no early return), and that what is drawn lands inside 0..${c.width} × 0..${c.height}.`);
+            }
+            // Error-class → cause hints (see services/previewHints.js): the raw
+            // browser text points at babel.min.js / the wrong line and the model
+            // fixes the wrong thing (live: 8 CDN-tag rewrites for a stray import).
+            let diagnosis = [];
+            try { diagnosis = require('./services/previewHints').previewErrorHints(r.pageErrors, dom); } catch (_) { diagnosis = []; }
+            const nothingVisible = (dom.visibleElements === 0) || ((dom.bodyTextChars || 0) === 0 && canvases.length === 0 && (dom.svgCount || 0) === 0 && (dom.imgCount || 0) === 0);
+            if (nothingVisible && !r.pageErrors.length) findings.push(`Nothing rendered: ${dom.mountPoint || 'body'} has ${dom.mountPointChildren || 0} children and the page has no visible text, canvas, svg or images.`);
+            if (dom.brokenImages) findings.push(`${dom.brokenImages} <img> element(s) failed to load.`);
+
+            let verdict = 'ok';
+            if (r.pageErrors.length || scriptFailures.length) verdict = 'errors';
+            else if (blankCanvases.length && blankCanvases.length === visibleCanvases.length) verdict = 'blank';
+            else if (nothingVisible) verdict = 'blank';
+            else if (consoleErrors.length || r.failedRequests.length) verdict = 'warnings';
+
+            // Screenshot → inline tile (same imageSpec contract as find_image;
+            // the stream handler strips the data URL from the model-facing copy).
+            let imageSpec;
+            if (r.screenshot && r.screenshot.length) {
+                let dataUrl = null;
+                try {
+                    const { Jimp } = require('jimp');
+                    const image = await Jimp.read(r.screenshot);
+                    if (image.bitmap.width > 1024) image.resize({ w: 1024 });
+                    const out = await image.getBuffer('image/jpeg', { quality: 80 });
+                    dataUrl = `data:image/jpeg;base64,${out.toString('base64')}`;
+                } catch (_) {
+                    if (r.screenshot.length <= 2_500_000) dataUrl = `data:image/png;base64,${r.screenshot.toString('base64')}`;
+                }
+                if (dataUrl) {
+                    imageSpec = {
+                        query: `preview of ${displayPath || 'inline html'}`,
+                        images: [{
+                            url: `preview://${displayPath || 'inline'}#shot-${Date.now().toString(36)}`,
+                            thumbnail: dataUrl,
+                            title: `Browser preview — ${r.title || displayPath || 'page'} (${verdict})`,
+                            source: 'screenshot',
+                            sourceUrl: null,
+                            license: null,
+                            attribution: null,
+                        }],
+                    };
+                }
+            }
+
+            const summary = verdict === 'ok'
+                ? `Page loaded with no errors: ${dom.elementCount || 0} elements, ${dom.visibleElements || 0} visible, ${canvases.length} canvas(es)${canvases.length ? ` (${canvases.filter(c => !c.blank).length} drawing, ${blankCanvases.length} blank)` : ''}, ${r.requests.ok}/${r.requests.total} requests ok.`
+                : `Page has problems (${verdict}): ${findings.length} finding(s) — ${findings.slice(0, 3).join(' | ').slice(0, 600)}${diagnosis.length ? ` || LIKELY CAUSE: ${diagnosis[0].slice(0, 400)}` : ''}`;
+            try { if (ctx?.userId) logUserActivity(ctx.userId, `Browser preview: ${displayPath || 'inline html'} → ${verdict}${findings.length ? ` (${findings.length} finding(s))` : ''} in ${r.elapsedMs} ms`); } catch (_) { /* */ }
+            console.log(`[preview_html] ${displayPath || 'inline'} → ${verdict} in ${r.elapsedMs} ms; errors=${r.pageErrors.length} consoleErr=${consoleErrors.length} failedReq=${r.failedRequests.length} canvases=${canvases.length} blank=${blankCanvases.length}`);
+            return {
+                success: true,
+                path: displayPath || undefined,
+                verdict,
+                summary,
+                findings,
+                ...(diagnosis.length ? { diagnosis } : {}),
+                pageErrors: r.pageErrors,
+                consoleErrors,
+                ...(consoleWarnings.length ? { consoleWarnings: { count: consoleWarnings.length, sample: consoleWarnings.slice(0, 5) } } : {}),
+                failedRequests: r.failedRequests,
+                requests: r.requests,
+                dom: {
+                    title: dom.title, bodyTextChars: dom.bodyTextChars, bodyTextPreview: dom.bodyTextPreview, elementCount: dom.elementCount,
+                    visibleElements: dom.visibleElements, mountPoint: dom.mountPoint, mountPointChildren: dom.mountPointChildren,
+                    scripts: dom.scripts, svgCount: dom.svgCount, imgCount: dom.imgCount, brokenImages: dom.brokenImages,
+                },
+                canvases,
+                ...(r.actions && r.actions.length ? { actions: r.actions } : {}),
+                elapsedMs: r.elapsedMs,
+                ...(resolvedNote ? { note: resolvedNote } : {}),
+                ...(imageSpec ? { imageSpec } : {}),
+                hint: verdict === 'ok'
+                    ? 'The page renders. If the user still reports a problem, ask what they see and reproduce it with `actions`.'
+                    : 'Fix the code (replace_lines / create_file), then call preview_html again to confirm before re-delivering with make_downloadable.',
+            };
         },
     });
 

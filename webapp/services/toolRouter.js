@@ -97,6 +97,12 @@ const INTENT_RULES = [
     // (observed: 15 tool calls, no image, on a "extract the main image" ask).
     [/\b(extract|grab|pull|capture|fetch|scrape|display|show|save)\b[^.\n]{0,60}\b(main |hero |lead |og:?|cover )?(image|picture|photo|img|thumbnail)s?\b|\b(image|picture|photo)s?\b[^.\n]{0,40}\bfrom (this|that|the|a) (page|site|url|link|article|listing)/i, ['find_image']],
     [/\bscreen ?shot|\bsnapshot of\b/i, ['find_image']],
+    // Testing/previewing a page the MODEL wrote ("test it in playwright", "the
+    // animator isn't displaying", "console error …", "blank canvas"). Without
+    // this the model tries to build a browser INSIDE the sandbox (17 run_node
+    // calls, ENOSPC ×5, no answer). Anchored to a page/html/canvas/app word so
+    // "the search isn't working" does not drag it in.
+    [/^(?=[\s\S]*\b(html|page|canvas|animat\w*|browser|react|webpage|web ?app|playwright|puppeteer|chrome|chromium|headless|console)\b)[\s\S]*(\b(test|check|verify|preview|render|open|load|run|debug|try)\b[^.\n]{0,50}\b(in (a |the |my |an? )?(browser|playwright|puppeteer|chrome|chromium|headless)|html (file|page)|\.html\b|web ?page)|\b(isn'?t|not|doesn'?t|won'?t|nothing|no longer|still not|fails? to) (displaying|rendering|showing|loading|working|shows?|renders?|displays?|appears?|loads?|works?)\b|\b(blank|black|empty|white) (page|screen|canvas)\b|\b(page|screen|canvas|animation|animator|app) (is|looks|stays|remains|appears|renders|comes up) (blank|black|empty|white|frozen|dead)\b|\bconsole (error|log|warning)s?\b|\buncaught\b|\breferenceerror\b|\btypeerror\b)/i, ['preview_html']],
     [/\b(video|clip|movie|footage|trailer)\b|play (me )?a|watch a/i, ['find_video']],
     [/\.(xlsx|xls|csv)\b|spreadsheet|excel/i, ['read_xlsx', 'create_xlsx']],
     [/\btranscri|\.(mp3|wav|m4a|flac|ogg)\b|audio (file|clip)/i, ['transcribe_audio']],

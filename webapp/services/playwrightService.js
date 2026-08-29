@@ -2313,6 +2313,203 @@ async function screenshotPageImages(url, options = {}) {
     }
 }
 
+
+/**
+ * Render a LOCAL HTML document (a file the model wrote into the workspace, or
+ * inline markup) in a real headless Chromium and report what a developer
+ * would read off DevTools: console errors/warnings, uncaught exceptions,
+ * failed network requests (CDN scripts that never loaded), a DOM summary,
+ * per-canvas blank detection, and a screenshot. This is the ONLY browser the
+ * platform can offer for testing generated pages — the sandbox has no
+ * Chromium and cannot install one (64 MB /tmp, gVisor), so a model that tries
+ * spends a whole turn on ENOSPC (live-observed, 21 tool calls, no answer).
+ *
+ * Not stealth: it is our own document. file:// so relative assets next to
+ * the file (chart.png, style.css written by an earlier tool) resolve; remote
+ * CDN scripts load through the webapp's normal network.
+ *
+ * @param {object} opts
+ * @param {string} [opts.filePath]   absolute path of the .html on this host
+ * @param {string} [opts.html]       inline markup (written to a temp file)
+ * @param {number} [opts.waitMs]     settle time after load (default 3000)
+ * @param {Array}  [opts.actions]    [{type:'click'|'type'|'wait'|'press'|'hover', selector, text, key, ms}]
+ * @param {object} [opts.viewport]   {width,height} default 1280×800
+ * @param {number} [opts.timeout]    navigation timeout (default 20000)
+ */
+async function renderLocalPage(opts = {}) {
+    const {
+        filePath = null,
+        html = null,
+        waitMs = 3000,
+        actions = [],
+        viewport = { width: 1280, height: 800 },
+        timeout = 20000,
+        screenshot = true,
+    } = opts;
+    if (!filePath && typeof html !== 'string') throw new Error('renderLocalPage: filePath or html required');
+    const fs = require('fs');
+    const path = require('path');
+
+    let tmpFile = null;
+    let target = filePath;
+    if (!target) {
+        const os = require('os');
+        const crypto = require('crypto');
+        tmpFile = path.join(os.tmpdir(), `preview-${crypto.randomBytes(6).toString('hex')}.html`);
+        await fs.promises.writeFile(tmpFile, html, 'utf8');
+        target = tmpFile;
+    }
+    const fileUrl = 'file://' + path.resolve(target);
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+    const consoleMsgs = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    const requests = { total: 0, ok: 0 };
+    const started = Date.now();
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext({
+            viewport: { width: Math.max(320, Math.min(2560, viewport.width | 0 || 1280)), height: Math.max(240, Math.min(2000, viewport.height | 0 || 800)) },
+            ignoreHTTPSErrors: true,
+            deviceScaleFactor: 1,
+        });
+        page = await context.newPage();
+        page.on('console', (m) => {
+            if (consoleMsgs.length >= 200) return;
+            let loc = '';
+            try { const l = m.location(); if (l && l.url) loc = `${l.url.replace(/^file:\/\/.*\//, '')}:${l.lineNumber || 0}`; } catch (_) {}
+            consoleMsgs.push({ type: m.type(), text: String(m.text() || '').slice(0, 600), ...(loc ? { at: loc } : {}) });
+        });
+        page.on('pageerror', (e) => {
+            if (pageErrors.length >= 50) return;
+            const msg = (e && (e.message || String(e))) || 'error';
+            const stack = e && e.stack ? String(e.stack).split('\n').slice(0, 4).join('\n') : '';
+            pageErrors.push({ message: String(msg).slice(0, 600), ...(stack ? { stack: stack.slice(0, 800) } : {}) });
+        });
+        page.on('request', () => { requests.total++; });
+        page.on('requestfinished', () => { requests.ok++; });
+        page.on('requestfailed', (r) => {
+            if (failedRequests.length >= 50) return;
+            const f = r.failure();
+            failedRequests.push({ url: String(r.url()).slice(0, 300), error: (f && f.errorText) || 'failed', resourceType: r.resourceType() });
+        });
+        page.on('response', (r) => {
+            try {
+                if (r.status() >= 400 && failedRequests.length < 50) {
+                    failedRequests.push({ url: String(r.url()).slice(0, 300), error: `HTTP ${r.status()}`, resourceType: r.request().resourceType() });
+                }
+            } catch (_) {}
+        });
+
+        await page.goto(fileUrl, { timeout, waitUntil: 'load' });
+        try { await page.waitForLoadState('networkidle', { timeout: Math.min(8000, timeout) }); } catch (_) {}
+        await page.waitForTimeout(Math.max(0, Math.min(15000, waitMs | 0)));
+
+        const actionLog = [];
+        for (const a of (Array.isArray(actions) ? actions.slice(0, 12) : [])) {
+            const t = String(a && a.type || '').toLowerCase();
+            try {
+                if (t === 'click' && a.selector) { await page.click(String(a.selector), { timeout: 4000 }); actionLog.push({ ok: true, action: `click ${a.selector}` }); }
+                else if (t === 'hover' && a.selector) { await page.hover(String(a.selector), { timeout: 4000 }); actionLog.push({ ok: true, action: `hover ${a.selector}` }); }
+                else if (t === 'type' && a.selector) { await page.fill(String(a.selector), String(a.text || ''), { timeout: 4000 }); actionLog.push({ ok: true, action: `type into ${a.selector}` }); }
+                else if (t === 'press') { await page.keyboard.press(String(a.key || 'Enter')); actionLog.push({ ok: true, action: `press ${a.key || 'Enter'}` }); }
+                else if (t === 'wait') { await page.waitForTimeout(Math.max(0, Math.min(10000, (a.ms | 0) || 1000))); actionLog.push({ ok: true, action: `wait ${(a.ms | 0) || 1000}ms` }); }
+                else if (t === 'mouse' && a.x != null) { await page.mouse.move(+a.x, +a.y || 0); await page.mouse.down(); await page.mouse.move((+a.x) + ((a.dx | 0) || 40), (+a.y || 0) + ((a.dy | 0) || 40), { steps: 8 }); await page.mouse.up(); actionLog.push({ ok: true, action: `drag from ${a.x},${a.y}` }); }
+                else actionLog.push({ ok: false, action: JSON.stringify(a).slice(0, 120), error: 'unknown action (click|hover|type|press|wait|mouse)' });
+            } catch (e) {
+                actionLog.push({ ok: false, action: `${t} ${a.selector || ''}`.trim(), error: String(e && e.message || e).split('\n')[0].slice(0, 200) });
+            }
+        }
+        if (actionLog.length) await page.waitForTimeout(800);
+
+        // DOM + canvas inspection. Canvas "blank" = every sampled pixel equals
+        // the first one (uniform) — a black canvas and an all-white canvas are
+        // both blank; a rendered scene is not. WebGL canvases are sampled via
+        // toDataURL into a 2d copy (works when preserveDrawingBuffer is on;
+        // otherwise reported as unsampled, never as blank).
+        const dom = await page.evaluate(() => {
+            const out = {};
+            out.title = document.title || '';
+            const body = document.body;
+            const text = body ? (body.innerText || '') : '';
+            out.bodyTextChars = text.length;
+            out.bodyTextPreview = text.replace(/\s+/g, ' ').trim().slice(0, 400);
+            out.elementCount = document.getElementsByTagName('*').length;
+            const root = document.getElementById('root') || document.getElementById('app') || document.querySelector('main') || body;
+            out.mountPoint = root ? `${root.tagName.toLowerCase()}${root.id ? '#' + root.id : ''}` : null;
+            out.mountPointChildren = root ? root.children.length : 0;
+            out.visibleElements = body ? Array.from(body.querySelectorAll('*')).filter(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).length : 0;
+            out.scripts = Array.from(document.scripts).map(s => ({ src: s.src ? s.src.slice(0, 160) : null, type: s.type || 'text/javascript', inlineChars: s.src ? 0 : (s.textContent || '').length }));
+            const canvases = [];
+            for (const c of Array.from(document.querySelectorAll('canvas')).slice(0, 8)) {
+                const rect = c.getBoundingClientRect();
+                const entry = { width: c.width, height: c.height, cssWidth: Math.round(rect.width), cssHeight: Math.round(rect.height), visible: rect.width > 0 && rect.height > 0 };
+                try {
+                    let ctx = c.getContext('2d');
+                    let src = c;
+                    if (!ctx) {
+                        // WebGL / bitmaprenderer: copy through an image
+                        entry.kind = 'webgl-or-other';
+                        const copy = document.createElement('canvas'); copy.width = c.width; copy.height = c.height;
+                        const cctx = copy.getContext('2d');
+                        try { cctx.drawImage(c, 0, 0); ctx = cctx; src = copy; } catch (_) { ctx = null; }
+                    } else entry.kind = '2d';
+                    if (ctx && c.width > 0 && c.height > 0) {
+                        const step = Math.max(1, Math.floor(Math.sqrt((c.width * c.height) / 4096)));
+                        const d = ctx.getImageData(0, 0, src.width, src.height).data;
+                        const r0 = d[0], g0 = d[1], b0 = d[2], a0 = d[3];
+                        let sampled = 0, differ = 0, transparent = 0, nonBlack = 0;
+                        for (let y = 0; y < src.height; y += step) for (let x = 0; x < src.width; x += step) {
+                            const o = (y * src.width + x) * 4; sampled++;
+                            if (d[o + 3] === 0) transparent++;
+                            if (d[o] || d[o + 1] || d[o + 2]) nonBlack++;
+                            if (Math.abs(d[o] - r0) > 8 || Math.abs(d[o + 1] - g0) > 8 || Math.abs(d[o + 2] - b0) > 8 || Math.abs(d[o + 3] - a0) > 8) differ++;
+                        }
+                        entry.sampledPixels = sampled;
+                        entry.nonUniformRatio = sampled ? +(differ / sampled).toFixed(3) : 0;
+                        entry.nonBlackRatio = sampled ? +(nonBlack / sampled).toFixed(3) : 0;
+                        entry.transparentRatio = sampled ? +(transparent / sampled).toFixed(3) : 0;
+                        entry.blank = sampled > 0 && differ / sampled < 0.002;
+                        entry.firstPixel = [r0, g0, b0, a0];
+                    } else if (!ctx) entry.unsampled = true;
+                } catch (e) { entry.unsampled = true; entry.error = String(e && e.message || e).slice(0, 120); }
+                canvases.push(entry);
+            }
+            out.canvases = canvases;
+            out.svgCount = document.querySelectorAll('svg').length;
+            out.imgCount = document.images.length;
+            out.brokenImages = Array.from(document.images).filter(i => i.complete && i.naturalWidth === 0 && i.src).length;
+            return out;
+        }).catch((e) => ({ error: String(e && e.message || e).slice(0, 200) }));
+
+        let shot = null;
+        if (screenshot) {
+            try { shot = await page.screenshot({ type: 'png', fullPage: false }); } catch (_) { shot = null; }
+        }
+        return {
+            success: true,
+            url: fileUrl,
+            title: dom.title || '',
+            elapsedMs: Date.now() - started,
+            console: consoleMsgs,
+            pageErrors,
+            failedRequests,
+            requests,
+            dom,
+            actions: actionLog,
+            screenshot: shot,
+        };
+    } finally {
+        try { if (page) await page.close(); } catch (_) {}
+        try { if (context) await context.close(); } catch (_) {}
+        if (poolEntry) releaseBrowser(poolEntry);
+        if (tmpFile) { try { await fs.promises.unlink(tmpFile); } catch (_) {} }
+    }
+}
+
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
@@ -2322,6 +2519,7 @@ module.exports = {
     sniffMediaStreams,
     extractPageImages,
     screenshotPageImages,
+    renderLocalPage,
     cleanup,
     getPoolStatus
 };

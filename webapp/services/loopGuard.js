@@ -654,6 +654,111 @@ function codeNetworkTargets(code, cap = 8) {
     return out;
 }
 
+
+// ---------------------------------------------------------------------------
+// Browser-in-sandbox detection
+// ---------------------------------------------------------------------------
+// The sandbox has NO browser and cannot get one: no Chromium/Firefox in the
+// image, no system libs, /tmp is a 64 MB tmpfs (a Playwright browser download
+// unpacks ~150 MB there and dies ENOSPC), and gVisor. Live-observed: "test it
+// in playwright" -> 17 run_node + 3 run_npm calls trying to npm-install
+// playwright and download chromium, ENOSPC five times, no answer. A script
+// that requires/launches/installs a browser is refused at dispatch and steered
+// to the server-side browser tools (preview_html for a page the model wrote,
+// web / find_image for a public URL).
+const BROWSER_CODE_RE = /require\(\s*['"](?:[^'"]*\/node_modules\/)?(playwright(?:-core|-chromium|-firefox|-webkit)?|puppeteer(?:-core)?|selenium-webdriver|chromedriver|@playwright\/test)['"]\s*\)|\bfrom\s+['"](playwright|puppeteer(?:-core)?)['"]|\bfrom\s+playwright(?:\.\w+)*\s+import\b|\bimport\s+playwright\b|\bfrom\s+selenium\b|\bimport\s+selenium\b|\bfrom\s+pyppeteer\b|\b(chromium|firefox|webkit)\.launch(?:_persistent_context)?\s*\(|\bpuppeteer\.launch\s*\(|\bsync_playwright\s*\(|\basync_playwright\s*\(|\bwebdriver\.(Chrome|Firefox|Edge|Safari)\s*\(|\b(?:npx\s+)?playwright(?:-core)?\s+install\b|\bpip3?\s+install\b[^\n;&|]*\b(playwright|selenium|pyppeteer)\b|\bnpm\s+(?:i|install|add)\b[^\n;&|]*\b(playwright(?:-core)?|puppeteer(?:-core)?|selenium-webdriver)\b|\bapt(?:-get)?\s+install\b[^\n;&|]*\b(chromium|chromium-browser|google-chrome|firefox)\b|['"](?:pip3?|npm|npx)['"]\s*,\s*['"](?:install|i|add|exec)['"][^\]\n]*['"](playwright(?:-core)?|puppeteer(?:-core)?|selenium(?:-webdriver)?|pyppeteer|@playwright\/test)['"]/;
+function codeNeedsBrowser(code) {
+    return BROWSER_CODE_RE.test(String(code || ''));
+}
+// run_npm / pip-style install commands (the bare sub-command, no interpreter).
+const BROWSER_PKG_RE = /(^|\s)(playwright(?:-core|-chromium|-firefox|-webkit)?|@playwright\/test|puppeteer(?:-core)?|selenium-webdriver|chromedriver|pyppeteer|selenium)(@[^\s]*)?(\s|$)/i;
+function commandInstallsBrowser(command) {
+    const c = String(command || '').trim();
+    if (!/^(npm\s+)?(i|install|add|in|isntall|pip3?\s+install|exec|x)\b/i.test(c) && !/^playwright(?:-core)?\s+install\b/i.test(c)) return false;
+    return BROWSER_PKG_RE.test(c) || /\bplaywright(?:-core)?\s+install\b/i.test(c);
+}
+
+// ---------------------------------------------------------------------------
+// Error-class signature + same-error streak
+// ---------------------------------------------------------------------------
+// The progress ledger scores a call as progress when it succeeded, was
+// non-empty and its bytes are new. A script whose stderr says ENOSPC for the
+// fifth time passes all three (run_node reports success:true when the script
+// itself caught the error, and the bytes differ by an npm notice or a
+// timestamp). The environment is telling the model the same thing every
+// call; this extracts the CLASS of that message so a streak of identical
+// failures under different args is visible.
+const ERROR_SIG_RULES = [
+    [/\b(E[A-Z]{4,}|ERR_[A-Z_]{3,})\b/, (m) => m[1]],
+    [/Cannot find module '([^']+)'/, (m) => `module-not-found:${m[1].split('/').slice(0, m[1].startsWith('@') ? 2 : 1).join('/')}`],
+    [/ModuleNotFoundError: No module named '([^'.]+)/, (m) => `module-not-found:${m[1]}`],
+    [/ImportError: (?:cannot import name '[^']+' from '([^']+)'|No module named '([^']+)')/, (m) => `import-error:${m[1] || m[2]}`],
+    [/\bcommand not found\b|\bnot found in this environment\b|\bnpm not found\b|\bnode not found\b/, () => 'command-not-found'],
+    [/\b(Authentication failure|Permission denied|EACCES|Operation not permitted)\b/, () => 'permission-denied'],
+    [/\bno space left on device\b/i, () => 'ENOSPC'],
+    [/\b(TimeoutExpired|timed out after|ETIMEDOUT|Timeout \d+ms exceeded)\b/, () => 'timeout'],
+    [/\bHTTP (4\d\d|5\d\d)\b|\bstatus code (4\d\d|5\d\d)\b|\bResponse code (4\d\d|5\d\d)\b/, (m) => `http-${m[1] || m[2] || m[3]}`],
+    [/\b(SyntaxError|TypeError|ReferenceError|RangeError|KeyError|ValueError|AttributeError|IndexError|NameError|ZeroDivisionError|FileNotFoundError|IsADirectoryError|NotADirectoryError|UnicodeDecodeError|JSONDecodeError|OSError|IOError)\b(?::\s*([^\n]{0,60}))?/, (m) => m[1] + (m[2] ? ':' + m[2].replace(/['"`].*$/, '').replace(/\d+/g, '#').trim().slice(0, 40) : '')],
+];
+function errorSignature(resultText) {
+    let text = resultText;
+    if (text == null) return null;
+    if (typeof text !== 'string') { try { text = JSON.stringify(text); } catch (_) { return null; } }
+    if (!text || text.length > 400000) return null;
+    // Prefer the error-bearing fields when the result is JSON so a legit
+    // stdout mentioning "ENOENT" in prose is not mistaken for a failure.
+    let hay = text;
+    try {
+        const o = JSON.parse(text);
+        if (o && typeof o === 'object') {
+            const parts = [];
+            for (const k of ['error', 'stderr', 'message', 'detail', 'hint', 'traceback']) if (typeof o[k] === 'string' && o[k]) parts.push(o[k]);
+            if (o.success === false || (typeof o.returncode === 'number' && o.returncode !== 0) || (typeof o.exitCode === 'number' && o.exitCode !== 0)) {
+                if (typeof o.stdout === 'string' && o.stdout) parts.push(o.stdout.slice(-2000));
+            }
+            hay = parts.join('\n');
+            if (!hay) return null;
+        }
+    } catch (_) { /* plain text — scan as-is */ }
+    // Unescape the common JSON-in-string case ("stderr":"...\n...").
+    hay = hay.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    for (const [re, fn] of ERROR_SIG_RULES) {
+        const m = hay.match(re);
+        if (m) return fn(m);
+    }
+    return null;
+}
+
+/**
+ * Per-tool consecutive same-error tracker. record() returns the current
+ * streak length for that tool (1 = first occurrence, 0 = no error / streak
+ * broken). A call with no error signature breaks the tool's streak; a call
+ * with a DIFFERENT signature starts a new one. The caller treats a streak of
+ * ≥2 as non-progress and ≥`adviseAt` as advisory-worthy.
+ */
+function makeErrorStreakTracker(opts = {}) {
+    const adviseAt = opts.adviseAt ?? envInt('LOOP_SAME_ERROR_STREAK', 3);
+    const byTool = new Map(); // tool -> { sig, count, lastAdvisedAt }
+    return {
+        get adviseAt() { return adviseAt; },
+        record(toolName, sig) {
+            const name = toolName || 'tool';
+            if (!sig) { byTool.delete(name); return { streak: 0, sig: null, advise: false }; }
+            const cur = byTool.get(name);
+            let entry;
+            if (cur && cur.sig === sig) { cur.count++; entry = cur; }
+            else { entry = { sig, count: 1, lastAdvisedAt: 0 }; byTool.set(name, entry); }
+            let advise = false;
+            if (entry.count >= adviseAt && (entry.lastAdvisedAt === 0 || entry.count - entry.lastAdvisedAt >= 2)) {
+                entry.lastAdvisedAt = entry.count;
+                advise = true;
+            }
+            return { streak: entry.count, sig, advise };
+        },
+        streakFor(toolName) { const e = byTool.get(toolName || 'tool'); return e ? { sig: e.sig, count: e.count } : { sig: null, count: 0 }; },
+    };
+}
+
 module.exports = {
     canonicalArgs,
     stableStringify,
@@ -671,6 +776,10 @@ module.exports = {
     lineShape,
     codeMakesNetworkRequests,
     codeNetworkTargets,
+    codeNeedsBrowser,
+    commandInstallsBrowser,
+    errorSignature,
+    makeErrorStreakTracker,
     TOOL_ARGS_MAX_CHARS,
     TOOL_ARGS_LOOP_MIN_CHARS,
     REASONING_HARD_CAP,
