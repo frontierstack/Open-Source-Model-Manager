@@ -106,15 +106,15 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     # TOML reader for the parse_toml skill. Python 3.11+ also ships
     # tomllib in stdlib, but the skill imports tomli first.
     tomli==2.2.* \
-    # Knowledge Base embeddings (kb_engine.py). model2vec gives fast static
-    # CPU embeddings (pure numpy, no torch/onnx) for semantic retrieval.
+    # Embedding engine (embedding_engine.py): account-memory semantic index +
+    # tool-router index. model2vec gives fast static CPU embeddings (pure numpy).
     model2vec==0.8.*
 
-# Pre-fetch the KB embedding model so the first query is fast and the image
+# Pre-fetch the embedding model so the first query is fast and the image
 # works offline. Non-fatal: if the download is unavailable at build time the
 # engine fetches it at boot, or falls back to lexical hashing.
-RUN python3 -c "from model2vec import StaticModel; StaticModel.from_pretrained('minishlab/potion-retrieval-32M'); print('[kb] embedding model cached')" \
-    || echo "[kb] embedding model prefetch deferred to runtime"
+RUN python3 -c "from model2vec import StaticModel; StaticModel.from_pretrained('minishlab/potion-retrieval-32M'); print('[embed] embedding model cached')" \
+    || echo "[embed] embedding model prefetch deferred to runtime"
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium

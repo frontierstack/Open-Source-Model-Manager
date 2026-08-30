@@ -180,9 +180,9 @@ const automationEngine = require('./services/automationEngine');
 const workflowValidator = require('./services/workflowValidator');
 const workflowRunStore = require('./services/workflowRunStore');
 
-// Knowledge Base (RAG): per-user document collections + a resident CPU
-// embedding engine for fast top-k retrieval that keeps chat context small.
-const knowledgeBaseService = require('./services/knowledgeBaseService');
+// Resident CPU embedding engine (model2vec) shared by the account-memory
+// semantic index and the tool router's semantic catalog index.
+const embeddingEngine = require('./services/embeddingEngine');
 
 // Account-scoped memory: persona/fact memories that follow the user across all
 // conversations (replaces the old per-conversation store). Storage only — the
@@ -420,7 +420,7 @@ function timingSafeCompare(a, b) {
 let allowInternalNetworkFlag = false;
 function allowInternalNetwork() { return allowInternalNetworkFlag; }
 
-// Admin-configurable upload limit (MB) for base64-JSON uploads (chat + KB docs).
+// Admin-configurable upload limit (MB) for base64-JSON uploads (chat).
 // Persisted in system-settings.json; editable from the webchat Settings panel
 // via PUT /api/system-settings. The JSON body parser is rebuilt on change (see
 // rebuildJsonBodyParser) because uploads ride as base64 inside JSON (~4/3
@@ -760,6 +760,48 @@ function extractAgenticQuery(textContent) {
         }
     }
     return { queryPart: '', contentPart: textContent };
+}
+
+// Upload-OCR upscale policy (see the /api/chat/upload image branch).
+const OCR_UPSCALE_TARGET = parseInt(process.env.OCR_UPSCALE_TARGET_PX, 10) || 1800;
+const OCR_UPSCALE_MAX = parseInt(process.env.OCR_UPSCALE_MAX_FACTOR, 10) || 3;
+
+// Pixel dimensions from the header bytes of a PNG/JPEG/GIF/WebP/BMP buffer —
+// no decode, so it is safe to call on every upload. Returns null when unknown.
+function imageDimensions(buf, mime = '') {
+    try {
+        if (!Buffer.isBuffer(buf) || buf.length < 26) return null;
+        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+            return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+        }
+        if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+            return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+        }
+        if (buf[0] === 0x42 && buf[1] === 0x4D) {
+            return { width: Math.abs(buf.readInt32LE(18)), height: Math.abs(buf.readInt32LE(22)) };
+        }
+        if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+            const chunk = buf.toString('ascii', 12, 16);
+            if (chunk === 'VP8 ' && buf.length >= 30) return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+            if (chunk === 'VP8L' && buf.length >= 25) { const b = buf.readUInt32LE(21); return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 }; }
+            if (chunk === 'VP8X' && buf.length >= 30) return { width: (buf.readUIntLE(24, 3)) + 1, height: (buf.readUIntLE(27, 3)) + 1 };
+            return null;
+        }
+        if (buf[0] === 0xFF && buf[1] === 0xD8) {
+            let i = 2;
+            while (i + 9 < buf.length) {
+                if (buf[i] !== 0xFF) { i++; continue; }
+                const marker = buf[i + 1];
+                if (marker === 0xD8 || (marker >= 0xD0 && marker <= 0xD7) || marker === 0x01) { i += 2; continue; }
+                const len = buf.readUInt16BE(i + 2);
+                if ((marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+                    return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+                }
+                i += 2 + len;
+            }
+        }
+        return null;
+    } catch (_) { return null; }
 }
 
 // Human-readable byte size. Bytes < 1KB stay raw; otherwise append a KB/MB
@@ -1301,31 +1343,6 @@ function buildChatRuntimePrelude() {
     ].join('\n');
     _preludeCache = { day, text };
     return text;
-}
-
-// Build a concise system nudge telling the model it has searchable knowledge
-// base(s) and SHOULD consult them for on-topic questions. Without this, the
-// model answers on-topic questions from general knowledge and never calls
-// search_knowledge_base, so the user's uploaded documents look unused and
-// nothing about the KB ever appears in the process logs. Kept short and
-// filename-capped so it costs little even with large collections. Returns null
-// when there are no KBs (so it never injects noise for users without one).
-function buildKbNudge(kbs) {
-    if (!Array.isArray(kbs) || !kbs.length) return null;
-    const KB_CAP = 5, FN_CAP = 6;
-    const listed = kbs.slice(0, KB_CAP).map((kb) => {
-        const docs = kb.documents || [];
-        const files = docs.slice(0, FN_CAP).map((d) => d.filename).filter(Boolean).join(', ');
-        const more = docs.length > FN_CAP ? `, +${docs.length - FN_CAP} more` : '';
-        return `"${kb.name}" (${docs.length} file${docs.length === 1 ? '' : 's'}${files ? `: ${files}${more}` : ''})`;
-    }).join('; ');
-    return (
-        'KNOWLEDGE BASE AVAILABLE — this user has uploaded reference documents you can search with the search_knowledge_base tool: ' +
-        `${listed}. ` +
-        "When the user's question relates to the topics or files in these knowledge base(s), you MUST call search_knowledge_base FIRST — before answering — and base your answer on the retrieved passages, citing the source filename. " +
-        "These documents are the user's own preferred, authoritative sources: for topics they cover, this OVERRIDES the general 'answer from your own knowledge first' guidance above — search the knowledge base instead of replying from general knowledge. " +
-        'Only skip the search when the question is clearly unrelated to every listed document.'
-    );
 }
 
 /**
@@ -3217,13 +3234,13 @@ const broadcast = (data, targetUserId = null) => {
 
 // Emit a user-visible process-log line (Logs tab) from ANYWHERE — the chat
 // stream has its own scoped `logChatActivity`, but post-response work
-// (memory extraction) and bottom-of-file tool executes (record_learning,
-// search_knowledge_base) run outside that closure and still need to surface
+// (memory extraction) and bottom-of-file tool executes (record_learning)
+// run outside that closure and still need to surface
 // what they did. Same `[Chat]` prefix + per-user targeting so it lands in the
 // same stream the user already watches.
 const logUserActivity = (userId, message, level = 'info') => {
     if (!userId) return;
-    // Mirror to the server console too — memory/KB events are low-volume and
+    // Mirror to the server console too — memory events are low-volume and
     // server-side visibility helps debugging when no client WS is attached.
     console.log(`[Chat] ${message}`);
     try { broadcast({ type: 'log', message: `[Chat] ${message}`, level, targetUserId: userId }); }
@@ -15697,8 +15714,6 @@ const ACTIVITY_RULES = [
     { activity: 'web-research', label: 'Web research',
       test: (t, a, q) => t.has('web') || t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact')
           || /\b(search the web|look ?up online|latest|current|news|who is|what is the (price|stock)|google)\b/.test(q) },
-    { activity: 'knowledge-base-lookup', label: 'Knowledge base lookup',
-      test: (t, a, q) => t.has('search_knowledge_base') || /\b(knowledge ?base|my (docs|documents|files|notes|library|pdfs?|books?)|in my (kb|knowledge))\b/.test(q) },
     { activity: 'data-visualization', label: 'Data visualization',
       test: (t, a, q) => t.has('render_chart') || t.has('fetch_timeseries')
           || /\b(chart|graph|plot|visuali[sz]e|bar chart|line chart|pie chart|dashboard|histogram|scatter ?plot)\b/.test(q) },
@@ -17156,7 +17171,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                             try {
                                 // Use tesseract for OCR
                                 const { stdout } = await execAsync(`tesseract "${imagePath}" stdout -l eng --psm 1`, {
-                                    timeout: 30000 // 30 seconds per page
+                                    timeout: 30000, // 30 seconds per page
+                                    env: { ...process.env, OMP_THREAD_LIMIT: '1' }
                                 });
                                 if (stdout.trim()) {
                                     ocrResults.push(stdout.trim());
@@ -17575,17 +17591,48 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const imgBuffer = Buffer.from(content, 'base64');
                 // Tesseract needs a file extension it recognizes
                 const ocrExt = ext || mimeType.split('/')[1] || 'png';
-                const ocrInputPath = `${ocrTmpPath}.${ocrExt}`;
+                let ocrInputPath = `${ocrTmpPath}.${ocrExt}`;
                 await fs.writeFile(ocrInputPath, imgBuffer);
+                const ocrT0 = Date.now();
+                // Small images (UI screenshots, game frames, phone photos of a
+                // screen) OCR as garbage at native size: tesseract wants ~30px
+                // glyphs. Upscale to ~1800px on the long edge + grayscale before
+                // reading — measured on a 596x438 game screenshot: native =
+                // "lgeies oo eettgsfS", x3 = "Volcano bomb [99] / Quality high
+                // medium low / DAMIAN 0 PLAYER 2 0". The model otherwise
+                // hand-rolls exactly this pipeline in run_python (and, on the
+                // reported turn, overwrote the upload doing it).
+                let ocrScale = 1;
+                try {
+                    const dims = imageDimensions(imgBuffer, imageMimeType || mimeType);
+                    const longEdge = dims ? Math.max(dims.width, dims.height) : 0;
+                    if (longEdge > 0 && longEdge < OCR_UPSCALE_TARGET) {
+                        ocrScale = Math.min(OCR_UPSCALE_MAX, Math.max(2, Math.ceil(OCR_UPSCALE_TARGET / longEdge)));
+                        const { Jimp } = require('jimp');
+                        const im = await Jimp.read(imgBuffer);
+                        im.scale({ f: ocrScale, mode: 'bicubicInterpolation' }).greyscale();
+                        const upPath = `${ocrTmpPath}_x${ocrScale}.png`;
+                        await im.write(upPath);
+                        try { await fs.unlink(ocrInputPath); } catch (e) { /* ignore */ }
+                        ocrInputPath = upPath;
+                    }
+                } catch (upErr) {
+                    ocrScale = 1;
+                    console.warn(`[Chat Upload] OCR upscale skipped for ${filename}:`, upErr.message);
+                }
 
                 try {
+                    // OMP_THREAD_LIMIT=1: tesseract's OpenMP threads thrash against
+                    // the running model on a small host — measured 15 s default vs
+                    // 225 ms single-threaded on the SAME 596x438 image.
                     const { stdout } = await execFileAsync('tesseract', [ocrInputPath, 'stdout', '--psm', '3'], {
                         timeout: 30000,
-                        maxBuffer: 5 * 1024 * 1024
+                        maxBuffer: 5 * 1024 * 1024,
+                        env: { ...process.env, OMP_THREAD_LIMIT: '1' }
                     });
                     ocrText = (stdout || '').trim();
                     if (ocrText) {
-                        console.log(`[Chat Upload] OCR extracted ${ocrText.length} chars from ${filename}`);
+                        console.log(`[Chat Upload] OCR extracted ${ocrText.length} chars from ${filename} (x${ocrScale}, ${Date.now() - ocrT0} ms)`);
                     }
                 } finally {
                     // Clean up temp file
@@ -18610,7 +18657,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // ban can't hard-remove — "no emoji", "don't re-download", tone rules,
         // "don't hallucinate" — live here). Applied ONCE to the first system
         // message (which at this point is the user/operator-authored prompt —
-        // memory/prelude/KB blocks are unshifted AFTER this), only when a
+        // memory/prelude blocks are unshifted AFTER this), only when a
         // non-empty system prompt exists, and never double-stamped.
         const STRICT_ADHERENCE_HEADER = 'SYSTEM INSTRUCTIONS — MANDATORY AND NON-NEGOTIABLE. Follow every instruction below exactly, literally, and in full. They take precedence over your defaults, your usual style, and any background, memory, examples, or context provided elsewhere in this conversation. Treat every prohibition ("do not…", "never…", "avoid…", "no…") as ABSOLUTE — do not do that thing under any circumstances, even if it seems helpful or a later message asks for it. Do not add, omit, soften, or reinterpret any requirement; when instructions could conflict, choose the more restrictive reading. Silently comply — do not restate these meta-instructions to the user.';
         {
@@ -18698,7 +18745,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                     if (memoryResult && memoryResult.block) {
                         // PLACEMENT (don't regress): prepend the block to the
-                        // LATEST USER MESSAGE (same slot as the KB/workspace
+                        // LATEST USER MESSAGE (same slot as the workspace
                         // pre-flight notes), NOT the leading system message.
                         // The backend reuses its KV cache only for the longest
                         // common PREFIX of consecutive requests, and this block
@@ -18787,31 +18834,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         } catch (preludeErr) {
             console.warn(`[Chat] Runtime prelude injection failed: ${preludeErr.message}`);
-        }
-
-        // KB proactivity nudge — when the user has knowledge base(s), tell the
-        // model to consult them for on-topic questions instead of answering only
-        // from general knowledge. This is what makes the KB actually get used
-        // (and visibly logged). Scoped to req.userId so it matches exactly which
-        // KBs the search_knowledge_base tool can see. Best-effort.
-        try {
-            const kbList = await knowledgeBaseService.listKBs(req.userId || null).catch(() => []);
-            const kbNudge = buildKbNudge(kbList);
-            if (kbNudge) {
-                if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
-                    const existing = chatMessages[0].content;
-                    if (typeof existing === 'string') {
-                        chatMessages[0] = { ...chatMessages[0], content: `${existing}\n\n${kbNudge}` };
-                    } else if (Array.isArray(existing)) {
-                        // Vision-format system message — append a text part.
-                        chatMessages[0] = { ...chatMessages[0], content: [...existing, { type: 'text', text: `\n\n${kbNudge}` }] };
-                    }
-                } else {
-                    chatMessages.unshift({ role: 'system', content: kbNudge });
-                }
-            }
-        } catch (kbNudgeErr) {
-            console.warn(`[Chat] KB nudge injection failed: ${kbNudgeErr.message}`);
         }
 
         // Calculate total tokens from all messages
@@ -20308,72 +20330,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
-        // --- Knowledge-base file pre-flight ----------------------------------
-        // A document added to a Knowledge Base lives ONLY as embedded chunks in
-        // the vector store — it is never written to the sandbox filesystem. So
-        // when the user says "read I-Health_Receipt.pdf", the model guesses a
-        // /workspace path and wastes a read_pdf/read_file call (which 404s)
-        // before recovering via search_knowledge_base. A buried tool-description
-        // warning isn't reliably obeyed by smaller models, so we deterministically
-        // detect KB filenames named in the user's message and inject an explicit
-        // up-front note steering the model straight to search_knowledge_base.
-        // Skipped silently when the tool isn't in the catalog or no KB filename
-        // is referenced.
-        if (fullToolCatalog.some(t => t?.function?.name === 'search_knowledge_base')) {
-            try {
-                let userText = '';
-                let userMsgIdx = -1;
-                for (let i = chatMessages.length - 1; i >= 0; i--) {
-                    if (chatMessages[i].role === 'user') {
-                        userText = base64Detector.extractTextFromContent(chatMessages[i].content);
-                        userMsgIdx = i;
-                        break;
-                    }
-                }
-                if (userMsgIdx >= 0 && userText) {
-                    const lcText = userText.toLowerCase();
-                    const kbs = await knowledgeBaseService.listKBs(req.userId || userId);
-                    const hits = [];
-                    const seen = new Set();
-                    for (const kb of kbs) {
-                        for (const d of (kb.documents || [])) {
-                            const fn = d.filename;
-                            if (!fn || seen.has(fn.toLowerCase())) continue;
-                            // Match the full filename (with extension) verbatim —
-                            // specific enough to avoid false positives on common words.
-                            if (lcText.includes(fn.toLowerCase())) {
-                                seen.add(fn.toLowerCase());
-                                hits.push({ filename: fn, kb: kb.name });
-                            }
-                        }
-                    }
-                    if (hits.length) {
-                        preflightForcedTools.add('search_knowledge_base');
-                        const lines = hits.map(h => `- "${h.filename}" is in the knowledge base "${h.kb}".`);
-                        const note = [
-                            '[SERVER NOTE: The file(s) named below live ONLY in the knowledge base, NOT on the sandbox filesystem. To read their contents call search_knowledge_base (optionally with the knowledge_base name); do NOT call read_pdf / read_file / list_directory on a /workspace path for them — that will fail.]',
-                            ...lines,
-                            '',
-                        ].join('\n');
-                        const msg = chatMessages[userMsgIdx];
-                        if (typeof msg.content === 'string') {
-                            msg.content = `${note}\n${msg.content}`;
-                        } else if (Array.isArray(msg.content)) {
-                            const textIdx = msg.content.findIndex(p => p?.type === 'text');
-                            if (textIdx >= 0) {
-                                msg.content[textIdx].text = `${note}\n${msg.content[textIdx].text || ''}`;
-                            } else {
-                                msg.content.unshift({ type: 'text', text: note });
-                            }
-                        }
-                        logChatActivity(`KB pre-flight: steered ${hits.length} named file(s) to search_knowledge_base`);
-                    }
-                }
-            } catch (e) {
-                console.warn('[Chat Stream] KB pre-flight failed:', e.message);
-            }
-        }
-
         // --- Workspace persistence pre-flight --------------------------------
         // Files a previous turn cloned/downloaded into this conversation's
         // sandbox workspace persist on disk, but nothing in the replayed
@@ -20383,7 +20339,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // tool calls to redo finished work. Deterministically inventory the
         // conv-<id> bucket (read-only; same owner/bucket resolution skills
         // use) and prepend a note listing what's already there. Mirrors the
-        // follow-up-document and KB pre-flights above.
+        // follow-up-document pre-flight above.
         if (conversationId && latestUserMsgIdx >= 0) {
             try {
                 const sbRunner = require('./services/sandboxRunner');
@@ -20433,6 +20389,48 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             } catch (e) {
                 console.warn('[Chat Stream] workspace pre-flight failed:', e.message);
             }
+        }
+
+        // --- Image attachments on a text-only model ---------------------------
+        // The image_url parts were stripped above (no vision path in this
+        // handler), so all the model has is the upload-time OCR text — and it
+        // is not told that it cannot see the picture, nor that a proper OCR
+        // tool exists. Observed: "build me this tank game" + a 596x438 game
+        // screenshot → the model re-implemented OCR in run_python (Pillow
+        // upscale → pytesseract subprocess) four times, and its `_big.png`
+        // save landed on the original upload. Name ocr_image only when it is
+        // in the catalog (force-advertise it so the router cannot hide it).
+        try {
+            const atts = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+            const imageNames = atts
+                .filter(a => a && a.type === 'image')
+                .map(a => String(a.filename || a.name || '').trim())
+                .filter(Boolean);
+            if (imageNames.length && latestUserMsgIdx >= 0) {
+                const ocrAvailable = fullToolCatalog.some(t => t?.function?.name === 'ocr_image');
+                if (ocrAvailable) preflightForcedTools.add('ocr_image');
+                const paths = imageNames.map(n => `/workspace/uploads/${n}`).join(', ');
+                const imgNote =
+                    `[SYSTEM: The user attached ${imageNames.length === 1 ? 'an image' : imageNames.length + ' images'} (${imageNames.join(', ')}). ` +
+                    'This model has NO vision — you cannot see the picture; the automatic OCR text in the FILE block (if any) is all that was read from it, and OCR of small UI text is often garbled. ' +
+                    `The file is on disk at ${paths}. ` +
+                    (ocrAvailable
+                        ? 'For a cleaner text read call ocr_image on that path (it auto-upscales and preprocesses) — do NOT re-implement OCR/upscaling yourself in run_python. '
+                        : '') +
+                    'Never write output files into /workspace/uploads/ (that is the user\'s input); save anything you create under /workspace/artifacts/. ' +
+                    'Build from the text cues you have, state what you inferred, and ask only if the task is impossible without seeing the image.]\n\n';
+                const um = chatMessages[latestUserMsgIdx];
+                if (typeof um.content === 'string') {
+                    um.content = imgNote + um.content;
+                } else if (Array.isArray(um.content)) {
+                    const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                    if (tIdx >= 0) um.content[tIdx].text = imgNote + um.content[tIdx].text;
+                    else um.content.unshift({ type: 'text', text: imgNote });
+                }
+                console.log(`[Chat Stream] Image pre-flight: ${imageNames.length} image(s), ocr_image ${ocrAvailable ? 'forced' : 'not in catalog'}`);
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] image pre-flight failed:', e.message);
         }
 
         // --- Honor explicit tool prohibitions in the user's system prompt ----
@@ -26164,182 +26162,13 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// KNOWLEDGE BASE (RAG) ROUTES
-// ============================================================================
-// Per-user document collections with semantic retrieval. Owners manage their
-// own KBs; admins see and manage all. Embedding + top-k search run in the
-// resident kb_engine subprocess (via knowledgeBaseService) so only a few
-// relevant snippets ever enter the chat context, regardless of KB size.
-
-// Attach the owner's username to each KB record (for the admin "all KBs" view).
-async function decorateKbOwners(list) {
-    const usersById = new Map();
-    try {
-        const users = await getAllUsers();
-        for (const u of users) usersById.set(String(u.id), u);
-    } catch (_) { /* fall back to raw owner id */ }
-    return list.map((kb) => ({
-        ...kb,
-        ownerName: kb.userId ? (usersById.get(String(kb.userId))?.username || 'unknown') : 'global',
-    }));
-}
-
-// Load a KB and enforce ownership (admins bypass). Sends the error + returns
-// null when access is denied so the caller can `if (!kb) return;`.
-async function loadOwnedKB(req, res) {
-    const kb = await knowledgeBaseService.getKB(req.params.id);
-    if (!kb) { res.status(404).json({ error: 'Knowledge base not found' }); return null; }
-    if (!callerIsAdmin(req) && !checkOwnership(kb, req.userId)) {
-        res.status(403).json({ error: 'Not authorized for this knowledge base' });
-        return null;
-    }
-    return kb;
-}
-
-// List KBs — own, or all for admins.
-app.get('/api/knowledge-bases', requireAuth, async (req, res) => {
-    try {
-        const isAdmin = callerIsAdmin(req);
-        const list = await knowledgeBaseService.listKBs(req.userId, { all: isAdmin });
-        res.json({ knowledgeBases: await decorateKbOwners(list), isAdmin });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Create a KB.
-app.post('/api/knowledge-bases', requireAuth, async (req, res) => {
-    try {
-        const { name, description } = req.body || {};
-        if (!name || !String(name).trim()) {
-            return res.status(400).json({ error: 'name is required' });
-        }
-        const kb = await knowledgeBaseService.createKB({
-            name: String(name).trim(), description, userId: req.userId,
-        });
-        res.status(201).json({ knowledgeBase: kb });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// KB details + documents + live engine stats.
-app.get('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        let stats = null;
-        try { stats = await knowledgeBaseService.stats(kb); } catch (_) { /* engine may be warming */ }
-        res.json({ knowledgeBase: kb, documents: kb.documents || [], stats });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Rename / edit description.
-app.patch('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        const patch = {};
-        if (req.body?.name != null) patch.name = String(req.body.name).slice(0, 200);
-        if (req.body?.description != null) patch.description = String(req.body.description).slice(0, 2000);
-        const updated = await knowledgeBaseService.updateKB(kb.id, patch);
-        res.json({ knowledgeBase: updated });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Delete a KB (removes its vectors + files).
-app.delete('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        await knowledgeBaseService.deleteKB(kb.id);
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Upload + index a document (base64 JSON body, mirrors /api/chat/upload).
-app.post('/api/knowledge-bases/:id/documents', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        const { filename, content, mimeType, text } = req.body || {};
-        if (!content && !text) {
-            return res.status(400).json({ error: 'content (base64) or text is required' });
-        }
-        // base64 → decoded bytes are ~3/4 of the string length (see /api/chat/upload)
-        if (content && Math.floor(content.length * 3 / 4) > uploadMaxBytes()) {
-            return res.status(413).json({ error: `File too large. Maximum size is ${uploadMaxMbSetting}MB.` });
-        }
-        const buffer = content ? Buffer.from(content, 'base64') : null;
-        const docId = crypto.randomBytes(12).toString('hex');
-        const safeName = String(filename || 'document.txt').slice(0, 255);
-        const result = await knowledgeBaseService.ingestDocument(kb, {
-            docId, filename: safeName, buffer, mimeType, text,
-        });
-        if (!result.chunkCount) {
-            return res.status(422).json({ error: 'No extractable text found in this document.', ...result });
-        }
-        const doc = {
-            docId,
-            filename: safeName,
-            mimeType: mimeType || '',
-            size: buffer ? buffer.length : (text ? Buffer.byteLength(text) : 0),
-            chunkCount: result.chunkCount,
-            chars: result.chars,
-            addedAt: new Date().toISOString(),
-        };
-        let stats = null; try { stats = await knowledgeBaseService.stats(kb); } catch (_) {}
-        const updated = await knowledgeBaseService.addDocumentMeta(kb.id, doc, {
-            chunkCount: stats ? stats.chunkCount : undefined,
-            embeddingModel: stats ? stats.model : undefined,
-        });
-        res.status(201).json({ document: doc, knowledgeBase: updated, stats });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Remove a document from a KB.
-app.delete('/api/knowledge-bases/:id/documents/:docId', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        await knowledgeBaseService.deleteDocument(kb, req.params.docId);
-        let stats = null; try { stats = await knowledgeBaseService.stats(kb); } catch (_) {}
-        const updated = await knowledgeBaseService.removeDocumentMeta(kb.id, req.params.docId, {
-            chunkCount: stats ? stats.chunkCount : undefined,
-        });
-        res.json({ success: true, knowledgeBase: updated, stats });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Query a KB (UI test box; the chat tool calls the service directly).
-app.post('/api/knowledge-bases/:id/search', requireAuth, async (req, res) => {
-    try {
-        const kb = await loadOwnedKB(req, res); if (!kb) return;
-        const { query, k } = req.body || {};
-        if (!query || !String(query).trim()) {
-            return res.status(400).json({ error: 'query is required' });
-        }
-        const topK = Math.min(Math.max(parseInt(k) || 6, 1), 50);
-        const results = await knowledgeBaseService.search(kb, String(query), topK);
-        res.json({ results, query });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============================================================================
 // ACCOUNT MEMORY — CRUD for the webapp Memory tab
 // ============================================================================
 // Memories are account-scoped (one set per user), managed here and surfaced to
 // the chat model via injection + the record_learning tool. Auth + ownership
-// only (no special permission, like knowledge bases); admins see/manage all and
+// only (no special permission, like conversations); admins see/manage all and
 // the list is decorated with ownerName. Routes sit BEFORE the 404/error
-// middleware (same placement rule as the knowledge-base routes).
+// middleware.
 
 // Account id that memory is keyed by. Resolves to the owning ACCOUNT in every
 // auth mode: a web session uses `req.user.id`; an API-key/Bearer caller uses
@@ -29838,133 +29667,6 @@ app.use((req, res) => {
     // `resolveSkillPolicy` and `isSkillBlocked` are module-scope — see the
     // helper near the auth destructure at the top of this file.
 
-    // ----- search_knowledge_base -------------------------------------------
-    // Semantic retrieval over the user's uploaded knowledge base(s). Surfaced
-    // only when the user actually has a KB. Returns short, source-cited
-    // snippets (top-k) — never whole documents — so it stays context-cheap and
-    // can be called repeatedly with refined queries.
-    tools.registerTool({
-        name: 'search_knowledge_base',
-        async build(ctx) {
-            let kbs = [];
-            try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); } catch (_) { return null; }
-            if (!kbs.length) return null;
-            // Surface document counts AND the actual filenames so the model
-            // (a) can answer "how many files do I have" without guessing from
-            // snippets, and (b) recognizes that a file the user names by hand
-            // lives in the KB — not on the sandbox disk — so it reaches for
-            // this tool instead of wasting a read_pdf/read_file on a guessed
-            // /workspace path. Filenames are capped per-KB to keep the catalog
-            // small on large collections.
-            const FN_CAP = 15;
-            const names = kbs.map((k) => {
-                const docs = k.documents || [];
-                const shown = docs.slice(0, FN_CAP).map((d) => d.filename).join(', ');
-                const more = docs.length > FN_CAP ? `, …+${docs.length - FN_CAP} more` : '';
-                const fileList = docs.length ? `: ${shown}${more}` : '';
-                return `"${k.name}" (${docs.length} file${docs.length === 1 ? '' : 's'}${fileList})`;
-            }).join('; ');
-            return {
-                type: 'function',
-                function: {
-                    name: 'search_knowledge_base',
-                    description:
-                        "Semantically search the user's uploaded knowledge base(s) and return the most relevant passages. " +
-                        "Call this whenever the answer may live in the user's own documents, notes, or files. " +
-                        'Returns short, source-cited snippets only (not whole documents), so it is cheap and safe to call repeatedly with refined queries. ' +
-                        'To list or count the files in a knowledge base (e.g. "how many files / which documents do I have"), call with list_documents=true instead of guessing from search results. ' +
-                        'IMPORTANT: the files listed below live ONLY in the knowledge base, NOT on the sandbox filesystem — if the user names one of them, use THIS tool to read it; do NOT call read_pdf/read_file/list_directory on a /workspace path (those will fail). ' +
-                        `Available knowledge bases: ${names}.`,
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            query: { type: 'string', description: 'Natural-language search query. Required unless list_documents is true.' },
-                            knowledge_base: { type: 'string', description: "Optional KB name to restrict the search; omit to search all of the user's knowledge bases." },
-                            list_documents: { type: 'boolean', description: 'Set true to return the inventory of files (filenames, types, counts) in the knowledge base(s) instead of doing a semantic search.' },
-                            k: { type: 'number', description: 'Max passages to return (default 6, max 20).' },
-                        },
-                        required: [],
-                        additionalProperties: false,
-                    },
-                },
-            };
-        },
-        async execute(args, ctx) {
-            const query = String(args?.query || '').trim();
-            const wantList = args?.list_documents === true || args?.list_documents === 'true';
-            if (!query && !wantList) return { error: 'query is required (or set list_documents=true to list files)' };
-            const k = Math.min(Math.max(parseInt(args?.k) || 6, 1), 20);
-            let kbs = [];
-            try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); }
-            catch (e) { return { error: 'knowledge base unavailable: ' + e.message }; }
-            if (!kbs.length) return { results: [], note: 'No knowledge bases available for this user.' };
-
-            let target = kbs;
-            if (args?.knowledge_base) {
-                const want = String(args.knowledge_base).toLowerCase();
-                const match = kbs.filter((k) => k.name.toLowerCase() === want || k.id === args.knowledge_base);
-                if (match.length) target = match;
-            }
-
-            // Inventory mode: return the file manifest so the model can count /
-            // enumerate documents precisely instead of inferring from snippets.
-            if (wantList) {
-                const knowledgeBases = target.map((kb) => {
-                    const docs = kb.documents || [];
-                    return {
-                        knowledgeBase: kb.name,
-                        documentCount: docs.length,
-                        files: docs.map((d) => ({
-                            filename: d.filename,
-                            type: d.mimeType || (d.filename.includes('.') ? d.filename.split('.').pop() : 'unknown'),
-                            chunks: d.chunkCount,
-                            addedAt: d.addedAt,
-                        })),
-                    };
-                });
-                const totalFiles = knowledgeBases.reduce((n, kb) => n + kb.documentCount, 0);
-                logUserActivity(ctx?.userId,
-                    `KB: listed inventory — ${totalFiles} file${totalFiles === 1 ? '' : 's'} across ${knowledgeBases.length} knowledge base${knowledgeBases.length === 1 ? '' : 's'} (${target.map(kb => kb.name).join(', ')})`);
-                return {
-                    totalFiles,
-                    knowledgeBases,
-                    note: `The user has ${totalFiles} file${totalFiles === 1 ? '' : 's'} across ${knowledgeBases.length} knowledge base${knowledgeBases.length === 1 ? '' : 's'}. Cite filenames exactly as shown.`,
-                };
-            }
-
-            const all = [];
-            for (const kb of target) {
-                try {
-                    const r = await knowledgeBaseService.search(kb, query, k);
-                    for (const item of r) all.push({ ...item, knowledgeBase: kb.name });
-                } catch (_) { /* skip a KB whose engine call failed */ }
-            }
-            all.sort((a, b) => b.score - a.score);
-            const top = all.slice(0, k);
-            // Process-log which KB documents this search referenced so the user
-            // can see the knowledge base being used to answer.
-            const refDocs = [...new Set(top.map(r => r.filename).filter(Boolean))];
-            const refKbs = [...new Set(top.map(r => r.knowledgeBase).filter(Boolean))];
-            logUserActivity(ctx?.userId,
-                `KB: searched “${String(query).slice(0, 50)}” — ${top.length === 0 ? 'no matches' : `${top.length} passage${top.length === 1 ? '' : 's'}`}` +
-                (refDocs.length ? ` from ${refDocs.length} file${refDocs.length === 1 ? '' : 's'} (${refDocs.slice(0, 3).join(', ')}${refDocs.length > 3 ? ', …' : ''})` : '') +
-                (refKbs.length ? ` in ${refKbs.join(', ')}` : ''));
-            return {
-                query,
-                count: top.length,
-                results: top.map((r) => ({
-                    source: r.filename || r.knowledgeBase,
-                    knowledgeBase: r.knowledgeBase,
-                    score: r.score,
-                    text: r.text,
-                })),
-                note: top.length
-                    ? 'Cite the source filename when you use these passages.'
-                    : 'No relevant passages found in the knowledge base.',
-            };
-        },
-    });
-
     // ----- record_learning -------------------------------------------------
     // Lets the model proactively persist a durable LEARNING into the user's
     // account memory — a correction, a stated preference, a mistake to avoid,
@@ -30509,12 +30211,12 @@ server.listen(PORT, async () => {
         console.warn('[Startup] loadSystemSettings failed:', e.message);
     }
 
-    // Warm up the Knowledge Base embedding engine in the background so the
-    // model is resident before the first query. Fire-and-forget — boot must
-    // not block on the model load, and KB calls lazily spawn it anyway.
-    knowledgeBaseService.ensureEngine()
-        .then(() => knowledgeBaseService.health())
-        .then((h) => console.log(`[kb] embedding engine ready (${h.model}, dim=${h.dim})`))
+    // Warm up the embedding engine in the background so the model is resident
+    // before the first memory/tool-router query. Fire-and-forget — boot must
+    // not block on the model load, and callers lazily spawn it anyway.
+    embeddingEngine.ensureEngine()
+        .then(() => embeddingEngine.health())
+        .then((h) => console.log(`[embed] engine ready (${h.model}, dim=${h.dim})`))
         // Build the tool-router's semantic index for the default catalog while the
         // engine is warm. toolIndex.search() deliberately never builds inline, so
         // without this the FIRST chat turn after every restart was demoted to
@@ -30525,7 +30227,7 @@ server.listen(PORT, async () => {
             const catalog = await require('./services/chatTools').buildToolCatalog({ userId: null });
             toolIndex.warmup(catalog);
         })
-        .catch((e) => console.warn('[kb] engine warm-up deferred:', e.message));
+        .catch((e) => console.warn('[embed] engine warm-up deferred:', e.message));
 
     // One-shot legacy-workspace migration: older installs kept per-user
     // files directly under /models/.modelserver/workspaces/<userId>/; the

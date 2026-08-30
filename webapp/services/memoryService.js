@@ -15,7 +15,7 @@
  * not every user's, and writes are serialized per user instead of globally.
  *
  * Semantic index: every create/update/delete mirrors into memoryIndex.js
- * (kb_engine embeddings, docId = memory id) BEST-EFFORT — embedding failures
+ * (embedding_engine embeddings, docId = memory id) BEST-EFFORT — embedding failures
  * never block a write; retrieval falls back to keyword matching.
  *
  * Responsibilities (STORAGE only — the heuristics that PRODUCE memories live
@@ -651,7 +651,7 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
     for (const c of candidates) {
         let scores = null;
         try {
-            // k=50 (the engine's hard clamp, kb_engine.py) rather than 32: the
+            // k=50 (the engine's hard clamp, embedding_engine.py) rather than 32: the
             // supersede/auto-link scan only sees the top-k existing memories per
             // candidate, so a busy account with >32 topically-clustered memories
             // would silently stop superseding (one-directional, no symmetry

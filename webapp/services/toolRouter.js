@@ -55,7 +55,6 @@ const CORE = [
     'web',                    // the one consolidated retrieval tool — highest per-turn utility
     'base64_decode',          // UNCONDITIONAL: the pre-flight relies on it staying callable for a slipped blob
     'load_skill',             // progressive disclosure of the whole skill catalog at ~1 tool's cost
-    'search_knowledge_base',  // only present when the user has a KB (build() null-gates it)
     'record_learning',        // only present when memory enabled (build() null-gates it)
     'make_downloadable',      // systemPrompt mandates it for file delivery
     // The sandbox INTERPRETERS. Core for the same reason make_downloadable is:
@@ -143,7 +142,6 @@ const INTENT_RULES = [
     // strands the model (observed: 4 failed make_downloadable calls on a nonexistent
     // .html, 20 web loops, then "I don't have a create_file tool" — no PDF delivered).
     [/\b(make|create|generate|write|produce|prepare|give|format|turn|convert|export|save|download|render|compile)\b[\s\S]{0,80}?\b(pdf|docx|word document)\b|\bpdf\b[\s\S]{0,40}?\b(report|version|file|document|copy)\b/i, ['create_pdf', 'html_to_pdf', 'create_docx', 'create_file', 'append_to_file']],
-    [/\b(my|the) (documents?|notes?|files?|knowledge ?base|kb)\b/i, ['search_knowledge_base']],
 ];
 
 // ---- find_tools discovery meta-tool (the universal reachability backstop).

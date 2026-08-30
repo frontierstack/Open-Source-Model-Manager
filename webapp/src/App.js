@@ -116,14 +116,12 @@ import {
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
     Boxes as LucideBoxes,
-    Library as LucideLibrary,
     Brain as LucideBrain,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
-import KnowledgeBasePanel from './components/KnowledgeBasePanel';
 import MemoryPanel from './components/MemoryPanel';
 import AppsPanel from './components/AppsPanel';
 import MyModelsPanel from './components/MyModelsPanel';
@@ -615,7 +613,7 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 9, 10]; // 8 (Automations) removed — built in the Chat app
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 10]; // 8 (Automations) removed — built in the Chat app; 9 (Knowledge Base) removed
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
@@ -7214,287 +7212,6 @@ fetch('${baseUrl}/api/chips', {
 .then(res => res.json())
 .then(result => console.log('Created chip:', result.id));`
             },
-            '/api/knowledge-bases': {
-                curl: `# Bearer Token Authentication
-# List your knowledge bases
-curl -k ${baseUrl}/api/knowledge-bases \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k ${baseUrl}/api/knowledge-bases \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"
-
-# Create a knowledge base
-curl -k -X POST ${baseUrl}/api/knowledge-bases \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "name": "Product Docs",
-    "description": "Manuals and spec sheets"
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {"Authorization": "Bearer your_bearer_token"}
-
-# OR API Key + Secret Authentication
-# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
-
-# List knowledge bases
-kbs = requests.get(f"${baseUrl}/api/knowledge-bases", headers=headers, verify=False).json()
-print(f"{len(kbs)} knowledge base(s)")
-
-# Create a knowledge base
-resp = requests.post(
-    f"${baseUrl}/api/knowledge-bases",
-    headers={**headers, "Content-Type": "application/json"},
-    json={"name": "Product Docs", "description": "Manuals and spec sheets"},
-    verify=False,
-)
-print("Created:", resp.json().get("id"))`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token" }
-
-# List knowledge bases
-$kbs = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases" -Headers $headers
-Write-Output "Knowledge bases: $($kbs.Count)"
-
-# Create a knowledge base
-$body = @{ name = "Product Docs"; description = "Manuals and spec sheets" } | ConvertTo-Json
-$kb = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-Write-Output "Created: $($kb.id)"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token' };
-
-// List knowledge bases
-const kbs = await fetch('${baseUrl}/api/knowledge-bases', { headers }).then(r => r.json());
-console.log(\`\${kbs.length} knowledge base(s)\`);
-
-// Create a knowledge base
-const kb = await fetch('${baseUrl}/api/knowledge-bases', {
-  method: 'POST',
-  headers: { ...headers, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ name: 'Product Docs', description: 'Manuals and spec sheets' })
-}).then(r => r.json());
-console.log('Created:', kb.id);`
-            },
-            '/api/knowledge-bases/:id': {
-                curl: `# Bearer Token Authentication
-# Get one knowledge base (metadata + documents[])
-curl -k ${baseUrl}/api/knowledge-bases/KB_ID \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k ${baseUrl}/api/knowledge-bases/KB_ID \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"
-
-# Rename / edit description (PATCH)
-curl -k -X PATCH ${baseUrl}/api/knowledge-bases/KB_ID \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "name": "Renamed KB" }'
-
-# Delete a knowledge base
-curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID \\
-  -H "Authorization: Bearer your_bearer_token"`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {"Authorization": "Bearer your_bearer_token"}
-
-# OR API Key + Secret Authentication
-# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
-
-kb_id = "KB_ID"
-
-# Get metadata + documents
-kb = requests.get(f"${baseUrl}/api/knowledge-bases/{kb_id}", headers=headers, verify=False).json()
-print(kb.get("name"), "-", len(kb.get("documents", [])), "doc(s)")
-
-# Rename / edit description
-requests.patch(
-    f"${baseUrl}/api/knowledge-bases/{kb_id}",
-    headers={**headers, "Content-Type": "application/json"},
-    json={"name": "Renamed KB"}, verify=False,
-)
-
-# Delete
-requests.delete(f"${baseUrl}/api/knowledge-bases/{kb_id}", headers=headers, verify=False)`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token" }
-$kbId = "KB_ID"
-
-# Get metadata + documents
-$kb = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Headers $headers
-Write-Output "$($kb.name) - $($kb.documents.Count) doc(s)"
-
-# Rename / edit description
-$body = @{ name = "Renamed KB" } | ConvertTo-Json
-Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Method Patch -Headers $headers -Body $body -ContentType "application/json"
-
-# Delete
-Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Method Delete -Headers $headers`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token' };
-const kbId = 'KB_ID';
-
-// Get metadata + documents
-const kb = await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, { headers }).then(r => r.json());
-console.log(kb.name, '-', (kb.documents || []).length, 'doc(s)');
-
-// Rename / edit description
-await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, {
-  method: 'PATCH',
-  headers: { ...headers, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ name: 'Renamed KB' })
-});
-
-// Delete
-await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, { method: 'DELETE', headers });`
-            },
-            '/api/knowledge-bases/:id/documents': {
-                curl: `# Bearer Token Authentication
-# Add a document — base64-encoded file bytes (auto-chunked + embedded).
-# 'content' is base64 (any file type: pdf/docx/xlsx/txt/html); use 'text'
-# instead to send raw UTF-8. Max 50MB.
-curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/documents \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d "{
-    \\"filename\\": \\"manual.pdf\\",
-    \\"content\\": \\"$(base64 -w0 manual.pdf)\\"
-  }"
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/documents \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "filename": "notes.txt", "text": "raw UTF-8 text instead of base64" }'`,
-                python: `import base64, requests
-
-# Bearer Token Authentication
-headers = {"Authorization": "Bearer your_bearer_token", "Content-Type": "application/json"}
-
-# OR API Key + Secret Authentication
-# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret", "Content-Type": "application/json"}
-
-kb_id = "KB_ID"
-with open("manual.pdf", "rb") as f:
-    content_b64 = base64.b64encode(f.read()).decode()
-
-resp = requests.post(
-    f"${baseUrl}/api/knowledge-bases/{kb_id}/documents",
-    headers=headers,
-    json={"filename": "manual.pdf", "content": content_b64},  # or {"filename": "notes.txt", "text": "..."}
-    verify=False,
-).json()
-print("Chunks indexed:", resp["document"]["chunkCount"])`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token" }
-$kbId = "KB_ID"
-
-$bytes = [System.IO.File]::ReadAllBytes("manual.pdf")
-$contentB64 = [System.Convert]::ToBase64String($bytes)
-
-$body = @{ filename = "manual.pdf"; content = $contentB64 } | ConvertTo-Json
-$resp = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId/documents" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-Write-Output "Chunks indexed: $($resp.document.chunkCount)"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-const kbId = 'KB_ID';
-
-// content = base64 of the file bytes; or send { filename, text } for raw UTF-8.
-const fs = require('fs');
-const contentB64 = fs.readFileSync('manual.pdf').toString('base64');
-
-const resp = await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}/documents\`, {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({ filename: 'manual.pdf', content: contentB64 })
-}).then(r => r.json());
-console.log('Chunks indexed:', resp.document.chunkCount);`
-            },
-            '/api/knowledge-bases/:id/documents/:docId': {
-                curl: `# Bearer Token Authentication
-# Remove a document from a knowledge base (drops its chunks + embeddings)
-curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {"Authorization": "Bearer your_bearer_token"}
-
-# OR API Key + Secret Authentication
-# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
-
-requests.delete(
-    f"${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID",
-    headers=headers, verify=False,
-)
-print("Document removed")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token" }
-Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID" -Method Delete -Headers $headers
-Write-Output "Document removed"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token' };
-await fetch('${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID', { method: 'DELETE', headers });
-console.log('Document removed');`
-            },
-            '/api/knowledge-bases/:id/search': {
-                curl: `# Bearer Token Authentication
-# Semantic top-k search over one knowledge base. 'k' is the number of
-# cited snippets to return (default 5).
-curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/search \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "query": "How do I reset the device?", "k": 5 }'
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/search \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "query": "How do I reset the device?", "k": 5 }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {"Authorization": "Bearer your_bearer_token", "Content-Type": "application/json"}
-
-# OR API Key + Secret Authentication
-# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret", "Content-Type": "application/json"}
-
-resp = requests.post(
-    f"${baseUrl}/api/knowledge-bases/KB_ID/search",
-    headers=headers,
-    json={"query": "How do I reset the device?", "k": 5},
-    verify=False,
-).json()
-for hit in resp.get("results", []):
-    print(f"[{hit.get('filename')}] {hit.get('text', '')[:120]}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token" }
-$body = @{ query = "How do I reset the device?"; k = 5 } | ConvertTo-Json
-$resp = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/KB_ID/search" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-$resp.results | ForEach-Object { Write-Output "[$($_.filename)] $($_.text)" }`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({ query: 'How do I reset the device?', k: 5 })
-}).then(r => r.json());
-(resp.results || []).forEach(hit => console.log(\`[\${hit.filename}] \${(hit.text || '').slice(0, 120)}\`));`
-            },
             '/api/skills/:skillName/execute': {
                 curl: `# Bearer Token Authentication
 # Execute any enabled skill by name (needs the "agents" permission).
@@ -8504,7 +8221,6 @@ console.log(chip);`
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
         { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
-        { id: 9, icon: <LucideLibrary size={18} strokeWidth={1.75} />,    label: 'Knowledge Base' },
         { id: 10, icon: <LucideBrain size={18} strokeWidth={1.75} />,     label: 'Memory' }
     ];
 
@@ -12143,12 +11859,6 @@ console.log(chip);`
                                                             <MenuItem value="/api/memories/maintenance">POST /api/memories/maintenance - Memory Cleanup / Consolidation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Knowledge Bases (RAG) ───</MenuItem>
-                                                            <MenuItem value="/api/knowledge-bases">GET/POST /api/knowledge-bases - List / Create Knowledge Base</MenuItem>
-                                                            <MenuItem value="/api/knowledge-bases/:id">GET/PATCH/DELETE /api/knowledge-bases/:id - Get / Rename / Delete</MenuItem>
-                                                            <MenuItem value="/api/knowledge-bases/:id/documents">POST /api/knowledge-bases/:id/documents - Add Document (base64)</MenuItem>
-                                                            <MenuItem value="/api/knowledge-bases/:id/documents/:docId">DELETE /api/knowledge-bases/:id/documents/:docId - Remove Document</MenuItem>
-                                                            <MenuItem value="/api/knowledge-bases/:id/search">POST /api/knowledge-bases/:id/search - Semantic Search</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
                                                             <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
                                                             <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>
@@ -12810,7 +12520,6 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_image</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Searches the open web for images (or displays model-supplied image / page URLs — JS-rendered galleries are read via the stealth browser), liveness-probes each, and renders an inline thumbnail grid. Also handles &quot;take a screenshot of &lt;url&gt;&quot; asks via full-page capture.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>render_chart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Validates a chart spec (line / bar / area / pie / scatter) and renders it inline via Recharts.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>fetch_timeseries</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pulls a price/quote time series from Yahoo Finance (no key) for charting and analysis.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>search_knowledge_base</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic RAG lookup over the user's knowledge bases — returns cited snippets only. Hidden until the user has at least one KB.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>dns_lookup / virustotal_lookup</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DNS record resolution and VirusTotal reputation lookup for security / OSINT questions.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extract an uploaded or downloaded archive (zip / tar / gz / bz2 / xz — magic-byte detection beats a lying extension) into the conversation workspace for <code>read_file</code> / <code>grep_code</code> analysis.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>build_automation</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Builds a real saved workflow in the Automation engine from a plain-English ask ("check this site every morning and Telegram me a summary") — the same builder <code>POST /api/automations/build</code> uses. Requires the <code>automation</code> permission.</TableCell></TableRow>
@@ -13142,11 +12851,6 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Relevance-ranked memory search</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/maintenance</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clean up memory (junk-delete + consolidate; dry-run unless <code>apply: true</code>)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id/link</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Link / unlink two related memories</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / create knowledge bases (RAG)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / rename / delete a knowledge base</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/documents</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Add a document (base64 upload, auto-chunked + embedded)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/documents/:docId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Remove a document (and its vectors)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic top-k search over a knowledge base</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Web search with content fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch URLs for chat context</TableCell></TableRow>
@@ -14333,9 +14037,6 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
 
                         {/* Automations are built + managed entirely in the Chat app
                             (sidebar → Automation); the webapp tab was removed. */}
-                        {visibleTabOrder[activeTab] === 9 && (
-                            <KnowledgeBasePanel />
-                        )}
                         {visibleTabOrder[activeTab] === 10 && (
                             <MemoryPanel />
                         )}

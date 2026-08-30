@@ -17,7 +17,7 @@ const SCRAPLING_SCRIPT = path.join(__dirname, 'scrapling_fetch.py');
 // ---------------------------------------------------------------------------
 // Resident web engine (services/web_engine.py) — warm stealth browsers + a
 // curl_cffi browser-impersonating HTTP layer + multi-backend search. Same
-// lifecycle pattern as kb_engine: spawned lazily (and warmed at boot), finds
+// lifecycle pattern as embedding_engine: spawned lazily (and warmed at boot), finds
 // its ephemeral port from the WEB_ENGINE_LISTENING line, one transparent
 // respawn-and-retry on failure. Every caller below falls back to the old
 // cold-subprocess path when the engine is unavailable, so nothing regresses.

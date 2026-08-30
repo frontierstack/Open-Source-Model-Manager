@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Knowledge Base embedding/retrieval engine.
+"""Resident embedding/retrieval engine (account memory index + tool-router index).
 
 A tiny persistent HTTP service (loopback only) that holds a CPU embedding
 model resident in memory so retrieval stays fast no matter how big a
-knowledge base grows. The webapp (Node) talks to it over 127.0.0.1.
+index grows. The webapp (Node) talks to it over 127.0.0.1.
 
 Why a resident process: loading the model costs a few seconds, but once warm
 each query embeds in well under a millisecond (the model is a static
 embedding table — pure numpy, no transformer forward pass, no GPU). That is
-what keeps "the model can reference a large KB" from ever becoming a context
+what keeps a large index from ever becoming a context
 or latency problem: we only ever return the top-k most relevant chunks.
 
-Storage: one SQLite file per knowledge base (`<kbDir>/index.sqlite`) holding
+Storage: one SQLite file per index (`<indexDir>/index.sqlite`) holding
 the chunk text + a normalized float32 embedding BLOB per row. Search loads
-the KB's vectors into an in-memory numpy matrix once (cached, invalidated by
+the index's vectors into an in-memory numpy matrix once (cached, invalidated by
 file mtime) and scores with a single matrix-vector product.
 
 Embedding backend: model2vec (minishlab/potion-retrieval-32M, 512-d). If the
@@ -34,10 +34,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
-MODEL_NAME = os.environ.get('KB_EMBED_MODEL', 'minishlab/potion-retrieval-32M')
-HOST = os.environ.get('KB_ENGINE_HOST', '127.0.0.1')
+MODEL_NAME = os.environ.get('EMBED_MODEL', 'minishlab/potion-retrieval-32M')
+HOST = os.environ.get('EMBED_ENGINE_HOST', '127.0.0.1')
 # PORT 0 => bind an ephemeral port; main() prints the actual one for the parent.
-PORT = int(os.environ.get('KB_ENGINE_PORT') or (sys.argv[1] if len(sys.argv) > 1 else '0'))
+PORT = int(os.environ.get('EMBED_ENGINE_PORT') or (sys.argv[1] if len(sys.argv) > 1 else '0'))
 
 # ---------------------------------------------------------------------------
 # Embedding backend
@@ -56,16 +56,16 @@ def _init_backend():
         _model = StaticModel.from_pretrained(MODEL_NAME)
         _dim = int(_model.dim)
         _mode = 'model2vec:' + MODEL_NAME.split('/')[-1]
-        print(f'[kb_engine] embedding backend: {_mode} (dim={_dim})', flush=True)
+        print(f'[embedding_engine] embedding backend: {_mode} (dim={_dim})', flush=True)
         return
     except Exception as e:  # pragma: no cover - environment dependent
-        print(f'[kb_engine] model2vec unavailable ({e}); falling back to lexical hashing', flush=True)
+        print(f'[embedding_engine] model2vec unavailable ({e}); falling back to lexical hashing', flush=True)
     # Lexical fallback — fixed-dim, stateless, no model download required.
     from sklearn.feature_extraction.text import HashingVectorizer
     _dim = 512
     _hashing = HashingVectorizer(n_features=_dim, alternate_sign=False, norm=None)
     _mode = 'hashing'
-    print(f'[kb_engine] embedding backend: hashing (dim={_dim})', flush=True)
+    print(f'[embedding_engine] embedding backend: hashing (dim={_dim})', flush=True)
 
 
 def _embed(texts):
@@ -89,21 +89,21 @@ def _hashing_embed(texts):
 
 
 # ---------------------------------------------------------------------------
-# Per-KB SQLite + in-memory matrix cache
+# Per-index SQLite + in-memory matrix cache
 # ---------------------------------------------------------------------------
 
 _write_lock = threading.Lock()
 _cache_lock = threading.Lock()
-_cache = {}  # kbDir -> {'mtime': float, 'mat': ndarray, 'rows': [(doc_id, filename, ord, text)]}
+_cache = {}  # indexDir -> {'mtime': float, 'mat': ndarray, 'rows': [(doc_id, filename, ord, text)]}
 
 
-def _db_path(kb_dir):
-    os.makedirs(kb_dir, exist_ok=True)
-    return os.path.join(kb_dir, 'index.sqlite')
+def _db_path(index_dir):
+    os.makedirs(index_dir, exist_ok=True)
+    return os.path.join(index_dir, 'index.sqlite')
 
 
-def _connect(kb_dir):
-    conn = sqlite3.connect(_db_path(kb_dir), timeout=30, check_same_thread=False)
+def _connect(index_dir):
+    conn = sqlite3.connect(_db_path(index_dir), timeout=30, check_same_thread=False)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS chunks ('
@@ -114,15 +114,15 @@ def _connect(kb_dir):
     return conn
 
 
-def _invalidate(kb_dir):
+def _invalidate(index_dir):
     with _cache_lock:
-        _cache.pop(os.path.abspath(kb_dir), None)
+        _cache.pop(os.path.abspath(index_dir), None)
 
 
-def _load_matrix(kb_dir):
-    """Load (and cache) the KB's normalized embedding matrix + row metadata."""
-    key = os.path.abspath(kb_dir)
-    db = _db_path(kb_dir)
+def _load_matrix(index_dir):
+    """Load (and cache) the index's normalized embedding matrix + row metadata."""
+    key = os.path.abspath(index_dir)
+    db = _db_path(index_dir)
     try:
         mtime = os.path.getmtime(db)
     except OSError:
@@ -131,7 +131,7 @@ def _load_matrix(kb_dir):
         hit = _cache.get(key)
         if hit and hit['mtime'] == mtime:
             return hit['mat'], hit['rows']
-    conn = _connect(kb_dir)
+    conn = _connect(index_dir)
     try:
         cur = conn.execute('SELECT doc_id, filename, ord, text, emb FROM chunks ORDER BY id')
         rows = []
@@ -152,7 +152,7 @@ def _load_matrix(kb_dir):
 # ---------------------------------------------------------------------------
 
 def op_ingest(body):
-    kb_dir = body['kbDir']
+    index_dir = body['indexDir']
     doc_id = str(body['docId'])
     filename = str(body.get('filename') or '')
     chunks = [c for c in (body.get('chunks') or []) if isinstance(c, str) and c.strip()]
@@ -160,7 +160,7 @@ def op_ingest(body):
         return {'ok': True, 'chunkCount': 0}
     embs = _embed(chunks)
     with _write_lock:
-        conn = _connect(kb_dir)
+        conn = _connect(index_dir)
         try:
             conn.executemany(
                 'INSERT INTO chunks (doc_id, filename, ord, text, emb) VALUES (?,?,?,?,?)',
@@ -169,7 +169,7 @@ def op_ingest(body):
             conn.commit()
         finally:
             conn.close()
-    _invalidate(kb_dir)
+    _invalidate(index_dir)
     return {'ok': True, 'chunkCount': len(chunks)}
 
 
@@ -179,7 +179,7 @@ def op_ingest_bulk(body):
     index build did 133 individual /ingest calls (per-call HTTP + commit fsync
     under _write_lock) taking ~10s; bulk does the same work in well under 1s.
     Additive op — existing ops unchanged."""
-    kb_dir = body['kbDir']
+    index_dir = body['indexDir']
     docs = []
     for d in (body.get('docs') or []):
         chunks = [c for c in (d.get('chunks') or []) if isinstance(c, str) and c.strip()]
@@ -196,7 +196,7 @@ def op_ingest_bulk(body):
             rows.append((doc_id, filename, i, c, embs[k].tobytes()))
             k += 1
     with _write_lock:
-        conn = _connect(kb_dir)
+        conn = _connect(index_dir)
         try:
             conn.executemany(
                 'INSERT INTO chunks (doc_id, filename, ord, text, emb) VALUES (?,?,?,?,?)',
@@ -205,18 +205,18 @@ def op_ingest_bulk(body):
             conn.commit()
         finally:
             conn.close()
-    _invalidate(kb_dir)
+    _invalidate(index_dir)
     return {'ok': True, 'docCount': len(docs), 'chunkCount': len(rows)}
 
 
 def op_search(body):
-    kb_dir = body['kbDir']
+    index_dir = body['indexDir']
     query = str(body.get('query') or '').strip()
     k = int(body.get('k') or 6)
     k = max(1, min(k, 50))
     if not query:
         return {'ok': True, 'results': [], 'total': 0}
-    mat, rows = _load_matrix(kb_dir)
+    mat, rows = _load_matrix(index_dir)
     if mat.shape[0] == 0:
         return {'ok': True, 'results': [], 'total': 0}
     q = _embed([query])[0]
@@ -240,25 +240,25 @@ def op_search(body):
 
 
 def op_delete_doc(body):
-    kb_dir = body['kbDir']
+    index_dir = body['indexDir']
     doc_id = str(body['docId'])
     with _write_lock:
-        conn = _connect(kb_dir)
+        conn = _connect(index_dir)
         try:
             cur = conn.execute('DELETE FROM chunks WHERE doc_id = ?', (doc_id,))
             conn.commit()
             removed = cur.rowcount
         finally:
             conn.close()
-    _invalidate(kb_dir)
+    _invalidate(index_dir)
     return {'ok': True, 'removed': removed}
 
 
 def op_stats(body):
-    kb_dir = body['kbDir']
-    if not os.path.exists(_db_path(kb_dir)):
+    index_dir = body['indexDir']
+    if not os.path.exists(_db_path(index_dir)):
         return {'ok': True, 'documentCount': 0, 'chunkCount': 0, 'dim': _dim, 'model': _mode, 'mode': _mode}
-    conn = _connect(kb_dir)
+    conn = _connect(index_dir)
     try:
         chunk_count = conn.execute('SELECT COUNT(*) FROM chunks').fetchone()[0]
         doc_count = conn.execute('SELECT COUNT(DISTINCT doc_id) FROM chunks').fetchone()[0]
@@ -270,15 +270,15 @@ def op_stats(body):
 
 def op_get_doc(body):
     """Return a single document's chunks reassembled in order (no embedding,
-    pure SQLite read). Used to serve a KB file's full text when the model /
+    pure SQLite read). Used to serve an indexed file's full text when the model /
     server asks to 'read' it by name. Selects by docId or by exact filename."""
-    kb_dir = body['kbDir']
+    index_dir = body['indexDir']
     doc_id = body.get('docId')
     filename = body.get('filename')
     max_chars = int(body.get('maxChars') or 0)
-    if not os.path.exists(_db_path(kb_dir)):
+    if not os.path.exists(_db_path(index_dir)):
         return {'ok': True, 'found': False}
-    conn = _connect(kb_dir)
+    conn = _connect(index_dir)
     try:
         if doc_id:
             cur = conn.execute(
@@ -350,7 +350,7 @@ def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     actual = server.server_address[1]
     # The first stdout line tells the Node parent which port we bound.
-    print(f'KB_ENGINE_LISTENING {actual}', flush=True)
+    print(f'EMBED_ENGINE_LISTENING {actual}', flush=True)
     server.serve_forever()
 
 

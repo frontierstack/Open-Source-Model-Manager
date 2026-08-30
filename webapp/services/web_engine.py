@@ -3,7 +3,7 @@
 Resident web-retrieval engine (speed + anti-bot layers for the `web` tool).
 
 Runs as a Python subprocess inside the webapp container (same pattern as
-kb_engine.py): a stdlib ThreadingHTTPServer on 127.0.0.1, ephemeral port,
+embedding_engine.py): a stdlib ThreadingHTTPServer on 127.0.0.1, ephemeral port,
 printing `WEB_ENGINE_LISTENING <port>` on stdout so Node can find it.
 
 Why it exists — measured on the live box (2026-08-23):

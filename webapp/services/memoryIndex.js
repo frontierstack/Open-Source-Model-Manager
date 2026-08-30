@@ -1,8 +1,7 @@
 /**
  * Memory embedding index — semantic retrieval for account memories.
  *
- * Rides the SAME resident kb_engine.py process the Knowledge Base feature
- * owns (via knowledgeBaseService.engineCall): model2vec potion-retrieval-32M,
+ * Rides the resident embedding_engine.py process (via embeddingEngine.call): model2vec potion-retrieval-32M,
  * 512-d, pure-CPU, already baked into the image. One memory = one engine
  * "document" with a single chunk, docId = the memory id, so:
  *   upsert  = delete_doc + ingest        (idempotent re-embed)
@@ -19,12 +18,12 @@
  * return null/false — callers treat null as "no semantic signal".
  *
  * Storage: /models/.modelserver/memory-index/<userIdSafe>/index.sqlite,
- * created and owned by the engine (same layout as a KB dir).
+ * created and owned by the engine.
  */
 
 const path = require('path');
 const fsp = require('fs/promises');
-const kbService = require('./knowledgeBaseService');
+const embeddingEngine = require('./embeddingEngine');
 
 const DATA_DIR = '/models/.modelserver';
 const MEM_INDEX_ROOT = path.join(DATA_DIR, 'memory-index');
@@ -65,11 +64,11 @@ function embedTextOf(rec) {
 /** Embed/re-embed one memory. Best-effort; returns true on success. */
 async function upsert(userId, rec) {
     if (!rec || !rec.id || !String(rec.text || '').trim()) return false;
-    const kbDir = indexDirFor(userId);
+    const indexDir = indexDirFor(userId);
     try {
-        await kbService.engineCall('/delete_doc', { kbDir, docId: rec.id });
-        await kbService.engineCall('/ingest', {
-            kbDir, docId: rec.id, filename: '', chunks: [embedTextOf(rec)],
+        await embeddingEngine.call('/delete_doc', { indexDir, docId: rec.id });
+        await embeddingEngine.call('/ingest', {
+            indexDir, docId: rec.id, filename: '', chunks: [embedTextOf(rec)],
         });
         return true;
     } catch (e) {
@@ -82,7 +81,7 @@ async function upsert(userId, rec) {
 async function remove(userId, memId) {
     if (!memId) return false;
     try {
-        await kbService.engineCall('/delete_doc', { kbDir: indexDirFor(userId), docId: memId });
+        await embeddingEngine.call('/delete_doc', { indexDir: indexDirFor(userId), docId: memId });
         return true;
     } catch (e) {
         logFailure('remove', e);
@@ -118,8 +117,8 @@ async function search(userId, query, k = 32) {
     const q = String(query || '').trim();
     if (!q) return null;
     try {
-        const res = await kbService.engineCall('/search', {
-            kbDir: indexDirFor(userId), query: q.slice(0, 2000), k: Math.min(50, Math.max(1, k)),
+        const res = await embeddingEngine.call('/search', {
+            indexDir: indexDirFor(userId), query: q.slice(0, 2000), k: Math.min(50, Math.max(1, k)),
         });
         const scores = new Map();
         for (const r of (res.results || [])) {

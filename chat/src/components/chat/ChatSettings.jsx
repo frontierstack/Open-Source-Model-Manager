@@ -599,8 +599,8 @@ export default function ChatSettings({
                                         <div className="set-row-title">Max upload size</div>
                                         <div className="set-row-help">
                                             {uploadLimitEditable
-                                                ? 'Largest file that can be attached to a chat or knowledge base. Applies to everyone on this server.'
-                                                : 'Largest file that can be attached to a chat or knowledge base. Set by an administrator.'}
+                                                ? 'Largest file that can be attached to a chat. Applies to everyone on this server.'
+                                                : 'Largest file that can be attached to a chat. Set by an administrator.'}
                                         </div>
                                         {uploadLimitError && (
                                             <div className="mt-1" style={{ '--fs': '11.5px', color: 'var(--danger)' }}>{uploadLimitError}</div>

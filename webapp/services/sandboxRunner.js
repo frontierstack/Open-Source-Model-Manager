@@ -990,6 +990,55 @@ function pickBestFileMatch(wanted, candidates) {
 // never silently redirect a write and corrupt a different file.
 const CODE_INPUT_DIRS = ['uploads', 'archives'];
 
+// A path literal that is NOT a plain read — a template the script fills in at
+// run time, or a WRITE target. The input-dir scope above assumed a script only
+// ever READS from uploads/, but a model routinely writes derived files right
+// next to the input (`<upload>_big.png`, `crop_%s.png`) — and rewriting THAT
+// literal to the upload it was derived from made `im.save()` overwrite the
+// user's original file (live: a 13 KB screenshot became an 8 MB upscale).
+const CODE_LITERAL_TEMPLATE_RE = /[{}%$*?<>|]/;
+// Method/function calls whose FIRST argument is a destination.
+const WRITE_CALL_RE = /(?:\.(?:save|savefig|to_csv|to_excel|to_json|to_parquet|to_pickle|to_hdf|to_feather|to_html|to_sql|write_text|write_bytes|write_image|imwrite|imsave|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|mkdir|mkdirSync|mkdirp|makedirs|touch|unlink|unlinkSync|remove|rm|rmSync|rmdir|rmtree|truncate)|\b(?:imwrite|imsave|savefig|makedirs|mkdir|unlink|remove|rmtree|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|touch))\s*\(\s*(?:f|r|b|u|rb|br)?['"`]?TOKEN/;
+// Calls whose SECOND argument is a destination (copy/move/rename/link).
+const WRITE_SECOND_ARG_RE = /\b(?:copy|copy2|copyfile|copytree|move|rename|renames|replace|link|symlink|copyFile|copyFileSync|renameSync|cp|cpSync)\s*\([^()]*?,\s*(?:f|r|b|u)?['"`]?TOKEN/;
+// open(path, 'w'/'a'/'x'/'wb'…) — a write mode in the second position.
+const OPEN_WRITE_RE = /\bopen\s*\(\s*(?:f|r|b|u)?['"`]TOKEN['"`]\s*,\s*(?:mode\s*=\s*)?['"][wax]/;
+// Path(TOKEN).write_*/mkdir/touch/unlink
+const PATHLIB_WRITE_RE = /\bPath\s*\(\s*(?:f|r|b|u)?['"`]TOKEN['"`]\s*\)\s*\.(?:write_text|write_bytes|mkdir|touch|unlink|rmdir|rename|replace)/;
+// Assigned to an output-named variable, a shell redirect, or an -o/--output flag.
+const OUTPUT_VAR_RE = /\b(?:out|output|dest|dst|target|save|result|export|artifact|report|final|new|tmp|temp)[A-Za-z0-9_]*\s*[:=]\s*(?:f|r|b|u)?['"`]TOKEN/i;
+const SHELL_OUT_RE = /(?:>>?|\s-o|--out(?:put)?(?:=|\s))\s*['"`]?TOKEN/;
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** True when ANY occurrence of `token` in `code` sits in a write/delete
+ *  position. Conservative on purpose: a miss means one mangled input path goes
+ *  unrecovered (the skill's ENOENT hint still fires); a false negative here
+ *  means a script writes over a user's file. */
+function isWriteContextLiteral(code, token) {
+    const tok = escapeRe(token);
+    const patterns = [WRITE_CALL_RE, WRITE_SECOND_ARG_RE, OPEN_WRITE_RE, PATHLIB_WRITE_RE, OUTPUT_VAR_RE, SHELL_OUT_RE]
+        .map(re => new RegExp(re.source.replace(/TOKEN/g, tok), re.flags));
+    let idx = code.indexOf(token);
+    while (idx !== -1) {
+        const win = code.slice(Math.max(0, idx - 240), idx + token.length + 64);
+        if (patterns.some(re => re.test(win))) return true;
+        idx = code.indexOf(token, idx + token.length);
+    }
+    return false;
+}
+
+/** `<real-stem><suffix>` / `<prefix><real-stem>` with the requested name LONGER
+ *  than the file it would resolve to: the model DERIVED a new name from the
+ *  input (`x_big.png`, `crop_x.png`, `x_gray.jpg`), it did not truncate one.
+ *  Never resolve those — they are outputs. */
+function isDerivedName(wanted, hitName) {
+    const stemOf = (n) => String(n).replace(/\.[^.]*$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const w = stemOf(wanted), h = stemOf(hitName);
+    if (!w || !h || h.length < 6 || w.length <= h.length) return false;
+    return w.startsWith(h) || w.endsWith(h);
+}
+
 /** Resolve mangled `/workspace/...` path LITERALS inside run_python / run_node
  *  code. The arg-path resolver (resolveMissingReadPaths) can't reach these —
  *  a path baked into the source is a string literal, not a tool argument — so
@@ -1022,6 +1071,8 @@ async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINE
         if (!rel || rel.includes('..')) continue;
         const topDir = rel.split('/')[0];
         if (!CODE_INPUT_DIRS.includes(topDir)) continue;   // input-only scope
+        if (CODE_LITERAL_TEMPLATE_RE.test(rel)) continue;   // `crop_%s.png`, `{name}` — filled in at run time
+        if (isWriteContextLiteral(codeText, token)) continue; // a destination, never a mangled input
         const local = path.join(root, rel);
         try {
             const st = await fs.stat(local);
@@ -1038,6 +1089,7 @@ async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINE
             // when the mangled name scores below the fuzzy floor.
             let hit = files.length === 1 ? files[0] : pickBestFileMatch(wantedBase, files);
             if (!hit) continue;
+            if (isDerivedName(wantedBase, hit.name)) continue;  // `<upload>_big.png` is an OUTPUT
             const resolved = path.posix.join(mount, path.relative(root, hit.full).split(path.sep).join('/'));
             if (resolved === token) continue;
             // Replace every occurrence of this exact literal.
@@ -1546,6 +1598,8 @@ module.exports = {
     normalizePathArgs,
     resolveMissingReadPaths,
     resolveCodePathLiterals,
+    isWriteContextLiteral,
+    isDerivedName,
     pickBestFileMatch,
     PATH_ARG_NAMES,
     RESOLVABLE_READ_PATH_ARGS,
