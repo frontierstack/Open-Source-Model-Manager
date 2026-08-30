@@ -170,6 +170,8 @@ export default function ToolMilestones({ toolCalls }) {
                 const name = g.name;
                 const verb = verbFor(name, done || failed);
                 const subject = extractSubject(last);
+                // What the model said this call is FOR (the `purpose` argument).
+                const purpose = last.purpose || '';
                 const detail = done && count === 1 ? doneDetail(last) : '';
                 const totalMs = (done || failed)
                     ? g.calls.reduce((a, c) => a + (c.durationMs || 0), 0)
@@ -225,7 +227,25 @@ export default function ToolMilestones({ toolCalls }) {
                                 fontVariantNumeric: 'tabular-nums',
                             }}>×{count}</span>
                         )}
-                        {subject && (
+                        {purpose && (
+                            <>
+                                <span style={{ color: 'var(--ink-4)' }}>·</span>
+                                <span
+                                    style={{
+                                        color: 'var(--ink-2)',
+                                        fontSize: 12, '--fs': '12px',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                        maxWidth: 520,
+                                    }}
+                                    title={purpose}
+                                >
+                                    {purpose}
+                                </span>
+                            </>
+                        )}
+                        {subject && !purpose && (
                             <>
                                 <span style={{ color: 'var(--ink-4)' }}>·</span>
                                 <span

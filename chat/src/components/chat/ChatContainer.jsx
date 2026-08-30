@@ -285,6 +285,7 @@ function buildNativeChipEntries(streamingToolCalls) {
         out.push({
             type: 'native_tool_call',
             label: tc.name || 'tool',
+            purpose: tc.purpose || undefined,
             query: argPreview,
             args: parsedArgsForChip,
             durationMs: tc.durationMs,
@@ -1803,6 +1804,7 @@ export default function ChatContainer({
                                     tool_call_id: parsed.tool_call_id,
                                     name: parsed.name,
                                     arguments: parsed.arguments,
+                                    purpose: parsed.purpose,
                                     sandboxed: parsed.sandboxed,
                                     source: parsed.source,
                                     network: parsed.network,

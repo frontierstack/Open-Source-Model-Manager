@@ -94,6 +94,7 @@ export default function ToolCallBlock({ tool }) {
             : label.toLowerCase().replace(/\s+/g, '.');
 
     const captionParts = [];
+    if (tool.purpose) captionParts.push(String(tool.purpose));
     const sourceList = Array.isArray(sources) ? sources : Array.isArray(results) ? results : null;
     const sourceCount = sourceList ? sourceList.length : null;
     // For load_skill, surface which skill the model loaded so the user can

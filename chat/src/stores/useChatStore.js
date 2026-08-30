@@ -465,6 +465,8 @@ export const useChatStore = create(
                     tool_call_id: tc.tool_call_id,
                     name: tc.name,
                     arguments: tc.arguments || '',
+                    // The model's one-line reason for the call (live commentary).
+                    purpose: tc.purpose || undefined,
                     status: 'running',
                     startedAt: Date.now(),
                     // Sandbox policy, piped through from the server so the

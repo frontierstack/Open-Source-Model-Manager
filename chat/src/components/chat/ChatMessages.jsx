@@ -71,6 +71,7 @@ function StreamingMessage() {
         return {
             type: 'native_tool_call',
             label: tc.name,
+            purpose: tc.purpose || undefined,
             query: argPreview,
             durationMs: tc.durationMs,
             // Drives ToolCallBlock's live "running… 4.2s" clock.

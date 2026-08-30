@@ -1337,7 +1337,9 @@ function buildChatRuntimePrelude() {
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
         `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. The sandbox has NO web browser and cannot install one (no Chromium, 64 MB /tmp) — playwright/puppeteer/selenium there are refused; to TEST or PREVIEW an HTML/JS/React page you wrote, call preview_html (real headless browser: console errors, exceptions, blank-canvas check, screenshot). When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
-        `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
+        `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
+        `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
+        `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
         `Files the user should be able to download (HTML, PDF, image, archive, dataset, generated script, edited source file, etc.) MUST be written under /workspace/ and surfaced with make_downloadable — the chat UI renders a download chip. When the user asks you to "output", "show", or "give me" a file you have ALREADY written or edited in /workspace this conversation, call make_downloadable with that file's path INSTEAD of reading it back and pasting its contents inline: the download is faster, always complete, and avoids the output-token limit that truncates large pasted files. Only paste a file inline when it is small or the user explicitly asks to see it in the chat. NEVER try to rewrite a large existing file by pasting its entire new contents into a single tool-call argument — that argument truncates; make small targeted edits (replace_lines / search_replace_file on one section at a time) or write chunks via create_file + append_to_file.`,
@@ -20194,6 +20196,35 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // dispatch. The router reduces what is ADVERTISED to the model per turn;
         // find_tools + name dispatch keep every dropped tool reachable. Any
         // failure below leaves toolCatalog = the full catalog (fail open).
+        // Every tool gets an optional `purpose` argument: one line the model
+        // writes about WHY it is making this call. Native-tool-calling models
+        // (Qwen3.x on llama.cpp) emit no prose before a tool_call even when
+        // told to narrate — measured 0 chars — but they do fill schema
+        // arguments, so this is the channel that gives the user live
+        // commentary ("Reading file — checking the mod manifest for
+        // entrypoints"). Stripped from the args before any guard/fingerprint
+        // and before dispatch (see the perCall block); shown in tool_executing
+        // + the persisted chip. Cloned so registry schemas stay untouched.
+        const withPurposeParam = (def) => {
+            const fn = def && def.function;
+            if (!fn || !fn.parameters || typeof fn.parameters !== 'object') return def;
+            const props = fn.parameters.properties && typeof fn.parameters.properties === 'object' ? fn.parameters.properties : {};
+            if (props.purpose) return def;
+            return {
+                ...def,
+                function: {
+                    ...fn,
+                    parameters: {
+                        ...fn.parameters,
+                        properties: {
+                            ...props,
+                            purpose: { type: 'string', description: 'One short line for the user: what this call is for / what you are checking. Shown as live progress.' },
+                        },
+                    },
+                },
+            };
+        };
+        toolCatalog = toolCatalog.map(withPurposeParam);
         const fullToolCatalog = toolCatalog.slice();
         const fullByName = new Map(fullToolCatalog.map(d => [d.function?.name, d]));
         toolCtx.fullToolCatalog = fullToolCatalog;
@@ -20758,7 +20789,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // purpose-built tools (web / dns_lookup / virustotal_lookup /
         // http_request) — only while `web` is actually usable this turn. The
         // OSINT turn wrote 24 such scripts in a row. 0 disables.
-        const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3', 10);
+        const INTERP_BUDGET_ADVISE = parseInt(process.env.INTERP_BUDGET_ADVISE || '8', 10);
+const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3', 10);
         const WRAPPER_MAX_CHARS = parseInt(process.env.WRAPPER_MAX_CHARS || '900', 10);
         const WRAPPER_RESIDUE_CHARS = parseInt(process.env.WRAPPER_RESIDUE_CHARS || '80', 10);
         // No /g flag — this regex is .test()ed repeatedly and lastIndex would drift.
@@ -21009,11 +21041,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // punctuation so file paths and tool-call JSON structure
                     // never accumulate penalty. CHAT_DRY_MULTIPLIER=0 disables;
                     // all knobs env-tunable, no rebuild.
-                    const dryMultiplier = Number(process.env.CHAT_DRY_MULTIPLIER ?? 0.7);
+                    // OFF by default (2026-08-29): DRY penalizes reproducing any
+                    // context sequence longer than dry_allowed_length, so copying
+                    // a hash / token / quoted log line out of a tool result gets
+                    // pushed off the exact bytes — measured: the model retried a
+                    // 64-char checksum four times, each shorter, and gave up with
+                    // "37ff458f…"; raising allowed_length to 12 only delayed it.
+                    // Silent corruption of evidence is worse than the narration
+                    // repeats DRY was added for, and the content-loop guard now
+                    // bounds those. Re-enable per install with CHAT_DRY_MULTIPLIER.
+                    const dryMultiplier = Number(process.env.CHAT_DRY_MULTIPLIER ?? 0);
                     const dryParams = (targetInstance?.backend !== 'sglang' && dryMultiplier > 0) ? {
                         dry_multiplier: dryMultiplier,
                         dry_base: Number(process.env.CHAT_DRY_BASE ?? 1.75),
-                        dry_allowed_length: Number(process.env.CHAT_DRY_ALLOWED_LENGTH ?? 4),
+                        // 12, not 4 (2026-08-29): DRY penalizes reproducing ANY
+                        // context sequence longer than allowed_length, which is
+                        // exactly what copying a hash / webhook token / quoted
+                        // evidence out of a tool result is — the model then bails
+                        // out of the value with "…" (same mechanism that shortened
+                        // retried filenames). Sentence-level narration loops are
+                        // still ≥ 12 tokens; the content-loop guard backstops the rest.
+                        dry_allowed_length: Number(process.env.CHAT_DRY_ALLOWED_LENGTH ?? 12),
                         dry_penalty_last_n: Number(process.env.CHAT_DRY_PENALTY_LAST_N ?? 4096),
                         // '-' and the bracket/operator set were missing: a
                         // hyphenated filename (`pasted-text-2026-08-25-114656`)
@@ -22077,6 +22125,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // Pre-resolve per-call metadata (policy + fp + nudge
                     // decisions) and emit tool_executing in original order.
                     const perCall = finalizedCalls.map(call => {
+                        // Lift the model's `purpose` line OUT of the args before
+                        // anything fingerprints or dispatches them (it varies per
+                        // call and would defeat every arg-repeat guard; tools with
+                        // additionalProperties:false would reject it).
+                        if (!call.purpose) {
+                            try {
+                                const pa = JSON.parse(call.function.arguments || '{}');
+                                if (pa && typeof pa === 'object' && !Array.isArray(pa) && 'purpose' in pa) {
+                                    const pv = pa.purpose;
+                                    delete pa.purpose;
+                                    call.function.arguments = JSON.stringify(pa);
+                                    if (typeof pv === 'string' && pv.trim()) call.purpose = pv.trim().replace(/\s+/g, ' ').slice(0, 200);
+                                }
+                            } catch (_) { /* malformed args are handled downstream */ }
+                        }
                         const policy = toolPolicy(call.function.name);
                         if (clientConnected) {
                             try {
@@ -22085,6 +22148,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     tool_call_id: call.id,
                                     name: call.function.name,
                                     arguments: call.function.arguments,
+                                    purpose: call.purpose || undefined,
                                     sandboxed: policy.sandboxed,
                                     source: policy.source,
                                     ...(policy.source === 'skill' ? { network: policy.network, workspace: policy.workspace } : {}),
@@ -22328,16 +22392,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             'query_sqlite', 'spreadsheet_query', 'csv_describe', 'extract_strings', 'hex_dump',
                             'web_search', 'fetch_url', 'scrapling_fetch', 'playwright_fetch', 'outline_file']);
                         let stalledOutcome = false;
+                        let stalledStreak = STALL_STREAK;
                         if (!unproductiveLoop && !oneShotAfterNudge && STALL_GUARD_TOOLS.has(effName)) {
                             const sameTool = historySnapshot.filter(h => h.toolName === effName && !h.nudge);
-                            if (sameTool.length >= STALL_STREAK) {
-                                const recent = sameTool.slice(-STALL_STREAK);
+                            const identicalRun = (n) => {
+                                if (sameTool.length < n) return false;
+                                const recent = sameTool.slice(-n);
                                 const sigs = new Set(recent.map(h => h.outcomeSig));
                                 const fps = new Set(recent.map(h => h.fp));
-                                if (sigs.size === 1 && fps.size === recent.length &&
-                                    recent.every(h => !h.outcomeEmpty && !h.failed)) {
-                                    stalledOutcome = true;
-                                }
+                                return sigs.size === 1 && fps.size === recent.length &&
+                                    recent.every(h => !h.outcomeEmpty && !h.failed);
+                            };
+                            // Two DIFFERENT scripts producing the same LONG output is
+                            // already conclusive (a jar audit ran 5 fresh analyzeN.py
+                            // printing the identical browser list before the ×3 rule
+                            // bit); short outputs ("3", "OK") can legitimately repeat,
+                            // so they keep the ×3 rule.
+                            const STALL_LONG_CHARS = parseInt(process.env.LOOP_STALL_LONG_CHARS || '300', 10);
+                            if (identicalRun(2) && sameTool.slice(-2).every(h => (h.outcomeLen || 0) >= STALL_LONG_CHARS)) {
+                                stalledOutcome = true; stalledStreak = 2;
+                            } else if (identicalRun(STALL_STREAK)) {
+                                stalledOutcome = true;
                             }
                         }
 
@@ -22512,10 +22587,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else if (stalledOutcome) {
                             nudge = {
                                 error: 'loop_detected',
-                                message: `Your last ${STALL_STREAK} ${effName} calls used DIFFERENT arguments/code but produced BYTE-IDENTICAL output — the changes you made had no effect on the result, so re-running another variant will not either. Re-read the output you already have: it most likely already contains the answer, OR the data does not look the way your pattern/parsing assumes (common causes: terminal colour/escape codes inside the lines, different quoting or spacing, a different column layout). If you need to look again, print a few RAW lines (repr()) around the target ONCE to see their exact bytes, then adjust — or stop calling tools and give the user the results you already have.`,
+                                message: `Your last ${stalledStreak} ${effName} calls used DIFFERENT arguments/code but produced BYTE-IDENTICAL output — the changes you made had no effect on the result, so re-running another variant will not either. Re-read the output you already have: it most likely already contains the answer, OR the data does not look the way your pattern/parsing assumes (common causes: terminal colour/escape codes inside the lines, different quoting or spacing, a different column layout). If you need to look again, print a few RAW lines (repr()) around the target ONCE to see their exact bytes, then adjust — or stop calling tools and give the user the results you already have.`,
                                 previous_call_count: historySnapshot.filter(h => h.toolName === effName).length,
                             };
-                            console.warn(`[Chat Stream] Loop detected for ${effName} (stalled-outcome ×${STALL_STREAK}, distinct args, identical output); short-circuited with nudge`);
+                            console.warn(`[Chat Stream] Loop detected for ${effName} (stalled-outcome ×${stalledStreak}, distinct args, identical output); short-circuited with nudge`);
                         } else if (rereadPath) {
                             nudge = {
                                 error: 'loop_detected',
@@ -23065,6 +23140,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 failed: recFailed,
                                 outcomeSig,
                                 outcomeEmpty,
+                                outcomeLen: String(resultMsg.content || '').length,
                                 resolvedTarget,
                                 readPath,
                                 execPath,
@@ -23113,6 +23189,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 resultMsg = attachAdvisory(resultMsg,
                                     `Interpreter advisory (${soFar}/${INTERP_NET_SCRIPT_MAX}): this script made its own HTTP/DNS requests. Use the purpose-built tools instead — web (reads a page or JSON API in one call), dns_lookup, virustotal_lookup, http_request — and reserve ${call.function.name} for computation over data you already have. After ${INTERP_NET_SCRIPT_MAX} such scripts in one turn, further ones are refused.`);
                                 logChatActivity(`Interpreter: ${call.function.name} hand-rolled HTTP/DNS (${soFar}/${INTERP_NET_SCRIPT_MAX} this turn) — advised the model to use the web tool`);
+                            }
+                            // Exploration budget: N successful interpreter runs in one
+                            // turn with no answer yet is the "one script per item"
+                            // pattern (a jar audit ran 19 analyzeN.py, ~25 s of model
+                            // time each). Non-blocking: the result carries a reminder
+                            // to answer now or name the ONE missing fact.
+                            if (INTERP_BUDGET_ADVISE > 0 && (recName === 'run_python' || recName === 'run_node') && !recFailed) {
+                                const execCount = historySnapshot.filter(h => (h.toolName === 'run_python' || h.toolName === 'run_node') && !h.failed && !h.nudge).length + 1;
+                                if (execCount >= INTERP_BUDGET_ADVISE) {
+                                    resultMsg = attachAdvisory(resultMsg,
+                                        `Exploration budget: this is interpreter run ${execCount} this turn. If you can answer the user now, STOP calling tools and write the full answer. ` +
+                                        'If not, state in one line the ONE specific fact still missing and get it in a single broad script (loop over everything, print a compact summary) — not another per-item script.');
+                                    if (execCount === INTERP_BUDGET_ADVISE) logChatActivity(`Interpreter: ${execCount} script runs this turn — reminded the model to answer or name the one missing fact`);
+                                }
                             }
                         } catch (_) { /* */ }
                         if (refusalKind) {
@@ -23189,6 +23279,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             persistedToolChips.push({
                                 type: 'native_tool_call',
                                 label: call.function.name || 'tool',
+                                purpose: call.purpose || undefined,
                                 query: argPreview,
                                 args: parsedArgsForChip,
                                 status: failedChip ? 'failed' : 'success',

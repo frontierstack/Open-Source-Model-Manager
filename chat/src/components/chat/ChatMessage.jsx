@@ -81,10 +81,12 @@ function describeRunningTool(toolCalls) {
     // Most recent partial/running tool drives the label.
     for (let i = toolCalls.length - 1; i >= 0; i--) {
         const t = toolCalls[i];
-        if (t && t.status === 'partial') {
+        if (t && (t.status === 'partial' || t.status === 'running')) {
             const name = t.label || t.name || '';
-            if (TOOL_VERBS[name]) return TOOL_VERBS[name];
-            return name ? name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : null;
+            const verb = TOOL_VERBS[name] || (name ? name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : null);
+            // The model's own one-line purpose is the most informative label.
+            if (t.purpose) return verb ? `${verb} — ${t.purpose}` : t.purpose;
+            return verb;
         }
     }
     return null;
