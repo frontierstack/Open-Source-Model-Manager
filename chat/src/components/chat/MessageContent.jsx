@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import rehypeWordTags from '../../utils/rehypeWordTags';
 import 'katex/dist/katex.min.css';
 import CodeBlock from './CodeBlock';
 import CodePreviewBlock from './CodePreviewBlock';
@@ -11,8 +12,10 @@ import { InlineVideoLink, videoDescriptorFromUrl } from './VideoBlock';
 // Flatten a react-markdown link's children to plain text (used as the video
 // title when we render a video link inline as a player).
 function childrenToText(children) {
+    if (children == null) return '';
     if (typeof children === 'string') return children;
-    if (Array.isArray(children)) return children.map(c => (typeof c === 'string' ? c : '')).join('');
+    if (Array.isArray(children)) return children.map(childrenToText).join('');
+    if (children.props && children.props.children != null) return childrenToText(children.props.children);
     return '';
 }
 
@@ -111,13 +114,19 @@ const sharedMarkdownComponents = {
     ol({ children }) {
         return <ol className="list-decimal">{children}</ol>;
     },
-    li({ children }) {
-        return <li>{children}</li>;
+    li({ children, className }) {
+        return <li className={className || undefined}>{children}</li>;
     },
     blockquote({ children }) {
-        return (
-            <blockquote>{children}</blockquote>
-        );
+        // A leading "Note:/Tip:/Warning:/Caution:/Important:/Danger:" turns the
+        // quote into a colored callout (scan the first bit of text).
+        const head = childrenToText(children).replace(/^[\s>*_]+/, '').slice(0, 16).toLowerCase();
+        let cls = '';
+        if (/^(warning|caution)\b/.test(head)) cls = 'callout-warn';
+        else if (/^(danger|critical)\b/.test(head)) cls = 'callout-danger';
+        else if (/^(tip|success|done)\b/.test(head)) cls = 'callout-ok';
+        else if (/^(note|important|info)\b/.test(head)) cls = 'callout-warn';
+        return <blockquote className={cls || undefined}>{children}</blockquote>;
     },
     table({ children }) {
         // No outer wrapper border — cell separators are enough and doubled
@@ -138,24 +147,20 @@ const sharedMarkdownComponents = {
     tr({ children }) {
         return <tr>{children}</tr>;
     },
-    th({ children }) {
-        return (
-            <th>{children}</th>
-        );
+    th({ children, className, style }) {
+        return <th className={className || undefined} style={style}>{children}</th>;
     },
-    td({ children }) {
-        return (
-            <td>{children}</td>
-        );
+    td({ children, className, style }) {
+        return <td className={className || undefined} style={style}>{children}</td>;
     },
     hr() {
         return <hr />;
     },
-    strong({ children }) {
-        return <strong>{children}</strong>;
+    strong({ children, className }) {
+        return <strong className={className || undefined}>{children}</strong>;
     },
-    em({ children }) {
-        return <em className="italic">{children}</em>;
+    em({ children, className }) {
+        return <em className={['italic', className].filter(Boolean).join(' ')}>{children}</em>;
     },
 };
 
@@ -171,7 +176,11 @@ const remarkPlugins = [remarkGfm, remarkMath];
 // strict:false → ignore unknown LaTeX commands instead of dropping a hard
 // "ParseError" in red across the page; output:'html' keeps the DOM small
 // (no MathML twin tree we don't display).
-const rehypePlugins = [[rehypeKatex, { strict: false, output: 'html', throwOnError: false }]];
+const rehypeKatexPlugin = [rehypeKatex, { strict: false, output: 'html', throwOnError: false }];
+// Word-tagging runs ONLY on the finalized message — mid-stream a half-typed
+// token would tag wrong (an IP or keyword completes token by token).
+const rehypePluginsStreaming = [rehypeKatexPlugin];
+const rehypePluginsFinal = [rehypeKatexPlugin, rehypeWordTags];
 
 // Currency vs math. remark-math treats single `$...$` as inline math, so a reply
 // like "it's $289.99 (Amazon) ... or $275.49 used" gets the two `$` paired and
@@ -231,7 +240,7 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
         <div className="markdown-content">
             <ReactMarkdown
                 remarkPlugins={remarkPlugins}
-                rehypePlugins={rehypePlugins}
+                rehypePlugins={isStreaming ? rehypePluginsStreaming : rehypePluginsFinal}
                 components={isStreaming ? streamingMarkdownComponents : markdownComponents}
             >
                 {processed}

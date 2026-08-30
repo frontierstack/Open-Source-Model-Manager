@@ -5040,3 +5040,98 @@ body[class*="font-size-"] .markdown-content h4 { font-size: calc(15px * var(--fs
 .set-seg-btn:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); color: var(--ink); }
 .set-seg-btn.is-active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .set-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ============================================================================
+   Assistant message readability — modern typography + word tagging (2026-08-29)
+   Appended last so it wins over the earlier .markdown-content rules by source
+   order; all colors are theme tokens so light/dark/variant themes track.
+   ============================================================================ */
+
+/* Headings: clearer hierarchy. h1/h2 get a hairline rule so long reports read
+   as sectioned documents rather than one scroll of text. */
+.markdown-content h1 { font-weight: 700; letter-spacing: -.01em; padding-bottom: .3em; border-bottom: 1px solid var(--rule); }
+.markdown-content h2 { font-weight: 650; letter-spacing: -.01em; padding-bottom: .25em; border-bottom: 1px solid var(--rule-2); }
+.markdown-content h3 { font-weight: 650; color: var(--ink); }
+.markdown-content h4 { font-weight: 600; color: var(--ink-2); text-transform: none; }
+
+/* Accent list markers — a small modern touch that also aids scanning. */
+.markdown-content ul > li::marker { color: color-mix(in oklab, var(--accent) 70%, var(--ink-4)); }
+.markdown-content ol > li::marker { color: var(--ink-3); font-variant-numeric: tabular-nums; font-weight: 600; }
+.markdown-content li { padding-left: .15em; }
+
+/* GFM task lists (- [ ] / - [x]) — remark-gfm emits <li class=task-list-item>
+   with a disabled checkbox. Style it as a real checklist. */
+.markdown-content li.task-list-item { list-style: none; margin-left: -1.15em; padding-left: 1.4em; position: relative; }
+.markdown-content li.task-list-item input[type="checkbox"] {
+    position: absolute; left: 0; top: .28em; margin: 0; width: 15px; height: 15px;
+    -webkit-appearance: none; appearance: none; cursor: default;
+    border: 1.5px solid var(--rule); border-radius: 4px; background: color-mix(in oklab, var(--ink) 4%, transparent);
+    display: inline-grid; place-content: center;
+}
+.markdown-content li.task-list-item input[type="checkbox"]:checked {
+    background: var(--ok); border-color: var(--ok);
+}
+.markdown-content li.task-list-item input[type="checkbox"]:checked::after {
+    content: ""; width: 8px; height: 5px; margin-top: -1px;
+    border-left: 2px solid #fff; border-bottom: 2px solid #fff; transform: rotate(-45deg);
+}
+.markdown-content li.task-list-item input[type="checkbox"]:checked ~ * { color: var(--ink-3); }
+
+/* Inline keyboard keys — models write <kbd> for shortcuts. */
+.markdown-content kbd {
+    font-family: var(--font-mono); font-size: .82em; line-height: 1;
+    padding: .18em .45em; border-radius: 5px; color: var(--ink);
+    background: color-mix(in oklab, var(--ink) 7%, transparent);
+    border: 1px solid var(--rule); border-bottom-width: 2px;
+    white-space: nowrap;
+}
+
+/* Callout blockquotes: a leading "Note:/Tip:/Warning:/Important:" recolors the
+   quote so guidance reads as a callout. Base is the accent quote already
+   defined above; these override the tint + bar per kind. */
+.markdown-content blockquote { position: relative; }
+.markdown-content blockquote.callout-warn {
+    border-left-color: var(--warning);
+    background: color-mix(in oklab, var(--warning) 8%, transparent);
+}
+.markdown-content blockquote.callout-danger {
+    border-left-color: var(--danger);
+    background: color-mix(in oklab, var(--danger) 8%, transparent);
+}
+.markdown-content blockquote.callout-ok {
+    border-left-color: var(--ok);
+    background: color-mix(in oklab, var(--ok) 8%, transparent);
+}
+
+/* Word tags — status/severity pills + identifier chips. Kept subtle: tinted
+   text on a faint wash, not loud chips, so a report doesn't turn into confetti.
+   `wtag-cell` (a whole table cell) reads as a proper pill; an inline tagged
+   <strong> is lighter (colored weight + hairline). */
+.markdown-content .wtag {
+    font-weight: 600; border-radius: 6px; white-space: nowrap;
+    padding: .05em .4em; font-size: .92em;
+    background: color-mix(in oklab, var(--wtag-c) 14%, transparent);
+    color: var(--wtag-c);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--wtag-c) 30%, transparent);
+}
+.markdown-content .wtag-ok      { --wtag-c: var(--ok); }
+.markdown-content .wtag-warn    { --wtag-c: var(--warning); }
+.markdown-content .wtag-danger  { --wtag-c: var(--danger); }
+.markdown-content .wtag-info    { --wtag-c: var(--accent); }
+/* Identifiers: monospace, neutral — a quiet chip that separates a hash/IP/CVE
+   from the prose without shouting a status color. */
+.markdown-content .wtag-id {
+    font-family: var(--font-mono); font-size: .86em; font-weight: 500;
+    padding: .05em .35em; border-radius: 5px; white-space: nowrap;
+    background: color-mix(in oklab, var(--ink) 7%, transparent);
+    color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--rule-2);
+}
+/* A whole status cell fills less aggressively so a Status column stays legible. */
+.markdown-content td.wtag-cell, .markdown-content th.wtag-cell {
+    color: var(--wtag-c); font-weight: 600;
+}
+.markdown-content td.wtag-cell { background: color-mix(in oklab, var(--wtag-c) 9%, transparent) !important; }
+
+/* Definition-style leading term: "**Term** — rest" is common in model output;
+   give the em-dash a touch more room so the term reads as a label. */
+.markdown-content li > strong:first-child { color: var(--ink); }

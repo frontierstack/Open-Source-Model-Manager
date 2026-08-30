@@ -105,7 +105,7 @@ export const useChatStore = create(
         // Streaming
         isStreaming: false,
         streamingContent: '',
-        streamingToolDraft: null,
+        streamingToolDrafts: {},
         streamingReasoning: '',
         // Native tool calls observed during the current stream. Each entry:
         //   { tool_call_id, name, arguments, status: 'running'|'success'|'failed',
@@ -241,7 +241,7 @@ export const useChatStore = create(
                 // but DON'T clear messages[] - let loadConversationMessages() replace them
                 // This prevents flash of empty state and race conditions during long streaming
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false
@@ -259,7 +259,7 @@ export const useChatStore = create(
                 activeConversationId: conversation.id,
                 messages: [],
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -398,7 +398,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -445,7 +445,16 @@ export const useChatStore = create(
 
         // Code being written INSIDE a streaming tool call (create_file etc.) —
         // read out of the partial arguments so the Artifacts panel shows it live.
-        setStreamingToolDraft: (streamingToolDraft) => set({ streamingToolDraft }),
+        // Live code drafts for tool calls in flight THIS turn, keyed by the
+        // call's turn index. A single slot lost every file but the newest when
+        // a turn wrote several (create_file A, then B) — each new call
+        // overwrote the last, so finished files vanished from the panel until
+        // the whole message committed. Merge by key so all stay visible.
+        upsertStreamingToolDraft: (draft) => set((state) => {
+            if (!draft || draft.tcIndex == null) return {};
+            return { streamingToolDrafts: { ...state.streamingToolDrafts, [draft.tcIndex]: draft } };
+        }),
+        clearStreamingToolDrafts: () => set({ streamingToolDrafts: {} }),
 
         setStreamingReasoning: (streamingReasoning) => set({ streamingReasoning }),
 
@@ -519,7 +528,7 @@ export const useChatStore = create(
             return {
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 streamingToolCalls: [],
@@ -534,7 +543,7 @@ export const useChatStore = create(
 
         clearStreaming: () => set(state => ({
             streamingContent: '',
-            streamingToolDraft: null,
+            streamingToolDrafts: {},
             streamingReasoning: '',
             streamingStatus: null,
             streamingToolCalls: [],
@@ -623,7 +632,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -639,7 +648,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
-                streamingToolDraft: null,
+                streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,

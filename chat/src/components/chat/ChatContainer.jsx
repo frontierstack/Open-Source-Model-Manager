@@ -389,7 +389,7 @@ function LiveArtifacts({ messages, open, setOpen, activeId, onSelect }) {
     const isStreaming = useChatStore(s => s.isStreaming);
     // Code being written inside a streaming TOOL CALL (create_file etc.) —
     // the other way a deliverable gets written, and the more common one.
-    const toolDraft = useChatStore(s => s.streamingToolDraft);
+    const toolDrafts = useChatStore(s => s.streamingToolDrafts);
     // Committed artifacts recompute only when messages change (not per token).
     const committed = useMemo(() => extractArtifacts(messages), [messages]);
     // The in-progress streaming block is extracted on its OWN (cheap) per token,
@@ -403,23 +403,28 @@ function LiveArtifacts({ messages, open, setOpen, activeId, onSelect }) {
             );
             if (live.length) list = [...list, ...live];
         }
-        if (isStreaming && toolDraft && toolDraft.source) {
-            const base = (toolDraft.filePath || '').split('/').pop();
-            list = [...list, {
-                // Same id extractArtifacts gives the committed tool-call source,
-                // so the panel transitions seamlessly once the call finishes.
-                id: `m${messages.length}_tc${toolDraft.tcIndex}_src`,
-                title: base || `${toolDraft.name} source`,
-                language: languageForTool(toolDraft.name, toolDraft.filePath, langFromName),
-                source: toolDraft.source,
-                messageIdx: messages.length,
-                createdAt: null,
-                kind: 'code',
-                streaming: !toolDraft.complete,
-            }];
+        if (isStreaming && toolDrafts) {
+            const drafts = Object.values(toolDrafts)
+                .filter(d => d && d.source)
+                .sort((a, b) => (a.tcIndex || 0) - (b.tcIndex || 0));
+            for (const d of drafts) {
+                const base = (d.filePath || '').split('/').pop();
+                list = [...list, {
+                    // Same id extractArtifacts gives the committed tool-call source,
+                    // so the panel transitions seamlessly once the call finishes.
+                    id: `m${messages.length}_tc${d.tcIndex}_src`,
+                    title: base || `${d.name} source`,
+                    language: languageForTool(d.name, d.filePath, langFromName),
+                    source: d.source,
+                    messageIdx: messages.length,
+                    createdAt: null,
+                    kind: 'code',
+                    streaming: !d.complete,
+                }];
+            }
         }
         return list;
-    }, [committed, isStreaming, streamingContent, toolDraft, messages.length]);
+    }, [committed, isStreaming, streamingContent, toolDrafts, messages.length]);
     // Auto-open the panel once when streaming code first appears. seenRef stays
     // true for the rest of the stream so a user who closes it isn't fought; it
     // resets after the streaming block is gone (committed), ready for next time.
@@ -507,7 +512,8 @@ export default function ChatContainer({
         appendStreamingReasoning,
         startStreamingToolCall,
         finishStreamingToolCall,
-        setStreamingToolDraft,
+        upsertStreamingToolDraft,
+        clearStreamingToolDrafts,
         clearStreaming,
         commitStreamingMessage,
         setStreamingStatus,
@@ -540,7 +546,8 @@ export default function ChatContainer({
         appendStreamingReasoning: state.appendStreamingReasoning,
         startStreamingToolCall: state.startStreamingToolCall,
         finishStreamingToolCall: state.finishStreamingToolCall,
-        setStreamingToolDraft: state.setStreamingToolDraft,
+        upsertStreamingToolDraft: state.upsertStreamingToolDraft,
+        clearStreamingToolDrafts: state.clearStreamingToolDrafts,
         clearStreaming: state.clearStreaming,
         commitStreamingMessage: state.commitStreamingMessage,
         setStreamingStatus: state.setStreamingStatus,
@@ -1793,11 +1800,18 @@ export default function ChatContainer({
                                     for (const [k, b] of toolArgBuffers) {
                                         if (b.id === parsed.tool_call_id || (!b.id && b.name === parsed.name)) { b.done = true; toolArgBuffers.delete(k); }
                                     }
-                                    const d = useChatStore.getState().streamingToolDraft;
-                                    if (d && (d.toolCallId === parsed.tool_call_id || (!d.toolCallId && d.name === parsed.name))) {
+                                    const drafts = useChatStore.getState().streamingToolDrafts;
+                                    const key = Object.keys(drafts).find(k => {
+                                        const d = drafts[k];
+                                        return d.toolCallId === parsed.tool_call_id || (!d.toolCallId && d.name === parsed.name && !d.complete);
+                                    });
+                                    if (key != null) {
+                                        const d = drafts[key];
                                         const argsText = typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments || {});
                                         const fin = extractCodeDraft(parsed.name, argsText);
-                                        setStreamingToolDraft({ ...d, complete: true, ...(fin && fin.source ? { filePath: fin.filePath || d.filePath, source: fin.source } : {}) });
+                                        // Freeze it complete and KEEP it — it stays in the panel
+                                        // alongside later files until the message commits.
+                                        upsertStreamingToolDraft({ ...d, complete: true, ...(fin && fin.source ? { filePath: fin.filePath || d.filePath, source: fin.source } : {}) });
                                     }
                                 } catch (_) { /* ignore */ }
                                 startStreamingToolCall({
@@ -1887,12 +1901,13 @@ export default function ChatContainer({
                                             const draft = extractCodeDraft(buf.name, buf.args);
                                             if (draft && draft.source.length > 0) {
                                                 lastDraftPushAt = now;
-                                                setStreamingToolDraft({
+                                                upsertStreamingToolDraft({
                                                     toolCallId: buf.id,
                                                     tcIndex: buf.tcIndex,
                                                     name: buf.name,
                                                     filePath: draft.filePath,
                                                     source: draft.source,
+                                                    complete: false,
                                                 });
                                             }
                                         }
