@@ -3,24 +3,18 @@ import {
     Brain as BrainIcon,
     Plus as PlusIcon,
     Trash2 as DeleteIcon,
-    Search as SearchIcon,
     Save as SaveIcon,
     RefreshCw as RefreshIcon,
     Loader2 as SpinnerIcon,
     Pin as PinIcon,
     EyeOff as MuteIcon,
-    Link2 as LinkIcon,
-    X as XIcon,
 } from 'lucide-react';
 
 // Memory tab — account-scoped persona/fact memory that follows the user across
 // every conversation. Self-contained data fetching (global fetch is CSRF-tagged
 // + cookie-authed via csrfFetch.js). Admins receive every user's memories and
-// see an owner badge. Memories can be connected to one another (bidirectional
-// links) so related notes surface together.
+// see an owner badge.
 
-const MEMORY_TYPES = ['feedback', 'preference', 'correction', 'workaround', 'issue', 'limitation', 'learning', 'fact'];
-const IMPACTS = ['important', 'medium', 'low'];
 
 // source → {label, dot}. auto = heuristic extraction, manual = user-authored,
 // model = recorded by the assistant via record_learning. A small colored dot
@@ -93,33 +87,18 @@ export default function MemoryPanel() {
 
     const [selectedId, setSelectedId] = React.useState(null);
     const [editText, setEditText] = React.useState('');
-    const [editType, setEditType] = React.useState('');
-    const [editImpact, setEditImpact] = React.useState('');
     const [savingEdit, setSavingEdit] = React.useState(false);
 
     const [showCreate, setShowCreate] = React.useState(false);
     const [newText, setNewText] = React.useState('');
-    const [newType, setNewType] = React.useState('preference');
-    const [newImpact, setNewImpact] = React.useState('medium');
     const [newPinned, setNewPinned] = React.useState(false);
-    const [newLinks, setNewLinks] = React.useState([]);          // memory ids to connect on create
-    const [newLinkPickerOpen, setNewLinkPickerOpen] = React.useState(false);
-    const [newLinkQuery, setNewLinkQuery] = React.useState('');
     const [busy, setBusy] = React.useState(false);
 
     const resetCreate = () => {
-        setNewText(''); setNewType('preference'); setNewImpact('medium');
-        setNewPinned(false); setNewLinks([]); setNewLinkPickerOpen(false); setNewLinkQuery('');
+        setNewText(''); setNewPinned(false);
     };
 
     const [filter, setFilter] = React.useState('');
-    const [query, setQuery] = React.useState('');
-    const [searching, setSearching] = React.useState(false);
-    const [results, setResults] = React.useState(null);
-
-    // Link picker (detail pane) — open state + its own search box.
-    const [linkPickerOpen, setLinkPickerOpen] = React.useState(false);
-    const [linkQuery, setLinkQuery] = React.useState('');
 
     // `silent` refetches in the background without flashing the loading spinner
     // or clearing the list — used by the auto-refresh so the view doesn't flicker
@@ -160,15 +139,9 @@ export default function MemoryPanel() {
 
     const selected = memories.find((m) => m.id === selectedId) || null;
 
-    // Sync the edit form whenever the selection changes; reset the link picker.
+    // Sync the edit form whenever the selection changes.
     React.useEffect(() => {
-        if (selected) {
-            setEditText(selected.text || '');
-            setEditType(selected.type || '');
-            setEditImpact(selected.impact || '');
-        }
-        setLinkPickerOpen(false);
-        setLinkQuery('');
+        if (selected) setEditText(selected.text || '');
     }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const createMemory = async () => {
@@ -177,15 +150,11 @@ export default function MemoryPanel() {
         try {
             const { memory } = await jsonFetch('/api/memories', {
                 method: 'POST',
-                body: JSON.stringify({ text: newText.trim(), type: newType || null, impact: newImpact || null }),
+                body: JSON.stringify({ text: newText.trim() }),
             });
-            // Apply the extra options to the freshly created memory: pin flag +
-            // any connections the user chose in the form.
+            // Apply the pin flag to the freshly created memory.
             if (newPinned) {
                 try { await jsonFetch(`/api/memories/${memory.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: true }) }); } catch (_) { /* non-fatal */ }
-            }
-            for (const targetId of newLinks) {
-                try { await jsonFetch(`/api/memories/${memory.id}/link`, { method: 'POST', body: JSON.stringify({ targetId }) }); } catch (_) { /* non-fatal */ }
             }
             setShowCreate(false); resetCreate();
             await loadMemories();
@@ -199,7 +168,7 @@ export default function MemoryPanel() {
         try {
             await jsonFetch(`/api/memories/${selected.id}`, {
                 method: 'PATCH',
-                body: JSON.stringify({ text: editText.trim(), type: editType || null, impact: editImpact || null }),
+                body: JSON.stringify({ text: editText.trim() }),
             });
             await loadMemories();
         } catch (e) { setError(e.message); } finally { setSavingEdit(false); }
@@ -226,19 +195,6 @@ export default function MemoryPanel() {
         } catch (e) { setError(e.message); }
     };
 
-    // Connect / disconnect the selected memory to another (bidirectional on the
-    // server). Silent reload keeps the selection + scroll position.
-    const setLink = async (targetId, unlink) => {
-        if (!selected) return;
-        try {
-            await jsonFetch(`/api/memories/${selected.id}/link`, {
-                method: 'POST',
-                body: JSON.stringify({ targetId, unlink: !!unlink }),
-            });
-            await loadMemories({ silent: true });
-        } catch (e) { setError(e.message); }
-    };
-
     const clearAll = async () => {
         if (!window.confirm('Delete ALL of your memories? This cannot be undone.')) return;
         try {
@@ -248,46 +204,11 @@ export default function MemoryPanel() {
         } catch (e) { setError(e.message); }
     };
 
-    const runSearch = async () => {
-        if (!query.trim()) return;
-        setSearching(true); setResults(null);
-        try {
-            const data = await jsonFetch('/api/memories/search', {
-                method: 'POST',
-                body: JSON.stringify({ query: query.trim(), k: 10 }),
-            });
-            setResults(data.results || []);
-        } catch (e) { setResults([]); setError(e.message); } finally { setSearching(false); }
-    };
-
     const visible = filter.trim()
         ? memories.filter((m) => (m.text || '').toLowerCase().includes(filter.trim().toLowerCase()))
         : memories;
 
-    const dirty = selected && (
-        editText.trim() !== (selected.text || '') ||
-        (editType || '') !== (selected.type || '') ||
-        (editImpact || '') !== (selected.impact || '')
-    );
-
-    // Resolve the selected memory's link ids → memory objects (drop any that no
-    // longer exist), and the candidate pool for the picker.
-    const linkedMemories = selected
-        ? (selected.links || []).map((id) => memories.find((m) => m.id === id)).filter(Boolean)
-        : [];
-    const linkCandidates = selected
-        ? memories.filter((m) =>
-            m.id !== selected.id &&
-            !(selected.links || []).includes(m.id) &&
-            (!linkQuery.trim() || (m.text || '').toLowerCase().includes(linkQuery.trim().toLowerCase())))
-        : [];
-
-    // Create-form link selection (connections are applied after the memory is
-    // created, since the new id doesn't exist yet).
-    const newLinkedMemories = newLinks.map((id) => memories.find((m) => m.id === id)).filter(Boolean);
-    const newLinkCandidates = memories.filter((m) =>
-        !newLinks.includes(m.id) &&
-        (!newLinkQuery.trim() || (m.text || '').toLowerCase().includes(newLinkQuery.trim().toLowerCase())));
+    const dirty = selected && editText.trim() !== (selected.text || '');
 
     return (
         <div className="flex flex-col" style={{ color: 'var(--text-primary)', height: 'calc(100vh - 140px)', minHeight: '460px' }}>
@@ -345,24 +266,8 @@ export default function MemoryPanel() {
                         style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
                     />
 
-                    {/* Field row: type + impact + pin */}
+                    {/* Field row: pin */}
                     <div className="mt-3 flex flex-wrap items-end gap-4">
-                        <label className="flex flex-col gap-1">
-                            <span className="text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>Type</span>
-                            <select value={newType} onChange={(e) => setNewType(e.target.value)}
-                                className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                                style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                                {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                        </label>
-                        <label className="flex flex-col gap-1">
-                            <span className="text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>Impact</span>
-                            <select value={newImpact} onChange={(e) => setNewImpact(e.target.value)}
-                                className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                                style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                                {IMPACTS.map((t) => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                        </label>
                         <button
                             type="button"
                             onClick={() => setNewPinned((v) => !v)}
@@ -374,73 +279,6 @@ export default function MemoryPanel() {
                         >
                             <PinIcon size={14} /> {newPinned ? 'Pinned' : 'Pin'}
                         </button>
-                    </div>
-
-                    {/* Connections */}
-                    <div className="mt-3">
-                        <div className="mb-1.5 flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 text-[0.68rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>
-                                <LinkIcon size={12} /> Connect to{newLinkedMemories.length > 0 ? ` · ${newLinkedMemories.length}` : ''}
-                            </span>
-                            {memories.length > 0 && (
-                                <button
-                                    type="button"
-                                    onClick={() => { setNewLinkPickerOpen((v) => !v); setNewLinkQuery(''); }}
-                                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition"
-                                    style={newLinkPickerOpen
-                                        ? { backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--border-focus)' }
-                                        : { color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
-                                >
-                                    <PlusIcon size={12} /> Add link
-                                </button>
-                            )}
-                        </div>
-
-                        {newLinkedMemories.length > 0 && (
-                            <div className="mb-2 flex flex-wrap gap-1.5">
-                                {newLinkedMemories.map((lm) => (
-                                    <span key={lm.id} className="inline-flex max-w-[260px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
-                                        style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
-                                        <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, backgroundColor: (SOURCE_META[lm.source] || SOURCE_META.auto).dot }} />
-                                        <span className="truncate" title={lm.text}>{lm.title || lm.text}</span>
-                                        <button type="button" onClick={() => setNewLinks((ids) => ids.filter((x) => x !== lm.id))} className="shrink-0" style={{ color: 'var(--text-tertiary)' }}>
-                                            <XIcon size={13} />
-                                        </button>
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-
-                        {newLinkPickerOpen && (
-                            <div className="rounded-md border" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)' }}>
-                                <input
-                                    value={newLinkQuery}
-                                    onChange={(e) => setNewLinkQuery(e.target.value)}
-                                    placeholder="Search memories to connect…"
-                                    className="w-full rounded-t-md border-b px-3 py-2 text-sm outline-none"
-                                    style={{ backgroundColor: 'transparent', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
-                                />
-                                <div className="max-h-44 overflow-y-auto p-1">
-                                    {newLinkCandidates.length === 0 ? (
-                                        <div className="p-3 text-center text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                                            {memories.length === 0 ? 'No memories to connect yet.' : 'No memories match.'}
-                                        </div>
-                                    ) : newLinkCandidates.slice(0, 40).map((c) => (
-                                        <button key={c.id} type="button"
-                                            onClick={() => { setNewLinks((ids) => [...ids, c.id]); setNewLinkQuery(''); }}
-                                            className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition"
-                                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-hover)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}>
-                                            <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, marginTop: 5, backgroundColor: (SOURCE_META[c.source] || SOURCE_META.auto).dot }} />
-                                            <div className="min-w-0 flex-1">
-                                                <div className="truncate text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{c.title || c.text}</div>
-                                                <div className="line-clamp-1 text-[0.68rem]" style={{ color: 'var(--text-tertiary)' }}>{c.text}</div>
-                                            </div>
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
                     </div>
 
                     <div className="mt-3 flex items-center gap-2">
@@ -494,7 +332,6 @@ export default function MemoryPanel() {
                         ) : (
                             visible.map((m) => {
                                 const active = m.id === selectedId;
-                                const linkCount = (m.links || []).length;
                                 return (
                                     <button
                                         key={m.id}
@@ -527,7 +364,6 @@ export default function MemoryPanel() {
                                                 {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
                                                 {m.pinned && <Chip tone="accent"><PinIcon size={10} /> pinned</Chip>}
                                                 {m.muted && <Chip>muted</Chip>}
-                                                {linkCount > 0 && <Chip tone="outline" title={`${linkCount} linked`}><LinkIcon size={10} /> {linkCount}</Chip>}
                                                 {isAdmin && m.ownerName ? <span className="text-[0.66rem]" style={{ color: 'var(--text-tertiary)' }}>· {m.ownerName}</span> : null}
                                             </div>
                                         </div>
@@ -543,10 +379,6 @@ export default function MemoryPanel() {
                     {!selected ? (
                         <div className="flex h-full flex-col items-center justify-center gap-4 text-sm" style={{ color: 'var(--text-tertiary)' }}>
                             <div>Select a memory to view or edit it.</div>
-                            {/* Recall test is useful even with nothing selected */}
-                            <div className="w-full max-w-md">
-                                <RecallTest {...{ query, setQuery, runSearch, searching, results }} />
-                            </div>
                         </div>
                     ) : (
                         <>
@@ -606,18 +438,6 @@ export default function MemoryPanel() {
                                 style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
                             />
                             <div className="mt-2 flex flex-wrap items-center gap-2">
-                                <select value={editType} onChange={(e) => setEditType(e.target.value)}
-                                    className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                                    style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                                    <option value="">— type —</option>
-                                    {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                                </select>
-                                <select value={editImpact} onChange={(e) => setEditImpact(e.target.value)}
-                                    className="rounded-md border px-2 py-1.5 text-sm outline-none"
-                                    style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}>
-                                    <option value="">— impact —</option>
-                                    {IMPACTS.map((t) => <option key={t} value={t}>{t}</option>)}
-                                </select>
                                 <button
                                     type="button" disabled={savingEdit || !dirty || !editText.trim()} onClick={saveEdit}
                                     className="ml-auto inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
@@ -628,152 +448,10 @@ export default function MemoryPanel() {
                                 </button>
                             </div>
 
-                            {/* Connected memories */}
-                            <div className="mt-5 border-t pt-4" style={{ borderColor: 'var(--border-primary)' }}>
-                                <div className="mb-2 flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>
-                                        <LinkIcon size={13} /> Connections{linkedMemories.length > 0 ? ` · ${linkedMemories.length}` : ''}
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => { setLinkPickerOpen((v) => !v); setLinkQuery(''); }}
-                                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition"
-                                        style={linkPickerOpen
-                                            ? { backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--border-focus)' }
-                                            : { color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
-                                    >
-                                        <PlusIcon size={13} /> Link memory
-                                    </button>
-                                </div>
-
-                                {linkedMemories.length === 0 && !linkPickerOpen && (
-                                    <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                                        Connect this to related memories so they surface together.
-                                    </div>
-                                )}
-
-                                {linkedMemories.length > 0 && (
-                                    <div className="flex flex-col gap-1.5">
-                                        {linkedMemories.map((lm) => (
-                                            <div
-                                                key={lm.id}
-                                                className="group flex items-center gap-2 rounded-md border px-2.5 py-1.5"
-                                                style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)' }}
-                                            >
-                                                <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, backgroundColor: (SOURCE_META[lm.source] || SOURCE_META.auto).dot }} />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setSelectedId(lm.id)}
-                                                    className="min-w-0 flex-1 truncate text-left text-xs"
-                                                    style={{ color: 'var(--text-secondary)' }}
-                                                    title={lm.text}
-                                                >
-                                                    {lm.title || lm.text}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setLink(lm.id, true)}
-                                                    title="Disconnect"
-                                                    className="shrink-0 rounded p-1"
-                                                    style={{ color: 'var(--text-tertiary)' }}
-                                                    onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; }}
-                                                    onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-                                                >
-                                                    <XIcon size={14} />
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {linkPickerOpen && (
-                                    <div className="mt-2 rounded-md border" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)' }}>
-                                        <input
-                                            autoFocus
-                                            value={linkQuery}
-                                            onChange={(e) => setLinkQuery(e.target.value)}
-                                            placeholder="Search memories to connect…"
-                                            className="w-full rounded-t-md border-b px-3 py-2 text-sm outline-none"
-                                            style={{ backgroundColor: 'transparent', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
-                                        />
-                                        <div className="max-h-52 overflow-y-auto p-1">
-                                            {linkCandidates.length === 0 ? (
-                                                <div className="p-3 text-center text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                                                    {memories.length <= 1 ? 'No other memories to connect yet.' : 'No memories match.'}
-                                                </div>
-                                            ) : linkCandidates.slice(0, 40).map((c) => (
-                                                <button
-                                                    key={c.id}
-                                                    type="button"
-                                                    onClick={() => { setLink(c.id, false); setLinkPickerOpen(false); setLinkQuery(''); }}
-                                                    className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition"
-                                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-hover)'; }}
-                                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
-                                                >
-                                                    <span className="inline-block shrink-0 rounded-full" style={{ width: 6, height: 6, marginTop: 5, backgroundColor: (SOURCE_META[c.source] || SOURCE_META.auto).dot }} />
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="truncate text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{c.title || c.text}</div>
-                                                        <div className="line-clamp-1 text-[0.68rem]" style={{ color: 'var(--text-tertiary)' }}>{c.text}</div>
-                                                    </div>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="mt-5 border-t pt-4" style={{ borderColor: 'var(--border-primary)' }}>
-                                <RecallTest {...{ query, setQuery, runSearch, searching, results }} />
-                            </div>
                         </>
                     )}
                 </div>
             </div>
-        </div>
-    );
-}
-
-// "Test recall" box — shows which memories the model would surface for a query
-// (same keyword scoring the injector uses). Mirrors the KB "Test retrieval" box.
-function RecallTest({ query, setQuery, runSearch, searching, results }) {
-    return (
-        <div>
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>Test recall</div>
-            <div className="flex gap-2">
-                <div className="relative flex-1">
-                    <SearchIcon size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-tertiary)' }} />
-                    <input
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-                        placeholder="What would the model recall for…"
-                        className="w-full rounded-md border py-2 pl-8 pr-3 text-sm outline-none"
-                        style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
-                    />
-                </div>
-                <button type="button" disabled={searching || !query.trim()} onClick={runSearch}
-                    className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-                    style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)' }}>
-                    {searching ? 'Searching…' : 'Search'}
-                </button>
-            </div>
-            {results != null && (
-                <div className="mt-2 flex flex-col gap-2">
-                    {results.length === 0 ? (
-                        <div className="text-sm" style={{ color: 'var(--text-tertiary)' }}>No matching memories.</div>
-                    ) : results.map((r) => (
-                        <div key={r.id} className="rounded-md p-3" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-primary)' }}>
-                            <div className="mb-1 flex items-center justify-between gap-2 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
-                                <span className="truncate">{r.title || r.type || r.source}</span>
-                                <span className="shrink-0">score {Number(r.score).toFixed(3)}</span>
-                            </div>
-                            <div className="text-sm" style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
-                                {r.text.length > 600 ? r.text.slice(0, 600) + '…' : r.text}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
         </div>
     );
 }
