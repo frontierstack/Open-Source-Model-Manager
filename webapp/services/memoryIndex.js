@@ -61,6 +61,22 @@ function embedTextOf(rec) {
     return base;
 }
 
+/** Chunks to embed for a record. An EXPERIENCE (procedure with a `task`) is
+ *  embedded as several SHORT phrasings — the verbatim ask, a generalized task
+ *  line, the task kind, later variants — because the engine keeps the best
+ *  chunk score per doc and the static embedding matches short↔short far
+ *  better than a long playbook against a short ask (measured: 0.12 vs 0.49
+ *  for the same pair). Everything else embeds its text once. */
+function embedChunksOf(rec) {
+    if (rec && rec.type === 'procedure' && rec.task) {
+        try {
+            const chunks = require('./experienceMemory').phrasingsFor(rec);
+            if (chunks.length) return chunks;
+        } catch (_) { /* fall through */ }
+    }
+    return [embedTextOf(rec)];
+}
+
 /** Embed/re-embed one memory. Best-effort; returns true on success. */
 async function upsert(userId, rec) {
     if (!rec || !rec.id || !String(rec.text || '').trim()) return false;
@@ -68,7 +84,7 @@ async function upsert(userId, rec) {
     try {
         await embeddingEngine.call('/delete_doc', { indexDir, docId: rec.id });
         await embeddingEngine.call('/ingest', {
-            indexDir, docId: rec.id, filename: '', chunks: [embedTextOf(rec)],
+            indexDir, docId: rec.id, filename: '', chunks: embedChunksOf(rec),
         });
         return true;
     } catch (e) {
@@ -173,5 +189,6 @@ module.exports = {
     search,
     reindexUser,
     embedTextOf,
+    embedChunksOf,
     indexDirFor,
 };

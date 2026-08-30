@@ -42,6 +42,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const memoryIndex = require('./memoryIndex');
+const experience = require('./experienceMemory');
 
 const DATA_DIR = '/models/.modelserver';
 const LEGACY_META_FILE = path.join(DATA_DIR, 'memories.json');
@@ -181,6 +182,10 @@ function summarizeMemoryText(text, maxLen = 56) {
 // Build the "<Category> — <summary>" title for a record. Procedures lead their
 // text with the activity label ("Reading emails: …"); reuse that nice label.
 function deriveMemoryTitle(rec) {
+    if (rec.type === 'procedure' && (rec.kind || rec.summary || rec.task)) {
+        const label = summarizeMemoryText(rec.kind || rec.summary || rec.task, 64) || titleCaseWords(String(rec.activity || 'experience').replace(/-/g, ' '));
+        return `Experience — ${label}`;
+    }
     if (rec.type === 'procedure') {
         const lead = String(rec.text || '').split(':')[0].trim();
         const label = (lead && lead.length <= 42)
@@ -419,8 +424,15 @@ function normalizeRecord(input) {
     // Persisted so the leanest+cleanest recipe is kept across turns/reloads.
     if (Number.isFinite(input.flail)) rec.flail = input.flail;
     if (Number.isFinite(input.unique)) rec.unique = input.unique;
+    // Experience (episodic) fields — see experienceMemory.js. Carried verbatim
+    // so a refinement/reload never loses the structured evidence behind `text`.
+    for (const k of EXPERIENCE_FIELDS) {
+        if (input[k] !== undefined) rec[k] = input[k];
+    }
     return rec;
 }
+
+const EXPERIENCE_FIELDS = ['task', 'summary', 'kind', 'variants', 'approach', 'outcome', 'lessons', 'pitfalls', 'history', 'textSource'];
 
 /** Create one memory (manual add or a model learning). Returns the record. */
 async function createMemory(input) {
@@ -456,11 +468,15 @@ async function updateMemory(id, patch) {
         if (Array.isArray(patch.links)) m.links = patch.links.filter((x) => typeof x === 'string').slice(0, 50);
         // Title is always derived — recompute whenever the body/type/activity
         // that feeds it may have changed.
+        // Experience retrieval phrasings (maintenance can prune a bad one).
+        if (Array.isArray(patch.variants)) {
+            m.variants = patch.variants.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, 240)).slice(0, 8);
+        }
         m.title = deriveMemoryTitle(m);
         m.updatedAt = nowIso();
         return { ...m };
     });
-    if (result && patch.text != null) {
+    if (result && (patch.text != null || Array.isArray(patch.variants))) {
         memoryIndex.upsert(existing.userId, result).catch(() => {});
     }
     return result;
@@ -1183,6 +1199,119 @@ async function upsertActivityMemory(userId, input) {
 }
 
 // --------------------------------------------------------------------------
+// Experience (episodic) memory — see experienceMemory.js for the pure logic.
+// --------------------------------------------------------------------------
+
+/** Record an episode: refine the matched experience (`matchId`, chosen by the
+ *  caller from task-similarity search) or create a new one. Atomic. */
+async function upsertExperience(userId, { matchId = null, episode, source = 'auto', sourceConvId = null, impact = 'medium' } = {}) {
+    if (!episode || !episode.task) throw new Error('episode.task is required');
+    let embedRec = null;
+    let dropped = [];
+    const result = await mutateUser(userId, (list) => {
+        const target = matchId ? list.find((m) => m.id === matchId && m.type === 'procedure' && m.userId === userId) : null;
+        if (target) {
+            const { replaced } = experience.mergeInto(target, episode, { source });
+            if (!target.activity && episode.activity) target.activity = episode.activity;
+            target.keywords = Array.from(new Set([...(target.keywords || []), ...(episode.keywords || [])])).slice(0, 40);
+            target.tokens = estimateTokens(target.text);
+            target.score = scoreForImpact(target.impact);
+            target.title = deriveMemoryTitle(target);
+            target.updatedAt = nowIso();
+            embedRec = { ...target };
+            return { id: target.id, updated: true, replaced, count: target.count, impact: target.impact };
+        }
+        const fields = experience.newRecordFields(episode, { userId, source, sourceConvId, impact });
+        const rec = normalizeRecord({ ...fields, keywords: episode.keywords || [], score: scoreForImpact(impact) });
+        rec.tokens = estimateTokens(rec.text);
+        list.push(rec);
+        dropped = pruneUser(list, userId);
+        embedRec = rec;
+        return { id: rec.id, updated: false, replaced: true, count: 1, impact: rec.impact };
+    });
+    if (embedRec) memoryIndex.upsert(userId, embedRec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
+    return result;
+}
+
+/** Apply an LLM refinement (generalized summary / kind / phrasings / lessons)
+ *  to an existing experience and re-embed it. Never overwrites the evidence
+ *  (approach/outcome/pitfalls); only enriches retrieval + lessons. */
+async function applyExperienceRefinement(userId, id, ref) {
+    if (!ref) return null;
+    const updated = await mutateUser(userId, (list) => {
+        const m = list.find((x) => x.id === id && x.type === 'procedure');
+        if (!m) return null;
+        if (ref.summary && !(m.textSource === 'model' && m.summary)) m.summary = ref.summary;
+        if (ref.kind) m.kind = ref.kind;
+        if (Array.isArray(ref.phrasings) && ref.phrasings.length) {
+            const v = Array.isArray(m.variants) ? m.variants.slice() : [];
+            for (const p of ref.phrasings) if (!v.some((x) => x.toLowerCase() === p.toLowerCase())) v.push(p);
+            m.variants = v.slice(-8);
+        }
+        if (Array.isArray(ref.lessons) && ref.lessons.length) {
+            const l = Array.isArray(m.lessons) ? m.lessons.slice() : [];
+            for (const x of ref.lessons) if (!l.some((y) => y.toLowerCase() === x.toLowerCase())) { if (l.length >= 5) l.shift(); l.push(x); }
+            m.lessons = l;
+        }
+        m.text = experience.renderPlaybook(m);
+        m.tokens = estimateTokens(m.text);
+        m.title = deriveMemoryTitle(m);
+        m.updatedAt = nowIso();
+        return { ...m };
+    });
+    if (updated) memoryIndex.upsert(userId, updated).catch(() => {});
+    return updated;
+}
+
+/** The model articulates a lesson about HOW it did a kind of task
+ *  (record_learning with `activity`). Attach it to the matched experience
+ *  (`matchId`) or start a new experience seeded with the lesson. */
+async function attachExperienceLesson(userId, { matchId = null, lesson, activity = null, impact = 'medium', sourceConvId = null } = {}) {
+    const text = String(lesson || '').trim();
+    if (!text) throw new Error('lesson is required');
+    let embedRec = null;
+    let dropped = [];
+    const result = await mutateUser(userId, (list) => {
+        const target = matchId ? list.find((m) => m.id === matchId && m.type === 'procedure' && m.userId === userId) : null;
+        if (target) {
+            const l = Array.isArray(target.lessons) ? target.lessons.slice() : [];
+            if (!l.some((y) => y.toLowerCase() === text.toLowerCase())) { if (l.length >= 5) l.shift(); l.push(text); }
+            target.lessons = l;
+            target.textSource = 'model';
+            if ((IMPACT_RANK[impact] || 2) > (IMPACT_RANK[target.impact] || 2)) target.impact = impact;
+            target.count = (target.count || 1) + 1;
+            target.text = experience.renderPlaybook(target);
+            target.tokens = estimateTokens(target.text);
+            target.score = scoreForImpact(target.impact);
+            target.title = deriveMemoryTitle(target);
+            target.updatedAt = nowIso();
+            embedRec = { ...target };
+            return { id: target.id, updated: true, count: target.count, impact: target.impact };
+        }
+        const act = activity ? normalizeActivity(activity) : null;
+        const rec = normalizeRecord({
+            userId, type: 'procedure', source: 'model', impact, activity: act,
+            task: act ? `${act.replace(/-/g, ' ')} (model lesson)` : text.slice(0, 120),
+            summary: null, kind: act ? act.replace(/-/g, ' ') : null, variants: [],
+            approach: [], outcome: null, lessons: [text], pitfalls: [], history: [],
+            count: 1, sourceConvId, textSource: 'model', score: scoreForImpact(impact),
+            keywords: [], text: 'x',
+        });
+        rec.text = experience.renderPlaybook(rec);
+        rec.tokens = estimateTokens(rec.text);
+        rec.title = deriveMemoryTitle(rec);
+        list.push(rec);
+        dropped = pruneUser(list, userId);
+        embedRec = rec;
+        return { id: rec.id, updated: false, count: 1, impact: rec.impact };
+    });
+    if (embedRec) memoryIndex.upsert(userId, embedRec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
+    return result;
+}
+
+// --------------------------------------------------------------------------
 // Per-conversation extraction cursors (memory-cursors.json)
 // --------------------------------------------------------------------------
 
@@ -1397,6 +1526,9 @@ module.exports = {
     consolidateProcedures,
     upsertModelLearning,
     upsertActivityMemory,
+    upsertExperience,
+    applyExperienceRefinement,
+    attachExperienceLesson,
     normalizeActivity,
     deriveMemoryTitle,
     countForUser,

@@ -189,6 +189,7 @@ const embeddingEngine = require('./services/embeddingEngine');
 // extraction heuristics live in this file.
 const memoryService = require('./services/memoryService');
 const memoryIndex = require('./services/memoryIndex');
+const experienceMemory = require('./services/experienceMemory');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
 const reasoningEffort = require('./services/reasoningEffort');
@@ -15752,69 +15753,97 @@ function classifyTurnActivity({ toolLabels = [], userText = '', attachmentKinds 
     return null;
 }
 
-// Fire-and-forget after a turn: record/refine the experience memory for the
-// turn's activity from the SUCCESSFUL tool path. Failed/exploratory calls are
-// excluded, so even a fumbling cold run produces a CLEAN recipe the warm run
-// follows directly. Atomic + activity-keyed in the service.
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments }) {
+// Fire-and-forget after a turn: record the EPISODE — what the task was, the
+// tool path that got it done (with argument hints), how efficient it was, the
+// pitfalls hit — and fold it into the closest existing experience (task
+// similarity via the embedding index) or start a new one. A later run of a
+// similar task retrieves it and goes straight to the proven approach. The
+// coarse activity label is kept only as a tag / weak signal. Optional LLM
+// refinement (generalized summary, task kind, alternative phrasings, lessons)
+// runs AFTER the record exists so a slow or absent model never blocks it.
+let experienceRefineInFlight = 0;
+const EXPERIENCE_REFINE_MAX_INFLIGHT = 1;
+const EXPERIENCE_REFINE_TIMEOUT_MS = parseInt(process.env.EXPERIENCE_REFINE_TIMEOUT_MS, 10) || 45000;
+
+async function refineExperienceWithModel(userId, id, episode, chips) {
+    if (process.env.EXPERIENCE_LLM_REFINE === '0') return null;
+    let hasRunning = false;
+    for (const inst of modelInstances.values()) { if (inst.status === 'running') { hasRunning = true; break; } }
+    if (!hasRunning || experienceRefineInFlight >= EXPERIENCE_REFINE_MAX_INFLIGHT) return null;
+    experienceRefineInFlight++;
+    try {
+        const raw = await Promise.race([
+            runModelCompletion({
+                messages: [
+                    { role: 'system', content: experienceMemory.REFINE_PROMPT },
+                    { role: 'user', content: experienceMemory.refinementInput(episode, chips) },
+                ],
+                temperature: 0, maxTokens: 400, disableThinking: true,
+            }),
+            new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('refine timed out')), EXPERIENCE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
+        ]);
+        const ref = experienceMemory.parseRefinement(raw);
+        if (!ref) return null;
+        const updated = await memoryService.applyExperienceRefinement(userId, id, ref);
+        if (updated) logUserActivity(userId, `Memory: refined experience wording — "${(ref.kind || ref.summary || '').slice(0, 70)}"${ref.phrasings?.length ? ` (+${ref.phrasings.length} phrasings)` : ''}`);
+        return updated;
+    } catch (_) {
+        return null;
+    } finally {
+        experienceRefineInFlight--;
+    }
+}
+
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
         const chips = Array.isArray(toolChips) ? toolChips : [];
         const okChips = chips.filter(c => c && c.status === 'success' && c.label);
         const attachmentKinds = deriveAttachmentKinds(attachments);
-        const toolLabels = okChips.map(c => c.label);
-        const act = classifyTurnActivity({ toolLabels, userText, attachmentKinds });
-        if (!act) return;
+        const act = classifyTurnActivity({ toolLabels: okChips.map(c => c.label), userText, attachmentKinds });
         // Only record when the turn actually DID something procedural.
         if (!okChips.length && !attachmentKinds.size) return;
+        const episode = experienceMemory.buildEpisode(
+            { userText, attachmentKinds, chips, activity: act ? act.activity : null, quality },
+            { errorSignature: loopGuard.errorSignature }
+        );
+        if (!episode.task) return;
+        episode.keywords = extractQueryKeywords(
+            `${episode.task} ${(act ? act.label : '')} ${episode.approach.map(st => st.tool).join(' ')} ${[...attachmentKinds].join(' ')}`);
 
-        // Lean successful path: unique tool labels in first-seen order. We do
-        // NOT enshrine repeat counts as "the approach" — a tool called many
-        // times is usually inefficient flailing (e.g. list_directory loops),
-        // which is exactly what the next run should AVOID. A heavily-repeated
-        // tool is flagged as a smell so the warm run goes direct instead.
-        const seq = [];
-        const counts = {};
-        for (const l of toolLabels) { counts[l] = (counts[l] || 0) + 1; if (!seq.includes(l)) seq.push(l); }
-        const pathStr = seq.join(' → ');
-        // Recipe quality signals (see upsertActivityMemory): total = every
-        // successful call, unique = distinct tools (completeness), flail =
-        // redundant repeat calls (wasted effort). The cleanest+most-complete run
-        // is kept as the best recipe.
-        const totalCalls = toolLabels.length;
-        const uniqueCalls = seq.length;
-        const flailCount = totalCalls - uniqueCalls;
-        // Flag AVOIDABLE repetition only — a narrow-scope read/search/list tool
-        // called many times is usually consolidatable into one broad call. But
-        // EXECUTION tools (run/terminal/bash/write/edit/query/chart) legitimately
-        // fire many times in real agentic work; calling that "avoidable" gave the
-        // model wrong advice and read oddly, so those are excluded from the note.
-        const EXEC_TOOL = /terminal|bash|shell|\bsh\b|\brun\b|run_|exec|_code|\bnode\b|python|write|create|update|\bedit\b|replace_lines|make_downloadable|render_chart|query|db_store|\btest\b|install|compile|build/i;
-        const flailTools = seq.filter(l => counts[l] >= 3 && !EXEC_TOOL.test(l));
-        const flailNote = flailTools.length
-            ? ` EFFICIENCY: last time ${flailTools.map(l => `${l} was called ${counts[l]}×`).join('; ')} — that narrow repetition was avoidable. Prefer ONE broad/comprehensive call over many narrow repeats, then only make an extra call if something specific is genuinely missing.`
-            : '';
-        const fileNote = attachmentKinds.size ? ` Input: ${[...attachmentKinds].join('/')}.` : '';
-        const text = pathStr
-            ? `${act.label}: the tools that got it done — ${pathStr}.${fileNote}${flailNote} Reuse this path and go direct; only deviate if a step fails.`
-            : `${act.label}:${fileNote} answered directly from the message content without extra tool calls.`;
-        const keywords = extractQueryKeywords(
-            `${act.label} ${act.activity.replace(/-/g, ' ')} ${seq.join(' ')} ${[...attachmentKinds].join(' ')}`);
+        // Find the closest existing experience by TASK similarity (the index
+        // holds every memory; keep only experiences). Engine down → no match →
+        // a new record (consolidation catches duplicates later).
+        let matchId = null, matchScore = null;
+        try {
+            const sem = await semanticMemoryScores(userId, episode.task, 24);
+            if (sem && sem.scores.size) {
+                const all = await memoryService.listMemories(userId);
+                const byId = new Map(all.filter(m => m.type === 'procedure').map(m => [m.id, m]));
+                let best = null;
+                for (const [id, score] of sem.scores) {
+                    const m = byId.get(id);
+                    if (!m) continue;
+                    const same = !!(m.activity && episode.activity && m.activity === episode.activity);
+                    if (!experienceMemory.shouldMerge(score, same)) continue;
+                    if (!best || score > best.score) best = { id, score };
+                }
+                if (best) { matchId = best.id; matchScore = best.score; }
+            }
+        } catch (_) { /* keyword-only → new record */ }
 
-        const res = await memoryService.upsertActivityMemory(userId, {
-            activity: act.activity, text, keywords,
-            impact: 'medium', source: 'auto', sourceConvId: conversationId,
-            // Quality of THIS run. `steps` (total calls) is kept for logging/min-
-            // tracking; `flail`/`unique` drive which recipe is kept as the best.
-            // Computed from the chips, so an in-progress /v1 snapshot is compared
-            // on cleanliness (not raw length) and can't clobber a clean recipe.
-            steps: totalCalls, flail: flailCount, unique: uniqueCalls,
+        const res = await memoryService.upsertExperience(userId, {
+            matchId, episode, source: 'auto', sourceConvId: conversationId, impact: 'medium',
         });
+        const oc = experienceMemory.renderOutcome(episode.outcome);
         logUserActivity(userId,
-            `Memory: ${res.updated ? `updated existing experience (${res.keptRecipe ? 'reinforced' : 'refined'})` : 'created new experience'} [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
+            `Memory: ${res.updated ? `refined experience (${res.replaced ? 'new best approach' : 'reinforced'}, ×${res.count}${matchScore != null ? `, similarity ${matchScore.toFixed(2)}` : ''})` : 'recorded new experience'}` +
+            ` — "${episode.task.slice(0, 70)}" [${episode.activity || 'general'}] ${oc ? `(${oc})` : ''}: ${experienceMemory.renderApproach(episode.approach).slice(0, 160) || 'inline answer'}`);
+        // Refine wording/phrasings with the local model in the background.
+        refineExperienceWithModel(userId, res.id, episode, chips).catch(() => {});
     } catch (e) {
-        console.warn('[Memory] activity record failed:', e.message);
+        console.warn('[Memory] experience record failed:', e.message);
     }
 }
 
@@ -15956,7 +15985,15 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // activity matches THIS turn's likely activity (so the right experience
     // leads), + experience depth (count) so well-practiced skills surface.
     const procScoreOf = (m) => {
-        const activityMatch = (activityHint && m.activity === activityHint) ? 1.5 : 0;
+        // Task SIMILARITY leads (cosine over the experience's phrasings);
+        // the coarse activity match is a weak tie-breaker; depth (count) and a
+        // converged best run add a little; a legacy tool-list-only record (no
+        // `task`) never outranks a real experience.
+        const semScore = semOf(m) ?? 0;
+        const activityMatch = (activityHint && m.activity === activityHint) ? 0.35 : 0;
+        const legacyPenalty = m.task ? 0 : 0.5;
+        const convergedBoost = (m.outcome && m.outcome.converged === false) ? -0.3 : 0.1;
+        if (m.task) return semScore * 2 + activityMatch + Math.min(0.3, 0.1 * ((m.count || 1) - 1)) + convergedBoost - legacyPenalty;
         const depthBoost = Math.min(0.4, 0.1 * ((m.count || 1) - 1));
         // scoreOf already includes relOf(m) once — adding relOf again here
         // double-counted relevance, letting a coincidentally keyword-heavy
@@ -15966,7 +16003,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         return activityMatch + depthBoost + scoreOf(m);
     };
 
-    const PROC_MAX = 8, DIRECTIVE_MAX = 18, FACT_MAX = 8;
+    const PROC_MAX = 3, DIRECTIVE_MAX = 18, FACT_MAX = 8;
     const procBudget = Math.floor(tokenBudget * 0.4);
     const directiveBudget = Math.floor(tokenBudget * 0.85);
     const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
@@ -15978,8 +16015,21 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // one — so a procedure for an unrelated activity (the "reading-emails"
     // experience during a coding task) never leads. That irrelevant-persona
     // leakage was the worst offender of the "buses" problem.
+    // An experience injects when the TASK is similar (cosine ≥ RETRIEVE_SEM,
+    // calibrated on the engine: 0.33 separates "another browser game" from
+    // "capital of France"), or — as a weaker path — when the predicted activity
+    // matches AND there is at least faint similarity (≥ 0.2). Legacy records
+    // without a task keep the old activity/keyword gate.
+    const EXP_MIN_SEM = experienceMemory.RETRIEVE_SEM;
     const procCands = all.filter(isProcedure)
-        .filter(m => (activityHint && m.activity === activityHint) || isRelevant(m))
+        .filter(m => {
+            const sc = semOf(m);
+            if (m.task) {
+                if (sc == null) return (activityHint && m.activity === activityHint) || isRelevant(m); // keyword-only mode
+                return sc >= EXP_MIN_SEM || (activityHint && m.activity === activityHint && sc >= 0.2);
+            }
+            return (activityHint && m.activity === activityHint) || isRelevant(m);
+        })
         .map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
     // Directives: only GLOBAL ones apply across topics — a pinned memory or a
     // genuine standing rule ("from now on, be concise", "I use tabs"). A directive
@@ -16092,16 +16142,13 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const handleOf = (m) => `#${String(m.id).replace(/-/g, '').slice(0, 6)}`;
     const parts = [];
     if (procedures.length) {
-        // Persona lead-in: the model's accumulated experience. Each line is an
-        // activity + the approach that worked; reuse it to skip re-exploration.
-        const lines = procedures.map(m =>
-            `- [${handleOf(m)}] (${m.activity}, done ${m.count || 1}×) ${m.text}`).join('\n');
-        parts.push(
-            'WHO YOU ARE — YOUR EXPERIENCE (skills built from past work for this user). ' +
-            'When the current task matches one of these activities, REUSE the approach that worked — go straight to it instead of re-exploring, and only deviate if a step fails. ' +
-            'As you find a better way, refine the matching one via record_learning with replaces:"<#handle>". Handles are internal — never show them:\n' +
-            lines
-        );
+        // Experience lead-in: similar tasks done before, each with the concrete
+        // approach that worked, its efficiency and pitfalls (experienceMemory).
+        // Legacy tool-list records (pre-2026-08-29) render through the same
+        // block — their text is the old "tools that got it done" line.
+        const ordered = procedures.slice().sort((x, y) => (semOf(y) ?? 0) - (semOf(x) ?? 0));
+        const block = experienceMemory.renderExperienceBlock(ordered.map(m => ({ m, sem: semOf(m) })));
+        if (block) parts.push(block);
     }
     if (learnings.length) {
         // Each line carries a short [#handle] (first 6 hex of the id) so the
@@ -24070,6 +24117,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 toolChips: persistedToolChips,
                 userText: latestUserText,
                 attachments: req.body?.attachments,
+                // How the run went — drives which approach is kept as the best.
+                quality: {
+                    ms: Date.now() - streamStartTime,
+                    rounds: toolCallRound,
+                    nudges: loopNudgeCount,
+                    checkpoints: loopCheckpointsUsed,
+                    contentLoop: contentLoopTruncated,
+                    capHit: toolCallCapHit,
+                    loopExhausted: reasoningLoopExhausted || loopNudgeExhausted,
+                    answerChars: String(fullResponse || '').length,
+                },
             }).catch(() => {});
         }
 
@@ -29770,9 +29828,32 @@ app.use((req, res) => {
                 const activityLabel = String(args?.activity || '').trim();
                 const isBehavioralLesson = type === 'preference' || type === 'correction' || type === 'feedback';
                 if (activityLabel && !isBehavioralLesson) {
-                    const ar = await memoryService.upsertActivityMemory(userId, {
-                        activity: activityLabel, text, keywords, impact,
-                        tokens: Math.ceil(text.length / 3), source: 'model',
+                    // Attach the lesson to the experience it is about: an explicit
+                    // replaces:"#handle" wins; otherwise the closest experience by
+                    // task similarity (lesson text + activity); else a new one.
+                    let matchId = null;
+                    const replHandle = String(args?.replaces || '').trim();
+                    if (replHandle) {
+                        try { const t = await memoryService.resolveHandle(userId, replHandle); if (t && t.type === 'procedure') matchId = t.id; } catch (_) {}
+                    }
+                    if (!matchId) {
+                        try {
+                            const probe = `${activityLabel}: ${lesson}${ctx.latestUserText ? ` — ${String(ctx.latestUserText).slice(0, 200)}` : ''}`;
+                            const sem = await semanticMemoryScores(userId, probe, 16);
+                            if (sem && sem.scores.size) {
+                                const all = await memoryService.listMemories(userId);
+                                const procs = new Map(all.filter(m => m.type === 'procedure').map(m => [m.id, m]));
+                                let best = null;
+                                for (const [id, sc] of sem.scores) {
+                                    if (!procs.has(id) || sc < experienceMemory.RETRIEVE_SEM) continue;
+                                    if (!best || sc > best.sc) best = { id, sc };
+                                }
+                                if (best) matchId = best.id;
+                            }
+                        } catch (_) { /* no match → new experience */ }
+                    }
+                    const ar = await memoryService.attachExperienceLesson(userId, {
+                        matchId, lesson: text, activity: activityLabel, impact,
                         sourceConvId: ctx.conversationId || null,
                     });
                     const arLinked = await linkRelated(ar.id);
