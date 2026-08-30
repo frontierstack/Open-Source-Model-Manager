@@ -51,6 +51,23 @@ function indexDirFor(userId) {
     return path.join(MEM_INDEX_ROOT, userIdSafe(userId));
 }
 
+// EXPERIENCES live in their own index namespace (a subdirectory of the user's
+// index dir, so a clear/reindex still covers both). Reason: the engine's `k` is
+// over CHUNKS, not documents, and an experience is embedded as up to 12 short
+// phrasings. In one shared index a handful of experiences plus a normal pile of
+// auto-facts push the RIGHT experience's best chunk past the top-k cut, and it
+// silently never surfaces — recall degrades exactly as the store grows, which is
+// when experience is worth the most. Two small searches cost ~a millisecond each
+// and give experiences their own top-k.
+function expIndexDirFor(userId) {
+    return path.join(indexDirFor(userId), '_experience');
+}
+
+/** An EXPERIENCE record (episodic playbook), as opposed to a fact/directive. */
+function isExperienceRec(rec) {
+    return !!(rec && rec.type === 'procedure' && rec.task);
+}
+
 /** Text we embed for a record: procedures lead with their activity so the
  * recipe's domain is part of the vector; everything else embeds its text. */
 function embedTextOf(rec) {
@@ -80,14 +97,36 @@ function embedChunksOf(rec) {
 /** Embed/re-embed one memory. Best-effort; returns true on success. */
 async function upsert(userId, rec) {
     if (!rec || !rec.id || !String(rec.text || '').trim()) return false;
-    const indexDir = indexDirFor(userId);
+    const main = indexDirFor(userId);
+    const exp = expIndexDirFor(userId);
+    const indexDir = isExperienceRec(rec) ? exp : main;
+    const other = isExperienceRec(rec) ? main : exp;
     try {
+        // Delete from BOTH namespaces first: a record that changed shape (a
+        // lesson-seeded procedure that later gains a task, a legacy row) must
+        // never leave a stale vector behind in the namespace it left.
         await embeddingEngine.call('/delete_doc', { indexDir, docId: rec.id });
+        try { await embeddingEngine.call('/delete_doc', { indexDir: other, docId: rec.id }); } catch (_) { /* namespace may not exist yet */ }
         await embeddingEngine.call('/ingest', {
             indexDir, docId: rec.id, filename: '', chunks: embedChunksOf(rec),
         });
         return true;
     } catch (e) {
+        // One retry: the engine respawns transparently on the next call, so a
+        // write that lands while it is restarting would otherwise leave the
+        // record in the JSON store but NOT in the index — permanently unfindable
+        // by semantics, with nothing to detect it (the self-heal only fires when
+        // the whole namespace is empty).
+        try {
+            // Full delete→ingest again: /ingest is a plain INSERT, so retrying it
+            // alone after a failed delete would leave the old chunks in place
+            // AND add new ones (a stale phrasing could then still win a search).
+            await embeddingEngine.call('/delete_doc', { indexDir, docId: rec.id });
+            await embeddingEngine.call('/ingest', {
+                indexDir, docId: rec.id, filename: '', chunks: embedChunksOf(rec),
+            });
+            return true;
+        } catch (_) { /* fall through */ }
         logFailure('upsert', e);
         return false;
     }
@@ -98,6 +137,7 @@ async function remove(userId, memId) {
     if (!memId) return false;
     try {
         await embeddingEngine.call('/delete_doc', { indexDir: indexDirFor(userId), docId: memId });
+        try { await embeddingEngine.call('/delete_doc', { indexDir: expIndexDirFor(userId), docId: memId }); } catch (_) { /* may not exist */ }
         return true;
     } catch (e) {
         logFailure('remove', e);
@@ -132,16 +172,34 @@ async function clearUser(userId) {
 async function search(userId, query, k = 32) {
     const q = String(query || '').trim();
     if (!q) return null;
-    try {
-        const res = await embeddingEngine.call('/search', {
-            indexDir: indexDirFor(userId), query: q.slice(0, 2000), k: Math.min(50, Math.max(1, k)),
-        });
-        const scores = new Map();
-        for (const r of (res.results || [])) {
+    const kk = Math.min(50, Math.max(1, k));
+    const scores = new Map();
+    const take = (res) => {
+        for (const r of ((res && res.results) || [])) {
             const prev = scores.get(r.docId);
             if (prev == null || r.score > prev) scores.set(r.docId, r.score);
         }
-        return { scores, total: res.total || 0 };
+        return (res && res.total) || 0;
+    };
+    try {
+        const main = await embeddingEngine.call('/search', {
+            indexDir: indexDirFor(userId), query: q.slice(0, 2000), k: kk,
+        });
+        let total = take(main);
+        let expTotal = 0;
+        // Experiences get their own top-k so a growing pile of facts can never
+        // crowd the right playbook out of the result set.
+        try {
+            const exp = await embeddingEngine.call('/search', {
+                indexDir: expIndexDirFor(userId), query: q.slice(0, 2000), k: kk,
+            });
+            expTotal = take(exp);
+            total += expTotal;
+        } catch (_) { /* no experiences indexed yet */ }
+        // expTotal lets the caller detect a store whose experiences predate the
+        // split namespace (they still sit in the main index) and self-heal with
+        // a reindex, exactly like the empty-index case.
+        return { scores, total, expTotal };
     } catch (e) {
         logFailure('search', e);
         return null;
@@ -183,6 +241,8 @@ function reindexUser(userId, memories) {
 
 module.exports = {
     upsert,
+    isExperienceRec,
+    expIndexDirFor,
     remove,
     removeMany,
     clearUser,

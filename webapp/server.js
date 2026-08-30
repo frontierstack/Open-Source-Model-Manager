@@ -14971,6 +14971,12 @@ const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') 
 // token-budgeted so a dense link graph can't flood the context; 1-hop only (we
 // never expand an expansion). Set to 0 to disable. Tunable without a rebuild.
 const LINK_EXPANSION_MAX = parseInt(process.env.MEMORY_LINK_EXPANSION_MAX) || 4;
+// How many tools named by a RECALLED experience are force-kept in the tool
+// catalog for the turn. The router advertises ~13 of 133 tools, picked by
+// semantics on the ask alone, so a remembered path can name a tool that is not
+// on offer — the model is then told to "reuse this approach" and cannot. Small
+// on purpose: the whole point of routing is a lean catalog (~130 tok/tool).
+const EXPERIENCE_FORCED_TOOL_MAX = parseInt(process.env.EXPERIENCE_FORCED_TOOL_MAX) || 6;
 
 // Semantic scores for a chat query: search with the full text AND a
 // keyword-condensed form, keeping the best cosine per memory. Real chat
@@ -14983,6 +14989,16 @@ const LINK_EXPANSION_MAX = parseInt(process.env.MEMORY_LINK_EXPANSION_MAX) || 4;
 async function semanticMemoryScores(userId, query, k = 32) {
     const sem = await memoryIndex.search(userId, query, k);
     if (!sem) return null;
+    // Experiences moved to their own index namespace (they were losing top-k
+    // chunk slots to auto-facts). A store written before that split still has
+    // them in the main index — detectable as "this account has experiences but
+    // the experience namespace is empty" — so heal it in the background.
+    if (sem.expTotal === 0) {
+        try {
+            const list = await memoryService.listMemories(userId);
+            if (list.some(m => m.type === 'procedure' && m.task)) memoryService.reindexUser(userId).catch(() => {});
+        } catch (_) { /* best-effort */ }
+    }
     const condensed = extractQueryKeywords(query).join(' ');
     if (condensed && condensed.length < String(query).trim().length) {
         try {
@@ -15738,7 +15754,8 @@ function deriveAttachmentKinds(attachments) {
         else if (/\.pdf$/.test(name) || mime.includes('pdf')) kinds.add('pdf');
         else if (/\.(docx?|odt|rtf)$/.test(name) || mime.includes('word') || mime.includes('officedocument.wordprocessing')) kinds.add('document');
         else if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/.test(name) || mime.startsWith('image/')) kinds.add('image');
-        else if (/\.(mp3|wav|m4a|flac|ogg|aac|mp4|mov|webm)$/.test(name) || mime.startsWith('audio/') || mime.startsWith('video/')) kinds.add('audio');
+        else if (/\.(mp4|mov|webm|mkv|avi|m4v|mpe?g)$/.test(name) || mime.startsWith('video/')) kinds.add('video');
+        else if (/\.(mp3|wav|m4a|flac|ogg|aac)$/.test(name) || mime.startsWith('audio/')) kinds.add('audio');
         else if (/\.(zip|7z|rar|tar|tgz|gz|bz2|xz)$/.test(name)) kinds.add('archive');
         else if (/\.(jsx?|tsx?|py|go|rs|java|c|cpp|h|hpp|rb|php|sh|json|ya?ml|toml)$/.test(name)) kinds.add('code');
     }
@@ -15767,7 +15784,7 @@ let experienceRefineInFlight = 0;
 const EXPERIENCE_REFINE_MAX_INFLIGHT = 1;
 const EXPERIENCE_REFINE_TIMEOUT_MS = parseInt(process.env.EXPERIENCE_REFINE_TIMEOUT_MS, 10) || 45000;
 
-async function refineExperienceWithModel(userId, id, episode, chips) {
+async function refineExperienceWithModel(userId, id, episode, chips, rec = null) {
     if (process.env.EXPERIENCE_LLM_REFINE === '0') return null;
     let hasRunning = false;
     for (const inst of modelInstances.values()) { if (inst.status === 'running') { hasRunning = true; break; } }
@@ -15778,7 +15795,10 @@ async function refineExperienceWithModel(userId, id, episode, chips) {
             runModelCompletion({
                 messages: [
                     { role: 'system', content: experienceMemory.REFINE_PROMPT },
-                    { role: 'user', content: experienceMemory.refinementInput(episode, chips) },
+                    // The accumulated record goes in too, so the summary/kind
+                    // GENERALIZE across every run of this task kind instead of
+                    // being rewritten to describe whichever run happened last.
+                    { role: 'user', content: experienceMemory.refinementInput(episode, chips, rec) },
                 ],
                 temperature: 0, maxTokens: 400, disableThinking: true,
             }),
@@ -15796,18 +15816,28 @@ async function refineExperienceWithModel(userId, id, episode, chips) {
     }
 }
 
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null }) {
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, usedExperiences = null, provisional = false }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
         const chips = Array.isArray(toolChips) ? toolChips : [];
-        const okChips = chips.filter(c => c && c.status === 'success' && c.label);
+        const okChips = chips.filter(c => c && c.status === 'success' && !c.refusal && c.label);
         const attachmentKinds = deriveAttachmentKinds(attachments);
-        const act = classifyTurnActivity({ toolLabels: okChips.map(c => c.label), userText, attachmentKinds });
-        // Only record when the turn actually DID something procedural.
-        if (!okChips.length && !attachmentKinds.size) return;
+        // Classify the SAME cleaned ask the episode is keyed on. The raw text
+        // still carries this turn's runtime notes (the injected memory block, the
+        // workspace/image pre-flights), and ACTIVITY_RULES are first-match on a
+        // regex over that text — so the label could be decided by the platform's
+        // own note instead of the user's request.
+        const cleanAsk = experienceMemory.summarizeTask(userText) || String(userText || '');
+        const act = classifyTurnActivity({ toolLabels: okChips.map(c => c.label), userText: cleanAsk, attachmentKinds });
+        // Only record when the turn actually DID something procedural. An
+        // attachment alone is NOT enough: a turn answered inline from the pasted
+        // file content has no approach, and storing it as an experience taught
+        // the model "this kind of task needs no tools" — the opposite of the
+        // playbook it should recall next time.
+        if (!okChips.length) return;
         const episode = experienceMemory.buildEpisode(
-            { userText, attachmentKinds, chips, activity: act ? act.activity : null, quality },
+            { userText, attachmentKinds, chips, activity: act ? act.activity : null, quality, taskKey, provisional },
             { errorSignature: loopGuard.errorSignature }
         );
         if (!episode.task) return;
@@ -15818,8 +15848,35 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         // holds every memory; keep only experiences). Engine down → no match →
         // a new record (consolidation catches duplicates later).
         let matchId = null, matchScore = null;
+        // An IN-PROGRESS task (the /v1 bridge re-records a running Pi task as it
+        // accrues tools) resolves DETERMINISTICALLY to the record already open
+        // for that task — never by cosine, which would drift, and never as a new
+        // completion.
+        if (taskKey) {
+            try {
+                const open = (await memoryService.listMemories(userId))
+                    .find(m => m.type === 'procedure' && m.openTaskKey === taskKey);
+                if (open) matchId = open.id;
+            } catch (_) { /* fall through to similarity */ }
+        }
+        // The experience the model was GIVEN this turn and actually followed is
+        // the most reliable identity signal there is — retrieval already judged
+        // the task similar enough to inject it, and the model then worked that
+        // way. Re-deriving identity from a cosine ≥ MERGE_SEM (0.62) at record
+        // time missed most of them (same-KIND tasks measure ~0.43-0.49), so the
+        // canonical "tank game → snake game" case filed a DUPLICATE instead of
+        // refining the record it had just used.
+        let matchedVia = null;
+        if (!matchId && Array.isArray(usedExperiences) && usedExperiences.length) {
+            for (const ux of usedExperiences) {
+                if (!ux || !ux.id) continue;
+                if (!experienceMemory.pathAdherence(ux.approach, episode.approach).followed) continue;
+                matchId = ux.id; matchedVia = 'applied';
+                break;
+            }
+        }
         try {
-            const sem = await semanticMemoryScores(userId, episode.task, 24);
+            const sem = matchId ? null : await semanticMemoryScores(userId, episode.task, 24);
             if (sem && sem.scores.size) {
                 const all = await memoryService.listMemories(userId);
                 const byId = new Map(all.filter(m => m.type === 'procedure').map(m => [m.id, m]));
@@ -15838,12 +15895,44 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const res = await memoryService.upsertExperience(userId, {
             matchId, episode, source: 'auto', sourceConvId: conversationId, impact: 'medium',
         });
+        // ---- Effectiveness: did the experience injected at the TOP of this turn
+        // actually shape it? Compare what the model was told worked against what
+        // it just did. This is the platform's own evidence that recall pays off
+        // (or does not) — surfaced per turn in the Logs tab and accumulated on
+        // the record as uses/follows.
+        if (Array.isArray(usedExperiences) && usedExperiences.length) {
+            for (const used of usedExperiences) {
+                const adh = experienceMemory.pathAdherence(used.approach, episode.approach);
+                memoryService.noteExperienceUse(userId, used.id, {
+                    followed: adh.followed, calls: episode.outcome.calls,
+                    seconds: episode.outcome.seconds, converged: episode.outcome.converged,
+                }).catch(() => {});
+                const ben = used.benefit;
+                logUserActivity(userId,
+                    `Memory: experience ${experienceMemory.handleOf({ id: used.id })} ${adh.followed ? 'APPLIED' : 'not followed'}` +
+                    ` — this run ${episode.outcome.calls} call${episode.outcome.calls === 1 ? '' : 's'}` +
+                    (Number.isFinite(episode.outcome.seconds) ? `/${episode.outcome.seconds} s` : '') +
+                    (used.bestCalls != null ? `, remembered best ${used.bestCalls}` : '') +
+                    (ben && ben.savedCalls > 0 ? `, ${ben.savedCalls} fewer than the first run` : '') +
+                    ` (path overlap ${Math.round(adh.overlap * 100)}%)`);
+            }
+        }
         const oc = experienceMemory.renderOutcome(episode.outcome);
         logUserActivity(userId,
-            `Memory: ${res.updated ? `refined experience (${res.replaced ? 'new best approach' : 'reinforced'}, ×${res.count}${matchScore != null ? `, similarity ${matchScore.toFixed(2)}` : ''})` : 'recorded new experience'}` +
+            `Memory: ${res.updated ? `refined experience (${res.replaced ? 'new best approach' : 'reinforced'}, ×${res.count}${matchScore != null ? `, similarity ${matchScore.toFixed(2)}` : (matchedVia ? `, ${matchedVia}` : '')})` : 'recorded new experience'}` +
             ` — "${episode.task.slice(0, 70)}" [${episode.activity || 'general'}] ${oc ? `(${oc})` : ''}: ${experienceMemory.renderApproach(episode.approach).slice(0, 160) || 'inline answer'}`);
-        // Refine wording/phrasings with the local model in the background.
-        refineExperienceWithModel(userId, res.id, episode, chips).catch(() => {});
+        // Refine wording/phrasings with the local model in the background — but
+        // only when there is something to generalize. Re-running it on every
+        // reinforcement burned a model call per turn and made `summary`/`kind`
+        // oscillate with the latest run's wording.
+        try {
+            const rec = await memoryService.getMemory(res.id);
+            const needsRefine = !res.updated                       // brand new record
+                || !rec || !rec.summary || !rec.kind               // never generalized
+                || res.replaced                                    // a new best approach to describe
+                || (rec.count || 1) === 3 || (rec.count || 1) === 10;   // depth milestones
+            if (needsRefine) refineExperienceWithModel(userId, res.id, episode, chips, rec).catch(() => {});
+        } catch (_) { refineExperienceWithModel(userId, res.id, episode, chips).catch(() => {}); }
     } catch (e) {
         console.warn('[Memory] experience record failed:', e.message);
     }
@@ -15857,6 +15946,35 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
 // context on top. Model-recorded learnings are floored so the evolving persona
 // persists even when keyword overlap is weak. Returns an injectable block or
 // null. `currentConvId` is optional (used only for the continuity boost).
+// A conversation works on ONE task across several turns ("now make the chart
+// blue", "add the totals row"). Retrieval only ever sees the LATEST message, so
+// every follow-up scored ~0 against the stored task and the playbook the thread
+// had been following silently dropped out — exactly when the model is deepest in
+// the work. Remember which experiences a thread has been given and keep them
+// eligible for the rest of it. Bounded + TTL'd; ids only, so the text/approach
+// injected is always the CURRENT record (a refinement mid-thread is picked up).
+const CONV_EXPERIENCE_TTL_MS = 2 * 60 * 60 * 1000;
+const CONV_EXPERIENCE_MAX = 512;
+const convExperienceCarry = new Map();   // convId -> { at, ids:Set }
+function carryExperienceIds(convId) {
+    if (!convId) return null;
+    const e = convExperienceCarry.get(convId);
+    if (!e) return null;
+    if (Date.now() - e.at > CONV_EXPERIENCE_TTL_MS) { convExperienceCarry.delete(convId); return null; }
+    return e.ids;
+}
+function noteCarriedExperiences(convId, ids) {
+    if (!convId || !ids || !ids.length) return;
+    const e = convExperienceCarry.get(convId) || { at: Date.now(), ids: new Set() };
+    for (const id of ids) e.ids.add(id);
+    e.at = Date.now();
+    convExperienceCarry.set(convId, e);
+    if (convExperienceCarry.size > CONV_EXPERIENCE_MAX) {
+        const oldest = [...convExperienceCarry.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (oldest) convExperienceCarry.delete(oldest[0]);
+    }
+}
+
 async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint = null } = {}) {
     if (!query || typeof query !== 'string') return null;
     // Defense-in-depth: callers should pass clean user text, but strip any
@@ -15898,10 +16016,18 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
             }
         }
     } catch (_) { semScores = null; }
-    // Cosine for a memory, or null when semantic mode is unavailable. A memory
-    // outside the top-k scores 0 (sem mode still active → keyword gate still
-    // backstops it in isRelevant).
-    const semOf = (m) => (semScores ? (semScores.get(m.id) ?? 0) : null);
+    // Cosine for a memory, or null when semantic mode is unavailable.
+    // A memory outside the top-k has NO score — not a score of zero. Collapsing
+    // the two disabled the keyword backstop for everything that missed the cut
+    // (`isRelevant` short-circuits on a numeric score), so a memory the query
+    // names by an exact identifier could be silently unreachable.
+    const semOf = (m) => (semScores ? (semScores.has(m.id) ? semScores.get(m.id) : null) : null);
+    // …but ranking needs a number.
+    const semRank = (m) => (semOf(m) ?? 0);
+    // Experiences this conversation has already been given (see the carry cache
+    // above). Declared here because both the scorer and the candidate filter
+    // read it.
+    const carried = carryExperienceIds(currentConvId);
     const now = Date.now();
     // DIRECTIVES are curated, persona-shaping memories — anything you authored
     // (manual), the model recorded (model learnings), or that's flagged
@@ -15987,11 +16113,13 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // activity matches THIS turn's likely activity (so the right experience
     // leads), + experience depth (count) so well-practiced skills surface.
     const procScoreOf = (m) => {
+        // A carried record with no fresh similarity still ranks above nothing.
+        if (carried && carried.has(m.id) && semOf(m) == null) return 0.25 + Math.min(0.3, 0.1 * ((m.count || 1) - 1));
         // Task SIMILARITY leads (cosine over the experience's phrasings);
         // the coarse activity match is a weak tie-breaker; depth (count) and a
         // converged best run add a little; a legacy tool-list-only record (no
         // `task`) never outranks a real experience.
-        const semScore = semOf(m) ?? 0;
+        const semScore = semRank(m);
         const activityMatch = (activityHint && m.activity === activityHint) ? 0.35 : 0;
         const legacyPenalty = m.task ? 0 : 0.5;
         const convergedBoost = (m.outcome && m.outcome.converged === false) ? -0.3 : 0.1;
@@ -16006,7 +16134,11 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     };
 
     const PROC_MAX = 3, DIRECTIVE_MAX = 18, FACT_MAX = 8;
-    const procBudget = Math.floor(tokenBudget * 0.4);
+    // Experience is the highest-value thing in the block (it changes what the
+    // model DOES), and one playbook alone can be ~600 tokens — a flat 40% of a
+    // 2500-token budget therefore admitted exactly one and PROC_MAX was dead
+    // letters. Allow the top matches up to 60%, and always let the best one in.
+    const procBudget = Math.floor(tokenBudget * 0.6);
     const directiveBudget = Math.floor(tokenBudget * 0.85);
     const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
 
@@ -16024,7 +16156,15 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // without a task keep the old activity/keyword gate.
     const EXP_MIN_SEM = experienceMemory.RETRIEVE_SEM;
     const procCands = all.filter(isProcedure)
+        // A run that hit the tool-call cap or exhausted the loop guards is not an
+        // approach that worked, and the block's header asserts that every entry
+        // did. Keep it stored (its lessons/pitfalls still merge into better runs)
+        // but never inject it as a playbook to reuse.
+        .filter(m => !(m.outcome && m.outcome.converged === false))
         .filter(m => {
+            // Already given to THIS thread: the task hasn't changed just because
+            // the follow-up message is short.
+            if (carried && carried.has(m.id)) return true;
             const sc = semOf(m);
             if (m.task) {
                 if (sc == null) return (activityHint && m.activity === activityHint) || isRelevant(m); // keyword-only mode
@@ -16123,7 +16263,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
                 // and gating falls to isRelevant's keyword arm, so memory never
                 // silently breaks.
                 const alwaysSurface = lm.pinned || isProcedure(lm) || isGlobalBehavioralDirective(lm);
-                const linkRelevant = isRelevant(lm) || ((semOf(lm) ?? 0) >= MEMORY_SEM_THRESHOLD * 0.7);
+                const linkRelevant = isRelevant(lm) || (semRank(lm) >= MEMORY_SEM_THRESHOLD * 0.7);
                 if (!alwaysSurface && !linkRelevant) continue;
                 const tk = tokOf(lm);
                 if (usedTokens + tk > tokenBudget) continue;
@@ -16148,7 +16288,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         // approach that worked, its efficiency and pitfalls (experienceMemory).
         // Legacy tool-list records (pre-2026-08-29) render through the same
         // block — their text is the old "tools that got it done" line.
-        const ordered = procedures.slice().sort((x, y) => (semOf(y) ?? 0) - (semOf(x) ?? 0));
+        const ordered = procedures.slice().sort((x, y) => semRank(y) - semRank(x));
         const block = experienceMemory.renderExperienceBlock(ordered.map(m => ({ m, sem: semOf(m) })));
         if (block) parts.push(block);
     }
@@ -16175,10 +16315,21 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         const lines = facts.map(m => `- ${m.text}`).join('\n');
         parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
     }
+    noteCarriedExperiences(currentConvId, procedures.map(m => m.id));
     console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts${linkExpanded ? `, +${linkExpanded} via links` : ''}; ${semScores ? 'semantic' : 'keyword'} mode) conv=${currentConvId || '-'}`);
     return {
         block: parts.join('\n\n'),
         count: picked.length,
+        // The experiences that went in, with the remembered path. The caller
+        // force-advertises those tools (a recalled approach the router hides is
+        // unfollowable) and, at the end of the turn, measures adherence.
+        experiences: procedures.map(m => ({
+            id: m.id,
+            approach: Array.isArray(m.approach) ? m.approach : [],
+            tools: experienceMemory.approachTools(m.approach),
+            bestCalls: (m.outcome && Number.isFinite(m.outcome.calls)) ? m.outcome.calls : (m.bestSteps ?? null),
+            benefit: experienceMemory.experienceBenefit(m),
+        })),
         procedures: procedures.length,
         learnings: learnings.length,
         facts: facts.length,
@@ -16330,7 +16481,14 @@ async function injectPersonaForV1(req, instance) {
     }
     if (!mem.block) return null;
 
-    const block = `${PI_PERSONA_MARKER} — account persona and experience for this task; runtime context, not part of the user's message]\n${mem.block}`;
+    // Pi runs its OWN tools on the user's machine (and renames the sandbox ones —
+    // run_bash → sandbox_bash), so a playbook recorded from a web-chat turn names
+    // tools this agent may not have. The chat surface force-advertises them; here
+    // the honest instruction is to reuse the SHAPE of the approach.
+    const piNote = (mem.procedures || 0) > 0
+        ? '\n(Your tool names may differ from the ones in these notes — reuse the approach and the order, mapping each step to the closest tool you actually have.)'
+        : '';
+    const block = `${PI_PERSONA_MARKER} — account persona and experience for this task; runtime context, not part of the user's message]\n${mem.block}${piNote}`;
     const um = messages[latestUserIdx];
     if (typeof um.content === 'string') {
         messages[latestUserIdx] = { ...um, content: `${um.content}\n\n${block}` };
@@ -16339,7 +16497,10 @@ async function injectPersonaForV1(req, instance) {
     } else {
         return null;
     }
-    return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint };
+    // Handed to recordV1TurnActivity so the /v1 surface measures adherence the
+    // same way the chat one does (uses/follows on the record).
+    try { req._v1UsedExperiences = mem.experiences || []; } catch (_) { /* frozen req */ }
+    return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint, experiences: mem.experiences || [] };
 }
 
 // Build the model's persona FROM Pi usage too. /v1 is stateless — Pi resends
@@ -16350,7 +16511,7 @@ async function injectPersonaForV1(req, instance) {
 // recordTurnActivity (synthesized success chips from the tool_calls). Imperfect
 // success-mapping is fine: best-recipe protection keeps the leanest version and
 // the model can refine via record_learning.
-async function recordV1TurnActivity(userId, apiKeyData, messages) {
+async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperiences = null) {
     if (!userId || userId === 'default' || !Array.isArray(messages)) return;
     const convKey = 'pi-' + (apiKeyData?.id || 'key');
     const lockKey = `${userId}:${convKey}`;
@@ -16400,7 +16561,20 @@ async function recordV1TurnActivity(userId, apiKeyData, messages) {
         // if it's CLEANER than the stored recipe — it can't clobber a clean recipe
         // just because it's the latest (the old steps:null path did exactly that).
         const okChips = toolLabels.map(l => ({ status: 'success', label: l }));
-        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [] });
+        // taskKey identifies THIS Pi task across its many in-progress snapshots,
+        // so they refine ONE record instead of merging into it repeatedly (which
+        // counted a single 48-call task as "done 7×" and froze its earliest,
+        // 1-tool prefix as the winning approach).
+        await recordTurnActivity({
+            userId, conversationId: convKey, toolChips: okChips, userText, attachments: [],
+            taskKey: `${convKey}:${taskId}`,
+            usedExperiences,
+            // Pi resolves tools client-side: we see names only, mid-task, with no
+            // arguments and no timing. Good enough to keep ONE record for the
+            // task in step with the work, never good enough to overwrite a
+            // complete, measured playbook.
+            provisional: true,
+        });
         await memoryService.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
         console.warn('[Pi/Memory] activity record failed:', e.message);
@@ -18727,6 +18901,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // chunking gate just like any other system context, so injection can't
         // blow up the context budget. Honors the chat "disable memory" toggle.
         let pendingMemoryNotice = null;
+        // The EXPERIENCES injected into this turn (id + the remembered tool path).
+        // Two consumers: the catalog build force-advertises the tools a remembered
+        // playbook names (a router that hides them makes the recalled approach
+        // unfollowable — the memory would be read and then ignored), and the
+        // end-of-turn recorder measures whether the path was actually followed.
+        let usedExperiences = [];
         // Held until SSE headers are flushed below; emits a chunking_progress
         // event so the UI knows the agentic flow took over.
         let pendingAgenticNotice = null;
@@ -18763,21 +18943,32 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // classification (it dilutes the query embedding enough to
                 // flip the semantic gate on borderline matches).
                 latestUserText = latestUserText.replace(/^\/(no_)?think\b\s*/i, '');
+                // Retrieve with the SAME normalization the write side keys on
+                // (experienceMemory.summarizeTask): the client wraps an upload as
+                // "=== FILE 1: … ===\n<the whole file>\n=== END FILE 1 ===", so the
+                // raw message embedded here is mostly FILE CONTENT and scores
+                // nothing against a stored task line — an upload could never
+                // recall its own experience. Falls back to the raw text when
+                // normalization leaves nothing.
+                const memoryQuery = experienceMemory.summarizeTask(latestUserText) || latestUserText;
                 if (latestUserText) {
                     // Predict THIS turn's activity (from the ask + any attachments,
                     // before any tools run) so the matching experience memory is
                     // surfaced first — that's what front-loads the proven approach.
                     const activityHint = (classifyTurnActivity({
                         toolLabels: [],
-                        userText: latestUserText,
+                        userText: memoryQuery,
                         attachmentKinds: deriveAttachmentKinds(req.body?.attachments),
                     }) || {}).activity || null;
                     const memoryResult = await retrieveRelevantMemories(
-                        chatUserId, chatConvId, latestUserText,
+                        chatUserId, chatConvId, memoryQuery,
                         // Budget scales with the model's window: a small-ctx
                         // model gets a lean persona block, a big one the full.
                         memoryBudgetForCtx(contextSize), { activityHint }
                     );
+                    if (memoryResult && Array.isArray(memoryResult.experiences)) {
+                        usedExperiences = memoryResult.experiences;
+                    }
                     if (memoryResult && memoryResult.count) {
                         // Process-log which memories were pulled into THIS turn so
                         // the user can see what's shaping the response.
@@ -18843,6 +19034,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         pendingMemoryNotice = {
                             type: 'memory_injected',
                             count: memoryResult.count,
+                            // Broken out so the UI (and any harness) can say WHAT
+                            // was recalled — an experience shaping the work reads
+                            // very differently from a stored fact.
+                            experiences: memoryResult.procedures,
+                            learnings: memoryResult.learnings,
+                            facts: memoryResult.facts,
                             tokens: memoryResult.tokens,
                             linked: memoryResult.linked,
                             previews: memoryResult.previews,
@@ -20238,6 +20435,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (toolCtx.activeDocumentId) {
             preflightForcedTools.add('query_document');
             preflightForcedTools.add('read_document_chunk');
+        }
+        // A recalled EXPERIENCE names the tools that worked last time — but the
+        // router advertises ~13 of 133 tools per turn, chosen by semantics on
+        // the ask alone. If the remembered path names a tool the router drops,
+        // the model reads "reuse this approach" and then cannot: it re-explores
+        // with whatever it was given, which is exactly the cost the memory
+        // exists to avoid. Force-include them (bounded, and only names the
+        // registry actually has, so a renamed/removed tool can't be resurrected).
+        if (usedExperiences.length) {
+            const named = [];
+            for (const ux of usedExperiences) {
+                for (const t of (ux.tools || [])) {
+                    if (named.length >= EXPERIENCE_FORCED_TOOL_MAX) break;
+                    if (!fullByName.has(t) || preflightForcedTools.has(t)) continue;
+                    preflightForcedTools.add(t);
+                    named.push(t);
+                }
+            }
+            if (named.length) {
+                console.log(`[Chat Stream] Experience pre-flight: force-advertising ${named.length} remembered tool(s): ${named.join(', ')}`);
+                logChatActivity(`Memory: kept ${named.length} remembered tool${named.length === 1 ? '' : 's'} in the catalog — ${named.join(', ')}`);
+            }
         }
         // Memoize the catalog's JSON + token estimate ONCE per turn — it's stable
         // across every tool round (built here, never rebuilt), but was re-
@@ -23270,7 +23489,16 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 const raw = String(call.function.arguments || '');
                                 argPreview = raw.length > 80 ? raw.slice(0, 80) + '\u2026' : raw;
                             }
-                            const failedChip = !!(parsedForChip && (parsedForChip.error || parsedForChip.success === false));
+                            // Same predicate the loop guard's ledger uses: the
+                            // interpreters report a CRASHED script as
+                            // {success:true, returncode:1}, so an error-only test
+                            // stored a failed step as part of "the approach that
+                            // worked" and hid the debug cycle from the experience.
+                            const failedChip = !!(parsedForChip && (
+                                parsedForChip.error
+                                || parsedForChip.success === false
+                                || (typeof parsedForChip.returncode === 'number' && parsedForChip.returncode !== 0)
+                                || (typeof parsedForChip.exitCode === 'number' && parsedForChip.exitCode !== 0)));
                             const chipArtifacts = (parsedForChip && Array.isArray(parsedForChip._artifacts))
                                 ? parsedForChip._artifacts
                                     .filter(a => a && typeof a.url === 'string' && typeof a.name === 'string')
@@ -23283,7 +23511,24 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 query: argPreview,
                                 args: parsedArgsForChip,
                                 status: failedChip ? 'failed' : 'success',
-                                error: failedChip ? String(parsedForChip.error || 'failed').slice(0, 300) : undefined,
+                                // A refusal never RAN (loop-guard nudge, quarantine,
+                                // prohibited tool). It is flail telemetry about this
+                                // turn, not a property of the tool — experience
+                                // capture must not turn it into a permanent pitfall
+                                // ("read_file failed (loop_detected)") that steers
+                                // the model away from a tool that works fine.
+                                refusal: refusalKind || undefined,
+                                // A crashed interpreter run has no `error` field —
+                                // its diagnosis is in stderr. Without it the chip
+                                // said only "failed", which is not a pitfall worth
+                                // storing and told the model nothing next time.
+                                error: failedChip
+                                    ? String(parsedForChip.error
+                                        || (typeof parsedForChip.stderr === 'string' && parsedForChip.stderr.trim()
+                                            ? parsedForChip.stderr.trim().split('\n').filter(Boolean).pop()
+                                            : '')
+                                        || 'failed').slice(0, 300)
+                                    : undefined,
                                 preview: String(resultMsg.content || '').slice(0, 240),
                                 chartSpec: (parsedForChip && parsedForChip.chartSpec) || undefined,
                                 chartSummary: (parsedForChip && typeof parsedForChip.summary === 'string') ? parsedForChip.summary : undefined,
@@ -24201,13 +24446,17 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // Skipped on an exhausted reasoning loop OR an exhausted loop-nudge
         // budget — the tool path is degenerate (the model never converged) and
         // would poison the procedure store.
-        if (streamingConversationId && !streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
+        if (!streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
             recordTurnActivity({
                 userId: chatMemId,
-                conversationId: streamingConversationId,
+                // No conversationId is fine — it is only a provenance tag and the
+                // continuity boost. Gating on it made every API caller a memory
+                // free-rider: retrieval ran for them, recording never did.
+                conversationId: streamingConversationId || null,
                 toolChips: persistedToolChips,
                 userText: latestUserText,
                 attachments: req.body?.attachments,
+                usedExperiences,
                 // How the run went — drives which approach is kept as the best.
                 quality: {
                     ms: Date.now() - streamStartTime,
@@ -25967,7 +26216,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             && req.body.messages.length) {
             // (1) build persona from Pi usage (fire-and-forget). Pass a shallow
             // snapshot so the async walk can't race with (2) mutating the array.
-            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice()).catch(() => {});
+            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice(), req._v1UsedExperiences || null).catch(() => {});
             // (2) inject persona into THIS request (awaited — must land before
             // forward). Bounded by a timeout so a slow/large memory read can
             // never stall the proxy: on timeout we forward without memory.
@@ -29835,7 +30084,13 @@ app.use((req, res) => {
                 function: {
                     name: 'record_learning',
                     description:
-                        'Save OR refine a durable, experience-based lesson in your long-term memory of THIS user, so your answers get better over time (continual learning). ' +
+                        // SENTENCE ONE CARRIES THE TRIGGER. Under the tool router the
+                        // model sees only the first sentence (≤150 chars) of a
+                        // description, so a "what it does" opener with the "when to
+                        // call it" buried in sentence two is invisible — the same
+                        // failure that made find_tools unreachable.
+                        'Call this right after an approach worked well or badly, or the user corrects you, so the lesson is reused next time. ' +
+                        'It saves OR refines a durable, experience-based lesson in your long-term memory of THIS user (continual learning). ' +
                         'Use it when an approach worked well (or poorly) and you found a better one, when the user corrects you or states a preference, or when you hit and worked around a limitation. ' +
                         'Capture the OUTCOME and the better next move — e.g. "Searched site A first, results were thin; broadening to A+B+C worked better — start broad next time, keep searching if weak." ' +
                         'Phrase lessons as ADAPTIVE HEURISTICS, never rigid absolutes: prefer "start with X, then try a few alternatives and keep going if results are weak" over "only ever use X". ' +

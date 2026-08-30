@@ -432,7 +432,12 @@ function normalizeRecord(input) {
     return rec;
 }
 
-const EXPERIENCE_FIELDS = ['task', 'summary', 'kind', 'variants', 'approach', 'outcome', 'lessons', 'pitfalls', 'history', 'textSource'];
+const EXPERIENCE_FIELDS = ['task', 'summary', 'kind', 'variants', 'approach', 'outcome', 'lessons', 'pitfalls', 'history', 'textSource',
+    // Effectiveness + in-progress identity. `uses`/`follows`/`lastUsedAt` are how
+    // the platform knows whether recalling a playbook actually changed what the
+    // model did; `openTaskKey` ties the /v1 bridge's repeated snapshots of ONE
+    // running task to ONE record instead of inflating its count.
+    'uses', 'follows', 'lastUsedAt', 'lastAppliedRun', 'openTaskKey', 'provisional', 'failStreak'];
 
 /** Create one memory (manual add or a model learning). Returns the record. */
 async function createMemory(input) {
@@ -933,7 +938,11 @@ async function consolidateProcedures(userId, opts = {}) {
         const find = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; } return r; };
         for (const m of group) {
             let res = null;
-            try { res = await memoryIndex.search(userId, String(m.text || ''), 8); } catch (_) { res = null; }
+            // Experiences are indexed as SHORT phrasings, so querying with the
+            // ~1900-char playbook scored ~0.1 against their own chunks and this
+            // pass could never find a duplicate. Query with the same short keys.
+            const probe = experience.phrasingsFor(m).slice(0, 3).join(' | ') || String(m.text || '');
+            try { res = await memoryIndex.search(userId, probe, 8); } catch (_) { res = null; }
             if (!res || !res.scores) continue;
             for (const [otherId, score] of res.scores) {
                 if (otherId === m.id || score < minSem) continue;
@@ -953,10 +962,17 @@ async function consolidateProcedures(userId, opts = {}) {
         }
         // Enforce the variant cap: if too many DISTINCT recipes survive, fold the
         // weakest into the strongest survivor.
-        if (survivors.length > MAX_ACTIVITY_VARIANTS) {
-            survivors.sort(stronger);
-            const keep = survivors.slice(0, MAX_ACTIVITY_VARIANTS);
-            const excess = survivors.slice(MAX_ACTIVITY_VARIANTS);
+        // The cap exists for the LEGACY activity-bucket records ("coding: the
+        // tools that got it done"), where >2 variants per activity is noise. An
+        // EPISODIC record is keyed on a task, and an activity bucket legitimately
+        // holds many distinct ones ("build a browser game", "audit an npm
+        // package", "parse a pcap" are all code-analysis) — folding them together
+        // destroys exactly the specificity that makes recall work.
+        const foldable = survivors.filter((m) => !m.task);
+        if (foldable.length > MAX_ACTIVITY_VARIANTS) {
+            foldable.sort(stronger);
+            const keep = foldable.slice(0, MAX_ACTIVITY_VARIANTS);
+            const excess = foldable.slice(MAX_ACTIVITY_VARIANTS);
             plan.push({ winner: keep[0], losers: excess });
         }
     }
@@ -1058,6 +1074,29 @@ async function upsertModelLearning(userId, input, opts = {}) {
                 }
             }
             if (best) target = best;
+        }
+
+        if (target && target.type === 'procedure') {
+            // The handle resolved to an EXPERIENCE. Overwriting it the normal way
+            // (text := the lesson, type := 'learning') destroyed the playbook: the
+            // rendered approach/outcome/pitfalls were replaced by one sentence and
+            // the record stopped being an experience at all, so it dropped out of
+            // every experience path (retrieval gate, merge, the Memory tab chip).
+            // A lesson about a playbook is an ADDITION to it.
+            const l = Array.isArray(target.lessons) ? target.lessons.slice() : [];
+            if (!l.some((y) => String(y).toLowerCase() === text.toLowerCase())) {
+                if (l.length >= 5) l.shift();
+                l.push(text);
+            }
+            target.lessons = l;
+            if ((IMPACT_RANK[reqImpact] || 2) > (IMPACT_RANK[target.impact] || 2)) target.impact = reqImpact;
+            target.score = scoreForImpact(target.impact);
+            target.text = experience.renderPlaybook(target);
+            target.tokens = estimateTokens(target.text);
+            target.title = deriveMemoryTitle(target);
+            target.updatedAt = nowIso();
+            embedRec = { ...target };
+            return { id: target.id, updated: true, impact: target.impact, experience: true };
         }
 
         if (target) {
@@ -1264,6 +1303,26 @@ async function applyExperienceRefinement(userId, id, ref) {
     return updated;
 }
 
+/** Record that an injected experience was (or was not) followed on a turn.
+ *  Cheap counters only — the measured benefit is derived from `history`
+ *  (experienceMemory.experienceBenefit): the first run predates the record, so
+ *  it is the cold baseline every later run is compared against. Never re-embeds
+ *  (nothing searchable changed), so it costs one file write and no engine call. */
+async function noteExperienceUse(userId, id, { followed = false, calls = null, seconds = null, converged = true } = {}) {
+    if (!id) return null;
+    return mutateUser(userId, (list) => {
+        const m = list.find((x) => x.id === id && x.type === 'procedure');
+        if (!m) return null;
+        m.uses = (m.uses || 0) + 1;
+        if (followed) m.follows = (m.follows || 0) + 1;
+        m.lastUsedAt = nowIso();
+        if (followed && converged && Number.isFinite(calls)) {
+            m.lastAppliedRun = { at: m.lastUsedAt, calls, seconds };
+        }
+        return { id: m.id, uses: m.uses, follows: m.follows || 0 };
+    });
+}
+
 /** The model articulates a lesson about HOW it did a kind of task
  *  (record_learning with `activity`). Attach it to the matched experience
  *  (`matchId`) or start a new experience seeded with the lesson. */
@@ -1280,7 +1339,10 @@ async function attachExperienceLesson(userId, { matchId = null, lesson, activity
             target.lessons = l;
             target.textSource = 'model';
             if ((IMPACT_RANK[impact] || 2) > (IMPACT_RANK[target.impact] || 2)) target.impact = impact;
-            target.count = (target.count || 1) + 1;
+            // NOT count++: `count` is "times this task was actually done" and the
+            // injected block renders it as "done N×". Articulating a lesson is not
+            // another run, and inflating it there both lied to the model and
+            // pushed the record to 'important' without evidence.
             target.text = experience.renderPlaybook(target);
             target.tokens = estimateTokens(target.text);
             target.score = scoreForImpact(target.impact);
@@ -1527,6 +1589,7 @@ module.exports = {
     upsertModelLearning,
     upsertActivityMemory,
     upsertExperience,
+    noteExperienceUse,
     applyExperienceRefinement,
     attachExperienceLesson,
     normalizeActivity,
