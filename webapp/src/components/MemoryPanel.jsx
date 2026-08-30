@@ -6,7 +6,6 @@ import {
     Save as SaveIcon,
     RefreshCw as RefreshIcon,
     Loader2 as SpinnerIcon,
-    Pin as PinIcon,
 } from 'lucide-react';
 
 // Memory tab — account-scoped persona/fact memory that follows the user across
@@ -329,8 +328,6 @@ export default function MemoryPanel() {
                                                     ? <Chip tone="accent">{`${m.activity || 'experience'} ·×${m.count || 1}${m.outcome && Number.isFinite(m.outcome.calls) ? ` · best ${m.outcome.calls} call${m.outcome.calls === 1 ? '' : 's'}` : ''}`}</Chip>
                                                     : (m.type && <Chip>{m.type}</Chip>)}
                                                 {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
-                                                {m.pinned && <Chip tone="accent"><PinIcon size={10} /> pinned</Chip>}
-                                                {m.muted && <Chip>muted</Chip>}
                                                 {isAdmin && m.ownerName ? <span className="text-[0.66rem]" style={{ color: 'var(--text-tertiary)' }}>· {m.ownerName}</span> : null}
                                             </div>
                                         </div>
