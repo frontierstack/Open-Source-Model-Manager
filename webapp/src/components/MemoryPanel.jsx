@@ -47,10 +47,6 @@ function relativeTime(iso) {
     return new Date(t).toLocaleDateString();
 }
 
-// Impact → chip tone, so importance is visible at every level (not just
-// "important"): low is quiet, medium is accented, important stands out.
-const IMPACT_TONE = { important: 'warn', medium: 'accent', low: 'muted' };
-
 // One consistent chip — single font size + weight everywhere so the meta rows
 // read cleanly instead of mixing sizes.
 function Chip({ children, tone = 'muted', title }) {
@@ -327,7 +323,6 @@ export default function MemoryPanel() {
                                                 {m.type === 'procedure'
                                                     ? <Chip tone="accent">{`${m.activity || 'experience'} ·×${m.count || 1}${m.outcome && Number.isFinite(m.outcome.calls) ? ` · best ${m.outcome.calls} call${m.outcome.calls === 1 ? '' : 's'}` : ''}`}</Chip>
                                                     : (m.type && <Chip>{m.type}</Chip>)}
-                                                {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
                                                 {isAdmin && m.ownerName ? <span className="text-[0.66rem]" style={{ color: 'var(--text-tertiary)' }}>· {m.ownerName}</span> : null}
                                             </div>
                                         </div>
