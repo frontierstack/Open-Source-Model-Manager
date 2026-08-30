@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Eye, Code, RefreshCw, Download, Share2, FileText, Maximize2, Minimize2, Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { injectSandboxPreview } from '../../utils/sandboxPreview';
+import { codeFromToolCall, languageForTool } from '../../utils/toolCodeArtifacts';
 
 /**
  * ArtifactsPanel — right-rail panel with Preview / Source / Diff tabs.
@@ -33,7 +34,7 @@ const FILE_LANG_BY_EXT = {
     pdf: 'pdf', zip: 'archive', tar: 'archive', gz: 'archive',
     mp3: 'audio', wav: 'audio', mp4: 'video', webm: 'video',
 };
-function langFromName(name) {
+export function langFromName(name) {
     const ext = (name || '').toLowerCase().split('.').pop();
     return FILE_LANG_BY_EXT[ext] || 'text';
 }
@@ -122,6 +123,30 @@ export function extractArtifacts(messages = [], startIndex = 0) {
                     createdAt,
                     kind: 'file',
                 });
+            });
+        });
+
+        // Code written THROUGH a tool call (create_file / run_python …) ----
+        // The source lives in the call's arguments, not in a prose fence, so
+        // it never reached this panel unless the write happened to land under
+        // artifacts/ (and then only as a file to fetch). Surface it as a code
+        // artifact — same id the live draft used while it streamed, so the
+        // panel transitions seamlessly. Skipped when the same file already
+        // surfaced as a downloadable file artifact above.
+        tcalls.forEach((tc, tcIdx) => {
+            const c = codeFromToolCall(tc);
+            if (!c) return;
+            const base = (c.filePath || '').split('/').pop();
+            const arts = Array.isArray(tc?.artifacts) ? tc.artifacts : [];
+            if (base && arts.some(a => a && a.name === base)) return;
+            artifacts.push({
+                id: `m${msgIdx}_tc${tcIdx}_src`,
+                title: base || `${tc.name} source`,
+                language: languageForTool(tc.name, c.filePath, langFromName),
+                source: c.source,
+                messageIdx: msgIdx,
+                createdAt,
+                kind: 'code',
             });
         });
     });

@@ -105,6 +105,7 @@ export const useChatStore = create(
         // Streaming
         isStreaming: false,
         streamingContent: '',
+        streamingToolDraft: null,
         streamingReasoning: '',
         // Native tool calls observed during the current stream. Each entry:
         //   { tool_call_id, name, arguments, status: 'running'|'success'|'failed',
@@ -240,6 +241,7 @@ export const useChatStore = create(
                 // but DON'T clear messages[] - let loadConversationMessages() replace them
                 // This prevents flash of empty state and race conditions during long streaming
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false
@@ -257,6 +259,7 @@ export const useChatStore = create(
                 activeConversationId: conversation.id,
                 messages: [],
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -395,6 +398,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -438,6 +442,10 @@ export const useChatStore = create(
         setStreaming: (isStreaming) => set({ isStreaming }),
 
         setStreamingContent: (streamingContent) => set({ streamingContent }),
+
+        // Code being written INSIDE a streaming tool call (create_file etc.) —
+        // read out of the partial arguments so the Artifacts panel shows it live.
+        setStreamingToolDraft: (streamingToolDraft) => set({ streamingToolDraft }),
 
         setStreamingReasoning: (streamingReasoning) => set({ streamingReasoning }),
 
@@ -509,6 +517,7 @@ export const useChatStore = create(
             return {
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 streamingToolCalls: [],
@@ -523,6 +532,7 @@ export const useChatStore = create(
 
         clearStreaming: () => set(state => ({
             streamingContent: '',
+            streamingToolDraft: null,
             streamingReasoning: '',
             streamingStatus: null,
             streamingToolCalls: [],
@@ -611,6 +621,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
@@ -626,6 +637,7 @@ export const useChatStore = create(
                 activeConversationId: null,
                 messages: [],
                 streamingContent: '',
+                streamingToolDraft: null,
                 streamingReasoning: '',
                 streamingStatus: null,
                 isStreaming: false,
