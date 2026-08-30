@@ -7,7 +7,6 @@ import {
     RefreshCw as RefreshIcon,
     Loader2 as SpinnerIcon,
     Pin as PinIcon,
-    EyeOff as MuteIcon,
 } from 'lucide-react';
 
 // Memory tab — account-scoped persona/fact memory that follows the user across
@@ -91,11 +90,10 @@ export default function MemoryPanel() {
 
     const [showCreate, setShowCreate] = React.useState(false);
     const [newText, setNewText] = React.useState('');
-    const [newPinned, setNewPinned] = React.useState(false);
     const [busy, setBusy] = React.useState(false);
 
     const resetCreate = () => {
-        setNewText(''); setNewPinned(false);
+        setNewText('');
     };
 
     const [filter, setFilter] = React.useState('');
@@ -152,10 +150,6 @@ export default function MemoryPanel() {
                 method: 'POST',
                 body: JSON.stringify({ text: newText.trim() }),
             });
-            // Apply the pin flag to the freshly created memory.
-            if (newPinned) {
-                try { await jsonFetch(`/api/memories/${memory.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: true }) }); } catch (_) { /* non-fatal */ }
-            }
             setShowCreate(false); resetCreate();
             await loadMemories();
             setSelectedId(memory.id);
@@ -180,18 +174,6 @@ export default function MemoryPanel() {
             await jsonFetch(`/api/memories/${id}`, { method: 'DELETE' });
             if (selectedId === id) setSelectedId(null);
             await loadMemories();
-        } catch (e) { setError(e.message); }
-    };
-
-    // Pin = never pruned out of the store; Mute = kept but never injected
-    // into a chat turn. Toggles PATCH the flag directly (no edit-form state).
-    const toggleFlag = async (mem, flag) => {
-        try {
-            await jsonFetch(`/api/memories/${mem.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ [flag]: !mem[flag] }),
-            });
-            await loadMemories({ silent: true });
         } catch (e) { setError(e.message); }
     };
 
@@ -265,21 +247,6 @@ export default function MemoryPanel() {
                         className="w-full resize-y rounded-md border px-3 py-2 text-sm leading-relaxed outline-none"
                         style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-primary)', color: 'var(--text-primary)' }}
                     />
-
-                    {/* Field row: pin */}
-                    <div className="mt-3 flex flex-wrap items-end gap-4">
-                        <button
-                            type="button"
-                            onClick={() => setNewPinned((v) => !v)}
-                            title="Pin — never auto-pruned from the store"
-                            className="inline-flex h-[34px] items-center gap-1.5 rounded-md px-3 text-sm font-medium transition"
-                            style={newPinned
-                                ? { color: 'var(--accent-primary)', border: '1px solid var(--border-focus)', backgroundColor: 'var(--accent-muted)' }
-                                : { color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
-                        >
-                            <PinIcon size={14} /> {newPinned ? 'Pinned' : 'Pin'}
-                        </button>
-                    </div>
 
                     <div className="mt-3 flex items-center gap-2">
                         <button
@@ -396,28 +363,6 @@ export default function MemoryPanel() {
                                     </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1.5">
-                                    <button
-                                        type="button"
-                                        onClick={() => toggleFlag(selected, 'pinned')}
-                                        title={selected.pinned ? 'Unpin (allow pruning again)' : 'Pin — never auto-pruned'}
-                                        className="rounded-lg p-2 transition"
-                                        style={selected.pinned
-                                            ? { color: 'var(--accent-primary)', border: '1px solid var(--border-focus)', backgroundColor: 'var(--accent-muted)' }
-                                            : { color: 'var(--text-tertiary)', border: '1px solid var(--border-primary)' }}
-                                    >
-                                        <PinIcon size={16} />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => toggleFlag(selected, 'muted')}
-                                        title={selected.muted ? 'Unmute (inject into chats again)' : 'Mute — keep stored but never inject into chats'}
-                                        className="rounded-lg p-2 transition"
-                                        style={selected.muted
-                                            ? { color: '#f59e0b', border: '1px solid #f59e0b55', backgroundColor: '#f59e0b1a' }
-                                            : { color: 'var(--text-tertiary)', border: '1px solid var(--border-primary)' }}
-                                    >
-                                        <MuteIcon size={16} />
-                                    </button>
                                     <button
                                         type="button"
                                         onClick={() => deleteMemory(selected.id)}
