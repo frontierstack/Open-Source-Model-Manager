@@ -285,7 +285,19 @@ async function readUserList(userId) {
 async function writeUserList(userId, list) {
     await fsp.mkdir(MEMORY_DIR, { recursive: true });
     const encoded = Buffer.from(JSON.stringify(list)).toString('base64');
-    await fsp.writeFile(shardPath(userId), encoded);
+    // ATOMIC: truncate-in-place meant a crash / full disk mid-write left a
+    // truncated shard, and a truncated base64 blob decodes to garbage that the
+    // reader turns into an EMPTY list — the account's entire memory gone with no
+    // error anywhere. Write beside it, then rename (atomic within a filesystem).
+    const target = shardPath(userId);
+    const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    try {
+        await fsp.writeFile(tmp, encoded);
+        await fsp.rename(tmp, target);
+    } catch (e) {
+        try { await fsp.unlink(tmp); } catch (_) { /* already gone */ }
+        throw e;
+    }
     userCache.set(userIdSafe(userId), list);
 }
 
@@ -1098,6 +1110,13 @@ async function upsertModelLearning(userId, input, opts = {}) {
             embedRec = { ...target };
             return { id: target.id, updated: true, impact: target.impact, experience: true };
         }
+
+        // PINNED means the user said "never lose this". The injected block hands
+        // the model every memory's [#handle] and invites it to pass one as
+        // `replaces`, so a mistyped or over-eager handle could silently rewrite a
+        // memory the user deliberately protected. Fall through to creating a new
+        // record instead. (The auto-merge path already refuses non-model rows.)
+        if (target && target.pinned) target = null;
 
         if (target) {
             const mergedImpact = (IMPACT_RANK[reqImpact] || 2) >= (IMPACT_RANK[target.impact] || 2)

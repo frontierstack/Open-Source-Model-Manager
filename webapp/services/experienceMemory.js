@@ -409,6 +409,12 @@ function phrasingsFor(rec) {
     if (rec.activity) push(String(rec.activity).replace(/-/g, ' '));
     const tools = (rec.approach || []).map(s => s.tool).filter(t => t && t !== '…');
     if (tools.length) push(`steps: ${[...new Set(tools)].join(' ')}`);
+    // LESSONS are searchable content, not decoration. A record created by
+    // `record_learning(activity=…)` has no approach, no summary and a synthetic
+    // task ("web research (model lesson)"), so without this the ONLY vector for
+    // the thing the model deliberately chose to remember was the bare activity
+    // phrase — it could never be recalled by anything resembling its content.
+    for (const l of (rec.lessons || [])) push(l);
     return out.slice(0, 12);
 }
 

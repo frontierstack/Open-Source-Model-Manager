@@ -15820,7 +15820,13 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
-        const chips = Array.isArray(toolChips) ? toolChips : [];
+        // META tools act on the assistant's own memory/catalog, not on the task.
+        // Left in, `record_learning` became a STEP of the stored approach (and
+        // counted toward outcome.calls), so a turn whose only tool call was
+        // "remember this" minted an experience whose playbook was, literally,
+        // "call record_learning" — and a real playbook gained a phantom step.
+        const META_TOOLS = new Set(['record_learning', 'find_tools']);
+        const chips = (Array.isArray(toolChips) ? toolChips : []).filter(c => !(c && META_TOOLS.has(c.label)));
         const okChips = chips.filter(c => c && c.status === 'success' && !c.refusal && c.label);
         const attachmentKinds = deriveAttachmentKinds(attachments);
         // Classify the SAME cleaned ask the episode is keyed on. The raw text
@@ -15856,7 +15862,10 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
             try {
                 const open = (await memoryService.listMemories(userId))
                     .find(m => m.type === 'procedure' && m.openTaskKey === taskKey);
-                if (open) matchId = open.id;
+                // Belt and braces: the key now binds the ask, but a same-run
+                // match overwrites the record's approach unconditionally, so
+                // require the activity to agree as well before taking that path.
+                if (open && (!open.activity || !episode.activity || open.activity === episode.activity)) matchId = open.id;
             } catch (_) { /* fall through to similarity */ }
         }
         // The experience the model was GIVEN this turn and actually followed is
@@ -16552,9 +16561,13 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperience
         const isNewTask = taskId !== lastTask;
         const grewEnough = toolCount >= lastTools + 4 && toolCount >= Math.ceil(lastTools * 1.5);
         if (!isNewTask && !grewEnough) return;
-        const uc = messages[taskStart]?.content;
-        const userText = typeof uc === 'string' ? uc
-            : (Array.isArray(uc) ? uc.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
+        // Strip Pi's client-appended runtime context exactly as retrieval does.
+        // Read raw, the recorded task was mostly the sandbox-inventory block —
+        // ~140 of the 180 stored characters were boilerplate IDENTICAL across
+        // every Pi task, so unrelated experiences embedded as near-duplicates
+        // (inflated cosine → wrong merges, diluted recall). v1LatestUserText
+        // resolves the same message (`taskStart` IS the last user index).
+        const userText = v1LatestUserText(messages);
         // Pi resolves tools client-side; we only see results, so treat them as
         // successful. recordTurnActivity computes the recipe-quality signals
         // (flail/unique) from these chips, so an in-progress snapshot is kept only
@@ -16567,7 +16580,13 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperience
         // 1-tool prefix as the winning approach).
         await recordTurnActivity({
             userId, conversationId: convKey, toolChips: okChips, userText, attachments: [],
-            taskKey: `${convKey}:${taskId}`,
+            // The key must identify THIS task, not "the Nth user message of some
+            // session on this API key" — two unrelated Pi sessions reach the same
+            // count and collided, and a collision overwrites the matched record's
+            // approach unconditionally (sameRun bypasses both betterRun and the
+            // provisional guard). Binding the ask itself makes a collision mean
+            // the same task by construction.
+            taskKey: `${convKey}:${taskId}:${crypto.createHash('sha1').update(userText).digest('hex').slice(0, 10)}`,
             usedExperiences,
             // Pi resolves tools client-side: we see names only, mid-task, with no
             // arguments and no timing. Good enough to keep ONE record for the
