@@ -17943,7 +17943,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const buf = Buffer.from(content, 'base64');
                 await require('fs').promises.writeFile(diskPath, buf);
 
-                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/${archiveId}/ where read_file, grep_code, and outline_file can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all.]`;
+                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/${archiveId}/ where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.]`;
                 return res.json({
                     type: 'archive',
                     filename: safeName,
@@ -20680,7 +20680,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                     const wsNote =
                         '[SYSTEM: This conversation\'s sandbox workspace (/workspace) still contains the files below, created in EARLIER turns. They persist across turns — reuse them directly with read_file / grep_code / list_directory' +
-                        (ws.repos.length ? ' / scan_source_files / git_log' : '') +
+                        (ws.repos.length || ws.dirs.length ? ' / scan_source_files' : '') +
+                        (ws.repos.length ? ' / git_log' : '') +
                         ' instead of re-cloning or re-downloading, unless the user explicitly asks for a fresh copy.\n' +
                         lines.join('\n') + ']\n\n';
                     const um = chatMessages[latestUserMsgIdx];
@@ -20694,7 +20695,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     preflightForcedTools.add('read_file');
                     preflightForcedTools.add('list_directory');
                     preflightForcedTools.add('grep_code');
-                    if (ws.repos.length) preflightForcedTools.add('scan_source_files');
+                    // Any source TREE — a git clone OR an extracted archive
+                    // (which lands as a plain dir under archives/) — gets the
+                    // batch reader. Before 2026-08-31 this was repos-only, so a
+                    // repo that arrived as a .zip left whole-file read_file as
+                    // the model's only exploration tool (observed: 44
+                    // sequential read_file calls filled a 131k window).
+                    if (ws.repos.length || ws.dirs.length) preflightForcedTools.add('scan_source_files');
                     // A page the model wrote earlier is the thing a follow-up
                     // ("it doesn't display", "test it") is about — make sure the
                     // browser tester is on the table.
@@ -21029,6 +21036,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // OSINT turn wrote 24 such scripts in a row. 0 disables.
         const INTERP_BUDGET_ADVISE = parseInt(process.env.INTERP_BUDGET_ADVISE || '8', 10);
 const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3', 10);
+        // Breadth-read budget: N successful whole-file read_file calls in one
+        // turn is the "read the repo one file at a time" pattern. Every file is
+        // DISTINCT, so no outcome-keyed guard can ever fire — yet at this
+        // breadth the reads fill the context window, and once full each new
+        // read EVICTS an earlier one (net information gain ≈ 0) while every
+        // round costs a full re-prefill. Non-blocking advisory, like
+        // INTERP_BUDGET_ADVISE. 0 disables.
+        const READ_BREADTH_ADVISE = parseInt(process.env.READ_BREADTH_ADVISE || '12', 10);
+        // Context-saturation guard: consecutive rounds at a FULL window
+        // (older tool rounds dropped to fit, or output budget scraping the
+        // floor). At CTX_SATURATION_CHECKPOINT such rounds spend the shared
+        // loop checkpoint (restate the task, demand the answer); at
+        // CTX_SATURATION_SYNTH force synthesis. Observed 2026-08-31: a repo
+        // audit sat at 129.7k/131k for 14+ rounds, ~2 min each (the trim
+        // rewrites the prompt every round → prefix-cache miss → full
+        // re-prefill), with a ~1.1k output budget — pure treadmill. 0 disables.
+        const CTX_SATURATION_CHECKPOINT = parseInt(process.env.CTX_SATURATION_CHECKPOINT || '2', 10);
+        const CTX_SATURATION_SYNTH = parseInt(process.env.CTX_SATURATION_SYNTH || '4', 10);
+        let ctxSaturatedStreak = 0;
         const WRAPPER_MAX_CHARS = parseInt(process.env.WRAPPER_MAX_CHARS || '900', 10);
         const WRAPPER_RESIDUE_CHARS = parseInt(process.env.WRAPPER_RESIDUE_CHARS || '80', 10);
         // No /g flag — this regex is .test()ed repeatedly and lastIndex would drift.
@@ -21986,12 +22012,14 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // for the tool catalog + a usable output budget; without the
                 // catalog term the loop under-counts input and the next request
                 // gets max_tokens clamped to 64 → truncated tool args → loop.
+                let trimmedThisRound = false;
                 {
                     const trimBudget = Math.max(
                         2048,
                         contextSize - toolCatalogTokens - MIN_OUTPUT_BUDGET - 200
                     );
                     const trimResult = trimToolHistoryToFit(currentMessages, trimBudget);
+                    trimmedThisRound = trimResult.dropped > 0;
                     if (trimResult.dropped > 0 || trimResult.truncated > 0) {
                         currentMessages = trimResult.messages;
                         const parts = [];
@@ -22046,6 +22074,18 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     MIN_OUTPUT_BUDGET,
                     Math.min(roundCap, roundHeadroom)
                 );
+
+                // ---- Context-saturation accounting (see the knobs above) ----
+                // Saturated: the trimmer had to DROP whole earlier tool rounds
+                // to admit this one, or the free headroom is scraping the
+                // output floor. Streak is acted on in the round-end loop
+                // accounting via spendCheckpoint (checkpoint → synthesis).
+                const ctxSaturatedNow = toolCatalog.length > 0 &&
+                    (trimmedThisRound || roundHeadroom <= Math.max(2048, MIN_OUTPUT_BUDGET * 2));
+                ctxSaturatedStreak = ctxSaturatedNow ? ctxSaturatedStreak + 1 : 0;
+                if (ctxSaturatedNow) {
+                    console.warn(`[Chat Stream] Context saturated (round ${toolCallRound + 1}, streak ${ctxSaturatedStreak}): headroom=${roundHeadroom}, trimmed=${trimmedThisRound}`);
+                }
 
                 finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
 
@@ -23442,6 +23482,19 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     if (execCount === INTERP_BUDGET_ADVISE) logChatActivity(`Interpreter: ${execCount} script runs this turn — reminded the model to answer or name the one missing fact`);
                                 }
                             }
+                            // Breadth-read budget: whole-file reads at repo
+                            // breadth (every file distinct → no outcome guard
+                            // can fire) flood the window. Non-blocking: steer
+                            // to the paged batch reader + grep, and to answer.
+                            if (READ_BREADTH_ADVISE > 0 && recName === 'read_file' && !recFailed) {
+                                const readCount = historySnapshot.filter(h => h.toolName === 'read_file' && !h.failed && !h.nudge).length + 1;
+                                if (readCount >= READ_BREADTH_ADVISE) {
+                                    resultMsg = attachAdvisory(resultMsg,
+                                        `Exploration budget: this is whole-file read ${readCount} this turn. At this breadth, file-by-file reading fills the context window — once full, each new file EVICTS an earlier one and further reading adds nothing. ` +
+                                        'Survey many files with ONE scan_source_files call on the parent directory (paged — repeat with the returned startIndex), use grep_code for targeted questions, and write your answer as soon as you have enough evidence. Reserve read_file for the few files that actually matter.');
+                                    if (readCount === READ_BREADTH_ADVISE) logChatActivity(`Loop guard: ${readCount} whole-file reads this turn — steered the model to scan_source_files/grep_code`);
+                                }
+                            }
                         } catch (_) { /* */ }
                         if (refusalKind) {
                             // Refused calls never ran, so they have no outcome — but
@@ -23646,6 +23699,23 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             spendCheckpoint([],
                                 `your last ${sum.staleCalls} tool calls produced no new information (${sum.text}${sum.byToolText ? `; ${sum.byToolText}` : ''})`,
                                 'Stagnation');
+                        }
+                        // Context saturation: the window has been FULL for
+                        // ctxSaturatedStreak consecutive rounds — every new
+                        // tool result evicts an earlier one and each round
+                        // costs a full re-prefill. First hit spends the shared
+                        // checkpoint (restate task, demand the answer); if the
+                        // model keeps calling tools at a full window, force
+                        // synthesis. Every result is "fresh bytes" here, so the
+                        // progress ledger can never see this shape.
+                        if (!loopNudgeExhausted && CTX_SATURATION_SYNTH > 0 && ctxSaturatedStreak >= CTX_SATURATION_SYNTH) {
+                            loopNudgeExhausted = true;
+                            console.warn(`[Chat Stream] Context window saturated for ${ctxSaturatedStreak} consecutive rounds — forcing synthesis`);
+                            logChatActivity(`Loop guard: context window full for ${ctxSaturatedStreak} rounds — writing the answer from what was gathered`);
+                        } else if (!loopNudgeExhausted && CTX_SATURATION_CHECKPOINT > 0 && ctxSaturatedStreak === CTX_SATURATION_CHECKPOINT) {
+                            spendCheckpoint([],
+                                `the context window is FULL — older tool results are already being evicted to make room for new ones, so further tool calls cannot add net information. Stop exploring and write your final answer from what you have`,
+                                'Context saturated');
                         }
                         if (!loopNudgeExhausted && progressLedger.totalCalls >= MAX_TOOL_CALLS_PER_TURN) {
                             toolCallCapHit = true;
@@ -30002,6 +30072,21 @@ app.use((req, res) => {
                     pathBase: workspace.localInContainer,
                     password,
                 });
+                // A big extraction is almost always a SOURCE TREE (repo zip,
+                // package tarball). Teaching "read_file each entry" at that
+                // scale is how a model burns 40+ sequential whole-file reads
+                // and fills the context window (observed 2026-08-31: a repo
+                // zip → read_file ×44 → window saturated at 129.7k/131k →
+                // ~2 min/round re-prefill grind). Steer breadth exploration
+                // to the PAGED batch reader + grep, and make sure those tools
+                // are actually advertised next round (the router picked the
+                // catalog from the user's ask, before the archive existed).
+                const isSourceTree = (result.entryCount || 0) >= 15;
+                if (isSourceTree && ctx && ctx._forcedToolNames instanceof Set) {
+                    ctx._forcedToolNames.add('scan_source_files');
+                    ctx._forcedToolNames.add('grep_code');
+                    ctx._forcedToolNames.add('outline_file');
+                }
                 return {
                     ...result,
                     workspaceRoot: workspace.containerMount,
@@ -30013,7 +30098,9 @@ app.use((req, res) => {
                         (archiveAutoResolvedFrom
                             ? `NOTE: "${archiveAutoResolvedFrom}" did not match any archive; auto-resolved to ${archiveId ? `archiveId=${archiveId}` : `path=${wsPath || filename}`}. Use that EXACT reference next time. `
                             : '') +
-                        `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`,
+                        (isSourceTree
+                            ? `Extracted ${result.entryCount} files into the conversation workspace under archives/${dirName}/. This is a whole source tree — survey it with ONE scan_source_files call (dirPath="archives/${dirName}", paged: repeat with the returned startIndex) and use grep_code / outline_file for targeted questions. Do NOT read_file every file one at a time: at this breadth whole-file reads flood your context window and evict earlier findings. Reserve read_file for the handful of files that actually matter.`
+                            : `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`),
                 };
             } catch (e) {
                 return { error: e.message || String(e) };
