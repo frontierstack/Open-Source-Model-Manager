@@ -1,4 +1,9 @@
-# Pi (pi.dev) one-shot installer for the model server — native Windows, no WSL.
+# Pi (pi.dev) one-shot installer for the model server -- native Windows, no WSL.
+#
+# IMPORTANT: this file must stay PURE ASCII. It is fetched with curl.exe on
+# Windows PowerShell 5.1, whose console decodes stdout with the legacy OEM
+# codepage - a UTF-8 em-dash mojibakes into a smart quote (0x94 -> U+201D),
+# which PowerShell treats as a REAL string delimiter and the script shreds.
 #
 # Idempotent. Self-corrects for common failure modes:
 #   - self-signed / corporate-MITM TLS (session cert bypass on Windows
@@ -11,9 +16,9 @@
 #   - no admin required on any path (winget may raise a UAC prompt; the
 #     zip fallback never does)
 #
-# Usage (any PowerShell — Windows PowerShell 5.1 or PowerShell 7+): copy the
-# one-liner from the Docs tab (Pi setup → 2b). On 5.1 the cert bypass MUST be
-# a compiled ICertificatePolicy (Add-Type) — a scriptblock assigned to
+# Usage (any PowerShell -- Windows PowerShell 5.1 or PowerShell 7+): copy the
+# one-liner from the Docs tab (Pi setup -> 2b). On 5.1 the cert bypass MUST be
+# a compiled ICertificatePolicy (Add-Type) -- a scriptblock assigned to
 # ServerCertificateValidationCallback fires on a thread with no runspace and
 # kills the handshake with "The underlying connection was closed: An
 # unexpected error occurred on a send."
@@ -23,7 +28,7 @@
 #
 # Everything Pi needs (MODELSERVER_BASE_URL, MODELSERVER_API_KEY,
 # NODE_TLS_REJECT_UNAUTHORIZED) is persisted to your USER environment, so
-# new terminals need nothing — just run `pi`.
+# new terminals need nothing -- just run `pi`.
 #
 # The webapp substitutes __MODELSERVER_BASE_URL__ with the canonical base
 # URL when serving this script via /api/pi/install.ps1.
@@ -51,14 +56,14 @@ function Section  ($t) {
 # ---------- TLS bypass (self-signed server cert / corporate MITM) ----------
 # Windows PowerShell 5.1 uses ServicePointManager for every Invoke-WebRequest;
 # PowerShell 7+ ignores it, so requests there pass -SkipCertificateCheck.
-# CRITICAL (5.1): the bypass must be a COMPILED ICertificatePolicy — a
+# CRITICAL (5.1): the bypass must be a COMPILED ICertificatePolicy -- a
 # PowerShell scriptblock assigned to ServerCertificateValidationCallback is
 # invoked on a background thread with no runspace, throws, and the request
-# dies with "The underlying connection was closed: … on a send."
+# dies with "The underlying connection was closed: ... on a send."
 if (-not $IsPS7) {
     try {
         # Clear any scriptblock callback a previous attempt left in this
-        # session — it overrides the policy below and re-breaks every request.
+        # session -- it overrides the policy below and re-breaks every request.
         [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
         if (-not ('TrustAllCertsPolicy' -as [type])) {
             Add-Type -TypeDefinition @'
@@ -125,7 +130,7 @@ function Get-NodeMajorMinor {
     return $null
 }
 
-# Pi engines require Node >=22.19.0 — major>22 fine; on the 22 line minor>=19.
+# Pi engines require Node >=22.19.0 -- major>22 fine; on the 22 line minor>=19.
 function Test-NodeOk {
     $mm = Get-NodeMajorMinor
     if (-not $mm) { return $false }
@@ -134,23 +139,23 @@ function Test-NodeOk {
 
 # ---------- banner ----------
 Write-Host ''
-Write-Host '  Pi (pi.dev) installer — Windows (no WSL)' -ForegroundColor White
-Write-Host "  $BaseUrl · $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
+Write-Host '  Pi (pi.dev) installer -- Windows (no WSL)' -ForegroundColor White
+Write-Host "  $BaseUrl - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
 
 $Failed = $false
 
 # ---------- step 1: TLS / env groundwork ----------
-Section '1/6 · TLS / environment'
+Section '1/6 - TLS / environment'
 [Environment]::SetEnvironmentVariable('NODE_TLS_REJECT_UNAUTHORIZED', '0', 'User')
 $env:NODE_TLS_REJECT_UNAUTHORIZED = '0'
-Log-Ok 'NODE_TLS_REJECT_UNAUTHORIZED=0 (user env — tolerates the self-signed server cert)'
-if ($IsPS7) { Log-Ok 'PowerShell 7+ detected — using -SkipCertificateCheck for downloads' }
-else        { Log-Ok 'Windows PowerShell 5.1 — session certificate bypass active' }
+Log-Ok 'NODE_TLS_REJECT_UNAUTHORIZED=0 (user env -- tolerates the self-signed server cert)'
+if ($IsPS7) { Log-Ok 'PowerShell 7+ detected -- using -SkipCertificateCheck for downloads' }
+else        { Log-Ok 'Windows PowerShell 5.1 -- session certificate bypass active' }
 
 # ---------- step 2: ensure Node >= 22.19 ----------
-Section '2/6 · Node >= 22.19'
+Section '2/6 - Node >= 22.19'
 if (Test-NodeOk) {
-    Log-Ok "Node $(node -v) detected — OK"
+    Log-Ok "Node $(node -v) detected -- OK"
 } else {
     $mm = Get-NodeMajorMinor
     if ($mm) { Log-Warn "Node v$($mm[0]).$($mm[1]) too old (Pi needs Node >= 22.19); upgrading." }
@@ -170,7 +175,7 @@ if (Test-NodeOk) {
         else { Log-Warn 'winget path did not produce Node >= 22.19; falling back to zip install' }
     }
 
-    # Path B: official zip into %LOCALAPPDATA%\Programs — never needs admin.
+    # Path B: official zip into %LOCALAPPDATA%\Programs -- never needs admin.
     if (-not $installed) {
         $nodeVer = '22.20.0'
         $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
@@ -198,9 +203,9 @@ if (Test-NodeOk) {
     }
 }
 
-# ---------- step 3: git (recommended — Pi uses it for repo work) ----------
+# ---------- step 3: git (recommended -- Pi uses it for repo work) ----------
 if (-not $Failed) {
-    Section '3/6 · git'
+    Section '3/6 - git'
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Log-Ok "git present: $((git --version) 2>$null)"
     } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -211,15 +216,15 @@ if (-not $Failed) {
         } catch { }
         Refresh-Path
         if (Get-Command git -ErrorAction SilentlyContinue) { Log-Ok "installed $((git --version) 2>$null)" }
-        else { Log-Warn 'git install did not complete — Pi works without it, but repo tasks need it (https://git-scm.com)' }
+        else { Log-Warn 'git install did not complete -- Pi works without it, but repo tasks need it (https://git-scm.com)' }
     } else {
-        Log-Warn 'git not found and winget unavailable — Pi works without it, but repo tasks need it (https://git-scm.com)'
+        Log-Warn 'git not found and winget unavailable -- Pi works without it, but repo tasks need it (https://git-scm.com)'
     }
 }
 
 # ---------- step 4: ensure Pi CLI ----------
 if (-not $Failed) {
-    Section '4/6 · Pi CLI'
+    Section '4/6 - Pi CLI'
     npm config set strict-ssl false 2>$null | Out-Null
 
     Refresh-Path
@@ -228,7 +233,7 @@ if (-not $Failed) {
         $piVer = ((& pi --version) 2>$null | Out-String).Trim()
     }
     # Pi <0.75 predates context-overflow auto-recovery, the Node 22.19 bump
-    # and the TypeBox 1.x extension API — force-upgrade. Major-aware.
+    # and the TypeBox 1.x extension API -- force-upgrade. Major-aware.
     $piNeedsUpgrade = $false
     if ($piVer -match '^(\d+)\.(\d+)') {
         $pMaj = [int]$Matches[1]; $pMin = [int]$Matches[2]
@@ -237,8 +242,8 @@ if (-not $Failed) {
     if ($piVer -and -not $piNeedsUpgrade) {
         Log-Ok "Pi already installed: $piVer"
     } else {
-        if ($piVer) { Log-Step "Pi $piVer is older than 0.75 — upgrading to latest" }
-        Log-Step 'installing @earendil-works/pi-coding-agent (npm — global installs are per-user on Windows)'
+        if ($piVer) { Log-Step "Pi $piVer is older than 0.75 -- upgrading to latest" }
+        Log-Step 'installing @earendil-works/pi-coding-agent (npm -- global installs are per-user on Windows)'
         $npmLog = Join-Path $env:TEMP 'pi-npm-install.log'
         npm install -g --no-audit --no-fund '@earendil-works/pi-coding-agent@latest' *> $npmLog
         Refresh-Path
@@ -259,7 +264,7 @@ if (-not $Failed) {
 
 # ---------- step 5: drop the modelserver extension ----------
 if (-not $Failed) {
-    Section '5/6 · modelserver extension'
+    Section '5/6 - modelserver extension'
     Say $ExtDir
     if (-not $env:MODELSERVER_API_KEY) {
         Log-Err 'MODELSERVER_API_KEY is not set. Re-run with:'
@@ -280,7 +285,7 @@ if (-not $Failed) {
         }
         if ($extOk) {
             Log-Ok 'extension files dropped'
-            # Pi 0.69+ uses the rebranded `typebox` package (1.x) — check for
+            # Pi 0.69+ uses the rebranded `typebox` package (1.x) -- check for
             # the CURRENT dep so an old install still gets it on re-run.
             if (Test-Path (Join-Path $ExtDir 'node_modules\typebox')) {
                 Log-Ok 'extension deps already present, skipping npm install'
@@ -298,7 +303,7 @@ if (-not $Failed) {
 
 # ---------- step 6: settings.json + persist env ----------
 if (-not $Failed) {
-    Section '6/6 · settings.json + user environment'
+    Section '6/6 - settings.json + user environment'
     New-Item -ItemType Directory -Force -Path (Split-Path $Settings) | Out-Null
     $writeSettings = $true
     if ((Test-Path $Settings) -and ((Get-Content $Settings -Raw -ErrorAction SilentlyContinue) -match '"modelserver"')) {
@@ -306,7 +311,7 @@ if (-not $Failed) {
         $writeSettings = $false
     }
     if ($writeSettings) {
-        # Absolute path with forward slashes — unambiguous for Pi on Windows
+        # Absolute path with forward slashes -- unambiguous for Pi on Windows
         # (no reliance on ~ expansion).
         $extEntry = ((Join-Path $ExtDir 'modelserver.ts') -replace '\\', '/')
         $settingsJson = @"
@@ -318,26 +323,26 @@ if (-not $Failed) {
   ]
 }
 "@
-        # WriteAllText with an explicit BOM-less UTF8 — PS 5.1's
+        # WriteAllText with an explicit BOM-less UTF8 -- PS 5.1's
         # `Set-Content -Encoding UTF8` writes a BOM, which breaks JSON.parse
         # when Pi reads the file.
         [IO.File]::WriteAllText($Settings, $settingsJson, (New-Object System.Text.UTF8Encoding($false)))
         Log-Ok "wrote $Settings"
     }
 
-    # Windows has no ~/.bashrc — persist everything to the USER environment so
+    # Windows has no ~/.bashrc -- persist everything to the USER environment so
     # every NEW terminal (PowerShell, cmd, Windows Terminal) has it.
     [Environment]::SetEnvironmentVariable('MODELSERVER_BASE_URL', $BaseUrl, 'User')
     $env:MODELSERVER_BASE_URL = $BaseUrl
     Log-Ok 'persisted MODELSERVER_BASE_URL (user env)'
     if ($env:MODELSERVER_API_KEY) {
         [Environment]::SetEnvironmentVariable('MODELSERVER_API_KEY', $env:MODELSERVER_API_KEY, 'User')
-        Log-Ok 'persisted MODELSERVER_API_KEY (user env — stored under HKCU, remove with: [Environment]::SetEnvironmentVariable("MODELSERVER_API_KEY", $null, "User"))'
+        Log-Ok 'persisted MODELSERVER_API_KEY (user env -- stored under HKCU, remove with: [Environment]::SetEnvironmentVariable("MODELSERVER_API_KEY", $null, "User"))'
     }
 }
 
 # ---------- verification ----------
-Section (& { if ($Failed) { 'Install FAILED — see errors above' } else { 'Install complete' } })
+Section (& { if ($Failed) { 'Install FAILED -- see errors above' } else { 'Install complete' } })
 $nodeShown = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v) } else { 'MISSING' }
 $piShown   = if (Get-Command pi   -ErrorAction SilentlyContinue) { ((& pi --version) 2>$null | Out-String).Trim() } else { 'MISSING' }
 Say "Node:       $nodeShown"
@@ -347,10 +352,10 @@ Say "Settings:   $Settings"
 Say "Base URL:   $BaseUrl"
 Write-Host ''
 if (-not $Failed) {
-    Say 'This shell is ready — run:'
+    Say 'This shell is ready -- run:'
     Say '  pi'
     Say '(new terminals pick everything up from the user environment automatically)'
 } else {
-    Say 'Fix the errors above and re-run — the installer is idempotent and skips finished steps.'
+    Say 'Fix the errors above and re-run -- the installer is idempotent and skips finished steps.'
 }
 Write-Host ''
