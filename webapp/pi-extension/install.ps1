@@ -157,40 +157,62 @@ function Get-PiVersion {
     try { return ((& $piCommand --version) 2>$null | Out-String).Trim() } catch { return '' }
 }
 
-# Portable MinGit (the official Git for Windows zip build): extracts under
-# %LOCALAPPDATA%\Programs\MinGit and goes on the user PATH -- no admin, no
-# installer UI. Used when winget is unavailable or its install failed.
-function Install-PortableMinGit {
-    $minGitDir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'MinGit'
+# Find a REAL bash.exe -- Pi's shell tool needs one. The System32 bash.exe
+# is only the WSL launcher shim; with no Linux distro installed it swallows
+# every command, and Pi's PATH fallback would pick it, leaving the agent
+# unable to run anything ("shell environment is WSL"). Pi auto-discovers
+# only %ProgramFiles%\Git\bin\bash.exe; anything else needs `shellPath` in
+# settings.json (handled in step 6).
+$PortableGitDir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'PortableGit'
+function Find-RealBash {
+    $candidatePaths = @()
+    if ($env:ProgramFiles)          { $candidatePaths += (Join-Path $env:ProgramFiles 'Git\bin\bash.exe') }
+    if (${env:ProgramFiles(x86)})   { $candidatePaths += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe') }
+    $candidatePaths += (Join-Path $PortableGitDir 'bin\bash.exe')
+    foreach ($bashPath in $candidatePaths) {
+        if (Test-Path $bashPath) { return $bashPath }
+    }
+    return $null
+}
+
+# PortableGit (the official self-extracting Git for Windows build): full git
+# INCLUDING Git Bash, extracted under %LOCALAPPDATA%\Programs\PortableGit --
+# no admin, no installer UI. Used when winget is unavailable or its install
+# failed. (MinGit is NOT enough: it ships without bash, and Pi needs bash.)
+function Install-PortableGit {
     $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { '64-bit' }
-    $minGitZipUrl = ''
+    $portableGitUrl = ''
     try {
-        Log-Step 'looking up the latest MinGit release (github.com API)'
+        Log-Step 'looking up the latest PortableGit release (github.com API)'
         $releaseJson = Invoke-Insecure -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' `
             -Headers @{ 'User-Agent' = 'modelserver-pi-installer' }
         if ($releaseJson -isnot [string]) { $releaseJson = $releaseJson.Content }
         $latestRelease = $releaseJson | ConvertFrom-Json
-        $minGitAsset = $latestRelease.assets |
-            Where-Object { $_.name -match ('^MinGit-.*-' + [regex]::Escape($architecture) + '\.zip$') -and $_.name -notmatch 'busybox' } |
+        $portableGitAsset = $latestRelease.assets |
+            Where-Object { $_.name -match ('^PortableGit-.*-' + [regex]::Escape($architecture) + '\.7z\.exe$') } |
             Select-Object -First 1
-        if ($minGitAsset) { $minGitZipUrl = $minGitAsset.browser_download_url }
+        if ($portableGitAsset) { $portableGitUrl = $portableGitAsset.browser_download_url }
     } catch { }
-    if (-not $minGitZipUrl) {
+    if (-not $portableGitUrl) {
         # API lookup failed (rate limit / blocked) -- pinned known-good build.
-        $minGitZipUrl = "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/MinGit-2.45.2-$architecture.zip"
+        $portableGitUrl = "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/PortableGit-2.45.2-$architecture.7z.exe"
     }
-    $minGitZipPath = Join-Path $env:TEMP 'MinGit.zip'
+    $portableGitSfxPath = Join-Path $env:TEMP 'PortableGit.7z.exe'
     try {
-        Log-Step "downloading portable MinGit ($architecture) -- no admin needed"
-        Invoke-Insecure -Uri $minGitZipUrl -OutFile $minGitZipPath
-        if (Test-Path $minGitDir) { Remove-Item -Recurse -Force $minGitDir }
-        New-Item -ItemType Directory -Force -Path $minGitDir | Out-Null
-        # MinGit zips have no top-level folder -- extract INTO the target dir.
-        Expand-Archive -Path $minGitZipPath -DestinationPath $minGitDir -Force
-        Remove-Item $minGitZipPath -ErrorAction SilentlyContinue
-        Add-UserPath (Join-Path $minGitDir 'cmd')
+        Log-Step "downloading PortableGit ($architecture, ~60 MB, includes Git Bash) -- no admin needed"
+        Invoke-Insecure -Uri $portableGitUrl -OutFile $portableGitSfxPath
+        Log-Step "extracting to $PortableGitDir (self-extracting 7z, takes a minute)"
+        if (Test-Path $PortableGitDir) { Remove-Item -Recurse -Force $PortableGitDir }
+        # The SFX takes 7-Zip switches: -y (quiet) and -o<dir> (destination).
+        Start-Process -FilePath $portableGitSfxPath -ArgumentList '-y', "-o$PortableGitDir" -Wait -WindowStyle Hidden
+        Remove-Item $portableGitSfxPath -ErrorAction SilentlyContinue
+        if (Test-Path (Join-Path $PortableGitDir 'cmd\git.exe')) {
+            Add-UserPath (Join-Path $PortableGitDir 'cmd')
+        } else {
+            Log-Warn 'PortableGit extraction did not produce cmd\git.exe'
+        }
     } catch {
-        Log-Warn "portable MinGit install failed: $($_.Exception.Message)"
+        Log-Warn "PortableGit install failed: $($_.Exception.Message)"
     }
 }
 
@@ -285,10 +307,12 @@ if (Test-NodeVersionOk) {
     }
 }
 
-# ---------- step 3: git (recommended -- Pi uses it for repo work) ----------
+# ---------- step 3: git + Git Bash (Pi's shell needs a real bash) ----------
 if (-not $InstallFailed) {
-    Section '3/6 - git'
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Section '3/6 - git + Git Bash'
+    $gitPresent  = [bool](Get-Command git -ErrorAction SilentlyContinue)
+    $realBashPath = Find-RealBash
+    if (-not ($gitPresent -and $realBashPath)) {
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             Log-Step 'installing Git for Windows via winget (a UAC prompt may appear)'
             try {
@@ -296,17 +320,21 @@ if (-not $InstallFailed) {
                     --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
             } catch { }
             Update-SessionPath
+            $realBashPath = Find-RealBash
         }
-        # winget unavailable (or its install failed): portable MinGit zip.
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            Install-PortableMinGit
+        # winget unavailable (or its install failed): PortableGit -- full git
+        # INCLUDING Git Bash. A git-only install (MinGit) is not enough: Pi's
+        # shell tool needs bash, and without one it falls back to the
+        # System32 WSL shim, which eats every command when no distro exists.
+        if (-not (Find-RealBash)) {
+            Install-PortableGit
+            $realBashPath = Find-RealBash
         }
     }
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        Log-Ok "git present: $((git --version) 2>$null)"
-    } else {
-        Log-Warn 'could not install git -- Pi works without it, but repo tasks need it (https://git-scm.com)'
-    }
+    if (Get-Command git -ErrorAction SilentlyContinue) { Log-Ok "git present: $((git --version) 2>$null)" }
+    else { Log-Warn 'could not install git -- Pi works without it, but repo tasks need it (https://git-scm.com)' }
+    if ($realBashPath) { Log-Ok "Git Bash present: $realBashPath (Pi's shell)" }
+    else { Log-Warn 'no real bash found -- Pi''s shell tool will not work (System32 bash.exe is only the WSL shim)' }
 }
 
 # ---------- step 4: ensure Pi CLI ----------
@@ -398,26 +426,57 @@ if (-not $InstallFailed) {
 if (-not $InstallFailed) {
     Section '6/6 - settings.json + user environment'
     New-Item -ItemType Directory -Force -Path (Split-Path $SettingsPath) | Out-Null
+
+    # Pi auto-discovers bash ONLY at %ProgramFiles%\Git\bin\bash.exe; any
+    # other bash (our PortableGit) must be named via `shellPath` in
+    # settings.json, or Pi's PATH fallback picks the System32 WSL shim,
+    # which eats every command when no Linux distro is installed.
+    $bashForPi = Find-RealBash
+    $shellPathNeeded = $false
+    if ($bashForPi) {
+        $autoDiscoveredLocations = @()
+        if ($env:ProgramFiles)        { $autoDiscoveredLocations += (Join-Path $env:ProgramFiles 'Git\bin\bash.exe') }
+        if (${env:ProgramFiles(x86)}) { $autoDiscoveredLocations += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe') }
+        $shellPathNeeded = $autoDiscoveredLocations -notcontains $bashForPi
+    }
+    # Forward slashes everywhere -- unambiguous for Pi (a Node app) on
+    # Windows, no reliance on ~ expansion.
+    $bashForPiEntry = if ($bashForPi) { $bashForPi -replace '\\', '/' } else { $null }
+
+    # BOM-less UTF8 for every settings write -- PS 5.1's `Set-Content
+    # -Encoding UTF8` writes a BOM, which breaks JSON.parse when Pi reads it.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
     $existingSettings = if (Test-Path $SettingsPath) { Get-Content $SettingsPath -Raw -ErrorAction SilentlyContinue } else { '' }
     if ($existingSettings -match '"modelserver"') {
-        Log-Ok "$SettingsPath already references modelserver, leaving alone"
+        Log-Ok "$SettingsPath already references modelserver"
+        # Merge shellPath into the existing file if it needs one.
+        if ($shellPathNeeded) {
+            try {
+                $settingsObject = $existingSettings | ConvertFrom-Json
+                $currentShellPath = $settingsObject.shellPath
+                if (-not ($currentShellPath -and (Test-Path $currentShellPath))) {
+                    $settingsObject | Add-Member -NotePropertyName shellPath -NotePropertyValue $bashForPiEntry -Force
+                    [IO.File]::WriteAllText($SettingsPath, ($settingsObject | ConvertTo-Json -Depth 8), $utf8NoBom)
+                    Log-Ok "set shellPath -> $bashForPiEntry (Pi's shell = Git Bash, not the WSL shim)"
+                } else {
+                    Log-Ok "shellPath already set: $currentShellPath"
+                }
+            } catch {
+                Log-Warn "could not merge shellPath into settings.json: $($_.Exception.Message)"
+            }
+        }
     } else {
-        # Absolute path with forward slashes -- unambiguous for Pi on
-        # Windows (no reliance on ~ expansion).
         $extensionEntry = ((Join-Path $ExtensionDir 'modelserver.ts') -replace '\\', '/')
-        $settingsJson = @"
-{
-  "defaultProvider": "modelserver",
-  "packages": [],
-  "extensions": [
-    "$extensionEntry"
-  ]
-}
-"@
-        # BOM-less UTF8 -- PS 5.1's `Set-Content -Encoding UTF8` writes a
-        # BOM, which breaks JSON.parse when Pi reads the file.
-        [IO.File]::WriteAllText($SettingsPath, $settingsJson, (New-Object System.Text.UTF8Encoding($false)))
+        $settingsObject = [ordered]@{
+            defaultProvider = 'modelserver'
+            packages        = @()
+            extensions      = @($extensionEntry)
+        }
+        if ($shellPathNeeded) { $settingsObject.shellPath = $bashForPiEntry }
+        [IO.File]::WriteAllText($SettingsPath, ($settingsObject | ConvertTo-Json -Depth 8), $utf8NoBom)
         Log-Ok "wrote $SettingsPath"
+        if ($shellPathNeeded) { Log-Ok "set shellPath -> $bashForPiEntry (Pi's shell = Git Bash, not the WSL shim)" }
     }
 
     # Windows has no ~/.bashrc -- persist everything to the USER environment
@@ -437,8 +496,11 @@ else                { Section 'Install complete' }
 $nodeSummary = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v) } else { 'MISSING' }
 $piSummary   = Get-PiVersion
 if (-not $piSummary) { $piSummary = 'MISSING' }
+$bashSummary = Find-RealBash
+if (-not $bashSummary) { $bashSummary = 'MISSING (Pi shell will not work)' }
 Say "Node:       $nodeSummary"
 Say "Pi:         $piSummary"
+Say "Shell:      $bashSummary"
 Say "Extension:  $ExtensionDir"
 Say "Settings:   $SettingsPath"
 Say "Base URL:   $BaseUrl"
