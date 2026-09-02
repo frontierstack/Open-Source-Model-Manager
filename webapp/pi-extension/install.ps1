@@ -57,6 +57,9 @@ function Section  ($t) {
 # dies with "The underlying connection was closed: … on a send."
 if (-not $IsPS7) {
     try {
+        # Clear any scriptblock callback a previous attempt left in this
+        # session — it overrides the policy below and re-breaks every request.
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
         if (-not ('TrustAllCertsPolicy' -as [type])) {
             Add-Type -TypeDefinition @'
 using System.Net;
@@ -74,8 +77,19 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 }
 
 # One request helper that is insecure-TLS-tolerant on BOTH editions.
+# On 5.1 prefer curl.exe (ships with Windows 10 1803+): it uses SChannel
+# directly and sidesteps the whole .NET ServicePointManager minefield.
 function Invoke-Insecure {
     param([string]$Uri, [string]$OutFile, [hashtable]$Headers)
+    if (-not $IsPS7 -and (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+        $cargs = @('-skfL', '--retry', '2')
+        if ($Headers) { foreach ($k in $Headers.Keys) { $cargs += @('-H', "${k}: $($Headers[$k])") } }
+        if ($OutFile) { $cargs += @('-o', $OutFile) }
+        $out = & curl.exe @cargs $Uri 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "curl.exe failed (exit $LASTEXITCODE) for $Uri" }
+        if (-not $OutFile) { return ($out -join "`n") }
+        return
+    }
     $p = @{ Uri = $Uri; UseBasicParsing = $true; ErrorAction = 'Stop' }
     if ($Headers) { $p.Headers = $Headers }
     if ($OutFile) { $p.OutFile = $OutFile }
