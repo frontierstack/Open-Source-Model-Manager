@@ -26101,6 +26101,7 @@ function sanitizeHost(hostHeader) {
 
 const PI_EXTENSION_DIR = path.join(__dirname, 'pi-extension');
 const PI_INSTALL_SCRIPT_PATH = path.join(PI_EXTENSION_DIR, 'install.sh');
+const PI_INSTALL_PS1_PATH = path.join(PI_EXTENSION_DIR, 'install.ps1');
 
 function piBaseUrlForRequest(req) {
     const host = sanitizeHost(req.get('host'));
@@ -26131,8 +26132,24 @@ app.get('/api/pi/install', requireAuth, async (req, res) => {
     }
 });
 
+// PowerShell-pipeable installer for native Windows (no WSL). Fetch with
+// Invoke-RestMethod + the bearer key and pipe to Invoke-Expression — the
+// script handles self-signed TLS, missing/old Node (winget → no-admin zip),
+// missing git, missing Pi, and persists env user-scope. Idempotent.
+app.get('/api/pi/install.ps1', requireAuth, async (req, res) => {
+    try {
+        const baseUrl = piBaseUrlForRequest(req);
+        const raw = await fs.readFile(PI_INSTALL_PS1_PATH, 'utf8');
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send(raw.replace(/__MODELSERVER_BASE_URL__/g, baseUrl));
+    } catch (err) {
+        console.error('[pi-install-ps1] error:', err);
+        res.status(500).json({ error: 'Failed to load install script' });
+    }
+});
+
 app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
-    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md', 'install.sh']);
+    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md', 'install.sh', 'install.ps1']);
     const file = req.params.file;
     if (!allowed.has(file)) {
         return res.status(404).json({ error: 'Unknown extension file' });
@@ -26145,12 +26162,13 @@ app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
         // self-contained — install.sh works as a curl|bash, and the
         // extension still phones home correctly when the user forgets
         // to export MODELSERVER_BASE_URL in their shell.
-        if (file === 'install.sh' || file === 'modelserver.ts') {
+        if (file === 'install.sh' || file === 'install.ps1' || file === 'modelserver.ts') {
             content = content.replace(/__MODELSERVER_BASE_URL__/g, piBaseUrlForRequest(req));
         }
         const contentType = file.endsWith('.json') ? 'application/json'
             : file.endsWith('.md') ? 'text/markdown; charset=utf-8'
             : file.endsWith('.sh') ? 'text/x-shellscript; charset=utf-8'
+            : file.endsWith('.ps1') ? 'text/plain; charset=utf-8'
             : 'text/typescript; charset=utf-8';
         res.setHeader('Content-Type', contentType);
         res.send(content);

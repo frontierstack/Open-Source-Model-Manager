@@ -90,6 +90,19 @@ Notes:
 
    The script persists `MODELSERVER_BASE_URL` to your shell rc. Keep `MODELSERVER_API_KEY` in your shell (don't commit it to rc) and you're set.
 
+### Windows (native — no WSL)
+
+`install.ps1` (served at `/api/pi/install.ps1`) installs everything natively on Windows, with no WSL and no admin rights. From any PowerShell window (Windows PowerShell 5.1 or PowerShell 7+):
+
+```powershell
+$env:MODELSERVER_API_KEY = "<your-bearer-key>"
+$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
+if ($PSVersionTable.PSVersion.Major -ge 6) { irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }
+else { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h | iex }
+```
+
+It handles: the self-signed server cert on both PowerShell editions, Node ≥ 22.19 (winget LTS first, then a no-admin zip install into `%LOCALAPPDATA%\Programs` with a user-PATH entry), Git for Windows (via winget, if missing), the Pi CLI (npm globals are per-user on Windows), the extension + Typebox deps, `%USERPROFILE%\.pi\agent\settings.json`, and persists `MODELSERVER_BASE_URL` / `MODELSERVER_API_KEY` / `NODE_TLS_REJECT_UNAUTHORIZED` to your user environment — new terminals need nothing, just run `pi`. Idempotent — re-run anytime.
+
 ### Manual install
 
 If you'd rather not pipe to bash, the auto-installer is the same `install.sh` shipped in this directory. Drop it next to `modelserver.ts`/`package.json` and run it. Or do the steps by hand:

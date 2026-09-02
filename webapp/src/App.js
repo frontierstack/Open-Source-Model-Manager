@@ -6358,7 +6358,8 @@ script = requests.get(f'${baseUrl}/api/pi/install', headers=H, verify=False).tex
 # Run the installer. The script is idempotent.
 env = {**os.environ, 'MODELSERVER_API_KEY': os.environ['MODELSERVER_API_KEY']}
 subprocess.run(['bash', '-c', script], check=True, env=env)`,
-                powershell: `# Pi's installer is bash-only. From PowerShell, hand off to WSL:
+                powershell: `# On Windows prefer the NATIVE installer (no WSL): /api/pi/install.ps1
+# — see that endpoint in this picker. To run the bash one under WSL anyway:
 $env:MODELSERVER_API_KEY = "your_bearer_key"
 $script = Invoke-RestMethod -Uri "${baseUrl}/api/pi/install" \`
   -Headers @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" } \`
@@ -6371,6 +6372,29 @@ const r = await fetch('${baseUrl}/api/pi/install', {
 });
 const script = await r.text();
 execSync(script, { stdio: 'inherit', shell: '/bin/bash', env: process.env });`
+            },
+            '/api/pi/install.ps1': {
+                curl: `# Native Windows PowerShell installer (no WSL). Fetch the raw script:
+curl -sk -H "Authorization: Bearer your_bearer_key" \\
+  ${baseUrl}/api/pi/install.ps1 -o install.ps1
+# Then on the Windows box:
+#   powershell -ExecutionPolicy Bypass -File .\\install.ps1`,
+                python: `import os, requests
+H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
+script = requests.get(f'${baseUrl}/api/pi/install.ps1', headers=H, verify=False).text
+open('install.ps1', 'w').write(script)
+# Run on Windows: powershell -ExecutionPolicy Bypass -File .\\install.ps1`,
+                powershell: `# One-shot native Windows install (no WSL, no admin). Works on both
+# Windows PowerShell 5.1 and PowerShell 7+ (self-signed cert handled).
+$env:MODELSERVER_API_KEY = "your_bearer_key"
+$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
+if ($PSVersionTable.PSVersion.Major -ge 6) { irm ${baseUrl}/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }
+else { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`,
+                javascript: `// Fetch the PowerShell installer source (run it on a Windows box).
+const r = await fetch('${baseUrl}/api/pi/install.ps1', {
+  headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
+});
+console.log(await r.text());`
             },
             '/api/pi/extension/modelserver.ts': {
                 curl: `# Raw TypeScript source for the bundled Pi extension that registers this
@@ -11919,6 +11943,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Pi (Terminal Agent) ───</MenuItem>
                                                             <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
+                                                            <MenuItem value="/api/pi/install.ps1">GET /api/pi/install.ps1 - Pi auto-installer for native Windows (PowerShell, no WSL)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Sandbox Workspaces ───</MenuItem>
@@ -12067,6 +12092,13 @@ console.log(chip);`
                                                 : '<your-bearer-key>';
                                             const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
                                             const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
+                                            // Native Windows (no WSL). The if/else covers both PowerShell
+                                            // editions: 7+ needs -SkipCertificateCheck (it ignores
+                                            // ServicePointManager); 5.1 needs the session cert callback
+                                            // (it has no -SkipCertificateCheck).
+                                            const buildPsCmd = (key) => `$env:MODELSERVER_API_KEY = "${key}"\n$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }\nif ($PSVersionTable.PSVersion.Major -ge 6) { irm ${baseUrl}/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }\nelse { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`;
+                                            const psCmdReveal = buildPsCmd(keyDisplay);
+                                            const psCmdFull = buildPsCmd(keyForCmd);
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
                                             return (
                                                 <>
@@ -12144,6 +12176,28 @@ console.log(chip);`
                                                             One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
                                                         </Typography>
                                                     </Box>
+
+                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>2b. Windows install (PowerShell — no WSL)</Typography>
+                                                            {selectedKey && (
+                                                                <Tooltip title="Copy full command (with cleartext key)">
+                                                                    <IconButton size="small" onClick={() => copyToClipboard(psCmdFull)}>
+                                                                        <ContentCopyIcon sx={{ fontSize: 14 }} />
+                                                                    </IconButton>
+                                                                </Tooltip>
+                                                            )}
+                                                        </Box>
+                                                        <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'var(--text-secondary)' }}>
+                                                            Installs Pi natively on Windows — no WSL, no admin required. Paste into any PowerShell window (Windows PowerShell 5.1 or PowerShell 7+; the <code>if/else</code> handles the self-signed certificate on both):
+                                                        </Typography>
+                                                        <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
+                                                            <span>{psCmdReveal}</span>
+                                                        </Box>
+                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
+                                                            The script installs and configures everything end-to-end: Node ≥ 22.19 (winget LTS, falling back to a no-admin zip install into <code>%LOCALAPPDATA%\Programs</code> with a user-PATH entry), Git for Windows (via winget, if missing), the Pi CLI (npm globals are per-user on Windows — no elevation), the modelserver extension + its Typebox deps, <code>%USERPROFILE%\.pi\agent\settings.json</code>, and persists <code>MODELSERVER_BASE_URL</code> / <code>MODELSERVER_API_KEY</code> / <code>NODE_TLS_REJECT_UNAUTHORIZED</code> to your user environment — so new terminals need nothing: just run <code>pi</code>. Idempotent — safe to re-run.
+                                                        </Typography>
+                                                    </Box>
                                                 </>
                                             );
                                         })()}
@@ -12183,6 +12237,9 @@ console.log(chip);`
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
                                                 <span>{`# Auto-installer (raw bash; what /api/pi/install serves)
 ${baseUrl}/api/pi/extension/install.sh
+
+# Windows auto-installer (raw PowerShell; what /api/pi/install.ps1 serves)
+${baseUrl}/api/pi/extension/install.ps1
 
 # Individual extension files (auth required on all of these)
 ${baseUrl}/api/pi/extension/modelserver.ts
@@ -13031,6 +13088,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         </TableCell>
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install.ps1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PowerShell auto-installer for native Windows — no WSL, no admin. Installs Node (winget → zip), git, Pi, the extension, and persists env user-scope.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
 
                                                 </TableBody>
