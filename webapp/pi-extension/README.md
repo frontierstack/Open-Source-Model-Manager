@@ -96,9 +96,19 @@ Notes:
 
 ```powershell
 $env:MODELSERVER_API_KEY = "<your-bearer-key>"
-$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
-if ($PSVersionTable.PSVersion.Major -ge 6) { irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }
-else { $s = if (Get-Command curl.exe -ErrorAction SilentlyContinue) { (curl.exe -skf -H "Authorization: Bearer $($env:MODELSERVER_API_KEY)" https://<your-host>:3001/api/pi/install.ps1) -join "`n" } else { [Net.ServicePointManager]::ServerCertificateValidationCallback = $null; if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}' }; [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h }; iex $s }
+$installerUrl = "https://<your-host>:3001/api/pi/install.ps1"
+$authHeaders = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    Invoke-RestMethod $installerUrl -Headers $authHeaders -SkipCertificateCheck | Invoke-Expression
+} elseif (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+    (curl.exe -skf -H "Authorization: Bearer $($env:MODELSERVER_API_KEY)" $installerUrl) -join "`n" | Invoke-Expression
+} else {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+    if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint servicePoint,X509Certificate certificate,WebRequest request,int problem){return true;}}' }
+    [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+    Invoke-RestMethod $installerUrl -Headers $authHeaders | Invoke-Expression
+}
 ```
 
 (Windows PowerShell 5.1 fetches via `curl.exe` — bundled since Windows 10 1803, it talks SChannel directly and sidesteps .NET's TLS layer entirely. Machines without `curl.exe` fall back to a compiled `ICertificatePolicy`; a scriptblock assigned to `ServerCertificateValidationCallback` would fire on a runspace-less thread and fail with "The underlying connection was closed: An unexpected error occurred on a send" — the `$null` assignment also clears a stale one left by an earlier attempt in the same window.)
