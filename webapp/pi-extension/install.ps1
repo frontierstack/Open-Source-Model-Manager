@@ -157,6 +157,43 @@ function Get-PiVersion {
     try { return ((& $piCommand --version) 2>$null | Out-String).Trim() } catch { return '' }
 }
 
+# Portable MinGit (the official Git for Windows zip build): extracts under
+# %LOCALAPPDATA%\Programs\MinGit and goes on the user PATH -- no admin, no
+# installer UI. Used when winget is unavailable or its install failed.
+function Install-PortableMinGit {
+    $minGitDir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'MinGit'
+    $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { '64-bit' }
+    $minGitZipUrl = ''
+    try {
+        Log-Step 'looking up the latest MinGit release (github.com API)'
+        $releaseJson = Invoke-Insecure -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' `
+            -Headers @{ 'User-Agent' = 'modelserver-pi-installer' }
+        if ($releaseJson -isnot [string]) { $releaseJson = $releaseJson.Content }
+        $latestRelease = $releaseJson | ConvertFrom-Json
+        $minGitAsset = $latestRelease.assets |
+            Where-Object { $_.name -match ('^MinGit-.*-' + [regex]::Escape($architecture) + '\.zip$') -and $_.name -notmatch 'busybox' } |
+            Select-Object -First 1
+        if ($minGitAsset) { $minGitZipUrl = $minGitAsset.browser_download_url }
+    } catch { }
+    if (-not $minGitZipUrl) {
+        # API lookup failed (rate limit / blocked) -- pinned known-good build.
+        $minGitZipUrl = "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/MinGit-2.45.2-$architecture.zip"
+    }
+    $minGitZipPath = Join-Path $env:TEMP 'MinGit.zip'
+    try {
+        Log-Step "downloading portable MinGit ($architecture) -- no admin needed"
+        Invoke-Insecure -Uri $minGitZipUrl -OutFile $minGitZipPath
+        if (Test-Path $minGitDir) { Remove-Item -Recurse -Force $minGitDir }
+        New-Item -ItemType Directory -Force -Path $minGitDir | Out-Null
+        # MinGit zips have no top-level folder -- extract INTO the target dir.
+        Expand-Archive -Path $minGitZipPath -DestinationPath $minGitDir -Force
+        Remove-Item $minGitZipPath -ErrorAction SilentlyContinue
+        Add-UserPath (Join-Path $minGitDir 'cmd')
+    } catch {
+        Log-Warn "portable MinGit install failed: $($_.Exception.Message)"
+    }
+}
+
 # ---------- banner ----------
 Write-Host ''
 Write-Host '  Pi (pi.dev) installer -- Windows (no WSL)' -ForegroundColor White
@@ -251,19 +288,24 @@ if (Test-NodeVersionOk) {
 # ---------- step 3: git (recommended -- Pi uses it for repo work) ----------
 if (-not $InstallFailed) {
     Section '3/6 - git'
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Log-Step 'installing Git for Windows via winget (a UAC prompt may appear)'
+            try {
+                winget install --id Git.Git -e --silent `
+                    --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            } catch { }
+            Update-SessionPath
+        }
+        # winget unavailable (or its install failed): portable MinGit zip.
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Install-PortableMinGit
+        }
+    }
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Log-Ok "git present: $((git --version) 2>$null)"
-    } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
-        Log-Step 'installing Git for Windows via winget (a UAC prompt may appear)'
-        try {
-            winget install --id Git.Git -e --silent `
-                --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        } catch { }
-        Update-SessionPath
-        if (Get-Command git -ErrorAction SilentlyContinue) { Log-Ok "installed $((git --version) 2>$null)" }
-        else { Log-Warn 'git install did not complete -- Pi works without it, but repo tasks need it (https://git-scm.com)' }
     } else {
-        Log-Warn 'git not found and winget unavailable -- Pi works without it, but repo tasks need it (https://git-scm.com)'
+        Log-Warn 'could not install git -- Pi works without it, but repo tasks need it (https://git-scm.com)'
     }
 }
 

@@ -113,7 +113,7 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 
 (Windows PowerShell 5.1 fetches via `curl.exe` — bundled since Windows 10 1803, it talks SChannel directly and sidesteps .NET's TLS layer entirely. Machines without `curl.exe` fall back to a compiled `ICertificatePolicy`; a scriptblock assigned to `ServerCertificateValidationCallback` would fire on a runspace-less thread and fail with "The underlying connection was closed: An unexpected error occurred on a send" — the `$null` assignment also clears a stale one left by an earlier attempt in the same window.)
 
-It handles: the self-signed server cert on both PowerShell editions, Node ≥ 22.19 (winget LTS first, then a no-admin zip install into `%LOCALAPPDATA%\Programs` with a user-PATH entry), Git for Windows (via winget, if missing), the Pi CLI (npm globals are per-user on Windows), the extension + Typebox deps, `%USERPROFILE%\.pi\agent\settings.json`, and persists `MODELSERVER_BASE_URL` / `MODELSERVER_API_KEY` / `NODE_TLS_REJECT_UNAUTHORIZED` to your user environment — new terminals need nothing, just run `pi`. Idempotent — re-run anytime.
+It handles: the self-signed server cert on both PowerShell editions, Node ≥ 22.19 (winget LTS first, then a no-admin zip install into `%LOCALAPPDATA%\Programs` with a user-PATH entry), Git for Windows if missing (winget, falling back to a portable MinGit zip), the Pi CLI (npm globals are per-user on Windows), the extension + Typebox deps, `%USERPROFILE%\.pi\agent\settings.json`, and persists `MODELSERVER_BASE_URL` / `MODELSERVER_API_KEY` / `NODE_TLS_REJECT_UNAUTHORIZED` to your user environment — new terminals need nothing, just run `pi`. Idempotent — re-run anytime.
 
 ### Manual install
 
