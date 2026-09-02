@@ -98,8 +98,10 @@ Notes:
 $env:MODELSERVER_API_KEY = "<your-bearer-key>"
 $h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
 if ($PSVersionTable.PSVersion.Major -ge 6) { irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }
-else { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h | iex }
+else { if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}' }; [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm https://<your-host>:3001/api/pi/install.ps1 -Headers $h | iex }
 ```
+
+(On 5.1 the bypass must be the compiled `ICertificatePolicy` above — a scriptblock assigned to `ServerCertificateValidationCallback` fires on a runspace-less thread and fails with "The underlying connection was closed: An unexpected error occurred on a send".)
 
 It handles: the self-signed server cert on both PowerShell editions, Node ≥ 22.19 (winget LTS first, then a no-admin zip install into `%LOCALAPPDATA%\Programs` with a user-PATH entry), Git for Windows (via winget, if missing), the Pi CLI (npm globals are per-user on Windows), the extension + Typebox deps, `%USERPROFILE%\.pi\agent\settings.json`, and persists `MODELSERVER_BASE_URL` / `MODELSERVER_API_KEY` / `NODE_TLS_REJECT_UNAUTHORIZED` to your user environment — new terminals need nothing, just run `pi`. Idempotent — re-run anytime.
 

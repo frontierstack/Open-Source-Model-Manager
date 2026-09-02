@@ -11,16 +11,12 @@
 #   - no admin required on any path (winget may raise a UAC prompt; the
 #     zip fallback never does)
 #
-# Usage (any PowerShell — Windows PowerShell 5.1 or PowerShell 7+):
-#   $env:MODELSERVER_API_KEY = "<your-bearer-key>"
-#   $h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
-#   if ($PSVersionTable.PSVersion.Major -ge 6) {
-#     irm __MODELSERVER_BASE_URL__/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex
-#   } else {
-#     [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
-#     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-#     irm __MODELSERVER_BASE_URL__/api/pi/install.ps1 -Headers $h | iex
-#   }
+# Usage (any PowerShell — Windows PowerShell 5.1 or PowerShell 7+): copy the
+# one-liner from the Docs tab (Pi setup → 2b). On 5.1 the cert bypass MUST be
+# a compiled ICertificatePolicy (Add-Type) — a scriptblock assigned to
+# ServerCertificateValidationCallback fires on a thread with no runspace and
+# kills the handshake with "The underlying connection was closed: An
+# unexpected error occurred on a send."
 #
 # Piping to iex sidesteps the execution policy; to run a saved copy instead:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
@@ -55,10 +51,25 @@ function Section  ($t) {
 # ---------- TLS bypass (self-signed server cert / corporate MITM) ----------
 # Windows PowerShell 5.1 uses ServicePointManager for every Invoke-WebRequest;
 # PowerShell 7+ ignores it, so requests there pass -SkipCertificateCheck.
+# CRITICAL (5.1): the bypass must be a COMPILED ICertificatePolicy — a
+# PowerShell scriptblock assigned to ServerCertificateValidationCallback is
+# invoked on a background thread with no runspace, throws, and the request
+# dies with "The underlying connection was closed: … on a send."
 if (-not $IsPS7) {
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        if (-not ('TrustAllCertsPolicy' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy : ICertificatePolicy {
+    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) {
+        return true;
+    }
+}
+'@
+        }
+        [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     } catch { }
 }
 

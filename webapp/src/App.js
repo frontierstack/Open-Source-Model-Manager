@@ -6385,11 +6385,12 @@ script = requests.get(f'${baseUrl}/api/pi/install.ps1', headers=H, verify=False)
 open('install.ps1', 'w').write(script)
 # Run on Windows: powershell -ExecutionPolicy Bypass -File .\\install.ps1`,
                 powershell: `# One-shot native Windows install (no WSL, no admin). Works on both
-# Windows PowerShell 5.1 and PowerShell 7+ (self-signed cert handled).
+# Windows PowerShell 5.1 and PowerShell 7+ (self-signed cert handled —
+# 5.1 needs a compiled cert policy; a scriptblock callback breaks TLS).
 $env:MODELSERVER_API_KEY = "your_bearer_key"
 $h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
 if ($PSVersionTable.PSVersion.Major -ge 6) { irm ${baseUrl}/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }
-else { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`,
+else { if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}' }; [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`,
                 javascript: `// Fetch the PowerShell installer source (run it on a Windows box).
 const r = await fetch('${baseUrl}/api/pi/install.ps1', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
@@ -12094,9 +12095,11 @@ console.log(chip);`
                                             const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
                                             // Native Windows (no WSL). The if/else covers both PowerShell
                                             // editions: 7+ needs -SkipCertificateCheck (it ignores
-                                            // ServicePointManager); 5.1 needs the session cert callback
-                                            // (it has no -SkipCertificateCheck).
-                                            const buildPsCmd = (key) => `$env:MODELSERVER_API_KEY = "${key}"\n$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }\nif ($PSVersionTable.PSVersion.Major -ge 6) { irm ${baseUrl}/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }\nelse { [Net.ServicePointManager]::SecurityProtocol='Tls12'; [Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`;
+                                            // ServicePointManager); 5.1 needs a COMPILED ICertificatePolicy —
+                                            // a scriptblock ServerCertificateValidationCallback fires on a
+                                            // runspace-less thread and fails with "The underlying connection
+                                            // was closed: An unexpected error occurred on a send."
+                                            const buildPsCmd = (key) => `$env:MODELSERVER_API_KEY = "${key}"\n$h = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }\nif ($PSVersionTable.PSVersion.Major -ge 6) { irm ${baseUrl}/api/pi/install.ps1 -Headers $h -SkipCertificateCheck | iex }\nelse { if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint a,X509Certificate b,WebRequest c,int d){return true;}}' }; [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm ${baseUrl}/api/pi/install.ps1 -Headers $h | iex }`;
                                             const psCmdReveal = buildPsCmd(keyDisplay);
                                             const psCmdFull = buildPsCmd(keyForCmd);
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
