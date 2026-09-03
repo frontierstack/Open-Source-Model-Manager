@@ -17245,7 +17245,30 @@ async function extractEmailAttachmentContent(attachments, depth = 0) {
 }
 
 // File upload endpoint for chat context
-app.post('/api/chat/upload', requireAuth, async (req, res) => {
+// Raw-bytes ingestion for chat uploads. The chat client streams the file as
+// application/octet-stream (filename/mime in headers) instead of base64 inside
+// JSON: a base64 string of a large file exceeds V8's maximum string length in
+// BOTH the browser (FileReader/JSON.stringify) and Node (body-parser/JSON.parse)
+// long before 1 GB, so the JSON form silently capped uploads at a few hundred
+// MB. The JSON form is still accepted (pasted text, API callers). The raw
+// parser is built per request so an admin change to uploadMaxMb applies at once.
+function chatUploadRawBody(req, res, next) {
+    if (!/^application\/octet-stream/i.test(req.headers['content-type'] || '')) return next();
+    express.raw({ type: 'application/octet-stream', limit: uploadMaxBytes() })(req, res, (err) => {
+        if (err) return next(err);
+        let filename = '';
+        try { filename = decodeURIComponent(req.headers['x-upload-filename'] || ''); } catch { filename = String(req.headers['x-upload-filename'] || ''); }
+        req.body = {
+            filename,
+            mimeType: String(req.headers['x-upload-mime'] || 'application/octet-stream'),
+            optimize: req.headers['x-upload-optimize'] !== '0',
+            _rawBuffer: Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
+        };
+        next();
+    });
+}
+
+app.post('/api/chat/upload', requireAuth, chatUploadRawBody, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'query')) {
         return res.status(403).json({ error: 'Query permission required' });
@@ -17255,16 +17278,22 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Handle base64-encoded file content
         const { filename, content, mimeType, optimize = true } = req.body;
 
-        // Validate file size against the admin-configured limit. `content` is
-        // base64, so the decoded file is ~3/4 of its length — compare decoded
-        // bytes, not base64 chars, or the effective limit is silently ~25% low.
-        const contentLength = content ? content.length : 0;
-        if (Math.floor(contentLength * 3 / 4) > uploadMaxBytes()) {
-            return res.status(413).json({ error: `File too large. Maximum size is ${uploadMaxMbSetting}MB.` });
-        }
+        // The file bytes: raw-stream upload (chatUploadRawBody) or legacy base64
+        // JSON. Every branch below works on this Buffer — never re-encode the
+        // whole file to base64 (string-length limits, see chatUploadRawBody).
+        const fileBuf = Buffer.isBuffer(req.body._rawBuffer)
+            ? req.body._rawBuffer
+            : (typeof content === 'string' && content ? Buffer.from(content, 'base64') : null);
 
-        if (!content) {
+        if (!fileBuf) {
             return res.status(400).json({ error: 'File content is required' });
+        }
+        if (fileBuf.length === 0) {
+            return res.status(400).json({ error: `${filename || 'File'} is empty (0 bytes) — nothing to upload.` });
+        }
+        // Validate file size against the admin-configured limit (decoded bytes).
+        if (fileBuf.length > uploadMaxBytes()) {
+            return res.status(413).json({ error: `File too large. Maximum size is ${uploadMaxMbSetting}MB.` });
         }
 
         // True on-disk size of the uploaded file: the client base64-encodes the
@@ -17272,7 +17301,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // file size the user sees on their machine. Surfaced as `size` on every
         // response below so the UI and model report bytes — never conflating
         // that with the post-extraction character count.
-        const uploadedByteSize = Buffer.from(content, 'base64').length;
+        const uploadedByteSize = fileBuf.length;
 
         // Helper to optionally optimize content
         const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
@@ -17322,7 +17351,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         if (isText) {
             try {
-                const rawBytes = Buffer.from(content, 'base64');
+                const rawBytes = fileBuf;
                 let decoded = rawBytes.toString('utf8');
                 const originalLength = decoded.length;
                 decoded = sanitizeForModel(maybeOptimize(decoded));
@@ -17376,7 +17405,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const path = require('path');
                 const fs = require('fs');
 
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const data = await extractPdfText(buffer);
                 const pageCount = data.numpages || 1;
                 let extractedText = data.text || '';
@@ -17505,7 +17534,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         if (ext === 'msg' || mimeType === 'application/vnd.ms-outlook') {
             try {
                 const MsgReader = require('@kenjiuno/msgreader').default;
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const msgReader = new MsgReader(buffer);
                 const fileData = msgReader.getFileData();
 
@@ -17613,7 +17642,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         if (ext === 'eml' || mimeType === 'message/rfc822') {
             try {
                 const { simpleParser } = require('mailparser');
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const parsed = await simpleParser(buffer);
 
                 // Build email content string
@@ -17694,7 +17723,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         if (ext === 'docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
             try {
                 const mammoth = require('mammoth');
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const result = await mammoth.extractRawText({ buffer });
                 const originalLength = result.value.length;
                 const optimized = sanitizeForModel(maybeOptimize(result.value));
@@ -17721,7 +17750,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // For Excel files (.xlsx) — parsed via @e965/xlsx
         if (ext === 'xlsx' || ext === 'xls' || mimeType?.includes('spreadsheet')) {
             try {
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const XLSX = require('@e965/xlsx');
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
                 // Two views of the same data: a CSV blob (what the model sees;
@@ -17802,7 +17831,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         // For images: convert to PNG if needed, run OCR, return both image and text
         if (mimeType?.startsWith('image/')) {
-            let imageDataUrl = `data:${mimeType};base64,${content}`;
+            let imageDataUrl = `data:${mimeType};base64,${fileBuf.toString('base64')}`;
             let imageMimeType = mimeType;
             let ocrText = '';
 
@@ -17811,7 +17840,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             if (needsConversion) {
                 try {
                     const { Jimp } = require('jimp');
-                    const buffer = Buffer.from(content, 'base64');
+                    const buffer = fileBuf;
                     const image = await Jimp.read(buffer);
                     const pngBuffer = await image.getBuffer('image/png');
                     const pngBase64 = pngBuffer.toString('base64');
@@ -17832,7 +17861,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const ocrTmpPath = `/tmp/ocr_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
 
                 // Write image to temp file
-                const imgBuffer = Buffer.from(content, 'base64');
+                const imgBuffer = fileBuf;
                 // Tesseract needs a file extension it recognizes
                 const ocrExt = ext || mimeType.split('/')[1] || 'png';
                 let ocrInputPath = `${ocrTmpPath}.${ocrExt}`;
@@ -17942,7 +17971,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 // the extension is the only thing archiveExtractor cares about.
                 const safeName = require('path').basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
                 const diskPath = `${dir}/${safeName}`;
-                const buf = Buffer.from(content, 'base64');
+                const buf = fileBuf;
                 await require('fs').promises.writeFile(diskPath, buf);
 
                 const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/${archiveId}/ where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.]`;
@@ -18025,7 +18054,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         ]);
         if (isKnownBinaryMime(mimeType) || (ext && BINARY_EXTS.has(ext))) {
             try {
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const finalMime = mimeType || 'application/octet-stream';
                 return res.json(await persistBinaryFile(buffer, finalMime));
             } catch (binErr) {
@@ -18039,7 +18068,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // wrong mimeType — persist the bytes via attachmentStore instead of
         // returning sanitized garbage.
         try {
-            const buffer = Buffer.from(content, 'base64');
+            const buffer = fileBuf;
             let decoded = buffer.toString('utf8');
 
             // Binary sniff: legitimate UTF-8 text essentially never produces
@@ -18088,7 +18117,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             // (shouldn't happen — Buffer.toString('utf8') is total — but
             // belt-and-suspenders).
             try {
-                const buffer = Buffer.from(content, 'base64');
+                const buffer = fileBuf;
                 const finalMime = mimeType || 'application/octet-stream';
                 return res.json(await persistBinaryFile(buffer, finalMime));
             } catch (persistErr) {

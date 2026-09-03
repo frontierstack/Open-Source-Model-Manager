@@ -253,23 +253,20 @@ export default function ChatInput({
         }));
         setUploadingFiles(prev => [...prev, ...uploadingIds]);
 
-        const readAsBase64 = (file) => new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = (e) => resolve(e.target.result.split(',')[1]);
-            reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-            reader.readAsDataURL(file);
-        });
-
-        const uploadFile = async (base64, file) => {
+        // Stream the raw bytes (the browser reads the File lazily) instead of
+        // base64-in-JSON: a base64 string of a large file blows past the JS
+        // maximum string length long before the 1 GB limit, so FileReader +
+        // JSON.stringify could never upload big files. Metadata rides in headers.
+        const uploadFile = async (file) => {
             const doFetch = () => fetch('/api/chat/upload', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-Upload-Filename': encodeURIComponent(file.name),
+                    'X-Upload-Mime': file.type || 'application/octet-stream',
+                },
                 credentials: 'include',
-                body: JSON.stringify({
-                    filename: file.name,
-                    content: base64,
-                    mimeType: file.type,
-                }),
+                body: file,
             });
             let response = await doFetch();
             if (response.status === 401 || response.status >= 500) {
@@ -284,8 +281,7 @@ export default function ChatInput({
             const file = validFiles[i];
             const uploadId = uploadingIds[i].id;
             try {
-                const base64 = await readAsBase64(file);
-                const response = await uploadFile(base64, file);
+                const response = await uploadFile(file);
                 if (response.ok) {
                     const data = await response.json();
                     onAddAttachment({
@@ -307,7 +303,7 @@ export default function ChatInput({
                     const errBody = await response.json().catch(() => ({}));
                     const reason = errBody.error || `HTTP ${response.status}`;
                     console.error(`Upload failed for ${file.name}: ${reason}`);
-                    failedFiles.push(file.name);
+                    failedFiles.push(`${file.name} (${reason})`);
                 }
             } catch (error) {
                 console.error(`File upload error for ${file.name}:`, error);
