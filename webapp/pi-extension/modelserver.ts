@@ -37,7 +37,7 @@ import { spawn, type ChildProcess } from "child_process";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 
 // Largest host file the auto-bridge will upload into the server workspace.
-const MAX_BRIDGE_BYTES = 50 * 1024 * 1024;
+const MAX_BRIDGE_BYTES = 1024 * 1024 * 1024;
 
 interface SkillParam {
     [key: string]: string | { type?: string };

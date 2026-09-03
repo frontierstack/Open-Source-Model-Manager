@@ -225,8 +225,8 @@ export default function ChatInput({
     };
 
     // Server-configured upload limit (admin-adjustable in Settings → Chat).
-    // Fetched once per mount; falls back to 50MB if the endpoint is unavailable.
-    const [uploadMaxMb, setUploadMaxMb] = useState(50);
+    // Fetched once per mount; falls back to 1GB if the endpoint is unavailable.
+    const [uploadMaxMb, setUploadMaxMb] = useState(1024);
     useEffect(() => {
         let cancelled = false;
         fetch('/api/system-settings/public', { credentials: 'include' })

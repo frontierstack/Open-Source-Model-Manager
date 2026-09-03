@@ -426,7 +426,7 @@ function allowInternalNetwork() { return allowInternalNetworkFlag; }
 // via PUT /api/system-settings. The JSON body parser is rebuilt on change (see
 // rebuildJsonBodyParser) because uploads ride as base64 inside JSON (~4/3
 // inflation) and body-parser fixes its limit at creation time.
-let uploadMaxMbSetting = 50;
+let uploadMaxMbSetting = 1024;
 function uploadMaxBytes() { return uploadMaxMbSetting * 1024 * 1024; }
 function clampUploadMaxMb(v) {
     const n = Math.round(Number(v));
@@ -11482,7 +11482,9 @@ async function resolveAgentWorkspaceTarget(req, rel) {
 
 app.post('/api/agent-workspaces/file',
     requireAuth,
-    express.raw({ type: 'application/octet-stream', limit: '50mb' }),
+    // Sized from the admin-configurable upload limit (same setting as chat
+    // uploads); built per request so a settings change applies immediately.
+    (req, res, next) => express.raw({ type: 'application/octet-stream', limit: uploadMaxBytes() })(req, res, next),
     async (req, res) => {
         try {
             if (!Buffer.isBuffer(req.body) || req.body.length === 0) {

@@ -7621,7 +7621,7 @@ curl -k "${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf" \\
   -H "Authorization: Bearer your_bearer_token" \\
   -o report.pdf
 
-# Upload a local file into the workspace (raw bytes, max 50MB)
+# Upload a local file into the workspace (raw bytes, max 1GB)
 curl -k -X POST "${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv" \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/octet-stream" \\
@@ -7635,7 +7635,7 @@ headers = {'Authorization': 'Bearer your_bearer_token'}
 r = requests.get('${baseUrl}/api/agent-workspaces/file', params={'path': 'artifacts/report.pdf'}, headers=headers, verify=False)
 open('report.pdf', 'wb').write(r.content)
 
-# Upload a local file into the workspace (raw bytes, max 50MB)
+# Upload a local file into the workspace (raw bytes, max 1GB)
 with open('data.csv', 'rb') as f:
     requests.post(
         '${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv',
@@ -7649,7 +7649,7 @@ with open('data.csv', 'rb') as f:
 # Download a workspace file
 Invoke-WebRequest -Uri "${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf" -Headers $headers -OutFile report.pdf
 
-# Upload a local file into the workspace (raw bytes, max 50MB)
+# Upload a local file into the workspace (raw bytes, max 1GB)
 Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv" -Method Post -Headers $headers -InFile data.csv -ContentType "application/octet-stream"`,
                 javascript: `// Bearer Token Authentication (API-key / bearer callers only)
 const headers = { 'Authorization': 'Bearer your_bearer_token' };
@@ -7658,7 +7658,7 @@ const headers = { 'Authorization': 'Bearer your_bearer_token' };
 const bytes = await fetch('${baseUrl}/api/agent-workspaces/file?path=artifacts/report.pdf', { headers })
   .then(r => r.arrayBuffer());
 
-// Upload a file into the workspace (raw bytes, max 50MB)
+// Upload a file into the workspace (raw bytes, max 1GB)
 await fetch('${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv', {
   method: 'POST',
   headers: { ...headers, 'Content-Type': 'application/octet-stream' },
@@ -12247,7 +12247,7 @@ console.log(chip);`
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>shell / SSH</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Seven <strong style={{ color: 'var(--text-primary)' }}>local</strong> session tools — <code>ssh_connect</code>, <code>shell_open</code>, <code>shell_exec</code>, <code>shell_send</code>, <code>shell_read</code>, <code>shell_close</code>, <code>shell_list</code> — hold a persistent interactive PTY open across turns (SSH password prompts, REPLs, <code>docker exec -it</code>, live <code>tail -f</code>, control keys like ctrl-c). Run in the Pi process, so they work even without the model server; no native modules needed.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>workspace</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Each key gets a persistent server-side sandbox workspace (<code>agent-&lt;keyId&gt;</code>). Real host-file path args are auto-uploaded (≤50MB) and rewritten to <code>/workspace/&lt;name&gt;</code>; <code>workspace_get</code> pulls files back to the host, <code>workspace_put</code> pushes one up, and <code>workspace_list</code> shows what is in there. Sandbox shell skills are prefixed (<code>sandbox_bash</code>, <code>sandbox_python</code>, …) so they are never confused with Pi&apos;s own host tools. Browse/manage it in the <strong style={{ color: 'var(--text-primary)' }}>Sandbox Workspace</strong> tab.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>workspace</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Each key gets a persistent server-side sandbox workspace (<code>agent-&lt;keyId&gt;</code>). Real host-file path args are auto-uploaded (≤1GB) and rewritten to <code>/workspace/&lt;name&gt;</code>; <code>workspace_get</code> pulls files back to the host, <code>workspace_put</code> pushes one up, and <code>workspace_list</code> shows what is in there. Sandbox shell skills are prefixed (<code>sandbox_bash</code>, <code>sandbox_python</code>, …) so they are never confused with Pi&apos;s own host tools. Browse/manage it in the <strong style={{ color: 'var(--text-primary)' }}>Sandbox Workspace</strong> tab.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>compaction</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>The extension re-injects a live sandbox inventory into Pi&apos;s system prompt every turn, so a <code>/compact</code> that discards old tool output cannot make the agent believe its uploaded files are gone. Two filesystems stay distinct: Pi&apos;s own <code>read</code>/<code>write</code>/<code>bash</code> act on <strong style={{ color: 'var(--text-primary)' }}>your host</strong>, server skills act on the <strong style={{ color: 'var(--text-primary)' }}>sandbox</strong>.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Pi&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
