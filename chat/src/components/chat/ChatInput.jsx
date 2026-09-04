@@ -133,9 +133,12 @@ export default function ChatInput({
         // sends the balancing dragleave — so the "Drop file to upload" box
         // stayed up after the user decided not to upload (user-reported).
         // Instead: while a drag is in progress the browser fires dragover
-        // continuously (every ~50-350 ms), so a WATCHDOG that clears the
-        // state when no dragover has arrived recently is the reliable signal.
-        const DRAG_IDLE_MS = 300;
+        // continuously (every ~50-350 ms — Chrome's STATIONARY-cursor cadence
+        // is ~350 ms), so a WATCHDOG that clears the state when no dragover
+        // has arrived recently is the reliable signal. The idle window must
+        // be several times that cadence: at 300 ms the overlay cleared and
+        // re-appeared on every stationary tick (user-reported flicker).
+        const DRAG_IDLE_MS = 1500;
         let idleTimer = null;
         const clearDrag = () => {
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -454,6 +457,10 @@ export default function ChatInput({
     const handleDragLeave = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // dragleave fires on every CHILD boundary the cursor crosses inside
+        // the composer; only a leave to something outside it ends the hover.
+        const to = e.relatedTarget;
+        if (to && e.currentTarget && e.currentTarget.contains(to)) return;
         setIsDragOver(false);
     };
 
