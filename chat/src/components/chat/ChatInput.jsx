@@ -127,37 +127,73 @@ export default function ChatInput({
     }, [messages, message, attachments, systemPrompts, selectedSystemPromptId, maxContextTokens]);
 
     useEffect(() => {
-        const handleWindowDragEnter = (e) => {
-            e.preventDefault();
-            dragCounterRef.current++;
-            if (e.dataTransfer?.types?.includes('Files')) {
-                setIsWindowDrag(true);
-            }
-        };
-        const handleWindowDragLeave = (e) => {
-            e.preventDefault();
-            dragCounterRef.current--;
-            if (dragCounterRef.current === 0) {
-                setIsWindowDrag(false);
-                setIsDragOver(false);
-            }
-        };
-        const handleWindowDragOver = (e) => { e.preventDefault(); };
-        const handleWindowDrop = (e) => {
-            e.preventDefault();
+        // Drag-state tracking. A dragenter/dragleave COUNTER drifts: the
+        // overlay itself mounts under the cursor and fires an extra dragenter,
+        // and Escape / dropping onto browser chrome or another window never
+        // sends the balancing dragleave — so the "Drop file to upload" box
+        // stayed up after the user decided not to upload (user-reported).
+        // Instead: while a drag is in progress the browser fires dragover
+        // continuously (every ~50-350 ms), so a WATCHDOG that clears the
+        // state when no dragover has arrived recently is the reliable signal.
+        const DRAG_IDLE_MS = 300;
+        let idleTimer = null;
+        const clearDrag = () => {
+            if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             dragCounterRef.current = 0;
             setIsWindowDrag(false);
             setIsDragOver(false);
         };
+        const armWatchdog = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(clearDrag, DRAG_IDLE_MS);
+        };
+        const isFileDrag = (e) => {
+            const types = e.dataTransfer?.types;
+            if (!types) return false;
+            return Array.from(types).includes('Files');
+        };
+        const handleWindowDragEnter = (e) => {
+            e.preventDefault();
+            if (isFileDrag(e)) {
+                setIsWindowDrag(true);
+                armWatchdog();
+            }
+        };
+        const handleWindowDragLeave = (e) => {
+            e.preventDefault();
+            // Leaving the document entirely (Chrome/Firefox report no
+            // relatedTarget and a 0,0 position) — clear right away rather
+            // than waiting for the watchdog.
+            if (!e.relatedTarget && (e.clientX <= 0 || e.clientY <= 0 ||
+                e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
+                clearDrag();
+            }
+        };
+        const handleWindowDragOver = (e) => {
+            e.preventDefault();
+            if (isFileDrag(e)) armWatchdog();
+        };
+        const handleWindowDrop = (e) => { e.preventDefault(); clearDrag(); };
+        // dragend fires on the source for in-page drags; Escape ends the
+        // drag without any dragleave in some browsers — a keydown covers it.
+        const handleKeyDown = (e) => { if (e.key === 'Escape') clearDrag(); };
+        const handleBlur = () => clearDrag();
         window.addEventListener('dragenter', handleWindowDragEnter);
         window.addEventListener('dragleave', handleWindowDragLeave);
         window.addEventListener('dragover', handleWindowDragOver);
         window.addEventListener('drop', handleWindowDrop);
+        window.addEventListener('dragend', clearDrag);
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('blur', handleBlur);
         return () => {
+            if (idleTimer) clearTimeout(idleTimer);
             window.removeEventListener('dragenter', handleWindowDragEnter);
             window.removeEventListener('dragleave', handleWindowDragLeave);
             window.removeEventListener('dragover', handleWindowDragOver);
             window.removeEventListener('drop', handleWindowDrop);
+            window.removeEventListener('dragend', clearDrag);
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('blur', handleBlur);
         };
     }, []);
 
