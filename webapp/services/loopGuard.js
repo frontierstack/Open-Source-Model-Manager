@@ -325,6 +325,52 @@ function segmentize(text, startOffset, minLen) {
  * occurrence of the first repeated segment), so a caller can keep the good
  * prefix and discard the loop. null when it cannot be located.
  */
+// --- Short-unit run (token-level degeneration) -----------------------------
+// A model can lock onto a SHORT unit and emit it forever on ONE line:
+// live-observed 2026-09-03, a run_python regex alternation that ended in
+// `|lat|lat|lat|lat|…` for thousands of characters while the user watched.
+// Nothing above sees it: the segment detectors need sentence-length units
+// (≥ 24 chars, split on punctuation/newlines) and the argument detector
+// works per LINE — a single ever-growing line is invisible to both until
+// max_tokens. This finds the smallest period p (1..maxPeriod) for which the
+// tail of the text is a run of the same p-char unit, and fires when the run
+// is long enough in BOTH chars and repeats (a `=====` rule or a hex dump of
+// zeros is a short run; 500+ chars of `|lat` is not something anyone wrote).
+// Returns { unit, period, repeats, runChars, runStart } or null.
+const SHORT_RUN_MIN_CHARS = envInt('SHORT_RUN_MIN_CHARS', 500);
+const SHORT_RUN_MIN_REPEATS = envInt('SHORT_RUN_MIN_REPEATS', 30);
+const SHORT_RUN_MAX_PERIOD = envInt('SHORT_RUN_MAX_PERIOD', 48);
+function shortRunReason(text, opts = {}) {
+    const minChars = opts.minChars ?? SHORT_RUN_MIN_CHARS;
+    const minRepeats = opts.minRepeats ?? SHORT_RUN_MIN_REPEATS;
+    const maxPeriod = opts.maxPeriod ?? SHORT_RUN_MAX_PERIOD;
+    const s = String(text || '');
+    if (s.length < minChars) return null;
+    // Only the tail can be the live run; bound the scan.
+    const window = Math.min(s.length, Math.max(minChars * 4, 4000));
+    const base = s.length - window;
+    const t = s.slice(base);
+    const n = t.length;
+    for (let p = 1; p <= maxPeriod && p * 2 <= n; p++) {
+        // Walk back from the end while t[i] === t[i - p].
+        let i = n - 1;
+        while (i - p >= 0 && t[i] === t[i - p]) i--;
+        const runChars = (n - 1 - i) + p;          // the matched span plus one unit
+        if (runChars < minChars) continue;
+        const repeats = Math.floor(runChars / p);
+        if (repeats < minRepeats) continue;
+        const unit = t.slice(n - p);
+        // A unit that is only whitespace is padding, not a loop (and a
+        // trailing newline run is how some templates end a message).
+        if (!unit.trim()) continue;
+        return {
+            unit, period: p, repeats, runChars,
+            runStart: base + (n - runChars),
+        };
+    }
+    return null;
+}
+
 function makeRepetitionDetector(cfg) {
     const granularity = cfg.granularity ?? 1500;
     const tailChars = cfg.tailChars ?? 4000;
@@ -361,6 +407,19 @@ function makeRepetitionDetector(cfg) {
         lastCheckAt = len;
         const tailStart = Math.max(startOffset, text.length - tailChars);
         const tail = text.slice(tailStart);
+
+        // 0. Token-level run: one short unit repeated on and on (see
+        //    shortRunReason). Cut at the start of the run so the recovery
+        //    keeps everything written before it.
+        if (cfg.shortRun !== false) {
+            const run = shortRunReason(text.slice(startOffset));
+            if (run) {
+                return {
+                    reason: `the unit "${run.unit.slice(0, 24)}" repeated ${run.repeats}x in a row (${run.runChars} chars)`,
+                    cutAt: startOffset + run.runStart,
+                };
+            }
+        }
 
         // 1. Known loop phrases in the tail.
         for (const { pattern, name } of phrases) {
@@ -581,6 +640,13 @@ function toolArgsDegenerationReason(text, opts = {}) {
     if (maxChars > 0 && s.length > maxChars) {
         return `${s.length} characters of arguments — far beyond what any tool call needs (limit ${maxChars})`;
     }
+    // Token-level run inside the argument (a regex alternation or list that
+    // degenerated into `|lat|lat|lat…`). Not gated on minChars: the run
+    // itself is the size signal.
+    const run = shortRunReason(s);
+    if (run) {
+        return `the unit "${run.unit.slice(0, 24)}" repeated ${run.repeats}x in a row (${run.runChars} chars) — the argument is degenerating`;
+    }
     if (s.length < minChars) return null;
     // Work on the tail only: the loop is at the end, and this runs on the SSE
     // hot path. Streamed JSON args carry "\n" as an escape — unescape so the
@@ -769,6 +835,7 @@ module.exports = {
     uniqueTrigramRatio,
     segmentize,
     makeRepetitionDetector,
+    shortRunReason,
     makeReasoningLoopDetector,
     makeContentLoopDetector,
     makeToolArgsLoopDetector,
