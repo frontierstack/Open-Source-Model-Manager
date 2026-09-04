@@ -11453,6 +11453,41 @@ app.delete('/api/agent-workspaces/:owner/:bucket', requireAuth, async (req, res)
     }
 });
 
+// Clear ALL sandbox workspaces the caller is allowed to manage in one call
+// (admins: every owner; everyone else: their own buckets). Backs the
+// "Clear all" button on the Sandbox Workspace tab. Each bucket is deleted
+// independently so one failure doesn't abort the sweep; the response lists
+// what was removed and what failed.
+app.delete('/api/agent-workspaces', requireAuth, async (req, res) => {
+    try {
+        const sbRunner = require('./services/sandboxRunner');
+        const isAdmin = callerIsAdmin(req);
+        const list = isAdmin
+            ? await sbRunner.listAllWorkspaces()
+            : await sbRunner.listWorkspaces(req.userId);
+        const deleted = [];
+        const failed = [];
+        let byteCount = 0, fileCount = 0;
+        for (const w of list) {
+            const r = await sbRunner.deleteWorkspaceBucketByOwner(w.owner, w.bucket).catch(e => ({ deleted: false, error: e.message }));
+            if (r.deleted) {
+                deleted.push({ owner: w.owner, bucket: w.bucket });
+                byteCount += r.byteCount || 0;
+                fileCount += r.fileCount || 0;
+            } else {
+                failed.push({ owner: w.owner, bucket: w.bucket, error: r.error || 'unknown' });
+            }
+        }
+        if (deleted.length) {
+            broadcast({ type: 'log', message: `Sandbox workspaces cleared: ${deleted.length} bucket(s), ${fileCount} files, ${byteCount} bytes${isAdmin ? ' (all users)' : ''}` });
+        }
+        res.json({ deletedCount: deleted.length, deleted, failed, byteCount, fileCount });
+    } catch (e) {
+        console.error('Error clearing sandbox workspaces:', e);
+        res.status(500).json({ error: 'Failed to clear workspaces' });
+    }
+});
+
 // --- host <-> server-workspace file bridge (powers Pi's auto-bridge) --------
 // These let a Pi/API agent move a file BETWEEN the two filesystems it lives in:
 // its host (Pi's own read/write/bash) and the server sandbox workspace (where
@@ -11965,8 +12000,8 @@ async function executeLegacySkill(skillName, params) {
                     throw new Error('Invalid base64Data: ' + e.message);
                 }
                 if (!buf.length) throw new Error('Decoded buffer is empty');
-                if (buf.length > 50 * 1024 * 1024) {
-                    throw new Error(`Archive is ${buf.length} bytes; 50MB max.`);
+                if (buf.length > uploadMaxBytes()) {
+                    throw new Error(`Archive is ${buf.length} bytes; the limit is ${uploadMaxMbSetting} MB (admin setting "uploadMaxMb").`);
                 }
                 result = await archiveExtractor.extractArchive(buf, fname);
                 break;
@@ -17974,7 +18009,7 @@ app.post('/api/chat/upload', requireAuth, chatUploadRawBody, async (req, res) =>
                 const buf = fileBuf;
                 await require('fs').promises.writeFile(diskPath, buf);
 
-                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/${archiveId}/ where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.]`;
+                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/<archive-name>/ (a legible directory named after the archive; the tool result reports the exact path) where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.]`;
                 return res.json({
                     type: 'archive',
                     filename: safeName,
@@ -29820,9 +29855,10 @@ app.use((req, res) => {
             if (!stat || !stat.isFile()) throw new Error(`No file at workspace path "${rel}".`);
             resolvedFrom = rel;
         }
-        if (stat.size > 50 * 1024 * 1024) throw new Error(`File is ${stat.size} bytes; 50MB max.`);
+        if (stat.size > uploadMaxBytes()) throw new Error(`File is ${stat.size} bytes; the limit is ${uploadMaxMbSetting} MB (admin setting "uploadMaxMb").`);
         return {
-            buffer: await fsp.readFile(finalPath),
+            sourcePath: finalPath,
+            size: stat.size,
             filename: pathMod.basename(finalPath),
             resolvedFrom,
             resolvedPath: pathMod.relative(workspace.localInContainer, finalPath).split(pathMod.sep).join('/'),
@@ -29847,8 +29883,8 @@ app.use((req, res) => {
         }
         const filename = entries[0];
         const diskPath = `${dir}/${filename}`;
-        const buf = await fsp.readFile(diskPath);
-        return { buffer: buf, filename };
+        const st = await fsp.stat(diskPath);
+        return { sourcePath: diskPath, size: st.size, filename };
     }
 
     // Fuzzy-match a garbled archiveId / path against the real candidates.
@@ -29945,7 +29981,7 @@ app.use((req, res) => {
             };
         },
         async execute(args, ctx) {
-            let buffer, filename;
+            let buffer, filename, sourcePath = null, sourceSize = 0;
             const password = String(args?.password ?? '');
             let archiveId = String(args?.archiveId || '').trim();
             let wsPath = String(args?.path || '').trim();
@@ -30007,7 +30043,8 @@ app.use((req, res) => {
             if (wsPath && !/^[a-f0-9]{32}$/.test(archiveId)) {
                 try {
                     const resolved = await resolveArchiveByPath(wsPath, ctx);
-                    buffer = resolved.buffer;
+                    sourcePath = resolved.sourcePath;
+                    sourceSize = resolved.size;
                     filename = resolved.filename;
                     if (resolved.resolvedFrom) {
                         archiveAutoResolvedFrom = resolved.resolvedFrom;
@@ -30020,7 +30057,8 @@ app.use((req, res) => {
             } else if (archiveId) {
                 try {
                     const resolved = await resolveArchiveById(archiveId, ctx?.userId);
-                    buffer = resolved.buffer;
+                    sourcePath = resolved.sourcePath;
+                    sourceSize = resolved.size;
                     filename = resolved.filename;
                 } catch (e) {
                     const available = await listUserArchives(ctx?.userId).catch(() => []);
@@ -30032,7 +30070,8 @@ app.use((req, res) => {
                     if (idHit && idHit !== archiveId) {
                         try {
                             const resolved = await resolveArchiveById(idHit, ctx?.userId);
-                            buffer = resolved.buffer;
+                            sourcePath = resolved.sourcePath;
+                            sourceSize = resolved.size;
                             filename = resolved.filename;
                             archiveAutoResolvedFrom = archiveId;
                             archiveId = idHit;
@@ -30056,10 +30095,14 @@ app.use((req, res) => {
                     return { error: `Invalid base64Data: ${e.message}` };
                 }
             }
-            if (!buffer?.length) return { error: 'Decoded buffer is empty' };
-            if (buffer.length > 50 * 1024 * 1024) {
-                return { error: `Archive is ${buffer.length} bytes; 50MB max.` };
+            if (!sourcePath && !buffer?.length) return { error: 'Decoded buffer is empty' };
+            const archiveBytes = sourcePath ? sourceSize : buffer.length;
+            if (archiveBytes > uploadMaxBytes()) {
+                return { error: `Archive is ${archiveBytes} bytes; the limit is ${uploadMaxMbSetting} MB (admin setting "uploadMaxMb" in the chat Settings panel).` };
             }
+            // On-disk archives are handed to the extractor by PATH (hardlinked
+            // into its staging dir) — a 1 GB upload never becomes a 1 GB Buffer.
+            const extractInput = { sourcePath };
             try {
                 // Persist extracted contents into the conversation's workspace
                 // bucket so subsequent read_file calls (sandboxed, rooted at
@@ -30079,7 +30122,7 @@ app.use((req, res) => {
                 } catch (wsErr) {
                     // Fall back to legacy inline-extraction mode if no workspace
                     // (e.g. /v1 passthrough callers without conv plumbing).
-                    return await archiveExtractor.extractArchive(buffer, filename, { password });
+                    return await archiveExtractor.extractArchive(buffer, filename, { password, ...extractInput });
                 }
                 const fsp = require('fs').promises;
                 const pathMod = require('path');
@@ -30120,6 +30163,7 @@ app.use((req, res) => {
                     extractTo: extractRoot,
                     pathBase: workspace.localInContainer,
                     password,
+                    ...extractInput,
                 });
                 // A big extraction is almost always a SOURCE TREE (repo zip,
                 // package tarball). Teaching "read_file each entry" at that

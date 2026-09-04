@@ -51,7 +51,26 @@ function execFileP(bin, args, opts = {}) {
 }
 
 const EXEC_TIMEOUT_MS = 60_000;
+// Extraction time scales with archive size: a 1 GB tarball on this 4-core
+// host runs minutes, not seconds. Base 60 s + ~1 s per 2 MB, capped.
+const EXEC_TIMEOUT_MAX_MS = parseInt(process.env.ARCHIVE_EXTRACT_TIMEOUT_MAX_MS || String(20 * 60_000), 10);
+function execTimeoutFor(sizeBytes) {
+    const scaled = EXEC_TIMEOUT_MS + Math.ceil((sizeBytes || 0) / (2 * 1024 * 1024)) * 1000;
+    return Math.min(EXEC_TIMEOUT_MAX_MS, Math.max(EXEC_TIMEOUT_MS, scaled));
+}
 const MAX_ENTRIES = 500;
+// Hard ceiling on how many files a single walk enumerates (stats + listing).
+// Well above any realistic source tree; bounds a pathological archive.
+const MAX_WALK_ENTRIES = 250_000;
+// Decompressed-size ceiling (zip-bomb / disk-exhaustion guard). Checked
+// after extraction; on breach the output is removed and the call fails.
+const MAX_EXTRACTED_BYTES = parseInt(process.env.ARCHIVE_MAX_EXTRACTED_BYTES || String(8 * 1024 * 1024 * 1024), 10);
+// uid/gid the sandbox runtime runs as (sandbox-runtime/Dockerfile: `useradd
+// -u 1000 sandbox`). Extracted trees are chowned to it so the sandbox can
+// WRITE into them (npm install, a script saving output next to its input,
+// replace_lines on an extracted file) — root-owned 0755 dirs only allowed reads.
+const SANDBOX_UID = parseInt(process.env.SANDBOX_UID || '1000', 10);
+const SANDBOX_GID = parseInt(process.env.SANDBOX_GID || '1000', 10);
 const MAX_TEXT_BYTES_PER_ENTRY = 200_000; // 200KB
 const MAX_TOTAL_TEXT_BYTES = 2_000_000;   // 2MB across all entries
 
@@ -175,6 +194,39 @@ function zipEncryptionInfo(buf) {
     return { total, encrypted, names };
 }
 
+// Same verdict for an archive that lives on DISK (source-path mode — the
+// bytes are never loaded whole). Reads the EOCD from the tail, then the
+// central directory region at its absolute offset (bounded to 16 MB), and
+// hands a synthetic buffer to the parser above with offsets rebased.
+async function zipEncryptionInfoFromFile(filePath, size) {
+    let fd = null;
+    try {
+        if (!size || size < 22) return null;
+        fd = await fs.promises.open(filePath, 'r');
+        const tailLen = Math.min(size, 65_557);
+        const tail = Buffer.alloc(tailLen);
+        await fd.read(tail, 0, tailLen, size - tailLen);
+        let eocd = -1;
+        for (let i = tail.length - 22; i >= 0; i--) {
+            if (tail[i] === 0x50 && tail[i + 1] === 0x4B && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) { eocd = i; break; }
+        }
+        if (eocd < 0) return null;
+        const cdOff = tail.readUInt32LE(eocd + 16);
+        const cdSize = tail.readUInt32LE(eocd + 12);
+        if (cdOff === 0xFFFFFFFF || cdSize > 16 * 1024 * 1024 || cdOff + cdSize > size) return null;
+        // Synthesize [central directory][EOCD] and rebase the CD offset to 0.
+        const cd = Buffer.alloc(cdSize);
+        await fd.read(cd, 0, cdSize, cdOff);
+        const eocdRec = Buffer.from(tail.subarray(eocd, eocd + 22));
+        eocdRec.writeUInt32LE(0, 16);
+        return zipEncryptionInfo(Buffer.concat([cd, eocdRec]));
+    } catch (_) {
+        return null;
+    } finally {
+        if (fd) await fd.close().catch(() => {});
+    }
+}
+
 // Cheap per-file check used to flag an extracted entry that is ITSELF an
 // encrypted zip (the reported case: an ordinary zip containing a
 // password-protected zip). Reads only the local file header.
@@ -242,22 +294,78 @@ function isPrintableUtf8(buf) {
     return bad / text.length < 0.1;
 }
 
-async function walkDir(root, relBase = '') {
+// Enumerate every regular file under root (bounded by MAX_WALK_ENTRIES so
+// the stats — count, bytes, per-top-level-dir summary — are truthful for
+// the whole tree, not just the first listing page). Symlinks are never
+// followed; one whose target resolves OUTSIDE root is removed (an archive
+// can carry `evil -> /etc` and the webapp reads the tree as root).
+async function walkDir(root, { pruneEscapingSymlinks = true } = {}) {
     const out = [];
-    const entries = await fs.promises.readdir(root, { withFileTypes: true });
-    for (const ent of entries) {
-        const full = path.join(root, ent.name);
-        const rel = relBase ? `${relBase}/${ent.name}` : ent.name;
-        if (ent.isDirectory()) {
-            const child = await walkDir(full, rel);
-            out.push(...child);
-        } else if (ent.isFile()) {
-            const stat = await fs.promises.stat(full);
-            out.push({ path: rel, size: stat.size, fullPath: full });
+    const droppedSymlinks = [];
+    let capped = false;
+    const rootReal = await fs.promises.realpath(root).catch(() => path.resolve(root));
+    async function walk(dir, relBase) {
+        if (capped) return;
+        let entries;
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+        catch (_) { return; }
+        for (const ent of entries) {
+            if (out.length >= MAX_WALK_ENTRIES) { capped = true; return; }
+            const full = path.join(dir, ent.name);
+            const rel = relBase ? `${relBase}/${ent.name}` : ent.name;
+            if (ent.isSymbolicLink()) {
+                if (!pruneEscapingSymlinks) continue;
+                try {
+                    const target = await fs.promises.readlink(full);
+                    const resolved = path.resolve(path.dirname(full), target);
+                    if (resolved !== rootReal && !resolved.startsWith(rootReal + path.sep)) {
+                        await fs.promises.unlink(full).catch(() => {});
+                        if (droppedSymlinks.length < 20) droppedSymlinks.push(`${rel} -> ${target}`);
+                    }
+                } catch (_) { /* best effort */ }
+                continue;
+            }
+            if (ent.isDirectory()) {
+                await walk(full, rel);
+            } else if (ent.isFile()) {
+                try {
+                    const stat = await fs.promises.stat(full);
+                    out.push({ path: rel, size: stat.size, fullPath: full });
+                } catch (_) { /* vanished */ }
+            }
         }
-        if (out.length > MAX_ENTRIES) break;
     }
-    return out;
+    await walk(root, '');
+    return { files: out, droppedSymlinks, capped };
+}
+
+// Per-top-level-directory summary so a truncated listing still conveys the
+// tree's SHAPE (which subtrees hold the bulk of the files/bytes).
+function summarizeTopLevel(files, limit = 12) {
+    const agg = new Map();
+    for (const f of files) {
+        const slash = f.path.indexOf('/');
+        const key = slash < 0 ? '(root files)' : f.path.slice(0, slash) + '/';
+        const a = agg.get(key) || { path: key, files: 0, bytes: 0 };
+        a.files += 1; a.bytes += f.size;
+        agg.set(key, a);
+    }
+    return [...agg.values()].sort((a, b) => b.files - a.files).slice(0, limit);
+}
+
+async function totalBytesOf(files) {
+    let n = 0;
+    for (const f of files) n += f.size;
+    return n;
+}
+
+// Free bytes on the filesystem holding `dir` (null when statfs is unavailable).
+async function freeBytesAt(dir) {
+    try {
+        if (typeof fs.promises.statfs !== 'function') return null;
+        const st = await fs.promises.statfs(dir);
+        return Number(st.bavail) * Number(st.bsize);
+    } catch (_) { return null; }
 }
 
 async function rmrf(dir) {
@@ -275,8 +383,21 @@ async function rmrf(dir) {
 // owner. Best-effort, bounded, and symlink-safe (chmod() follows links on
 // Linux and lchmod isn't supported, so symlinks are skipped, not recursed).
 async function normalizeTreePermissions(root) {
+    // Fast path: coreutils handle a 100k-file tree in well under a second and
+    // — unlike a JS walk bounded by a visit cap — cover EVERY entry, so no
+    // file deep in a big archive is left unreadable/unwritable. GNU chmod -R
+    // ignores symlinks met during traversal; chown -R (default -P) changes
+    // the link itself, never its referent. `u+w` restores owner write on
+    // read-only-stored dirs; `X` grants traversal only where it belongs.
+    // The ownership change is what lets the sandbox user (uid 1000) WRITE
+    // into the extracted tree. Falls back to the bounded JS walk on error.
+    try {
+        await execFileP('chmod', ['-R', 'u+rw,a+rX', root], { timeout: 5 * 60_000 });
+        await execFileP('chown', ['-R', `${SANDBOX_UID}:${SANDBOX_GID}`, root], { timeout: 5 * 60_000 });
+        return;
+    } catch (_) { /* fall back to the JS walk below */ }
     let visited = 0;
-    const MAX_VISIT = MAX_ENTRIES * 4; // headroom over the listing cap
+    const MAX_VISIT = MAX_WALK_ENTRIES;
     async function walk(dir) {
         let entries;
         try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
@@ -288,14 +409,17 @@ async function normalizeTreePermissions(root) {
             if (ent.isDirectory()) {
                 try { const st = await fs.promises.stat(full); await fs.promises.chmod(full, st.mode | 0o755); }
                 catch (_) { /* best effort */ }
+                try { await fs.promises.chown(full, SANDBOX_UID, SANDBOX_GID); } catch (_) { /* best effort */ }
                 await walk(full);
             } else if (ent.isFile()) {
                 try { const st = await fs.promises.stat(full); await fs.promises.chmod(full, st.mode | 0o644); }
                 catch (_) { /* best effort */ }
+                try { await fs.promises.chown(full, SANDBOX_UID, SANDBOX_GID); } catch (_) { /* best effort */ }
             }
         }
     }
     try { const st = await fs.promises.stat(root); await fs.promises.chmod(root, st.mode | 0o755); } catch (_) { /* best effort */ }
+    try { await fs.promises.chown(root, SANDBOX_UID, SANDBOX_GID); } catch (_) { /* best effort */ }
     await walk(root);
 }
 
@@ -314,15 +438,40 @@ async function normalizeTreePermissions(root) {
  * }
  */
 async function extractArchive(buffer, filename, opts = {}) {
-    if (!Buffer.isBuffer(buffer) || !buffer.length) {
-        throw new Error('extractArchive: non-empty Buffer required');
+    // Two input shapes: raw bytes (base64 tool arg, legacy callers) or a
+    // `sourcePath` on disk (uploaded archive in the store, a workspace file).
+    // With the upload limit at 1 GB the on-disk form is the only sane one —
+    // reading the whole archive into a Buffer just to write it back out
+    // doubles peak RAM and the format sniff needs only the head (64 KB) and,
+    // for zip encryption, the tail. `head`/`size` are what every check
+    // below reads; `buffer` stays null in source-path mode.
+    const sourcePath = typeof opts.sourcePath === 'string' && opts.sourcePath ? opts.sourcePath : null;
+    let size, head;
+    if (sourcePath) {
+        const st = await fs.promises.stat(sourcePath).catch(() => null);
+        if (!st || !st.isFile() || !st.size) throw new Error(`extractArchive: sourcePath "${sourcePath}" is not a readable, non-empty file`);
+        size = st.size;
+        const fd = await fs.promises.open(sourcePath, 'r');
+        try {
+            head = Buffer.alloc(Math.min(size, 65536));
+            const { bytesRead } = await fd.read(head, 0, head.length, 0);
+            head = head.subarray(0, bytesRead);
+        } finally { await fd.close(); }
+        buffer = null;
+    } else {
+        if (!Buffer.isBuffer(buffer) || !buffer.length) {
+            throw new Error('extractArchive: non-empty Buffer or sourcePath required');
+        }
+        size = buffer.length;
+        head = buffer.length > 65536 ? buffer.subarray(0, 65536) : buffer;
     }
+    const execTimeout = execTimeoutFor(size);
     // Try the extension first, then fall back to magic-byte sniffing.
     // If both agree, we use the extension handler. If they disagree,
     // trust the magic — renamed/mislabeled archives are common and the
     // user's intent is "extract this, whatever it is".
     const extHandler = pickHandler(filename);
-    const sniffed = sniffFormat(buffer);
+    const sniffed = sniffFormat(head);
     let handler = extHandler;
     let sourcedFrom = 'extension';
     if (!handler && sniffed) {
@@ -345,8 +494,8 @@ async function extractArchive(buffer, filename, opts = {}) {
         }
     }
     if (!handler) {
-        const preview = buffer.slice(0, 16).toString('hex');
-        const kind = describeNonArchive(buffer);
+        const preview = head.slice(0, 16).toString('hex');
+        const kind = describeNonArchive(head);
         throw new Error(
             kind
                 ? `"${filename}" is not an archive — the content looks like ${kind}. ` +
@@ -367,7 +516,7 @@ async function extractArchive(buffer, filename, opts = {}) {
     const password = typeof opts.password === 'string' ? opts.password : '';
     // Parsed once up front so a password verdict can be reached even when the
     // extractor says nothing useful (unzip's silent exit 82).
-    const encInfo = zipEncryptionInfo(buffer);
+    const encInfo = sourcePath ? await zipEncryptionInfoFromFile(sourcePath, size) : zipEncryptionInfo(buffer);
 
     const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
     // When extracting into a caller-owned dir we expect read_file to follow up
@@ -390,7 +539,21 @@ async function extractArchive(buffer, filename, opts = {}) {
     const archivePath = path.join(archiveStageDir, path.basename(filename) || 'archive.bin');
     await fs.promises.mkdir(extractDir, { recursive: true });
     if (persistMode) await fs.promises.mkdir(archiveStageDir, { recursive: true });
-    await fs.promises.writeFile(archivePath, buffer);
+    // Disk pre-check: the staged copy + the extraction both land on this
+    // filesystem. Refuse up front with a clear message rather than letting
+    // tar die half-way with ENOSPC (which also strands a partial tree).
+    const free = await freeBytesAt(extractDir);
+    if (free != null && free < size * 2 + 256 * 1024 * 1024) {
+        await rmrf(persistMode ? archiveStageDir : workRoot);
+        throw new Error(`Not enough free disk to extract "${filename}" (${size} bytes; ${free} bytes free). Free space on the server's models volume and retry.`);
+    }
+    if (sourcePath) {
+        // Hardlink when possible (same filesystem, zero copy); copy otherwise.
+        try { await fs.promises.link(sourcePath, archivePath); }
+        catch (_) { await fs.promises.copyFile(sourcePath, archivePath); }
+    } else {
+        await fs.promises.writeFile(archivePath, buffer);
+    }
     const pathBase = opts.pathBase || extractDir;
 
     try {
@@ -422,7 +585,7 @@ async function extractArchive(buffer, filename, opts = {}) {
                     }
                     const args = attempt.single === 'xz' ? ['-d', '-k', '-f', srcPath] : ['-k', '-f', srcPath];
                     // gunzip/bunzip2/xz with -k (keep original) write foo.ext -> foo.
-                    await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS });
+                    await execFileP(bin, args, { timeout: execTimeout });
                     const stripped = srcPath.replace(/\.(gz|bz2|xz)$/i, '');
                     if (!fs.existsSync(stripped)) {
                         throw new Error(`Decompression produced no output (expected ${stripped})`);
@@ -434,7 +597,7 @@ async function extractArchive(buffer, filename, opts = {}) {
                     const fd = await fs.promises.open(stripped, 'r');
                     try { await fd.read(innerHead, 0, 263, 0); } finally { await fd.close(); }
                     if (innerHead.subarray(257, 262).toString('ascii') === 'ustar') {
-                        await execFileP('tar', ['-xf', stripped, '-C', extractDir], { timeout: EXEC_TIMEOUT_MS });
+                        await execFileP('tar', ['-xf', stripped, '-C', extractDir], { timeout: execTimeout });
                         await rmrf(stripped);
                     } else {
                         // Content isn't a tar — drop any leftover archive-ish
@@ -453,7 +616,7 @@ async function extractArchive(buffer, filename, opts = {}) {
                     // (`7z x`) but before the archive name (unzip/unrar treat
                     // anything after the archive as a file selector).
                     if (attempt.pw) args.splice(1, 0, ...attempt.pw(password));
-                    await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
+                    await execFileP(bin, args, { timeout: execTimeout, maxBuffer: 10 * 1024 * 1024 });
                 }
                 // An extractor that exits 0 but produces nothing (tar can on
                 // some non-tar streams) is a failure — let the next attempt run.
@@ -500,13 +663,15 @@ async function extractArchive(buffer, filename, opts = {}) {
             // can tell apart "file isn't what the extension says" from
             // "base64 got truncated in transit".
             const { attempt, err } = lastErr;
-            const preview = buffer.slice(0, 16).toString('hex');
+            const preview = head.slice(0, 16).toString('hex');
             const tail = (err.stderr || err.stdout || err.message || '').toString().trim().split('\n').slice(-3).join(' ');
             const tried = attempts.filter(Boolean).map(a => a.name).join(' → ');
-            const kind = describeNonArchive(buffer);
+            const kind = describeNonArchive(head);
+            const timedOut = err && (err.killed || /ETIMEDOUT|timed? ?out/i.test(String(err.message || '')));
             throw new Error(
                 (kind ? `"${filename}" does not contain archive data — it looks like ${kind}. ` : '') +
-                `Extraction failed on ${filename} (size=${buffer.length}, first16=${preview}, detectedVia=${sourcedFrom}, tried=${tried}); last error (${attempt.name}): ${tail}`
+                (timedOut ? `Extraction of ${filename} exceeded the ${Math.round(execTimeout / 1000)} s limit (ARCHIVE_EXTRACT_TIMEOUT_MAX_MS). ` : '') +
+                `Extraction failed on ${filename} (size=${size}, first16=${preview}, detectedVia=${sourcedFrom}, tried=${tried}); last error (${attempt.name}): ${tail}`
             );
         }
         handler = used;
@@ -515,11 +680,22 @@ async function extractArchive(buffer, filename, opts = {}) {
         // archive's stored modes/owner may not grant it read/traversal, so
         // normalize before listing. Harmless to skip in legacy temp-dir mode
         // (the webapp reads everything itself, as root).
+        // Walk BEFORE the chmod/chown so an escaping symlink is pruned first.
+        const walked = await walkDir(extractDir);
+        const files = walked.files;
+        const extractedBytes = await totalBytesOf(files);
+        if (extractedBytes > MAX_EXTRACTED_BYTES) {
+            // Zip-bomb / disk-exhaustion guard: throw the tree away rather
+            // than leave gigabytes of junk in the workspace.
+            const leftovers = await fs.promises.readdir(extractDir).catch(() => []);
+            for (const name of leftovers) await rmrf(path.join(extractDir, name));
+            throw new Error(`"${filename}" expanded to ${extractedBytes} bytes, over the ${MAX_EXTRACTED_BYTES}-byte extraction ceiling (ARCHIVE_MAX_EXTRACTED_BYTES). The output was discarded.`);
+        }
         if (persistMode) await normalizeTreePermissions(extractDir);
 
-        const files = await walkDir(extractDir);
         const truncated = files.length > maxEntries;
         const selected = truncated ? files.slice(0, maxEntries) : files;
+        const topLevel = truncated ? summarizeTopLevel(files) : undefined;
 
         let totalTextBytes = 0;
         const entries = [];
@@ -567,13 +743,19 @@ async function extractArchive(buffer, filename, opts = {}) {
             ok: true,
             archive: filename,
             format: handler.name,
+            archiveBytes: size,
             entryCount: files.length,
+            extractedBytes,
             entries,
             truncated,
+            ...(topLevel ? { topLevel } : {}),
+            ...(walked.capped ? { entryCountCapped: true } : {}),
+            ...(walked.droppedSymlinks.length ? { droppedSymlinks: walked.droppedSymlinks } : {}),
             ...(lockedEntries.length ? { encryptedEntries: lockedEntries } : {}),
             ...(passwordWarning ? { partial: true, passwordProtected: true } : {}),
             note: [
-                truncated ? `Listing truncated at ${maxEntries} of ${files.length} entries.` : '',
+                truncated ? `Listing shows the first ${maxEntries} of ${files.length}${walked.capped ? '+' : ''} files; \`topLevel\` summarizes every top-level directory (file count + bytes). Use list_directory / scan_source_files on a subdirectory to see the rest.` : '',
+                walked.droppedSymlinks.length ? `${walked.droppedSymlinks.length} symlink(s) pointing outside the extraction directory were removed.` : '',
                 passwordWarning || '',
                 lockedEntries.length
                     ? `NOTE: ${lockedEntries.length === 1 ? 'this extracted entry is itself a password-protected zip' : 'these extracted entries are themselves password-protected zips'}: ${lockedEntries.slice(0, 5).join(', ')}. To read inside, call extract_archive again with path="<that entry>" AND the "password" argument — ask the user for the password if you do not have one (malware-sample archives are commonly locked with "infected").`
@@ -591,4 +773,4 @@ async function extractArchive(buffer, filename, opts = {}) {
     }
 }
 
-module.exports = { extractArchive, pickHandler };
+module.exports = { extractArchive, pickHandler, execTimeoutFor, MAX_EXTRACTED_BYTES };

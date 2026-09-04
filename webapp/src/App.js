@@ -663,6 +663,30 @@ const App = () => {
         }
     };
 
+    // "Clear all" — wipes every workspace the caller can see (admins: all users).
+    const [agentWsClearOpen, setAgentWsClearOpen] = useState(false);
+    const [agentWsClearing, setAgentWsClearing] = useState(false);
+    const confirmClearAllAgentWorkspaces = async () => {
+        setAgentWsClearing(true);
+        try {
+            const res = await fetch('/api/agent-workspaces', { method: 'DELETE' });
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+            const failed = Array.isArray(d.failed) ? d.failed.length : 0;
+            showSnackbar(
+                `Cleared ${d.deletedCount || 0} workspace${d.deletedCount === 1 ? '' : 's'} (${d.fileCount || 0} files, ${formatBytes(d.byteCount || 0)})` +
+                (failed ? ` — ${failed} failed` : ''),
+                failed ? 'warning' : 'success'
+            );
+            setAgentWsClearOpen(false);
+            await loadAgentWorkspaces();
+        } catch (e) {
+            showSnackbar(`Clear all failed: ${e.message}`, 'error');
+        } finally {
+            setAgentWsClearing(false);
+        }
+    };
+
     const confirmDeleteAgentWorkspace = async () => {
         if (!agentWsDeleteTarget) return;
         setAgentWsDeleting(true);
@@ -7585,6 +7609,10 @@ curl -k ${baseUrl}/api/agent-workspaces \\
 
 # Delete one workspace (owner + bucket from the list response)
 curl -k -X DELETE ${baseUrl}/api/agent-workspaces/OWNER/BUCKET \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Clear ALL workspaces you can manage (admins: every user's)
+curl -k -X DELETE ${baseUrl}/api/agent-workspaces \\
   -H "Authorization: Bearer your_bearer_token"`,
                 python: `import requests
 
@@ -7595,7 +7623,10 @@ workspaces = requests.get('${baseUrl}/api/agent-workspaces', headers=headers, ve
 print(workspaces)
 
 # Delete one workspace (owner + bucket from the list response)
-requests.delete('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', headers=headers, verify=False)`,
+requests.delete('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', headers=headers, verify=False)
+
+# Clear ALL workspaces you can manage (admins: every user's)
+requests.delete('${baseUrl}/api/agent-workspaces', headers=headers, verify=False)`,
                 powershell: `$headers = @{
     "Authorization" = "Bearer your_bearer_token"
 }
@@ -7603,7 +7634,10 @@ $workspaces = Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces" -Headers 
 $workspaces | ConvertTo-Json -Depth 5
 
 # Delete one workspace
-Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces/OWNER/BUCKET" -Method Delete -Headers $headers`,
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces/OWNER/BUCKET" -Method Delete -Headers $headers
+
+# Clear ALL workspaces you can manage (admins: every user's)
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-workspaces" -Method Delete -Headers $headers`,
                 javascript: `// Bearer Token Authentication
 const headers = { 'Authorization': 'Bearer your_bearer_token' };
 
@@ -7611,7 +7645,10 @@ const workspaces = await fetch('${baseUrl}/api/agent-workspaces', { headers }).t
 console.log(workspaces);
 
 // Delete one workspace (owner + bucket from the list response)
-await fetch('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', { method: 'DELETE', headers });`
+await fetch('${baseUrl}/api/agent-workspaces/OWNER/BUCKET', { method: 'DELETE', headers });
+
+// Clear ALL workspaces you can manage (admins: every user's)
+await fetch('${baseUrl}/api/agent-workspaces', { method: 'DELETE', headers });`
             },
             '/api/agent-workspaces/file': {
                 curl: `# Bearer Token Authentication
@@ -13628,9 +13665,20 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                 : ' You see workspaces tied to your own account.'}
                                         </Typography>
                                     </Box>
-                                    <Button variant="outlined" size="small" onClick={loadAgentWorkspaces} disabled={agentWsLoading}>
-                                        {agentWsLoading ? 'Refreshing…' : 'Refresh'}
-                                    </Button>
+                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                        <Button variant="outlined" size="small" onClick={loadAgentWorkspaces} disabled={agentWsLoading}>
+                                            {agentWsLoading ? 'Refreshing…' : 'Refresh'}
+                                        </Button>
+                                        <Button
+                                            variant="outlined"
+                                            size="small"
+                                            color="error"
+                                            onClick={() => setAgentWsClearOpen(true)}
+                                            disabled={agentWsLoading || agentWsClearing || agentWorkspaces.length === 0}
+                                        >
+                                            Clear all
+                                        </Button>
+                                    </Box>
                                 </Box>
 
                                 {agentWsLoading && agentWorkspaces.length === 0 ? (
@@ -13654,6 +13702,23 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                             : sectionEmpty('No webchat or shared workspaces.')}
                                     </>
                                 )}
+
+                                <Dialog open={agentWsClearOpen} onClose={() => !agentWsClearing && setAgentWsClearOpen(false)}>
+                                    <DialogTitle>Clear all workspaces?</DialogTitle>
+                                    <DialogContent>
+                                        <Typography variant="body2">
+                                            This permanently deletes <strong>all {agentWorkspaces.length} workspace{agentWorkspaces.length === 1 ? '' : 's'}</strong> listed here
+                                            {' '}({agentWorkspaces.reduce((n, w) => n + (w.fileCount || 0), 0)} files, {formatBytes(agentWorkspaces.reduce((n, w) => n + (w.sizeBytes || 0), 0))})
+                                            {agentWsIsAdmin ? ' across every user and API key' : ''} — every agent workspace and every webchat session workspace, with everything stored in them. Running agents will start from an empty workspace. This cannot be undone.
+                                        </Typography>
+                                    </DialogContent>
+                                    <DialogActions>
+                                        <Button onClick={() => setAgentWsClearOpen(false)} disabled={agentWsClearing}>Cancel</Button>
+                                        <Button onClick={confirmClearAllAgentWorkspaces} color="error" variant="contained" disabled={agentWsClearing}>
+                                            {agentWsClearing ? 'Clearing…' : 'Clear all'}
+                                        </Button>
+                                    </DialogActions>
+                                </Dialog>
 
                                 <Dialog open={!!agentWsDeleteTarget} onClose={() => !agentWsDeleting && setAgentWsDeleteTarget(null)}>
                                     <DialogTitle>Delete workspace?</DialogTitle>
