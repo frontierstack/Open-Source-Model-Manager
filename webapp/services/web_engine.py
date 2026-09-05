@@ -89,9 +89,10 @@ DEFAULT_PROFILE = os.environ.get('WEB_ENGINE_IMPERSONATE', 'chrome')
 # family sometimes passes where the first is blocked (Akamai/Cloudflare keep
 # per-fingerprint reputations).
 PROFILE_ROTATION = ['chrome', 'safari', 'firefox', 'edge', 'chrome_android']
-HEADER_KEEP = ('server', 'cf-ray', 'cf-mitigated', 'cf-cache-status', 'x-datadome', 'x-iinfo',
-               'x-sucuri-id', 'x-akamai-transformed', 'retry-after', 'content-type', 'location',
-               'x-amzn-waf-action', 'x-cdn', 'via', 'x-cache', 'set-cookie')
+HEADER_KEEP = ('server', 'cf-ray', 'cf-mitigated', 'cf-cache-status', 'x-datadome', 'x-datadome-cid', 'x-iinfo',
+               'x-sucuri-id', 'x-akamai-transformed', 'akamai-grn', 'retry-after', 'content-type', 'location',
+               'x-amzn-waf-action', 'x-cdn', 'via', 'x-cache', 'set-cookie',
+               'x-kpsdk-ct', 'x-kpsdk-cd', 'x-kpsdk-h', 'x-vercel-mitigated', 'x-vercel-id', 'x-px-authorization', 'x-queueit-token')
 
 
 def log(*a):

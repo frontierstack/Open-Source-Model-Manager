@@ -173,6 +173,7 @@ const attachmentStore = require('./services/attachmentStore');
 // "Is this actually content?" — shared with the browser service and the
 // automation engine so every layer draws the line in the same place.
 const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
+const pageObstacles = require('./services/pageObstacles');
 const urlRecovery = require('./services/urlRecovery');
 
 // Automation engine (in-process DAG executor) + per-user run-history store.
@@ -13347,7 +13348,8 @@ function extractTextFromHtml(html, maxLength = 5000) {
 // Whitelisted response headers we inspect for WAF signatures / rate-limit hints.
 // Kept internal (opt-in via includeHeaders, like rawHtml) — never rides into a
 // tool result / API response.
-const WAF_HEADER_KEYS = ['server', 'cf-ray', 'cf-mitigated', 'x-datadome', 'set-cookie', 'x-iinfo', 'x-cdn', 'x-sucuri-id', 'x-akamai-transformed', 'retry-after'];
+const WAF_HEADER_KEYS = ['server', 'cf-ray', 'cf-mitigated', 'x-datadome', 'x-datadome-cid', 'set-cookie', 'x-iinfo', 'x-cdn', 'x-sucuri-id', 'x-akamai-transformed', 'akamai-grn', 'retry-after',
+    'x-kpsdk-ct', 'x-kpsdk-cd', 'x-kpsdk-h', 'x-amzn-waf-action', 'x-vercel-mitigated', 'x-vercel-id', 'x-px-authorization', 'x-queueit-token'];
 function pickHeaders(h) {
     const out = {};
     if (!h) return out;
@@ -13567,53 +13569,24 @@ function isContentTooThin(content, url, rawHtml) {
 // 15-25s cascade or fast-fails a working host). WEAK = generic/widget mentions a
 // security blog or checkout page legitimately contains ("captcha", "bot detection",
 // "enable cookies") — HINT-ONLY, never gate a strike or an escalation.
-const CHALLENGE_MARKERS_STRONG = [
-    /just a moment/i, /checking your browser/i, /cf-?challenge/i,
-    /cf-browser-verification/i, /challenge-platform/i, /__cf_chl_/i,
-    /attention required/i, /ddos protection by cloudflare/i, /ray id:/i,
-    /error 10(15|20)/i, /cf-turnstile/i, /perimeterx/i, /px-captcha/i,
-    /datadome/i, /captcha-delivery\.com/i, /geo\.captcha-delivery/i,
-    /imperva/i, /incapsula/i, /_incapsula_/i, /distil networks/i, /sucuri/i,
-    /pardon our interruption/i, /verifying you are human/i,
-    /enable javascript and cookies to continue/i, /unusual traffic/i,
-    /needs to review the security of your connection/i,
-    // AWS WAF: its challenge SDK exposes these verbatim (and its token XHRs used
-    // to be captured INTO the extracted content, where nothing recognised them).
-    /awswaf/i, /aws-waf-token/i, /awswaf_session_storage/i,
-];
-// Deliberately NOT a strike/escalation trigger: /distil networks/ is used above
-// instead of bare /distil/ because this repo is ML-heavy ("knowledge distillation").
-const CHALLENGE_MARKERS_WEAK = [
-    /\bcaptcha\b/i, /recaptcha/i, /hcaptcha/i, /h-captcha/i, /turnstile/i,
-    /access denied/i, /one more step/i, /enable cookies/i, /bot detection/i,
-    /are you a (?:robot|human)/i, /please verify you('| a)re human/i,
-];
+const CHALLENGE_MARKERS_STRONG = pageObstacles.STRONG_WALL_MARKERS;
+const CHALLENGE_MARKERS_WEAK = pageObstacles.WEAK_WALL_MARKERS;
 const CHALLENGE_MARKERS = [...CHALLENGE_MARKERS_STRONG, ...CHALLENGE_MARKERS_WEAK];
 // strongOnly scans only the high-precision tier — pass it for any escalation or
 // host-block-strike decision. Default (full scan) is for the model-facing hint,
 // where a false positive merely adds a "maybe retry with stealth" note.
 function looksLikeChallenge(text, { strongOnly = false } = {}) {
     if (!text) return false;
-    const blob = String(text).slice(0, 8000);
-    return (strongOnly ? CHALLENGE_MARKERS_STRONG : CHALLENGE_MARKERS).some((re) => re.test(blob));
+    // Tiered in pageObstacles: structural wall tokens at any length, vendor
+    // NAMES only on a short body (a security article that mentions DataDome /
+    // Imperva in prose must never strike the host or escalate).
+    return strongOnly ? pageObstacles.hasStrongWallMarker(text) : pageObstacles.hasAnyWallMarker(text);
 }
 // WAF signature from HTTP status + response headers (localization/obfuscation-proof
 // where body markers fail). A vendor header's PRESENCE means "the site USES this WAF",
 // NOT "it blocked us" — so every vendor rule is gated on a block status; only an
 // explicit cf-mitigated:challenge header may fire on a 200.
-function challengeFromHeaders(status, h) {
-    h = h || {};
-    const server = String(h['server'] || '');
-    const sc = Array.isArray(h['set-cookie']) ? h['set-cookie'].join(';') : String(h['set-cookie'] || '');
-    if (String(h['cf-mitigated'] || '').toLowerCase() === 'challenge') return 'cloudflare';
-    if (![401, 403, 406, 429, 503].includes(status)) return null;
-    if (/cloudflare/i.test(server) || h['cf-ray']) return 'cloudflare';
-    if (h['x-datadome'] || /datadome/i.test(sc)) return 'datadome';
-    if (h['x-iinfo'] || /^visid_incap|incap_ses/i.test(sc) || /incapsula|imperva/i.test(server)) return 'incapsula';
-    if (/sucuri/i.test(server) || h['x-sucuri-id']) return 'sucuri';
-    if (h['x-akamai-transformed']) return 'akamai';
-    return null;
-}
+function challengeFromHeaders(status, h) { return pageObstacles.wafFromHeaders(status, h); }
 
 // The consolidated `web` chat tool routes to web_search / fetch_url / etc.
 // internally. Map a `web` call to its EFFECTIVE inner operation so the existing
@@ -14181,11 +14154,37 @@ async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
     const maxLength = options.maxLength || 12000;
 
+    // Layer trace — every layer records what it saw. Surfaces as `tried` on the
+    // result (the model learns the cascade ALREADY escalated, so "retry in the
+    // browser" is never suggested after the browser ran) and in the log line.
+    const t0 = Date.now();
+    const trace = [];
+    const tried = { impersonate: false, browser: false };
+    // A 404/410 from a layer that reached the origin is the host's REAL answer.
+    // Falling through to the axios last resort after it turned a plain missing
+    // page into "bot_protected" (axios got the host's usual 403 for non-browser
+    // clients) — the model then hunted mirrors for an article that never existed.
+    let notFound = 0;
+    const noteStatus = (st) => { if (st === 404 || st === 410) notFound = st; };
+    const notFoundResult = () => finish({ success: false, url, error: `HTTP ${notFound}`, message: `The page does not exist (HTTP ${notFound} from the origin). Do not retry variants of this URL — search for the title instead.` });
+    const mark = (layer, verdict) => { trace.push(`${layer}:${verdict}`); };
+    const traceStr = () => trace.join(' → ');
+    const finish = (r) => {
+        r.tried = traceStr();
+        console.log(`[fetchUrlContent] ${url} → ${r.success ? 'served' : 'FAILED'} (${r.source || r.error || '?'}, ${(r.content || '').length} chars) after ${Date.now() - t0}ms: ${r.tried}${r.obstacle ? ` [obstacle ${r.obstacle.kind}${r.obstacle.vendor ? '/' + r.obstacle.vendor : ''}]` : ''}${r.dismissed ? ` [dismissed ${r.dismissed.map(d => d.kind).join('+')}]` : ''}`);
+        return r;
+    };
+    // Classify a layer's answer. `escalate` = do not serve this as the page.
+    const obstacleOf = (layer, r, status) => pageObstacles.classifyObstacle({
+        title: r && r.title, content: r && r.content, rawHtml: r && (r.rawHtml || r.bodyHead),
+        status: status || 0, headers: r && (r.respHeaders || r.headers), source: layer, url, tried,
+    });
+
     // Bot-blocked host fast-fail: this host defeated the ENTIRE cascade within
     // the last few minutes — don't re-burn 15-25s proving it again.
     const hostBlocked = hostBlockReason(url);
     if (hostBlocked) {
-        return { success: false, url, error: 'bot_protected', message: hostBlocked, source: 'host-block-memo' };
+        return { success: false, url, error: 'bot_protected', message: hostBlocked, source: 'host-block-memo', tried: 'host-block-memo' };
     }
 
     // Escalation memory: start at the layer that served this host last time.
@@ -14214,6 +14213,13 @@ async function fetchUrlContent(url, options = {}) {
     });
     if (fileResult) return fileResult;
 
+    // A layer that returned READABLE content behind a non-escalating obstacle
+    // (login wall / paywall / geo block — a real browser cannot log in or pay
+    // either) is served with the obstacle attached, unless a later layer does
+    // better. `best` keeps the longest such answer.
+    let best = null;
+    const keepBest = (r) => { if (!best || (r.content || '').length > (best.content || '').length) best = r; };
+
     // ---- Axios fast path -------------------------------------------------
     // A cheap HTTP GET first. The Scrapling-first cascade below launches a
     // Python StealthyFetcher browser subprocess on EVERY url (~3s warm, and a
@@ -14226,14 +14232,14 @@ async function fetchUrlContent(url, options = {}) {
     // Skipped for includeLinks callers (axios can't extract links).
     // When axios sees a DEFINITE SPA shell, force the cascade through to a real
     // browser even if a later stage (Scrapling) returns a short-but->500 shell —
-    // Scrapling is a stealth FETCHER, not a full JS engine, so a pure client-
+    // Scrapling is a stealth FETCHER, not a JS engine, so a pure client-
     // rendered app (e.g. vuejs.org) otherwise dead-ends at a ~700-char nav shell.
     let forceBrowser = memoLayer === 'playwright';
     if (fastPathWillRun) {
         try {
             const ax = typeof htmlOut.body === 'string'
-                ? await fetchUrlContentAxios(url, 0, maxLength, { includeRawHtml: true, prefetchedHtml: htmlOut.body })
-                : await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true, probeDocument: true });
+                ? await fetchUrlContentAxios(url, 0, maxLength, { includeRawHtml: true, includeHeaders: true, prefetchedHtml: htmlOut.body })
+                : await fetchUrlContentAxios(url, Math.min(timeout, 4000), maxLength, { includeRawHtml: true, includeHeaders: true, probeDocument: true });
             // Not HTML: this is the extensionless-document case the HEAD probe used
             // to catch. We already have the bytes AND the headers, so hand both to
             // the file parser — no HEAD, no second download.
@@ -14246,29 +14252,38 @@ async function fetchUrlContent(url, options = {}) {
             }
             if (ax && ax.success) {
                 const tooThin = isContentTooThin(ax.content || '', url, ax.rawHtml);
-                // Scan the RAW html — a cf-challenge / noscript interstitial is stripped
-                // out of the extracted text, so the text-only scan never saw it. STRONG
-                // only: a benign page that merely mentions "captcha"/"bot detection"
-                // (common on this user's security content) must NOT get force-escalated
-                // into the 15-25s cascade — real walls carry a strong vendor marker.
-                const challenged = looksLikeChallenge(ax.rawHtml || ax.content || '', { strongOnly: true });
-                if (ax.content && !tooThin && !challenged) {
+                // Classify the answer: a Cloudflare/DataDome interstitial, a consent
+                // wall, an age gate or a JS-required shell must NOT be served as the
+                // page (STRONG markers only for the bot tier — a security blog that
+                // merely mentions "captcha" must not be force-escalated into the
+                // 15-25s cascade). Scans the RAW html too: a cf-challenge / noscript
+                // interstitial is stripped out of the extracted text.
+                const obs = obstacleOf('axios-fast', ax, ax.status || 200);
+                if (ax.content && !tooThin && !(obs && obs.escalate)) {
                     setHostMemo(url, null);   // host is cheap — clear any stale escalation
                     clearHostBotWall(url);    // a clean serve clears not-yet-blocking strikes
-                    return {
+                    mark('axios-fast', obs ? obs.kind : 'ok');
+                    return finish({
                         success: true,
                         url,
                         content: smartTruncate(ax.content, maxLength),
                         title: ax.title || '',
                         links: [],
                         source: 'axios-fast',
-                    };
+                        ...(obs ? { obstacle: obs } : {}),
+                    });
                 }
+                mark('axios-fast', obs ? `${obs.kind}${obs.vendor ? '/' + obs.vendor : ''}` : (tooThin ? 'thin' : 'shell'));
+                // The browser dismisses consent overlays / age gates and renders JS
+                // shells — go straight there rather than through a stealth fetcher
+                // that will return the same wall.
+                if (obs && obs.browserHelps) forceBrowser = true;
                 if (ax.rawHtml) {
                     const sig = htmlShellSignal(ax.rawHtml, String(ax.content || '').trim().length);
                     if (sig.isShell) forceBrowser = true;
                 }
             } else if (ax && /timeout|ECONNABORTED|ERR_BAD_RESPONSE/i.test(String(ax.error || ''))) {
+                mark('axios-fast', 'timeout');
                 // The probe GET is capped at 4s, but a document download gets the
                 // caller's full budget. A LARGE extensionless PDF can therefore
                 // out-run the probe. Fall back to the original cheap HEAD probe so
@@ -14276,8 +14291,12 @@ async function fetchUrlContent(url, options = {}) {
                 // handed to Scrapling/Playwright (which cannot read a PDF at all).
                 const probed = await fetchUrlAsFile(url, { timeout, maxLength });
                 if (probed) return probed;
+            } else if (ax) {
+                const st = ax.status || (String(ax.error || '').match(/HTTP (\d{3})/) || [])[1] || 0;
+                const waf = pageObstacles.wafFromHeaders(st, ax.respHeaders);
+                mark('axios-fast', `${ax.error ? String(ax.error).replace(/^Request failed with status code /, 'HTTP ').slice(0, 24) : 'fail'}${waf ? '/' + waf : ''}`);
             }
-        } catch (_) { /* fall through to the impersonate → Scrapling → Playwright cascade */ }
+        } catch (_) { mark('axios-fast', 'error'); /* fall through to the impersonate → Scrapling → Playwright cascade */ }
     }
 
     // ---- Impersonate layer (curl_cffi Chrome TLS/JA3, NO browser) ---------
@@ -14285,17 +14304,20 @@ async function fetchUrlContent(url, options = {}) {
     // layer: a large class of hosts 403 Node's axios purely on its TLS/HTTP2
     // fingerprint, then serve a real Chrome fingerprint in ~0.3-0.6 s with no
     // browser at all (bleepingcomputer 3.4s→0.5s, nytimes 6.8s→0.4s, zillow
-    // 9.2s→0.6s measured). It runs when axios did NOT already serve the page
-    // and the page is NOT a proven JS SPA shell (impersonate can't run JS, so a
-    // shell would just come back thin and waste the round-trip → straight to the
-    // browser instead). memoLayer 'impersonate' jumps here directly next time.
+    // 9.2s→0.6s measured). The engine ROTATES fingerprints (chrome → safari →
+    // firefox) on a bot-status, since hosts keep per-JA3 reputations.
     // Note: runs EVEN when axios flagged an SPA shell (forceBrowser) — curl_cffi's
     // real Chrome fingerprint frequently receives server-rendered HTML that the
     // fingerprint-blocked axios GET did not (nytimes: axios shell → impersonate
     // 5.6k readable chars, ~6s saved vs the browser). isContentTooThin still
     // routes a genuine JS SPA (vuejs: impersonate shell → thin → browser) onward.
-    if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()
-        && memoLayer !== 'playwright' && memoLayer !== 'scrapling') {
+    // Factored out because it is ALSO the fallback when a host memoized to the
+    // browser layer fails there: the memo used to skip this layer entirely, so a
+    // host the browser could no longer read (a 403 the impersonated fetch with
+    // rotation reads fine) was declared bot-blocked without ever trying it.
+    const tryImpersonate = async () => {
+        if (!(scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable())) return null;
+        tried.impersonate = true;
         try {
             const imp = await scraplingService.fetchImpersonated(url, {
                 timeout: Math.min(timeout, 15000), maxLength, extractLinks: !!options.includeLinks,
@@ -14303,8 +14325,7 @@ async function fetchUrlContent(url, options = {}) {
             const impText = String(imp && imp.content || '');
             const impLen = impText.trim().length;
             const impStatus = imp && imp.httpStatus;
-            const impWaf = imp ? challengeFromHeaders(impStatus || 0, imp.headers) : null;
-            const impChallenged = looksLikeChallenge(`${imp && imp.title || ''}\n${imp && imp.bodyHead || impText}`, { strongOnly: true });
+            noteStatus(impStatus);
             // Shell decision from the engine's TRUE full-markup stats — bodyHead is
             // capped at 6k, so htmlShellSignal() over it can't see a JS app-shell's
             // real size/script-count and would serve a 690-char nav shell as success
@@ -14316,75 +14337,92 @@ async function fetchUrlContent(url, options = {}) {
                    && (imp.htmlLen > 30000 || (imp.scriptCount || 0) >= 8)
                    && (impLen / imp.htmlLen) < 0.08)
                 : false;
+            const obs = imp ? obstacleOf('impersonate', imp, impStatus || (imp.success ? 200 : 0)) : null;
             const impThin = !impText || isContentTooThin(impText, url) || (impShell && impLen < SHELL_TEXT_FLOOR);
-            if (imp && imp.success && impText && !impThin && !impChallenged) {
+            if (imp && imp.success && impText && !impThin && !(obs && obs.escalate)) {
                 setHostMemo(url, 'impersonate');   // skip axios+scrapling here next time
                 clearHostBotWall(url);
-                return {
+                mark('impersonate', `${obs ? obs.kind : 'ok'}${imp.rotated ? '/rotated:' + imp.profile : ''}`);
+                return finish({
                     success: true, url,
                     content: smartTruncate(impText, maxLength),
                     title: imp.title || '',
                     links: Array.isArray(imp.links) ? imp.links : [],
                     source: 'impersonate',
-                };
+                    ...(obs ? { obstacle: obs } : {}),
+                });
             }
-            // A hard bot-status or a challenge body here is real evidence the host
-            // walls non-browser clients — record it so a genuine wall fast-fails,
-            // but keep cascading to the stealth BROWSER, which passes many of these.
-            if (imp && (impWaf || impChallenged || [401, 403, 406, 429, 503].includes(impStatus))) {
-                if (impStatus === 503 && !impWaf) { /* transient — let the browser try, no strike yet */ }
-                // strike only on a strong signal; the browser attempt below may still succeed
-            }
+            mark('impersonate', imp ? `${obs ? `${obs.kind}${obs.vendor ? '/' + obs.vendor : ''}` : (impThin ? 'thin' : (imp.error || 'fail'))}${impStatus ? ` ${impStatus}` : ''}${imp.rotated ? '/rotated' : ''}` : 'no-result');
+            if (imp && imp.success && impText && obs && !obs.escalate) keepBest({ success: true, url, content: smartTruncate(impText, maxLength), title: imp.title || '', links: [], source: 'impersonate', obstacle: obs });
+            if (obs && obs.browserHelps) forceBrowser = true;
             // If the impersonate body proves an SPA shell, skip straight to the browser.
             if (impShell) forceBrowser = true;
-        } catch (_) { /* fall through to Scrapling → Playwright */ }
+        } catch (e) { mark('impersonate', 'error'); /* fall through to Scrapling → Playwright */ }
+        return null;
+    };
+    if (memoLayer !== 'playwright' && memoLayer !== 'scrapling') {
+        const served = await tryImpersonate();
+        if (served) return served;
     }
 
     // Try Scrapling first if available (best CAPTCHA evasion). Skipped when the
     // memo says this host needed a real browser last time — Scrapling is a
     // stealth fetcher, not a JS engine, and re-proving that costs seconds.
-    if (scraplingService && memoLayer !== 'playwright') {
+    // Also skipped when a cheaper layer already proved the page is a consent /
+    // age-gate / JS shell the browser has to handle (forceBrowser) — the stealth
+    // fetcher would return the same wall.
+    if (scraplingService && memoLayer !== 'playwright' && !(forceBrowser && memoLayer !== 'scrapling')) {
         try {
             const scraplingResult = await scraplingService.fetchUrl(url, {
                 timeout,
                 extractLinks: options.includeLinks || false
             });
+            tried.browser = true;   // the stealth layer is a real (patchright) browser
 
             // A duplicated/site-name title ("Mastodon - Mastodon") with little text is
             // a hydration shell Scrapling didn't render — escalate even though the
             // text cleared the thin floor (Scrapling output carries no rawHtml, so
             // htmlShellSignal can't see it; the title is the cheap available signal).
+            noteStatus(scraplingResult.httpStatus);
             const sTitle = String(scraplingResult.title || '');
             const titleShell = /^(.+?)\s*[-–|]\s*\1$/i.test(sTitle) && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
             // axios already proved this is an SPA shell — a still-short Scrapling
             // result means Scrapling didn't render the app either; go to Playwright.
             const stillShell = forceBrowser && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
-            if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell) {
+            const obs = scraplingResult.success ? obstacleOf('scrapling', scraplingResult, scraplingResult.httpStatus || 200) : null;
+            if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell && !(obs && obs.escalate)) {
                 setHostMemo(url, 'scrapling');   // skip the axios probe for this host next time
-                // Guard the strike-clear: this path doesn't re-check for a challenge, so
-                // don't clear if the rendered body is itself a strong-marker wall.
-                if (!looksLikeChallenge(scraplingResult.content || '', { strongOnly: true })) clearHostBotWall(url);
-                return {
+                clearHostBotWall(url);
+                mark('scrapling', obs ? obs.kind : 'ok');
+                return finish({
                     success: true,
                     url,
                     content: smartTruncate(scraplingResult.content, maxLength),
                     title: scraplingResult.title || '',
                     links: scraplingResult.links || [],
-                    source: 'scrapling'
-                };
+                    source: 'scrapling',
+                    ...(obs ? { obstacle: obs } : {}),
+                });
             }
+            mark('scrapling', scraplingResult.success ? (obs ? `${obs.kind}${obs.vendor ? '/' + obs.vendor : ''}` : ((titleShell || stillShell) ? 'shell' : 'thin')) : String(scraplingResult.error || 'fail').slice(0, 40));
+            if (scraplingResult.success && obs && obs.kind === 'bot_challenge' && obs.strength === 'strong') noteHostBotWall(url, `scrapling-${obs.vendor || 'challenge'}`);
             // Content too thin / shell / JS-required — fall through to Playwright for JS rendering
             if (scraplingResult.success && (isContentTooThin(scraplingResult.content, url) || titleShell || stillShell)) {
                 console.log(`[fetchUrlContent] Scrapling returned ${(titleShell || stillShell) ? 'a shell' : 'thin content'} for ${url} (${(scraplingResult.content || '').length} chars), trying Playwright for JS rendering`);
             }
         } catch (scraplingError) {
+            mark('scrapling', 'error');
             console.log(`Scrapling fetch failed for ${url}: ${scraplingError.message}`);
         }
     }
 
-    // Use Playwright if available (handles JS-rendered pages, avoids bot detection)
+    // Use Playwright if available (handles JS-rendered pages, avoids bot detection,
+    // waits out Cloudflare-style auto-clearing challenges, dismisses consent
+    // overlays and simple age gates).
     if (playwrightEnabled && playwrightService) {
+        let pwFailed = null;
         try {
+            tried.browser = true;
             const result = await playwrightService.fetchUrlContent(url, {
                 timeout: Math.max(timeout, 20000), // Allow more time for JS-heavy pages
                 waitForJS: options.waitForJS !== false,
@@ -14400,34 +14438,64 @@ async function fetchUrlContent(url, options = {}) {
                 // read the page) and wiped the strikes that would have flagged the
                 // wall — so the failure re-fed itself on every later run.
                 const unusable = contentUnusableReason(result.content || '');
-                if (unusable) {
-                    console.log(`[fetchUrlContent] Playwright returned no usable content for ${url} — ${unusable}`);
+                const obs = obstacleOf('playwright', result, result.httpStatus || 200);
+                if (unusable || (obs && (obs.kind === 'bot_challenge' || obs.kind === 'blocked'))) {
+                    console.log(`[fetchUrlContent] Playwright returned no usable content for ${url} — ${unusable || obs.kind}`);
                     setHostMemo(url, null);          // re-probe the cheap layer next time
                     // Strike the host only on POSITIVE evidence of a wall. "No
                     // usable content" on its own may just be an extraction miss,
                     // and a strike would fast-fail the whole host — including the
                     // cheap layer that may well read it fine.
-                    if (looksLikeChallenge(result.content || '', { strongOnly: true })) {
-                        noteHostBotWall(url, 'playwright-challenge-content');
+                    if (obs && obs.kind === 'bot_challenge' && obs.strength === 'strong') {
+                        noteHostBotWall(url, `playwright-${obs.vendor || 'challenge'}`);
                     }
-                    return { ...result, source: 'playwright', contentUnusable: unusable };
+                    mark('playwright', obs ? `${obs.kind}${obs.vendor ? '/' + obs.vendor : ''}` : 'unusable');
+                    // The browser is the last content layer; if the cheaper
+                    // impersonate layer never ran (host was memoized to the
+                    // browser), give it its turn before giving up.
+                    if (!tried.impersonate) { const served = await tryImpersonate(); if (served) return served; }
+                    if (best) return finish(best);
+                    return finish({ ...result, success: false, error: obs ? obs.kind : 'no_usable_content', source: 'playwright', ...(unusable ? { contentUnusable: unusable } : {}), ...(obs ? { obstacle: obs, message: obs.hint } : {}) });
+                }
+                if (obs && obs.escalate) {
+                    // Consent / age gate the dismissal could not clear, a JS shell
+                    // that never rendered, or almost no text: nothing else can do
+                    // better, so serve what we have WITH the verdict — the hint
+                    // tells the model whether mode:"interact" or another source
+                    // is the way forward.
+                    mark('playwright', obs.kind);
+                    setHostMemo(url, null);
+                    if (best && (best.content || '').length > (result.content || '').length * 1.5) return finish(best);
+                    return finish({ ...result, source: 'playwright', obstacle: obs });
                 }
                 setHostMemo(url, 'playwright');   // go straight to the browser for this host next time
-                if (!looksLikeChallenge(result.content || '', { strongOnly: true })) clearHostBotWall(url);
-                return { ...result, source: 'playwright' };
+                clearHostBotWall(url);
+                mark('playwright', `${obs ? obs.kind : 'ok'}${result.dismissed ? '/dismissed:' + result.dismissed.map(d => d.kind).join('+') : ''}`);
+                return finish({ ...result, source: 'playwright', ...(obs ? { obstacle: obs } : {}) });
             }
-
-            // If Playwright fails, fall back to axios for simple HTML pages
-            console.log(`Playwright fetch failed for ${url}, trying axios fallback`);
-            return await axiosLastResort(url, timeout);
+            pwFailed = String(result.error || 'failed');
         } catch (error) {
-            console.error(`Playwright error for ${url}:`, error.message);
-            return await axiosLastResort(url, timeout);
+            pwFailed = String(error && error.message || error);
+            console.error(`Playwright error for ${url}:`, pwFailed);
         }
+        mark('playwright', pwFailed.replace(/^HTTP /, 'HTTP ').slice(0, 40));
+        { const m = /^HTTP (404|410)\b/.exec(pwFailed); if (m) noteStatus(parseInt(m[1], 10)); }
+        if (notFound) { setHostMemo(url, null); return notFoundResult(); }
+        console.log(`Playwright fetch failed for ${url} (${pwFailed}), trying ${tried.impersonate ? 'axios' : 'impersonate'} fallback`);
+        // A memoized-browser host that now fails in the browser must not skip
+        // the impersonate layer (fingerprint rotation reads many 403s the browser
+        // gets). Unpin the memo either way — the browser is no longer the layer
+        // that serves this host.
+        setHostMemo(url, null);
+        if (!tried.impersonate) { const served = await tryImpersonate(); if (served) return served; }
+        if (best) return finish(best);
+        return finish(await axiosLastResort(url, timeout));
     }
 
     // Fallback to axios
-    return await axiosLastResort(url, timeout);
+    if (best) return finish(best);
+    if (notFound) return notFoundResult();
+    return finish(await axiosLastResort(url, timeout));
 }
 
 // URL fetch endpoint for chat - fetches content from URLs in messages
@@ -14465,6 +14533,9 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
                             content: result.content?.slice(0, maxLength) || '',
                             title: result.title || '',
                             source: result.source || 'unknown',
+                            ...(result.tried ? { tried: result.tried } : {}),
+                            ...(result.dismissed ? { dismissed: result.dismissed } : {}),
+                            ...(result.obstacle ? { obstacle: { kind: result.obstacle.kind, vendor: result.obstacle.vendor, action: result.obstacle.action, evidence: result.obstacle.evidence }, hint: result.obstacle.hint } : {}),
                         };
                     } else {
                         return {
@@ -14472,6 +14543,8 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
                             success: false,
                             error: result.error || 'Fetch failed',
                             ...(result.message ? { message: result.message } : {}),
+                            ...(result.tried ? { tried: result.tried } : {}),
+                            ...(result.obstacle ? { obstacle: { kind: result.obstacle.kind, vendor: result.obstacle.vendor, action: result.obstacle.action, evidence: result.obstacle.evidence }, hint: result.obstacle.hint } : {}),
                         };
                     }
                 } catch (error) {
@@ -27165,15 +27238,21 @@ app.use((req, res) => {
     // weak) — the divergent local copy that used to live here is gone (single
     // source of truth). The HINT is intentionally broad; only the STRONG tier gates
     // a host-block strike (see the noteHostBotWall call in fetch_url's execute).
-    function detectBotChallenge({ title = '', content = '' } = {}) {
-        const blob = `${title}\n${content}`.slice(0, 8000);
-        const hit = CHALLENGE_MARKERS.find(rx => rx.test(blob));
-        if (hit) return `bot protection detected (${hit.source}) — retry with scrapling_fetch for better evasion`;
-        const trimmed = typeof content === 'string' ? content.trim() : '';
-        if (trimmed.length < 400) {
-            return 'response body is very thin — page may be JS-gated or bot-challenged; if unexpected, retry with scrapling_fetch';
-        }
-        return null;
+    // The model-facing shape of a page obstacle (see services/pageObstacles.js):
+    // what stood in the way, which vendor, and the one concrete next step. The
+    // booleans the cascade uses internally (escalate / browserHelps) are dropped.
+    function publicObstacle(obs) {
+        if (!obs) return null;
+        return { kind: obs.kind, ...(obs.vendor ? { vendor: obs.vendor } : {}), strength: obs.strength, evidence: obs.evidence, action: obs.action };
+    }
+    // Hint for a result that a single LAYER produced (playwright_fetch /
+    // scrapling_fetch / crawl) — the consolidated cascade attaches its own
+    // `obstacle` in fetchUrlContent. Also covers the plain "almost no text"
+    // case, which used to be the only non-bot hint and pointed at a tool the
+    // model cannot call.
+    function detectBotChallenge({ title = '', content = '', layer = 'playwright', url = '', status = 0 } = {}) {
+        const obs = pageObstacles.classifyObstacle({ title, content, status, source: layer, url });
+        return obs ? { obstacle: publicObstacle(obs), hint: obs.hint } : null;
     }
 
     // Shopping/product pages inject price & stock client-side, so a fetch can
@@ -27189,6 +27268,60 @@ app.use((req, res) => {
         if (!content || !PRODUCT_SIGNALS.test(content)) return null;
         return 'this looks like a shopping/product page; price and availability are typically loaded dynamically and are often missing or out of date in scraped HTML. ' +
             'If the exact figure you need is not clearly present here, re-fetching this URL with another scraper will hit the same page — use web_search to get it from another source and cite that source.';
+    }
+
+    // Internet Archive snapshot of a page the live web will not give us.
+    // availability API → closest snapshot → the `id_` raw-original form (no
+    // Wayback toolbar/rewriting) → the same axios text extractor as the fast
+    // path. Returns null unless the snapshot is real, readable content (a
+    // snapshot of the same paywall/login wall is rejected by the classifier).
+    const ARCHIVE_TIMEOUT_MS = parseInt(process.env.ARCHIVE_FETCH_TIMEOUT_MS, 10) || 12000;
+    // web.archive.org rate-limits by IP (HTTP 429, no Retry-After); once it does,
+    // every further attempt for a while is a wasted round-trip on an already-failed
+    // read, so back off. Env-tunable.
+    const ARCHIVE_COOLDOWN_MS = parseInt(process.env.ARCHIVE_COOLDOWN_MS, 10) || 10 * 60 * 1000;
+    let archiveCoolingUntil = 0;
+    async function fetchArchivedCopy(url, maxLength) {
+        if (!/^https?:\/\//i.test(String(url || ''))) return null;
+        if (Date.now() < archiveCoolingUntil) return null;
+        const max = Math.min(100_000, Math.max(1000, parseInt(maxLength || 15000, 10)));
+        try {
+            const avail = await axios.get('https://archive.org/wayback/available', {
+                params: { url }, timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ModelServer/1.0)' },
+            });
+            const snap = avail && avail.data && avail.data.archived_snapshots && avail.data.archived_snapshots.closest;
+            if (!snap || !snap.available || !snap.url || (snap.status && String(snap.status) !== '200')) return null;
+            const rawUrl = String(snap.url).replace(/^http:\/\//i, 'https://').replace(/\/web\/(\d{4,14})\//, '/web/$1id_/');
+            // web.archive.org 429s the Node/curl fingerprints from this host but
+            // answers a rotated browser fingerprint (measured: firefox profile 200
+            // where axios/curl got 429 with `x-rl: 0`) — the impersonate engine
+            // with rotation goes first, plain axios is the fallback.
+            let r = null;
+            if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
+                const imp = await scraplingService.fetchImpersonated(rawUrl, { timeout: ARCHIVE_TIMEOUT_MS, maxLength: max }).catch(() => null);
+                if (imp && imp.success && imp.content) r = { success: true, content: imp.content, title: imp.title || '', rawHtml: imp.bodyHead || '' };
+                else if (imp && imp.httpStatus === 429) r = { success: false, status: 429 };
+            }
+            if (!r || (!r.success && r.status !== 429)) {
+                r = await fetchUrlContentAxios(rawUrl, ARCHIVE_TIMEOUT_MS, max, { includeRawHtml: true, includeHeaders: true });
+            }
+            if (r && (r.status === 429 || /HTTP 429/.test(String(r.error || '')))) {
+                archiveCoolingUntil = Date.now() + ARCHIVE_COOLDOWN_MS;
+                console.warn(`[web] Internet Archive rate-limited this host (429 on every fingerprint) — archive fallback paused for ${Math.round(ARCHIVE_COOLDOWN_MS / 60000)} min`);
+                return null;
+            }
+            if (!r || !r.success || !r.content) { console.log(`[web] Archive snapshot for ${url} unreadable: ${r && r.error || 'no content'}`); return null; }
+            const text = String(r.content).trim();
+            if (text.length < 400) { console.log(`[web] Archive snapshot for ${url} too thin (${text.length} chars)`); return null; }
+            // Title + text only: the archived MARKUP still carries the origin's inert
+            // bot-protection script tags (a DataDome loader on every Economist page),
+            // which is not a wall; the archive's own headers are irrelevant.
+            const obs = pageObstacles.classifyObstacle({ title: r.title, content: text, status: 200, source: 'archive', url });
+            if (obs && obs.kind !== 'thin') { console.log(`[web] Archive snapshot for ${url} rejected: ${obs.kind} (${obs.evidence})`); return null; }   // the snapshot holds the same wall
+            const ts = String(snap.timestamp || '');
+            const archivedAt = ts.length >= 8 ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}` : 'unknown date';
+            return { success: true, url, source: 'archive', archivedAt, archiveUrl: String(snap.url), title: r.title || '', content: smartTruncate(text, max) };
+        } catch (_) { return null; }
     }
 
     // ----- web_search ------------------------------------------------------
@@ -27457,11 +27590,16 @@ app.use((req, res) => {
             try {
                 const result = await fetchUrlContent(url, { timeout: 20_000, maxLength, waitForJS: true });
                 if (!result.success) {
-                    return { url, success: false, error: result.error || 'fetch failed', ...(result.message ? { message: result.message } : {}) };
+                    return { url, success: false, error: result.error || 'fetch failed', ...(result.message ? { message: result.message } : {}), ...(result.tried ? { tried: result.tried } : {}), ...(result.obstacle ? { obstacle: publicObstacle(result.obstacle), hint: result.obstacle.hint } : {}) };
                 }
                 const content = (result.content || '').slice(0, maxLength);
                 const title = result.title || '';
-                const hint = detectBotChallenge({ title, content }) || productPageHint(content);
+                // The cascade classified what it served (fetchUrlContent attaches
+                // `obstacle` when a login wall / paywall / undismissable overlay /
+                // thin render is all any layer could get). Its hint names the exact
+                // next `web` call — or says plainly that re-reading will not help.
+                const obs = result.obstacle || null;
+                const hint = obs ? obs.hint : productPageHint(content);
                 // A "successful" fetch that is really a challenge wall counts toward
                 // the host's bot-block strikes too (same fail-fast as hard 403s). Gate
                 // the STRIKE on a STRONG marker only — a page that merely mentions
@@ -27473,7 +27611,10 @@ app.use((req, res) => {
                     success: true,
                     title,
                     source: result.source || 'unknown',
+                    ...(result.tried ? { tried: result.tried } : {}),
+                    ...(result.dismissed ? { dismissed: result.dismissed } : {}),
                     content,
+                    ...(obs ? { obstacle: publicObstacle(obs) } : {}),
                     ...(hint ? { hint } : {}),
                 };
             } catch (e) {
@@ -27504,7 +27645,9 @@ app.use((req, res) => {
                         'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to also collect links. ' +
                         'For a page that needs interaction first (accept a cookie wall, submit a form, click "load more", scroll for lazy content) use mode:"interact" with an ordered `actions` array. For "top N / most recent N" across a paginated listing use mode:"crawl". ' +
                         'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. ' +
-                        'Trust fetched/searched content over training when they conflict, and cite the URL(s). If a result carries a `hint` about bot protection or a dynamic price, follow it (the cascade already tried stealth — switch source via a new search rather than re-reading the same URL). Rejects private/internal addresses.',
+                        'Trust fetched/searched content over training when they conflict, and cite the URL(s). ' +
+                        'When a read hits an obstacle the result carries `obstacle` (kind: bot_challenge/consent/login/paywall/age_gate/geo/js_required/thin, plus `tried` = the layers already used) and a `hint` naming the ONE next step — do exactly that: mode:"browser" only when the hint says so (the browser waits out challenges and dismisses consent/age overlays), mode:"interact" with actions for an overlay it could not clear, otherwise switch source (search for the subject) — never re-read the same URL in a mode already listed in `tried`. ' +
+                        'A page that is bot-walled, paywalled or login-gated is automatically retried from the Internet Archive; a result with source:"archive" carries `archivedAt` — cite it as an archived copy. Rejects private/internal addresses.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -27606,9 +27749,39 @@ app.use((req, res) => {
                 if (!r || r.error || r.success === false) return true;
                 return !!contentErrorPageReason(r.content, r.title);
             };
+            // ---- Archived-copy fallback ----------------------------------
+            // A hard bot wall, a paywall or a login wall is the end of the
+            // road for every live layer — but the Internet Archive frequently
+            // holds a readable snapshot of exactly that page (news articles,
+            // docs, product pages). Trying it automatically turns "blocked —
+            // switch source" into an answer, clearly labelled as archived so
+            // the model cites it as such. Never used for a rate limit, a
+            // consent/age overlay (mode:"interact" handles those) or a JS
+            // shell (the archive holds the same shell).
+            const ARCHIVE_KINDS = new Set(['bot_challenge', 'blocked', 'login', 'paywall', 'geo']);
+            const archiveWorthIt = (r) => {
+                if (!r) return false;
+                if (r.error === 'bot_protected') return true;
+                const k = r.obstacle && r.obstacle.kind;
+                return !!(k && ARCHIVE_KINDS.has(k) && (r.success === false || r.obstacle.action === 'switch_source'));
+            };
+            const withArchive = async (url, r) => {
+                if (!archiveWorthIt(r)) return r;
+                const arch = await fetchArchivedCopy(url, a.maxLength).catch(() => null);
+                if (!arch) return r;
+                console.log(`[web] Archived copy served for ${url} (${arch.archivedAt}) after: ${r.tried || r.error || (r.obstacle && r.obstacle.kind)}`);
+                const why = r.obstacle ? `${r.obstacle.kind}${r.obstacle.vendor ? ' (' + r.obstacle.vendor + ')' : ''}` : (r.error || 'blocked');
+                return {
+                    ...arch,
+                    liveResult: r.success ? 'obstacle' : 'failed',
+                    liveObstacle: r.obstacle || null,
+                    ...(r.tried ? { tried: `${r.tried} → archive:ok` } : {}),
+                    note: `The live page could not be read (${why}); this is the Internet Archive snapshot from ${arch.archivedAt}. Cite it as an archived copy (${arch.archiveUrl}) and say the content may be out of date.`,
+                };
+            };
             const readOne = async (url) => {
                 const first = await readOnce(url);
-                if (!readMissed(first)) { noteSeen(url); return first; }
+                if (!readMissed(first)) { noteSeen(url); return await withArchive(url, first); }
                 const fix = urlRecovery.pickBestUrlMatch(url, seenUrls);
                 if (!fix) {
                     // Nothing to correct to — make a soft 404 read as the
@@ -27623,11 +27796,11 @@ app.use((req, res) => {
                             hint: 'Do NOT retype the URL from memory — that is how it broke. Copy it character-for-character from the user\'s message or from a search result, or search for the title instead.',
                         };
                     }
-                    return first;
+                    return await withArchive(url, first);
                 }
                 console.log(`[web] URL recovery: "${url}" → "${fix.url}" (score ${fix.score.toFixed(3)})`);
                 const second = await readOnce(fix.url);
-                if (readMissed(second)) return first;
+                if (readMissed(second)) return await withArchive(url, first);
                 noteSeen(fix.url);
                 return {
                     ...second,
@@ -29400,7 +29573,8 @@ app.use((req, res) => {
                 // A "successful" stealth fetch whose body is itself a strong WAF wall
                 // counts as a strike, so `web` mode:stealth also fast-fails the host.
                 if (looksLikeChallenge(`${result.title || ''}\n${content}`, { strongOnly: true })) noteHostBotWall(url, 'scrapling-challenge');
-                const hint = productPageHint(content);
+                const ob = detectBotChallenge({ title: result.title, content, layer: 'scrapling', url, status: result.httpStatus || 0 });
+                const hint = ob ? ob.hint : productPageHint(content);
                 return {
                     url,
                     success: true,
@@ -29408,6 +29582,7 @@ app.use((req, res) => {
                     content,
                     ...(extractLinks && Array.isArray(result.links) ? { links: result.links.slice(0, 100) } : {}),
                     engine: 'scrapling',
+                    ...(ob ? { obstacle: ob.obstacle } : {}),
                     ...(hint ? { hint } : {}),
                 };
             } catch (e) {
@@ -29451,10 +29626,9 @@ app.use((req, res) => {
                     timeout, waitForJS, includeLinks, maxLength,
                 });
                 if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'playwright-challenge');
-                const hint = result?.success
-                    ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
-                    : null;
-                return { ...result, engine: 'playwright', ...(hint ? { hint } : {}) };
+                const ob = result?.success ? detectBotChallenge({ title: result.title, content: result.content, layer: 'playwright', url, status: result.httpStatus || 0 }) : null;
+                const hint = result?.success ? (ob ? ob.hint : productPageHint(result.content)) : null;
+                return { ...result, engine: 'playwright', ...(ob ? { obstacle: ob.obstacle } : {}), ...(hint ? { hint } : {}) };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
             }
@@ -29484,10 +29658,9 @@ app.use((req, res) => {
             try {
                 const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
                 if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'interact-challenge');
-                const hint = result?.success
-                    ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
-                    : null;
-                return { ...result, engine: 'playwright', ...(hint ? { hint } : {}) };
+                const ob = result?.success ? detectBotChallenge({ title: result.title, content: result.content, layer: 'interact', url }) : null;
+                const hint = result?.success ? (ob ? ob.hint : productPageHint(result.content)) : null;
+                return { ...result, engine: 'playwright', ...(ob ? { obstacle: ob.obstacle } : {}), ...(hint ? { hint } : {}) };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
             }
@@ -29587,7 +29760,7 @@ app.use((req, res) => {
                     .map(p => `=== Page ${p.index + 1}: ${p.title || '(no title)'} — ${p.url} ===\n${p.content}`)
                     .join('\n\n');
                 if (looksLikeChallenge(combinedContent, { strongOnly: true })) noteHostBotWall(url, 'crawl-challenge');
-                const hint = detectBotChallenge({ content: combinedContent });
+                const hint = (() => { const ob = detectBotChallenge({ content: combinedContent, layer: 'crawl', url }); return ob ? ob.hint : null; })();
                 return {
                     url,
                     success: true,

@@ -999,6 +999,128 @@ async function waitForChallengeToClear(page, maxMs = CF_CHALLENGE_WAIT_MS) {
     return false;
 }
 
+
+// ---------------------------------------------------------------------------
+// Overlay dismissal — cookie-consent walls and simple age gates.
+// A consent-management overlay (OneTrust/Didomi/Sourcepoint/Quantcast/…) or an
+// age gate answers INSTEAD of the page for a fresh browser context: extracted
+// text is "We value your privacy … Accept all" and the article behind it never
+// reaches the model, which then re-reads the same URL the same way. The known
+// CMP selectors are tried first (precise; several live in a cross-origin
+// iframe, so every frame is scanned), then visible buttons whose whole label is
+// an accept/agree phrase AND that sit inside an overlay-ish container (fixed /
+// sticky / dialog / consent-named ancestor) — a "Continue" button in ordinary
+// page flow is never clicked. Age gates get a 1990-01-01 birth date and the
+// enter/confirm button. Best-effort, bounded (~2 s worst case), never throws.
+// ---------------------------------------------------------------------------
+const { CONSENT_SELECTORS, CONSENT_BUTTON_RE, AGE_RE: AGE_GATE_RE } = require('./pageObstacles');
+const AGE_ENTER_RE = /^\s*(?:view page|enter(?: site)?|continue|confirm|submit|proceed|i am (?:over )?(?:18|19|21)(?:\+| or older)?|yes,? i(?:'m| am)(?: over)? (?:18|19|21)|yes|ok|verify|go)\s*$/i;
+
+async function dismissOverlays(page, { maxRounds = 2 } = {}) {
+    const dismissed = [];
+    const visibleWithin = async (loc) => {
+        try { if (!(await loc.count())) return false; return await loc.isVisible(); } catch (_) { return false; }
+    };
+    for (let round = 0; round < maxRounds; round++) {
+        let clicked = null;
+        let frames = [];
+        try { frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())]; } catch (_) { break; }
+        for (const frame of frames) {
+            // 1. Known consent-management-platform buttons.
+            for (const sel of CONSENT_SELECTORS) {
+                try {
+                    const loc = frame.locator(sel).first();
+                    if (await visibleWithin(loc)) {
+                        await loc.click({ timeout: 1500 });
+                        clicked = { kind: 'consent', via: sel };
+                        break;
+                    }
+                } catch (_) { /* detached / covered — next candidate */ }
+            }
+            if (clicked) break;
+            // 2. Visible accept/agree button inside an overlay-ish container.
+            try {
+                const handle = await frame.evaluateHandle((btnReSrc) => {
+                    const re = new RegExp(btnReSrc, 'i');
+                    const cands = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="submit"], input[type="button"]'));
+                    const isVisible = (el) => {
+                        const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+                        return r.width > 4 && r.height > 4 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+                    };
+                    const OVERLAYISH = /cookie|consent|gdpr|privacy|cmp|banner|modal|overlay|popup|dialog|notice|age-?gate|agegate|interstitial|paywall|onboard|welcome/i;
+                    const inOverlay = (el) => {
+                        let n = el;
+                        for (let i = 0; i < 10 && n && n !== document.body; i++, n = n.parentElement) {
+                            const cs = getComputedStyle(n);
+                            if (cs.position === 'fixed' || cs.position === 'sticky') return true;
+                            if (n.getAttribute('role') === 'dialog' || n.getAttribute('aria-modal') === 'true') return true;
+                            if (OVERLAYISH.test(`${n.id} ${typeof n.className === 'string' ? n.className : ''}`)) return true;
+                        }
+                        // The whole frame IS the overlay (CMP iframes): body-level buttons count.
+                        return window !== window.top;
+                    };
+                    for (const el of cands) {
+                        const t = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+                        if (t && t.length <= 40 && re.test(t) && isVisible(el) && inOverlay(el)) return el;
+                    }
+                    return null;
+                }, CONSENT_BUTTON_RE.source);
+                const el = handle.asElement();
+                if (el) {
+                    const label = (await el.innerText().catch(() => '')).trim().slice(0, 40);
+                    await el.click({ timeout: 1500 });
+                    clicked = { kind: 'consent', via: `text:${label || '?'}` };
+                }
+                await handle.dispose().catch(() => {});
+            } catch (_) { /* frame navigated away — fine */ }
+            if (clicked) break;
+        }
+        // 3. Age gate: only when the visible page text says so.
+        if (!clicked) {
+            try {
+                const isAgeGate = await page.evaluate((src) => new RegExp(src, 'i').test((document.body?.innerText || '').slice(0, 2000)), AGE_GATE_RE.source);
+                if (isAgeGate) {
+                    const done = await page.evaluate(({ enterSrc }) => {
+                        const fire = (el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+                        let touched = 0;
+                        document.querySelectorAll('select').forEach((sel) => {
+                            const key = `${sel.id} ${sel.name}`.toLowerCase();
+                            const opts = Array.from(sel.options);
+                            let pick = null;
+                            if (/year|yy|birth|age|dob/.test(key)) pick = opts.find(o => /^(19|20)\d\d$/.test(o.value) && parseInt(o.value, 10) <= 1995 && parseInt(o.value, 10) >= 1970) || opts.find(o => /^1990$/.test(o.textContent.trim()));
+                            else if (/month|mm/.test(key)) pick = opts.find(o => /^(1|01|jan)/i.test(o.value) || /^jan/i.test(o.textContent.trim()));
+                            else if (/day|dd/.test(key)) pick = opts.find(o => /^(1|01)$/.test(o.value));
+                            if (pick) { sel.value = pick.value; fire(sel); touched++; }
+                        });
+                        document.querySelectorAll('input').forEach((inp) => {
+                            const key = `${inp.id} ${inp.name} ${inp.placeholder || ''}`.toLowerCase();
+                            if (inp.type === 'date') { inp.value = '1990-01-01'; fire(inp); touched++; }
+                            else if (/year|yyyy/.test(key)) { inp.value = '1990'; fire(inp); touched++; }
+                            else if (/month|mm/.test(key)) { inp.value = '01'; fire(inp); touched++; }
+                            else if (/\bday\b|dd/.test(key)) { inp.value = '01'; fire(inp); touched++; }
+                            else if (inp.type === 'checkbox' && /age|18|21|confirm|adult/.test(key)) { inp.checked = true; fire(inp); touched++; }
+                        });
+                        const re = new RegExp(enterSrc, 'i');
+                        const btn = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="submit"], input[type="button"]'))
+                            .find(el => { const t = (el.innerText || el.value || '').trim(); const r = el.getBoundingClientRect(); return t && t.length <= 30 && re.test(t) && r.width > 4 && r.height > 4; });
+                        if (btn) { btn.click(); return { touched, clicked: (btn.innerText || btn.value || '').trim().slice(0, 30) }; }
+                        return { touched, clicked: null };
+                    }, { enterSrc: AGE_ENTER_RE.source });
+                    if (done && done.clicked) {
+                        clicked = { kind: 'age_gate', via: `text:${done.clicked}` };
+                        try { await page.waitForLoadState('load', { timeout: 6000 }); } catch (_) {}
+                    }
+                }
+            } catch (_) { /* best-effort */ }
+        }
+        if (!clicked) break;
+        dismissed.push(clicked);
+        try { await page.waitForTimeout(700); } catch (_) { break; }
+    }
+    if (dismissed.length) console.log(`[Playwright] Dismissed ${dismissed.map(d => `${d.kind} (${d.via})`).join(', ')}`);
+    return dismissed;
+}
+
 /**
  * Fetch URL content with Playwright
  *
@@ -1027,6 +1149,7 @@ async function fetchUrlContent(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const dismissed = [];   // overlays clicked away (consent / age gate) — reported to the caller
 
     try {
         poolEntry = await getBrowser();
@@ -1161,6 +1284,14 @@ async function fetchUrlContent(url, options = {}) {
                 }
             }
 
+            // Cookie-consent walls / age gates answer INSTEAD of the page — dismiss
+            // them now, before the thin-content wait and the lazy scroll, so the
+            // extraction below sees the real content.
+            if (options.dismissOverlays !== false) {
+                const d = await dismissOverlays(page).catch(() => []);
+                if (d.length) { dismissed.push(...d); try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (_) {} }
+            }
+
             // Check if page has meaningful content, if not wait longer for late-loading SPAs
             const bodyTextLength = await page.evaluate(() => (document.body?.innerText || '').trim().length);
             if (bodyTextLength < 500) {
@@ -1168,9 +1299,12 @@ async function fetchUrlContent(url, options = {}) {
                 await page.waitForTimeout(randomDelay(5000, 8000));
 
                 // If still thin, try scrolling to trigger lazy loading
-                const stillThin = await page.evaluate(() => (document.body?.innerText || '').trim().length < 500);
+                let stillThin = false;
+                try { stillThin = await page.evaluate(() => (document.body?.innerText || '').trim().length < 500); } catch (_) {}
                 if (stillThin) {
-                    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+                    // body can be null mid-redirect (Google News interstitials) — never let
+                    // a scroll nudge fail the whole fetch.
+                    try { await page.evaluate(() => window.scrollTo(0, (document.body?.scrollHeight || 0) / 2)); } catch (_) {}
                     await page.waitForTimeout(randomDelay(2000, 3000));
                 }
             }
@@ -1303,12 +1437,16 @@ async function fetchUrlContent(url, options = {}) {
             });
         }
 
+        let navStatusOut = 0;
+        try { navStatusOut = response.status(); } catch (_) {}
         return {
             success: true,
             content,
             title,
             url,
             finalUrl: page.url(),
+            httpStatus: navStatusOut,
+            ...(dismissed.length ? { dismissed } : {}),
             screenshot: screenshotData?.toString('base64')
         };
 
@@ -1384,6 +1522,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
         if (await pageLooksLikeChallenge(page)) {
             await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
         }
+        if (options.dismissOverlays !== false) await dismissOverlays(page).catch(() => []);
 
         // Execute actions
         for (const action of actions) {
@@ -2511,6 +2650,7 @@ async function renderLocalPage(opts = {}) {
 }
 
 module.exports = {
+    dismissOverlays,
     fetchUrlContent,
     fetchMultipleUrls,
     interactAndFetch,
