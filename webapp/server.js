@@ -1331,7 +1331,7 @@ function buildChatRuntimePrelude() {
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
     const text = [
-        `Today is ${today}.`,
+        `Today is ${today}. Your training data ends before today: things you remember as upcoming may already have happened, and last year's releases are not "new". For anything time-sensitive (new/upcoming/latest/current/prices/versions), search with the CURRENT year, trust dated ${new Date().getFullYear()} sources over memory, read the dates on what you fetch, and never present a past date as still to come.`,
         `Answer directly from your own knowledge whenever you confidently know the answer and a tool would only be slower — do not call a tool for general knowledge, explanations, reasoning, math you can do, or writing/editing code you can produce yourself. A direct answer is preferred when it is correct and faster.`,
         `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (the \`web\` tool — search the web or read a page/URL), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
         `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
@@ -12949,10 +12949,11 @@ app.get('/api/search', requireAuth, async (req, res) => {
         // through to the legacy DDG→Scrapling→Brave chain on miss/unavailable.
         try {
             if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
-                const engines = SEARCH_ENGINE_ORDER.filter(e => !backendCoolingDown(e));
+                const routeFresh = freshnessOf(q);
+                const engines = (routeFresh ? SEARCH_ENGINE_ORDER_FRESH : SEARCH_ENGINE_ORDER).filter(e => !backendCoolingDown(e));
                 if (engines.length) {
-                    const er = await scraplingService.search(enhancedQuery, parseInt(limit), { engines });
-                    if (Array.isArray(er?.tried)) for (const t of er.tried) { if (t.blocked) noteBackendBlocked(t.engine); else if (t.count > 0) noteBackendOk(t.engine); }
+                    const er = await scraplingService.search(tidySearchQuery(enhancedQuery), parseInt(limit), { engines, freshness: routeFresh });
+                    noteEngineTried(er && er.tried);
                     if (er && er.success && Array.isArray(er.results) && er.results.length) {
                         for (const r of er.results) { if (r.url && !seenUrls.has(r.url)) { seenUrls.add(r.url); results.push({ title: r.title || 'No title', url: r.url, snippet: r.snippet || 'No description available', content: null, ...(r.date ? { date: r.date } : {}) }); } }
                         searchSource = `engine:${er.engine}`;
@@ -13524,6 +13525,37 @@ const SHELL_TEXT_FLOOR = parseInt(process.env.SHELL_TEXT_FLOOR, 10) || 1500;
 // browser) vs a small-but-COMPLETE page (serve as-is, never over-escalate). Pure
 // extracted-text length can't tell vuejs.org's 689-char hydration shell from
 // example.com's 165-char complete page — only the markup structure can.
+// Publication date of a fetched page, from the markup the site itself declares
+// (article:published_time / datePublished JSON-LD / <time datetime> / date
+// metas). Surfaced as `published` on every read so the model can see that the
+// "upcoming release" article it is reading is from last year.
+function extractPublishedDate(html) {
+    const h = String(html || '').slice(0, 300000);
+    if (!h) return null;
+    const pats = [
+        /<meta[^>]+(?:property|name)=["'](?:article:published_time|og:article:published_time|article:modified_time|og:updated_time|datePublished|dateCreated|pubdate|publishdate|publish-date|publication_date|date|dc\.date(?:\.issued)?|sailthru\.date|parsely-pub-date|cXenseParse:recs:publishtime)["'][^>]+content=["']([^"']{8,40})["']/i,
+        /<meta[^>]+content=["']([^"']{8,40})["'][^>]+(?:property|name)=["'](?:article:published_time|datePublished|pubdate|publishdate|publish-date|date|dc\.date)["']/i,
+        /"datePublished"\s*:\s*"([^"]{8,40})"/i,
+        /"dateModified"\s*:\s*"([^"]{8,40})"/i,
+        /<time[^>]+datetime=["']([^"']{8,40})["']/i,
+    ];
+    for (const re of pats) {
+        const m = re.exec(h);
+        if (!m) continue;
+        const iso = normalizeDateString(m[1]);
+        if (iso) return iso;
+    }
+    return null;
+}
+function normalizeDateString(raw) {
+    const t = String(raw || '').trim();
+    let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    const d = new Date(t);
+    if (!isNaN(d.getTime()) && d.getFullYear() >= 1995 && d.getFullYear() <= 2100) return d.toISOString().slice(0, 10);
+    return null;
+}
+
 function htmlShellSignal(rawHtml, textLen) {
     const html = String(rawHtml || '');
     const htmlLen = html.length;
@@ -14114,7 +14146,33 @@ function clearHostBotWall(url) {
 // answers a bot-looking client with a degraded navigational page (first-entity
 // homepages only) — the engine reads Bing's RSS output now, but Brave's results
 // are the most consistently on-topic, so it goes first after DDG.
-const SEARCH_ENGINE_ORDER = (process.env.SEARCH_ENGINE_ORDER || 'ddg,brave,bing,yahoo').split(',').map(s => s.trim()).filter(Boolean);
+const SEARCH_ENGINE_ORDER = (process.env.SEARCH_ENGINE_ORDER || 'ddg,brave,yahoo,bing').split(',').map(s => s.trim()).filter(Boolean);
+// Recency questions add Bing's NEWS RSS right after DDG: dated, recent,
+// on-topic where the web verticals degrade ("new pokemon games" → CNN/Fox
+// homepages from web search vs "Pokémon Winds and Waves release date" from news).
+const SEARCH_ENGINE_ORDER_FRESH = (process.env.SEARCH_ENGINE_ORDER_FRESH || 'ddg,bing-news,brave,yahoo,bing').split(',').map(s => s.trim()).filter(Boolean);
+// A search engine that answered junk for the first word is DEGRADED for this
+// fingerprint/IP right now — cool it briefly instead of re-asking it next call.
+const SEARCH_DEGRADED_COOLDOWN_MS = parseInt(process.env.SEARCH_DEGRADED_COOLDOWN_MS, 10) || 3 * 60 * 1000;
+function noteEngineTried(tried) {
+    if (!Array.isArray(tried)) return;
+    for (const t of tried) {
+        if (!t || !t.engine) continue;
+        if (t.blocked) noteBackendBlocked(t.engine);
+        else if (t.degraded) noteBackendBlocked(t.engine, SEARCH_DEGRADED_COOLDOWN_MS);
+        else if (t.count > 0) noteBackendOk(t.engine);
+    }
+}
+// Question scaffolding the model (or a user) types is not a search term:
+// "Any new pokemon games coming out?" → Bing answered "Any" with AnyDesk.
+const QUESTION_SCAFFOLD_RE = /^(?:(?:hey|hi|ok|okay|so)[,!]?\s+)?(?:any|are there(?: any)?|is there(?: a| an| any)?|what(?:'s| is| are| was| were)(?: the)?|which(?: is| are)?|who(?:'s| is| are| was)?|when(?: is| was| does| did| will)?|where(?: is| are| can)?|why(?: is| did| does)?|how (?:many|much|do i|do you|can i|to)|tell me(?: about)?|can you(?: please)? (?:find|search|look up|tell me|check)|please (?:find|search|check)|find(?: me| out)?(?: about)?|search(?: for)?|look up|show me|give me|do you know(?: if| about)?|i want to know(?: if| about)?|i(?:'d| would) like to know(?: if| about)?|is it true that|did)\s+/i;
+function tidySearchQuery(q) {
+    let out = String(q || '').trim();
+    if (/"|\bsite:|\bintitle:|\binurl:/.test(out)) return out;       // crafted — leave it
+    for (let i = 0; i < 2; i++) out = out.replace(QUESTION_SCAFFOLD_RE, '');
+    out = out.replace(/[?!.]+$/g, '').replace(/\s+/g, ' ').trim();
+    return out.split(' ').length >= 2 ? out : String(q || '').trim();
+}
 // Query filler the reformulation drops when every backend answered generically:
 // years/months (a specific date rarely appears verbatim in a title) and vague
 // words that only dilute the entity terms.
@@ -14134,6 +14192,41 @@ function reformulateWeakQuery(q, relevance) {
         alt = (keep.length >= 2 ? keep : words).slice(0, 6).join(' ');
     }
     return alt && alt.toLowerCase() !== orig.toLowerCase() ? alt : null;
+}
+// "New / upcoming / latest / coming out / release date" = a question about
+// RECENCY. A local model's sense of "now" is its training cutoff, so it
+// searches with last year's date and reads a 2025 launch as upcoming in 2026
+// (live report: "Any new pokemon games coming out?" → an October 2025 release
+// presented as the next launch). The tool fixes the year in the query, asks
+// the backends for recent results, dates every result it can, and tells the
+// model in as many words that anything dated before today already happened.
+const FRESHNESS_INTENT_RE = /\b(?:new(?:est|ly)?|upcoming|coming (?:out|soon|up)|latest|recent(?:ly)?|current(?:ly)?|this (?:year|month|week)|today|right now|nowadays|release date|releas(?:ing|ed)|announced|just (?:released|launched|dropped)|what'?s new|upgrade|update[sd]?|schedule|season|roadmap|next (?:gen|generation|version|model|release))\b/i;
+function freshnessOf(rawQuery) {
+    return FRESHNESS_INTENT_RE.test(String(rawQuery || '')) ? 'year' : null;
+}
+function anchorQueryYear(q) {
+    const year = new Date().getFullYear();
+    const years = (String(q).match(/\b(?:19|20)\d{2}\b/g) || []).map(Number);
+    if (years.includes(year)) return { query: q, changed: false };
+    // Replace a past year the model dragged in from its training data; keep a
+    // FUTURE year (the user may be asking about 2027). Otherwise append this year.
+    const past = years.filter(y => y < year);
+    if (past.length && !years.some(y => y > year)) {
+        let out = q;
+        for (const y of new Set(past)) out = out.replace(new RegExp(`\\b${y}\\b`, 'g'), String(year));
+        return { query: out.replace(/\s+/g, ' ').trim(), changed: true, replaced: past };
+    }
+    if (!years.length) return { query: `${q} ${year}`, changed: true };
+    return { query: q, changed: false };
+}
+function freshnessHint(results, today) {
+    const year = today.slice(0, 4);
+    const dated = results.filter(r => r.date);
+    const stale = dated.filter(r => !String(r.date).startsWith(year));
+    const parts = [`Today is ${today}.`];
+    parts.push(dated.length ? `Results carry a \`date\` where known — ${stale.length ? `${stale.length} of them predate ${year} and describe things that have ALREADY happened (a launch dated last year is not upcoming)` : `all dated results are from ${year}`}.` : 'These results carry no dates — check the page for its publication date before treating anything as upcoming.');
+    parts.push(`Answer in terms of what is new or upcoming AS OF ${today}: prefer ${year}-dated sources, state dates explicitly, and never present a past release as still to come.`);
+    return parts.join(' ');
 }
 function searchRelevanceHint(q, relevance) {
     if (!relevance) return null;
@@ -14315,6 +14408,7 @@ async function fetchUrlContent(url, options = {}) {
                     setHostMemo(url, null);   // host is cheap — clear any stale escalation
                     clearHostBotWall(url);    // a clean serve clears not-yet-blocking strikes
                     mark('axios-fast', obs ? obs.kind : 'ok');
+                    const published = extractPublishedDate(ax.rawHtml);
                     return finish({
                         success: true,
                         url,
@@ -14322,6 +14416,7 @@ async function fetchUrlContent(url, options = {}) {
                         title: ax.title || '',
                         links: [],
                         source: 'axios-fast',
+                        ...(published ? { published } : {}),
                         ...(obs ? { obstacle: obs } : {}),
                     });
                 }
@@ -14395,12 +14490,14 @@ async function fetchUrlContent(url, options = {}) {
                 setHostMemo(url, 'impersonate');   // skip axios+scrapling here next time
                 clearHostBotWall(url);
                 mark('impersonate', `${obs ? obs.kind : 'ok'}${imp.rotated ? '/rotated:' + imp.profile : ''}`);
+                const published = extractPublishedDate(imp.bodyHead);
                 return finish({
                     success: true, url,
                     content: smartTruncate(impText, maxLength),
                     title: imp.title || '',
                     links: Array.isArray(imp.links) ? imp.links : [],
                     source: 'impersonate',
+                    ...(published ? { published } : {}),
                     ...(obs ? { obstacle: obs } : {}),
                 });
             }
@@ -14586,6 +14683,7 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
                             title: result.title || '',
                             source: result.source || 'unknown',
                             ...(result.tried ? { tried: result.tried } : {}),
+                            ...(result.published ? { published: result.published } : {}),
                             ...(result.dismissed ? { dismissed: result.dismissed } : {}),
                             ...(result.obstacle ? { obstacle: { kind: result.obstacle.kind, vendor: result.obstacle.vendor, action: result.obstacle.action, evidence: result.obstacle.evidence }, hint: result.obstacle.hint } : {}),
                         };
@@ -27385,7 +27483,13 @@ app.use((req, res) => {
         async execute(args) {
             const rawQuery = String(args?.query || '').trim();
             if (!rawQuery) return { error: 'query is required' };
-            const q = extractSearchQuery(rawQuery);
+            const freshness = freshnessOf(rawQuery);
+            let q = tidySearchQuery(extractSearchQuery(rawQuery));
+            let yearAnchor = null;
+            if (freshness) {
+                const anchored = anchorQueryYear(q);
+                if (anchored.changed) { yearAnchor = { from: q, to: anchored.query, replaced: anchored.replaced || null }; q = anchored.query; }
+            }
             const limit = Math.min(10, Math.max(1, parseInt(args?.limit || 5, 10)));
             // Result cache — reuses the /api/search `searchCache` (1h TTL, 1000-entry
             // LRU). Repeated identical searches within a turn/session skip the full
@@ -27428,13 +27532,10 @@ app.use((req, res) => {
                     // degraded navigational page (see web_engine.py); the engine
                     // now judges each backend by query-term COVERAGE and moves on
                     // when the results do not reflect the query.
-                    const engines = SEARCH_ENGINE_ORDER.filter(e => !backendCoolingDown(e));
+                    const engines = (freshness ? SEARCH_ENGINE_ORDER_FRESH : SEARCH_ENGINE_ORDER).filter(e => !backendCoolingDown(e));
                     if (engines.length) {
-                        let er = await scraplingService.search(q, limit, { engines });
-                        if (Array.isArray(er?.tried)) for (const t of er.tried) {
-                            const key = t.engine;
-                            if (t.blocked) noteBackendBlocked(key); else if (t.count > 0) noteBackendOk(key);
-                        }
+                        let er = await scraplingService.search(q, limit, { engines, freshness });
+                        noteEngineTried(er && er.tried);
                         // Automatic reformulation: when every backend's results are
                         // generic (low coverage), retry ONCE with the query reduced to
                         // its specific terms (drop years/filler; keep the entities) —
@@ -27443,7 +27544,8 @@ app.use((req, res) => {
                         if (er && er.success && er.relevance && er.relevance.lowRelevance) {
                             const alt = reformulateWeakQuery(q, er.relevance);
                             if (alt && alt !== q) {
-                                const er2 = await scraplingService.search(alt, limit, { engines }).catch(() => null);
+                                const er2 = await scraplingService.search(alt, limit, { engines, freshness }).catch(() => null);
+                                noteEngineTried(er2 && er2.tried);
                                 if (er2 && er2.success && er2.relevance && er2.relevance.coverage > er.relevance.coverage) {
                                     console.log(`[web_search] reformulated "${q}" → "${alt}" (coverage ${er.relevance.coverage} → ${er2.relevance.coverage})`);
                                     reformulated = { from: q, to: alt };
@@ -27457,8 +27559,16 @@ app.use((req, res) => {
                                 ...(reformulated ? { reformulatedFrom: reformulated.from } : {}),
                                 ...(er.relevance ? { relevance: { coverage: er.relevance.coverage, missingTerms: er.relevance.missing || [], weakTerms: er.relevance.weak || [] } } : {}),
                             };
-                            const hint = searchRelevanceHint(q, er.relevance);
-                            if (hint) out.hint = hint;
+                            const hints = [];
+                            if (freshness) {
+                                const today = er.today || new Date().toISOString().slice(0, 10);
+                                out.today = today;
+                                if (yearAnchor) out.yearAnchored = yearAnchor.replaced ? `replaced ${yearAnchor.replaced.join('/')} with ${today.slice(0, 4)}` : `added ${today.slice(0, 4)}`;
+                                hints.push(freshnessHint(out.results, today));
+                            }
+                            const rh = searchRelevanceHint(q, er.relevance);
+                            if (rh) hints.push(rh);
+                            if (hints.length) out.hint = hints.join(' ');
                             // Never cache a low-relevance answer: the model's next
                             // reformulation must reach the backends, not the memo.
                             return (er.relevance && er.relevance.lowRelevance) ? out : cacheReturn(out);
@@ -27692,6 +27802,7 @@ app.use((req, res) => {
                     source: result.source || 'unknown',
                     ...(result.tried ? { tried: result.tried } : {}),
                     ...(result.dismissed ? { dismissed: result.dismissed } : {}),
+                    ...(result.published ? { published: result.published } : {}),
                     content,
                     ...(obs ? { obstacle: publicObstacle(obs) } : {}),
                     ...(hint ? { hint } : {}),

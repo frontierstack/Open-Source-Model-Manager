@@ -1439,6 +1439,16 @@ async function fetchUrlContent(url, options = {}) {
 
         let navStatusOut = 0;
         try { navStatusOut = response.status(); } catch (_) {}
+        let published = null;
+        try {
+            published = await page.evaluate(() => {
+                const sel = ['meta[property="article:published_time"]', 'meta[name="article:published_time"]', 'meta[property="og:updated_time"]', 'meta[name="datePublished"]', 'meta[itemprop="datePublished"]', 'meta[name="pubdate"]', 'meta[name="publishdate"]', 'meta[name="publish-date"]', 'meta[name="date"]', 'meta[name="dc.date"]', 'meta[name="parsely-pub-date"]', 'time[datetime]'];
+                for (const q of sel) { const el = document.querySelector(q); const v = el && (el.getAttribute('content') || el.getAttribute('datetime')); if (v) return v; }
+                for (const sc of document.querySelectorAll('script[type="application/ld+json"]')) { const m = /"datePublished"\s*:\s*"([^"]{8,40})"/.exec(sc.textContent || ''); if (m) return m[1]; }
+                return null;
+            });
+            if (published) { const d = new Date(published); published = /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : (isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)); }
+        } catch (_) { published = null; }
         return {
             success: true,
             content,
@@ -1446,6 +1456,7 @@ async function fetchUrlContent(url, options = {}) {
             url,
             finalUrl: page.url(),
             httpStatus: navStatusOut,
+            ...(published ? { published } : {}),
             ...(dismissed.length ? { dismissed } : {}),
             screenshot: screenshotData?.toString('base64')
         };

@@ -262,6 +262,7 @@ async function search(query, maxResults = 5, options = {}) {
                 query, limit: maxResults,
                 ...(Array.isArray(options.engines) && options.engines.length ? { engines: options.engines } : {}),
                 timeout: options.timeoutSec || 8,
+                ...(options.freshness ? { freshness: options.freshness } : {}),
             }, { timeoutMs: 45000 });
             return r;
         } catch (e) {

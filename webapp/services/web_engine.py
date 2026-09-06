@@ -422,7 +422,13 @@ def _ddg_decode(href):
 
 def _bing_decode(href):
     # https://www.bing.com/ck/a?...&u=a1<base64url>&ntb=1
+    # news RSS: https://www.bing.com/news/apiclick.aspx?...&url=<urlencoded>
     try:
+        if 'apiclick.aspx' in href and 'url=' in href:
+            q = urllib.parse.urlparse(href).query
+            u = urllib.parse.parse_qs(q).get('url', [''])[0]
+            if u.startswith('http'):
+                return u
         if 'bing.com/ck/' in href:
             q = urllib.parse.urlparse(href).query
             u = urllib.parse.parse_qs(q).get('u', [''])[0]
@@ -473,7 +479,8 @@ articles report reports page pages site website official find search results res
 please can could would should will may might won win wins winning lost lose loses losing said says say
 told between against versus happened happens happen going went come came make made makes take took
 know known think thought like just also still ever even much many more most some any all each every both
-now yet already again back here very really only own same other another""".split())
+now yet already again back here very really only own same other another any out coming going there
+want need anything something things stuff good best top""".split())
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9'\-]{1,}")
 
 
@@ -531,21 +538,94 @@ def _clean_snippet(s):
     return re.sub(r'\s+', ' ', s).strip()
 
 
-def _search_one(engine, query, limit, timeout_s):
+_MONTHS = {m: i + 1 for i, m in enumerate(['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'])}
+_DATE_TEXT_RE = re.compile(r'\b([A-Z][a-z]{2,8})\.? (\d{1,2}), (20\d{2})\b|\b(\d{1,2}) ([A-Z][a-z]{2,8})\.? (20\d{2})\b')
+_DATE_URL_RE = re.compile(r'/(20\d{2})/(\d{1,2})(?:/(\d{1,2}))?/')
+_RFC_RE = re.compile(r'(\d{1,2}) ([A-Z][a-z]{2}) (20\d{2})')
+
+
+def _iso(y, m, d):
+    try:
+        y, m, d = int(y), int(m), int(d)
+        if 2000 <= y <= 2100 and 1 <= m <= 12 and 1 <= d <= 31:
+            return '%04d-%02d-%02d' % (y, m, d)
+    except Exception:
+        pass
+    return None
+
+
+def _date_of(entry, raw_snippet=''):
+    """Best-effort publication date (ISO yyyy-mm-dd) for a search result: the
+    engine's pubDate, a leading "May 4, 2026 -" in the snippet, or a
+    /2026/04/08/ path in the URL. Recency is what a "new / upcoming / latest"
+    question is about, and an undated result lets a 2025 page pass as news."""
+    pd = str(entry.get('date') or '')
+    m = _RFC_RE.search(pd)
+    if m:
+        iso = _iso(m.group(3), _MONTHS.get(m.group(2).lower()[:3], 0), m.group(1))
+        if iso:
+            return iso
+    for text in (raw_snippet, entry.get('snippet') or '', entry.get('title') or ''):
+        m = _DATE_TEXT_RE.search(str(text)[:80])
+        if m:
+            if m.group(1):
+                iso = _iso(m.group(3), _MONTHS.get(m.group(1).lower()[:3], 0), m.group(2))
+            else:
+                iso = _iso(m.group(6), _MONTHS.get(m.group(5).lower()[:3], 0), m.group(4))
+            if iso:
+                return iso
+    m = _DATE_URL_RE.search(str(entry.get('url') or ''))
+    if m:
+        iso = _iso(m.group(1), m.group(2), m.group(3) or 1)
+        if iso:
+            return iso
+    return None
+
+
+# Search engines keep per-TLS-fingerprint reputations exactly like the hosts the
+# fetch layer rotates for: DDG answers this host's chrome JA3 with a 202
+# challenge on EVERY query but serves firefox/safari fine (measured); Bing
+# degrades chrome to first-word navigational junk. Each engine remembers the
+# profile that last worked so the retry cost is paid once.
+SEARCH_PROFILES = ['chrome', 'firefox', 'safari']
+_engine_profile = {}
+_BLOCK_STATUSES = (202, 401, 403, 406, 429, 503)
+
+
+def _search_one(engine, query, limit, timeout_s, freshness=None):
+    start = _engine_profile.get(engine, SEARCH_PROFILES[0])
+    order = [start] + [p for p in SEARCH_PROFILES if p != start]
+    last = None
+    for i, prof in enumerate(order):
+        results, tried = _search_one_profile(engine, query, limit, timeout_s, freshness, prof)
+        tried['profile'] = prof
+        if results or not tried.get('blocked'):
+            if results:
+                _engine_profile[engine] = prof
+            if i:
+                tried['rotated'] = True
+            return results, tried
+        last = (results, tried)
+    results, tried = last
+    tried['rotated'] = True
+    return results, tried
+
+
+def _search_one_profile(engine, query, limit, timeout_s, freshness, profile):
     eq = urllib.parse.quote_plus(query)
     t0 = time.time()
     tried = {'engine': engine, 'status': None, 'blocked': False, 'ms': 0}
     results = []
     from scrapling.fetchers import Fetcher
-    kw = {'impersonate': 'chrome', 'timeout': timeout_s, 'stealthy_headers': True, 'retries': 1}
+    kw = {'impersonate': profile, 'timeout': timeout_s, 'stealthy_headers': True, 'retries': 1}
     if SSL_BYPASS_ENABLED:
         kw['verify'] = False
     try:
         if engine == 'ddg':
-            page = Fetcher.get('https://html.duckduckgo.com/html/?q=' + eq, **kw)
+            page = Fetcher.get('https://html.duckduckgo.com/html/?q=' + eq + ('&df=y' if freshness else ''), **kw)
             tried['status'] = _status_of(page)
             body = _body_text(page)
-            if BLOCK_RE.search(body[:20000]) or tried['status'] in (202, 403, 429):
+            if BLOCK_RE.search(body[:20000]) or tried['status'] in _BLOCK_STATUSES:
                 tried['blocked'] = True
             else:
                 for r in page.css('.result'):
@@ -555,14 +635,22 @@ def _search_one(engine, query, limit, timeout_s):
                     url = _ddg_decode(a[0].attrib.get('href', ''))
                     sn = r.css('.result__snippet')
                     if url.startswith('http'):
-                        results.append({'title': _txt(a[0])[:200] or 'No title', 'url': url,
-                                        'snippet': _clean_snippet(_txt(sn[0]) if sn else '')[:300]})
-        elif engine == 'bing':
+                        raw_sn = _txt(sn[0]) if sn else ''
+                        entry = {'title': _txt(a[0])[:200] or 'No title', 'url': url, 'snippet': _clean_snippet(raw_sn)[:300]}
+                        iso = _date_of(entry, raw_sn)
+                        if iso:
+                            entry['date'] = iso
+                        results.append(entry)
+        elif engine in ('bing', 'bing-news'):
             # RSS output: the HTML endpoint hands a bot-looking client a degraded
             # page whose results are navigational hits for the first entity only
             # (measured: "Chicago Glock lawsuit ruling" → Chicago Wikipedia,
             # choosechicago.com, the band; RSS → the actual court rulings).
-            page = Fetcher.get('https://www.bing.com/search?q=' + eq + '&format=rss&setlang=en&cc=US', **kw)
+            # bing-news = the News vertical's RSS: dated, recent, on-topic where
+            # the web RSS degraded too ("new pokemon games" → CNN/Fox homepages
+            # vs "Pokémon Winds and Waves release date confirmed").
+            url_base = 'https://www.bing.com/news/search?q=' if engine == 'bing-news' else 'https://www.bing.com/search?q='
+            page = Fetcher.get(url_base + eq + '&format=rss&setlang=en&cc=US', **kw)
             tried['status'] = _status_of(page)
             raw = ''
             for attr in ('body', 'html_content'):
@@ -588,8 +676,13 @@ def _search_one(engine, query, limit, timeout_s):
                          'snippet': _clean_snippet(d.group(1) if d else '')[:300]}
                 if pd:
                     entry['date'] = pd.group(1).strip()[:40]
+                iso = _date_of(entry, d.group(1) if d else '')
+                if iso:
+                    entry['date'] = iso
+                elif 'date' in entry:
+                    del entry['date']
                 results.append(entry)
-            if not results and (tried['status'] != 200 or BLOCK_RE.search(raw[:20000])):
+            if not results and (tried['status'] in _BLOCK_STATUSES or BLOCK_RE.search(raw[:20000])):
                 tried['blocked'] = True
         elif engine == 'yahoo':
             page = Fetcher.get('https://search.yahoo.com/search?p=' + eq, **kw)
@@ -604,15 +697,20 @@ def _search_one(engine, query, limit, timeout_s):
                 h = d.css('h3.title') or d.css('h3')
                 sn = d.css('.compText p') or d.css('.compText')
                 if url.startswith('http') and 'yahoo.com' not in urllib.parse.urlparse(url).netloc:
-                    results.append({'title': (_txt(h[0]) if h else _txt(a[0]))[:200] or 'No title', 'url': url,
-                                    'snippet': _clean_snippet(_txt(sn[0]) if sn else '')[:300]})
-            if not results and tried['status'] != 200:
+                    raw_sn = _txt(sn[0]) if sn else ''
+                    entry = {'title': (_txt(h[0]) if h else _txt(a[0]))[:200] or 'No title', 'url': url,
+                             'snippet': _clean_snippet(raw_sn)[:300]}
+                    iso = _date_of(entry, raw_sn)
+                    if iso:
+                        entry['date'] = iso
+                    results.append(entry)
+            if not results and tried['status'] in _BLOCK_STATUSES:
                 tried['blocked'] = True
         elif engine == 'brave':
-            page = Fetcher.get('https://search.brave.com/search?q=' + eq, **kw)
+            page = Fetcher.get('https://search.brave.com/search?q=' + eq + ('&tf=py' if freshness else ''), **kw)
             tried['status'] = _status_of(page)
             body = _body_text(page)
-            if tried['status'] in (403, 429) or BLOCK_RE.search(body[:20000]):
+            if tried['status'] in _BLOCK_STATUSES or BLOCK_RE.search(body[:20000]):
                 tried['blocked'] = True
             else:
                 # One <div class="snippet" data-type="web"> per organic result: the
@@ -628,8 +726,12 @@ def _search_one(engine, query, limit, timeout_s):
                     title = (_txt(title_el[0]) if title_el else _txt(a[0])).strip()
                     desc_el = sn.css('.generic-snippet .content') or sn.css('.snippet-description') or sn.css('.snippet-content')
                     if title:
-                        results.append({'title': title[:200], 'url': href,
-                                        'snippet': _clean_snippet(_txt(desc_el[0]) if desc_el else '')[:300]})
+                        raw_sn = _txt(desc_el[0]) if desc_el else ''
+                        entry = {'title': title[:200], 'url': href, 'snippet': _clean_snippet(raw_sn)[:300]}
+                        iso = _date_of(entry, raw_sn)
+                        if iso:
+                            entry['date'] = iso
+                        results.append(entry)
                 if not results:
                     # Older markup fallback
                     for a in page.css('a[href^="http"]'):
@@ -663,10 +765,16 @@ def _search_one(engine, query, limit, timeout_s):
 # Coverage below this → the engine answered something generic; try the next one
 # and return the best-covered set. ≥ this → good enough, stop.
 SEARCH_GOOD_COVERAGE = float(os.environ.get('SEARCH_GOOD_COVERAGE') or 0.5)
-DEFAULT_ENGINE_ORDER = ['ddg', 'brave', 'bing', 'yahoo']
+# Coverage under this with several results = the engine answered JUNK for the
+# first word ("Any" → AnyDesk downloads). Reported as `degraded` so the caller
+# cools that backend instead of asking it again a second later.
+SEARCH_DEGRADED_COVERAGE = float(os.environ.get('SEARCH_DEGRADED_COVERAGE') or 0.2)
+ALL_ENGINES = ('ddg', 'bing', 'bing-news', 'yahoo', 'brave')
+DEFAULT_ENGINE_ORDER = ['ddg', 'brave', 'yahoo', 'bing']
+FRESH_ENGINE_ORDER = ['ddg', 'bing-news', 'brave', 'yahoo', 'bing']
 
 
-def search(query, limit=5, engines=None, timeout_s=8):
+def search(query, limit=5, engines=None, timeout_s=8, freshness=None):
     """Multi-engine search that judges RELEVANCE, not just non-emptiness: an
     engine whose results do not reflect the query terms (Bing's degraded
     navigational answer, a "did you mean" page) is not accepted; the next
@@ -674,14 +782,16 @@ def search(query, limit=5, engines=None, timeout_s=8):
     are merged in behind the winner when the winner is short. Returns
     `relevance` {coverage, terms, missing, weak} so the caller can tell the
     model WHICH terms the results never matched."""
-    order = [e for e in (engines or DEFAULT_ENGINE_ORDER) if e in ('ddg', 'bing', 'yahoo', 'brave')]
+    order = [e for e in (engines or (FRESH_ENGINE_ORDER if freshness else DEFAULT_ENGINE_ORDER)) if e in ALL_ENGINES]
     tried = []
     best = None   # (coverage, engine, results, cov)
     pool = []     # all results from every engine, for the merge
     for eng in order:
-        results, t = _search_one(eng, query, limit, timeout_s)
+        results, t = _search_one(eng, query, limit, timeout_s, freshness)
         cov = coverage_of(results, query)
         t['coverage'] = cov['coverage']
+        if results and len(results) >= 3 and cov['coverage'] < SEARCH_DEGRADED_COVERAGE:
+            t['degraded'] = True
         tried.append(t)
         if results:
             pool.append((cov['coverage'], eng, results))
@@ -703,8 +813,16 @@ def search(query, limit=5, engines=None, timeout_s=8):
                 if r['url'] not in seen and len(merged) < limit:
                     seen.add(r['url'])
                     merged.append(dict(r, via=e2))
+    if freshness:
+        # A "new / upcoming / latest" question is about recency: dated-this-year
+        # results first, then undated, then older — relative order kept inside
+        # each band so relevance still decides within the band.
+        this_year = time.strftime('%Y')
+        band = lambda r: 0 if str(r.get('date') or '').startswith(this_year) else (1 if not r.get('date') else 2)
+        merged = sorted(merged, key=band)
     cov = coverage_of(merged, query)
     return {'success': True, 'engine': eng, 'query': query, 'count': len(merged), 'results': merged, 'tried': tried,
+            'freshness': freshness or None, 'today': time.strftime('%Y-%m-%d'),
             'relevance': {'coverage': cov['coverage'], 'terms': cov['terms'], 'missing': cov['missing'],
                           'weak': cov.get('weak', []), 'lowRelevance': cov['coverage'] < SEARCH_GOOD_COVERAGE}}
 
@@ -764,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                 q = str(body.get('query') or '').strip()
                 if not q:
                     return self._send(400, {'ok': False, 'error': 'query required'})
-                res = search(q, int(body.get('limit') or 5), body.get('engines'), int(body.get('timeout') or 8))
+                res = search(q, int(body.get('limit') or 5), body.get('engines'), int(body.get('timeout') or 8), body.get('freshness') or None)
                 res['ok'] = True
                 return self._send(200, res)
             return self._send(404, {'ok': False, 'error': 'not found'})
