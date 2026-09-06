@@ -1338,6 +1338,7 @@ function buildChatRuntimePrelude() {
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
         `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. The sandbox has NO web browser and cannot install one (no Chromium, 64 MB /tmp) — playwright/puppeteer/selenium there are refused; to TEST or PREVIEW an HTML/JS/React page you wrote, call preview_html (real headless browser: console errors, exceptions, blank-canvas check, screenshot). When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
+        `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query.`,
         `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
         `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
         `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
@@ -12942,18 +12943,20 @@ app.get('/api/search', requireAuth, async (req, res) => {
         const results = [];
         const seenUrls = new Set(); // Deduplication
         let searchSource = 'duckduckgo';
+        let routeRelevance = null;
 
         // Resident-engine multi-backend search FIRST (fast, impersonated). Falls
         // through to the legacy DDG→Scrapling→Brave chain on miss/unavailable.
         try {
             if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
-                const engines = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => !backendCoolingDown(e));
+                const engines = SEARCH_ENGINE_ORDER.filter(e => !backendCoolingDown(e));
                 if (engines.length) {
                     const er = await scraplingService.search(enhancedQuery, parseInt(limit), { engines });
                     if (Array.isArray(er?.tried)) for (const t of er.tried) { if (t.blocked) noteBackendBlocked(t.engine); else if (t.count > 0) noteBackendOk(t.engine); }
                     if (er && er.success && Array.isArray(er.results) && er.results.length) {
-                        for (const r of er.results) { if (r.url && !seenUrls.has(r.url)) { seenUrls.add(r.url); results.push({ title: r.title || 'No title', url: r.url, snippet: r.snippet || 'No description available', content: null }); } }
+                        for (const r of er.results) { if (r.url && !seenUrls.has(r.url)) { seenUrls.add(r.url); results.push({ title: r.title || 'No title', url: r.url, snippet: r.snippet || 'No description available', content: null, ...(r.date ? { date: r.date } : {}) }); } }
                         searchSource = `engine:${er.engine}`;
+                        if (er.relevance) routeRelevance = { coverage: er.relevance.coverage, missingTerms: er.relevance.missing || [], weakTerms: er.relevance.weak || [], lowRelevance: !!er.relevance.lowRelevance, hint: searchRelevanceHint(enhancedQuery, er.relevance) };
                     }
                 }
             }
@@ -13169,7 +13172,8 @@ app.get('/api/search', requireAuth, async (req, res) => {
             results,
             count: results.length,
             contentFetchedCount: shouldFetchContent ? contentFetchedCount : undefined,
-            source: searchSource
+            source: searchSource,
+            ...(routeRelevance ? { relevance: { coverage: routeRelevance.coverage, missingTerms: routeRelevance.missingTerms, weakTerms: routeRelevance.weakTerms }, ...(routeRelevance.hint ? { hint: routeRelevance.hint } : {}) } : {}),
         };
 
         // Cache ONLY a non-empty result. An all-backends collapse (DDG CAPTCHA →
@@ -13177,10 +13181,14 @@ app.get('/api/search', requireAuth, async (req, res) => {
         // be cached — otherwise the 1h TTL pins the empty verdict and every retry of
         // that query is served the stale nothing. Signal it as retryable instead.
         if (results.length > 0) {
-            searchCache.set(cacheKey, {
-                data: resultData,
-                timestamp: Date.now()
-            });
+            // A low-relevance answer (generic pages) is never cached either — the
+            // next reformulation must reach the backends.
+            if (!(routeRelevance && routeRelevance.lowRelevance)) {
+                searchCache.set(cacheKey, {
+                    data: resultData,
+                    timestamp: Date.now()
+                });
+            }
             res.json(resultData);
         } else {
             res.json({ ...resultData, retryable: true, source: 'rate-limited' });
@@ -14102,6 +14110,50 @@ function clearHostBotWall(url) {
 // ONLY on a positive block signal (CAPTCHA/anomaly page, 403/429, network throw) —
 // NEVER on a 0-result parse, which can be regex drift or a genuinely empty query and
 // would falsely sideline a healthy backend for everyone.
+// Backend order for the resident engine. Brave before Bing: Bing's HTML endpoint
+// answers a bot-looking client with a degraded navigational page (first-entity
+// homepages only) — the engine reads Bing's RSS output now, but Brave's results
+// are the most consistently on-topic, so it goes first after DDG.
+const SEARCH_ENGINE_ORDER = (process.env.SEARCH_ENGINE_ORDER || 'ddg,brave,bing,yahoo').split(',').map(s => s.trim()).filter(Boolean);
+// Query filler the reformulation drops when every backend answered generically:
+// years/months (a specific date rarely appears verbatim in a title) and vague
+// words that only dilute the entity terms.
+const SEARCH_FILLER_RE = /\b(?:19|20)\d{2}\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b|\b(?:latest|recent|current|news|update[sd]?|details?|information|info|article|report|ruling|decision|outcome|status|summary|explained|about|regarding|what|happened|happening|who|why|how|when|where)\b/gi;
+function reformulateWeakQuery(q, relevance) {
+    const orig = String(q || '').trim();
+    if (!orig || /["]|\bsite:|\bintitle:|\binurl:/.test(orig)) return null;   // already crafted — leave it
+    let alt = orig.replace(SEARCH_FILLER_RE, ' ').replace(/\s+/g, ' ').trim();
+    const words = alt.split(' ').filter(Boolean);
+    if (words.length < 2) return null;
+    // Keep the most specific terms: prefer the ones the results DID hit at
+    // least once (they anchor the topic) plus anything capitalised in the
+    // original — cap at 6 words so the query is tighter, not different.
+    if (words.length > 6) {
+        const missing = new Set((relevance && relevance.missing) || []);
+        const keep = words.filter(w => !missing.has(w.toLowerCase()));
+        alt = (keep.length >= 2 ? keep : words).slice(0, 6).join(' ');
+    }
+    return alt && alt.toLowerCase() !== orig.toLowerCase() ? alt : null;
+}
+function searchRelevanceHint(q, relevance) {
+    if (!relevance) return null;
+    const missing = (relevance.missing || []).slice(0, 6);
+    const weak = (relevance.weak || []).slice(0, 6);
+    if (relevance.lowRelevance) {
+        return `LOW RELEVANCE: these results are generic — they never mention ${missing.length ? missing.map(t => `"${t}"`).join(', ') : 'most of your query terms'}${weak.length ? ` and barely mention ${weak.map(t => `"${t}"`).join(', ')}` : ''}. ` +
+            'Do NOT repeat this query or a near-variant. Reformulate: put the exact name of the thing (case, product, person, event) in quotes, add ONE distinguishing detail (a party, place, court, model number), drop filler words; or search a specific site (site:reuters.com, site:courtlistener.com, site:<the organisation>). If two reformulations still miss, read the most specific result you DID get and follow its links.';
+    }
+    // Soft note only when what is missing looks ESSENTIAL: a proper noun / a
+    // number-bearing token from the original query, or several terms at once.
+    // A single missing common word ("ruling", "settlement") is not worth a note.
+    const properish = new Set(String(q || '').split(/\s+/).filter(w => /^[A-Z][a-z]|\d/.test(w) && w.length >= 3).map(w => w.toLowerCase().replace(/[^a-z0-9'-]/g, '')));
+    const essential = missing.filter(t => properish.has(t));
+    if (essential.length || missing.length >= 2) {
+        return `Note: no result mentions ${missing.map(t => `"${t}"`).join(', ')} — if that term is essential, refine the query (quote it, add a distinguishing detail) before concluding it cannot be found.`;
+    }
+    return null;
+}
+
 const searchBackendMemo = new Map();   // name -> coolingUntil (ms epoch)
 const SEARCH_BACKEND_COOLDOWN_MS = parseInt(process.env.SEARCH_BACKEND_COOLDOWN_MS, 10) || 120 * 1000;
 function backendCoolingDown(name) {
@@ -27372,17 +27424,44 @@ app.use((req, res) => {
             // we fall through to the exact DDG→Brave→Scrapling chain below.
             try {
                 if (scraplingService && scraplingService.engineAvailable && scraplingService.engineAvailable()) {
-                    const skip = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => backendCoolingDown(e === 'ddg' ? 'ddg' : e));
-                    const engines = ['ddg', 'bing', 'yahoo', 'brave'].filter(e => !skip.includes(e));
+                    // Brave BEFORE Bing: Bing's answer to a bot-looking client is a
+                    // degraded navigational page (see web_engine.py); the engine
+                    // now judges each backend by query-term COVERAGE and moves on
+                    // when the results do not reflect the query.
+                    const engines = SEARCH_ENGINE_ORDER.filter(e => !backendCoolingDown(e));
                     if (engines.length) {
-                        const er = await scraplingService.search(q, limit, { engines });
+                        let er = await scraplingService.search(q, limit, { engines });
                         if (Array.isArray(er?.tried)) for (const t of er.tried) {
                             const key = t.engine;
                             if (t.blocked) noteBackendBlocked(key); else if (t.count > 0) noteBackendOk(key);
                         }
+                        // Automatic reformulation: when every backend's results are
+                        // generic (low coverage), retry ONCE with the query reduced to
+                        // its specific terms (drop years/filler; keep the entities) —
+                        // the reformulation the model should have made, done for it.
+                        let reformulated = null;
+                        if (er && er.success && er.relevance && er.relevance.lowRelevance) {
+                            const alt = reformulateWeakQuery(q, er.relevance);
+                            if (alt && alt !== q) {
+                                const er2 = await scraplingService.search(alt, limit, { engines }).catch(() => null);
+                                if (er2 && er2.success && er2.relevance && er2.relevance.coverage > er.relevance.coverage) {
+                                    console.log(`[web_search] reformulated "${q}" → "${alt}" (coverage ${er.relevance.coverage} → ${er2.relevance.coverage})`);
+                                    reformulated = { from: q, to: alt };
+                                    er = er2;
+                                }
+                            }
+                        }
                         if (er && er.success && Array.isArray(er.results) && er.results.length) {
-                            return cacheReturn({ query: q, source: `engine:${er.engine}`, count: er.results.length,
-                                results: er.results.slice(0, limit).map(r => ({ title: r.title || 'No title', url: r.url, snippet: r.snippet || '' })) });
+                            const out = { query: reformulated ? reformulated.to : q, source: `engine:${er.engine}`, count: er.results.length,
+                                results: er.results.slice(0, limit).map(r => ({ title: r.title || 'No title', url: r.url, snippet: r.snippet || '', ...(r.date ? { date: r.date } : {}) })),
+                                ...(reformulated ? { reformulatedFrom: reformulated.from } : {}),
+                                ...(er.relevance ? { relevance: { coverage: er.relevance.coverage, missingTerms: er.relevance.missing || [], weakTerms: er.relevance.weak || [] } } : {}),
+                            };
+                            const hint = searchRelevanceHint(q, er.relevance);
+                            if (hint) out.hint = hint;
+                            // Never cache a low-relevance answer: the model's next
+                            // reformulation must reach the backends, not the memo.
+                            return (er.relevance && er.relevance.lowRelevance) ? out : cacheReturn(out);
                         }
                     }
                 }
@@ -27644,7 +27723,7 @@ app.use((req, res) => {
                         'Reading auto-cascades static fetch → stealth anti-bot → real-browser render, so you do NOT need to pick an engine or re-read the same URL a different way — one call handles Cloudflare / "Just a moment" / CAPTCHA and JS-rendered SPAs. ' +
                         'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to also collect links. ' +
                         'For a page that needs interaction first (accept a cookie wall, submit a form, click "load more", scroll for lazy content) use mode:"interact" with an ordered `actions` array. For "top N / most recent N" across a paginated listing use mode:"crawl". ' +
-                        'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. ' +
+                        'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. A search result carries `relevance` (which query terms the results never matched) and, when the results are generic, a `hint` telling you how to reformulate — follow it rather than repeating the query. ' +
                         'Trust fetched/searched content over training when they conflict, and cite the URL(s). ' +
                         'When a read hits an obstacle the result carries `obstacle` (kind: bot_challenge/consent/login/paywall/age_gate/geo/js_required/thin, plus `tried` = the layers already used) and a `hint` naming the ONE next step — do exactly that: mode:"browser" only when the hint says so (the browser waits out challenges and dismisses consent/age overlays), mode:"interact" with actions for an overlay it could not clear, otherwise switch source (search for the subject) — never re-read the same URL in a mode already listed in `tried`. ' +
                         'A page that is bot-walled, paywalled or login-gated is automatically retried from the Internet Archive; a result with source:"archive" carries `archivedAt` — cite it as an archived copy. Rejects private/internal addresses.',

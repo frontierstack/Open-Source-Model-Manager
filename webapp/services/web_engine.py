@@ -41,6 +41,7 @@ import sys
 import json
 import time
 import re
+import html as html_mod
 import threading
 import queue
 import traceback
@@ -456,6 +457,80 @@ def _txt(el):
             return ''
 
 
+# Query-term coverage: how much of the QUERY do the results actually reflect?
+# Bing's HTML endpoint answers a bot-looking client with a degraded page whose
+# "results" are navigational pages for the FIRST entity only ("Chicago Glock
+# lawsuit" → Chicago Wikipedia / choosechicago.com; "OpenAI Hugging Face hack"
+# → openai.com). Those parse fine, look like results, and are useless — the
+# model then sees the same generic homepages for every reformulation and
+# concludes the search engine is "echoing stale results". Coverage is the
+# fraction of significant query terms present in a result's title+snippet+url.
+_STOP = set("""a an the and or of for to in on at by with from as is are was were be been this that these those
+it its into over under about after before between during without within than then them they their there
+what which who whom whose when where why how do does did done has have had having not no yes if but so such
+via per vs latest recent news new current today update updates details detail information info article
+articles report reports page pages site website official find search results result get give show tell me
+please can could would should will may might won win wins winning lost lose loses losing said says say
+told between against versus happened happens happen going went come came make made makes take took
+know known think thought like just also still ever even much many more most some any all each every both
+now yet already again back here very really only own same other another""".split())
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9'\-]{1,}")
+
+
+def _query_terms(query):
+    q = str(query or '').lower()
+    q = re.sub(r'\b(?:site|inurl|intitle|filetype|ext):\S+', ' ', q)
+    terms = []
+    for w in _WORD_RE.findall(q):
+        w = w.strip("'-")
+        if len(w) < 3 or w in _STOP or w in terms:
+            continue
+        terms.append(w)
+    return terms
+
+
+def _result_text(r):
+    u = str(r.get('url') or '').lower()
+    u = re.sub(r'https?://(?:www\.)?', ' ', u)
+    u = re.sub(r'[^a-z0-9]+', ' ', u)
+    return '%s %s %s' % (str(r.get('title') or '').lower(), str(r.get('snippet') or '').lower(), u)
+
+
+def _term_in(text, term):
+    if term in text:
+        return True
+    # crude stemming: "lawsuits"/"lawsuit", "ruling"/"rulings", "hacking"/"hack"
+    stem = re.sub(r'(?:ing|ed|es|s)$', '', term)
+    return len(stem) >= 4 and stem in text
+
+
+def coverage_of(results, query, top=5):
+    terms = _query_terms(query)
+    if not terms or not results:
+        return {'coverage': 0.0 if terms else 1.0, 'terms': terms, 'missing': [], 'weak': [], 'perResult': []}
+    per = []
+    hit_counts = {t: 0 for t in terms}
+    for r in results[:top]:
+        text = _result_text(r)
+        hits = [t for t in terms if _term_in(text, t)]
+        for t in hits:
+            hit_counts[t] += 1
+        per.append(len(hits) / len(terms))
+    coverage = sum(per) / len(per)
+    n = min(len(results), top)
+    missing = [t for t in terms if hit_counts[t] == 0]
+    weak_terms = [t for t in terms if 0 < hit_counts[t] < max(1, n // 2)]
+    return {'coverage': round(coverage, 3), 'terms': terms, 'missing': missing, 'weak': weak_terms,
+            'perResult': [round(x, 2) for x in per]}
+
+
+def _clean_snippet(s):
+    s = html_mod.unescape(str(s or ''))
+    s = re.sub(r'<[^>]+>', '', s)
+    s = re.sub(r'^\s*(?:\w{3} \d{1,2}, \d{4}|\d{1,2} \w{3} \d{4}|\d+ (?:day|hour|week|month|minute)s? ago)\s*[·\-–]\s*', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+
 def _search_one(engine, query, limit, timeout_s):
     eq = urllib.parse.quote_plus(query)
     t0 = time.time()
@@ -481,34 +556,56 @@ def _search_one(engine, query, limit, timeout_s):
                     sn = r.css('.result__snippet')
                     if url.startswith('http'):
                         results.append({'title': _txt(a[0])[:200] or 'No title', 'url': url,
-                                        'snippet': (_txt(sn[0]) if sn else '')[:300]})
+                                        'snippet': _clean_snippet(_txt(sn[0]) if sn else '')[:300]})
         elif engine == 'bing':
-            page = Fetcher.get('https://www.bing.com/search?q=' + eq + '&setlang=en&cc=US', **kw)
+            # RSS output: the HTML endpoint hands a bot-looking client a degraded
+            # page whose results are navigational hits for the first entity only
+            # (measured: "Chicago Glock lawsuit ruling" → Chicago Wikipedia,
+            # choosechicago.com, the band; RSS → the actual court rulings).
+            page = Fetcher.get('https://www.bing.com/search?q=' + eq + '&format=rss&setlang=en&cc=US', **kw)
             tried['status'] = _status_of(page)
-            for li in page.css('li.b_algo'):
-                a = li.css('h2 a')
-                if not a:
+            raw = ''
+            for attr in ('body', 'html_content'):
+                try:
+                    v = getattr(page, attr, None)
+                    if isinstance(v, (bytes, bytearray)):
+                        raw = v.decode('utf-8', 'ignore')
+                    elif v:
+                        raw = str(v)
+                    if raw:
+                        break
+                except Exception:
                     continue
-                url = _bing_decode(a[0].attrib.get('href', ''))
-                p = li.css('p')
-                if url.startswith('http') and 'bing.com' not in urllib.parse.urlparse(url).netloc:
-                    snippet = _txt(p[0]) if p else ''
-                    snippet = re.sub(r'^\w{3} \d{1,2}, \d{4}\s*·\s*|^\d+ (?:day|hour|week)s? ago\s*·\s*', '', snippet)
-                    results.append({'title': _txt(a[0])[:200] or 'No title', 'url': url, 'snippet': snippet[:300]})
-            if not results and (tried['status'] != 200 or BLOCK_RE.search(_body_text(page)[:20000])):
+            for item in re.findall(r'<item>(.*?)</item>', raw, re.S):
+                t = re.search(r'<title>(.*?)</title>', item, re.S)
+                l = re.search(r'<link>(.*?)</link>', item, re.S)
+                d = re.search(r'<description>(.*?)</description>', item, re.S)
+                pd = re.search(r'<pubDate>(.*?)</pubDate>', item, re.S)
+                url = _bing_decode(html_mod.unescape((l.group(1) if l else '').strip()))
+                if not url.startswith('http') or 'bing.com' in urllib.parse.urlparse(url).netloc:
+                    continue
+                entry = {'title': _clean_snippet(t.group(1) if t else '')[:200] or 'No title', 'url': url,
+                         'snippet': _clean_snippet(d.group(1) if d else '')[:300]}
+                if pd:
+                    entry['date'] = pd.group(1).strip()[:40]
+                results.append(entry)
+            if not results and (tried['status'] != 200 or BLOCK_RE.search(raw[:20000])):
                 tried['blocked'] = True
         elif engine == 'yahoo':
             page = Fetcher.get('https://search.yahoo.com/search?p=' + eq, **kw)
             tried['status'] = _status_of(page)
+            # Markup: <div class="algo"> <div class="compTitle"> <a href=...> ... <h3 class="title">
+            # — the ANCHOR wraps the h3 (the old "h3 a" selector matched nothing).
             for d in page.css('div.algo'):
-                h = d.css('h3 a')
-                if not h:
+                a = d.css('.compTitle a') or d.css('a[href*="r.search.yahoo.com"]') or d.css('a')
+                if not a:
                     continue
-                url = _yahoo_decode(h[0].attrib.get('href', ''))
-                sn = d.css('.compText p, p.fc-falcon, div.compText')
+                url = _yahoo_decode(a[0].attrib.get('href', ''))
+                h = d.css('h3.title') or d.css('h3')
+                sn = d.css('.compText p') or d.css('.compText')
                 if url.startswith('http') and 'yahoo.com' not in urllib.parse.urlparse(url).netloc:
-                    results.append({'title': _txt(h[0])[:200] or 'No title', 'url': url,
-                                    'snippet': (_txt(sn[0]) if sn else '')[:300]})
+                    results.append({'title': (_txt(h[0]) if h else _txt(a[0]))[:200] or 'No title', 'url': url,
+                                    'snippet': _clean_snippet(_txt(sn[0]) if sn else '')[:300]})
             if not results and tried['status'] != 200:
                 tried['blocked'] = True
         elif engine == 'brave':
@@ -518,15 +615,32 @@ def _search_one(engine, query, limit, timeout_s):
             if tried['status'] in (403, 429) or BLOCK_RE.search(body[:20000]):
                 tried['blocked'] = True
             else:
-                for a in page.css('a[href^="http"]'):
-                    href = a.attrib.get('href', '')
-                    cls = a.attrib.get('class', '')
-                    if 'brave.com' in href or 'svelte' not in cls:
+                # One <div class="snippet" data-type="web"> per organic result: the
+                # link, a .search-snippet-title and a .generic-snippet .content.
+                for sn in page.css('div.snippet[data-type="web"]'):
+                    a = sn.css('a[href^="http"]')
+                    if not a:
                         continue
-                    title_el = a.css('.title')
-                    title = _txt(title_el[0]) if title_el else _txt(a)
-                    if href.startswith('http') and title:
-                        results.append({'title': title[:200], 'url': href, 'snippet': ''})
+                    href = a[0].attrib.get('href', '')
+                    if not href.startswith('http') or 'brave.com' in urllib.parse.urlparse(href).netloc:
+                        continue
+                    title_el = sn.css('.search-snippet-title') or sn.css('.title')
+                    title = (_txt(title_el[0]) if title_el else _txt(a[0])).strip()
+                    desc_el = sn.css('.generic-snippet .content') or sn.css('.snippet-description') or sn.css('.snippet-content')
+                    if title:
+                        results.append({'title': title[:200], 'url': href,
+                                        'snippet': _clean_snippet(_txt(desc_el[0]) if desc_el else '')[:300]})
+                if not results:
+                    # Older markup fallback
+                    for a in page.css('a[href^="http"]'):
+                        href = a.attrib.get('href', '')
+                        cls = a.attrib.get('class', '')
+                        if 'brave.com' in href or 'svelte' not in cls:
+                            continue
+                        title_el = a.css('.title')
+                        title = _txt(title_el[0]) if title_el else _txt(a)
+                        if href.startswith('http') and title:
+                            results.append({'title': title[:200], 'url': href, 'snippet': ''})
         else:
             tried['error'] = 'unknown engine'
     except Exception as e:
@@ -546,17 +660,53 @@ def _search_one(engine, query, limit, timeout_s):
     return out, tried
 
 
+# Coverage below this → the engine answered something generic; try the next one
+# and return the best-covered set. ≥ this → good enough, stop.
+SEARCH_GOOD_COVERAGE = float(os.environ.get('SEARCH_GOOD_COVERAGE') or 0.5)
+DEFAULT_ENGINE_ORDER = ['ddg', 'brave', 'bing', 'yahoo']
+
+
 def search(query, limit=5, engines=None, timeout_s=8):
-    engines = [e for e in (engines or ['ddg', 'bing', 'yahoo', 'brave']) if e in ('ddg', 'bing', 'yahoo', 'brave')]
+    """Multi-engine search that judges RELEVANCE, not just non-emptiness: an
+    engine whose results do not reflect the query terms (Bing's degraded
+    navigational answer, a "did you mean" page) is not accepted; the next
+    engine is tried and the best-covered set wins. Results from a weaker engine
+    are merged in behind the winner when the winner is short. Returns
+    `relevance` {coverage, terms, missing, weak} so the caller can tell the
+    model WHICH terms the results never matched."""
+    order = [e for e in (engines or DEFAULT_ENGINE_ORDER) if e in ('ddg', 'bing', 'yahoo', 'brave')]
     tried = []
-    for eng in engines:
+    best = None   # (coverage, engine, results, cov)
+    pool = []     # all results from every engine, for the merge
+    for eng in order:
         results, t = _search_one(eng, query, limit, timeout_s)
+        cov = coverage_of(results, query)
+        t['coverage'] = cov['coverage']
         tried.append(t)
         if results:
-            return {'success': True, 'engine': eng, 'query': query, 'count': len(results),
-                    'results': results, 'tried': tried}
-    return {'success': False, 'engine': None, 'query': query, 'count': 0, 'results': [], 'tried': tried,
-            'error': 'no engine returned results'}
+            pool.append((cov['coverage'], eng, results))
+            if best is None or cov['coverage'] > best[0]:
+                best = (cov['coverage'], eng, results, cov)
+            if cov['coverage'] >= SEARCH_GOOD_COVERAGE:
+                break
+    if best is None:
+        return {'success': False, 'engine': None, 'query': query, 'count': 0, 'results': [], 'tried': tried,
+                'error': 'no engine returned results'}
+    coverage, eng, results, cov = best
+    merged = list(results)
+    seen = {r['url'] for r in merged}
+    if len(merged) < limit:
+        for c, e2, rs in sorted(pool, key=lambda x: -x[0]):
+            if e2 == eng:
+                continue
+            for r in rs:
+                if r['url'] not in seen and len(merged) < limit:
+                    seen.add(r['url'])
+                    merged.append(dict(r, via=e2))
+    cov = coverage_of(merged, query)
+    return {'success': True, 'engine': eng, 'query': query, 'count': len(merged), 'results': merged, 'tried': tried,
+            'relevance': {'coverage': cov['coverage'], 'terms': cov['terms'], 'missing': cov['missing'],
+                          'weak': cov.get('weak', []), 'lowRelevance': cov['coverage'] < SEARCH_GOOD_COVERAGE}}
 
 
 # ---------------------------------------------------------------------------
