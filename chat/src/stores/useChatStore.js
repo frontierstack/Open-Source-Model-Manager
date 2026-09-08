@@ -510,6 +510,9 @@ export const useChatStore = create(
         }),
 
         clearStreamingToolCalls: () => set({ streamingToolCalls: [] }),
+        // Replace the whole list — used when reconnecting to a background
+        // stream, whose completed chips + in-flight calls come from the server.
+        setStreamingToolCalls: (list) => set({ streamingToolCalls: Array.isArray(list) ? list : [] }),
 
         setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
 

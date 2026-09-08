@@ -253,6 +253,8 @@ function buildNativeChipEntries(streamingToolCalls) {
     const out = [];
     if (!Array.isArray(streamingToolCalls)) return out;
     for (const tc of streamingToolCalls) {
+        // Reconnect entries carry the server-built chip verbatim.
+        if (tc.chip && typeof tc.chip === 'object') { out.push({ ...tc.chip }); continue; }
         let argPreview = '';
         let parsedArgsForChip = null;
         if (tc.arguments) {
@@ -512,6 +514,7 @@ export default function ChatContainer({
         appendStreamingReasoning,
         startStreamingToolCall,
         finishStreamingToolCall,
+        setStreamingToolCalls,
         upsertStreamingToolDraft,
         clearStreamingToolDrafts,
         clearStreaming,
@@ -546,6 +549,7 @@ export default function ChatContainer({
         appendStreamingReasoning: state.appendStreamingReasoning,
         startStreamingToolCall: state.startStreamingToolCall,
         finishStreamingToolCall: state.finishStreamingToolCall,
+        setStreamingToolCalls: state.setStreamingToolCalls,
         upsertStreamingToolDraft: state.upsertStreamingToolDraft,
         clearStreamingToolDrafts: state.clearStreamingToolDrafts,
         clearStreaming: state.clearStreaming,
@@ -771,6 +775,42 @@ export default function ChatContainer({
     };
 
     // Check for active background streaming on a conversation
+    // Rebuild the live tool-call list from a background job's status payload:
+    // completed chips (server-built, passed through verbatim) + calls still
+    // running (server-shaped, so the running clock renders). Only writes to
+    // the store when something actually changed — the poll runs at ~10 Hz.
+    const applyJobToolCalls = (data) => {
+        const next = [];
+        (Array.isArray(data.toolCalls) ? data.toolCalls : []).forEach((chip, i) => {
+            if (!chip || typeof chip !== 'object') return;
+            next.push({
+                tool_call_id: `bg-chip-${i}`,
+                name: chip.label || 'tool',
+                arguments: '',
+                status: chip.status === 'failed' ? 'failed' : 'success',
+                startedAt: chip.startedAt,
+                durationMs: chip.durationMs,
+                chip,
+            });
+        });
+        (Array.isArray(data.runningToolCalls) ? data.runningToolCalls : []).forEach((rc) => {
+            if (!rc || typeof rc !== 'object') return;
+            next.push({
+                tool_call_id: rc.tool_call_id || `bg-run-${next.length}`,
+                name: rc.name || 'tool',
+                arguments: rc.arguments || '',
+                purpose: rc.purpose || undefined,
+                status: 'running',
+                startedAt: rc.startedAt || Date.now(),
+                sandboxed: rc.sandboxed,
+                sandboxSource: rc.source,
+            });
+        });
+        const sig = (l) => l.map(t => `${t.tool_call_id}:${t.status}`).join('|');
+        const cur = useChatStore.getState().streamingToolCalls || [];
+        if (sig(next) !== sig(cur)) setStreamingToolCalls(next);
+    };
+
     const checkActiveStreaming = async (conversationId) => {
         // GUARD: never start a background poll while the FOREGROUND stream for
         // this same conversation is still live. This fires on a fresh send —
@@ -806,6 +846,7 @@ export default function ChatContainer({
                     setStreaming(true);
                     setStreamingContent(data.content || '');
                     setStreamingReasoning(data.reasoning || '');
+                    applyJobToolCalls(data);
                     setIsLoading(false);
                     // Map the server's phase to a user-facing status. The
                     // server registers the job up front, so phase can be any
@@ -868,6 +909,7 @@ export default function ChatContainer({
                                     if (pollData.streaming) {
                                         setStreamingContent(pollData.content || '');
                                         setStreamingReasoning(pollData.reasoning || '');
+                                        applyJobToolCalls(pollData);
                                         // Keep the status indicator in sync as
                                         // the server transitions through phases
                                         // (preparing → chunking → mapping →

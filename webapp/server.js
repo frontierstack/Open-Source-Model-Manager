@@ -17178,6 +17178,11 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             phase: job.phase || null,
             progress: job.progress || null,
             events: Array.isArray(job.events) ? job.events : [],
+            // Tool chips completed so far + calls in flight, so a client that
+            // reconnects mid-turn (refresh / switch-back) redraws the tool
+            // history instead of showing a bare bubble until the save lands.
+            toolCalls: Array.isArray(job.toolChips) ? job.toolChips : [],
+            runningToolCalls: job.runningToolCalls ? Array.from(job.runningToolCalls.values()) : [],
         });
     } catch (error) {
         console.error('Error checking streaming status:', error);
@@ -20793,6 +20798,31 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // tool chips on reload. The foreground path builds chips client-side
         // from the SSE stream; this is the parity copy for the background save.
         const persistedToolChips = [];
+        // Mirror the chips onto the streaming job so the reconnect poll
+        // (GET /streaming) can hand them to a refreshed client mid-turn.
+        if (streamingConversationId) {
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (job) { job.toolChips = persistedToolChips; job.runningToolCalls = new Map(); }
+        }
+        const noteRunningToolCall = (call, policy) => {
+            if (!streamingConversationId || !call) return;
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (!job || !job.runningToolCalls) return;
+            job.runningToolCalls.set(call.id, {
+                tool_call_id: call.id,
+                name: call.function && call.function.name,
+                arguments: (call.function && call.function.arguments) || '',
+                purpose: call.purpose || undefined,
+                startedAt: Date.now(),
+                sandboxed: policy && policy.sandboxed,
+                source: policy && policy.source,
+            });
+        };
+        const clearRunningToolCall = (callId) => {
+            if (!streamingConversationId) return;
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (job && job.runningToolCalls) job.runningToolCalls.delete(callId);
+        };
 
         // Skills can carry a `systemPrompt` (set in the Tool editor's
         // "Prompt" field) that the model should see when the tool is
@@ -22722,6 +22752,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
+                        noteRunningToolCall(call, policy);
                         let targetKey = null;
                         const targetExtractor = MUTATING_TARGET_EXTRACTORS[call.function.name];
                         if (targetExtractor) {
@@ -23865,6 +23896,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     .filter(a => a && typeof a.url === 'string' && typeof a.name === 'string')
                                     .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
                                 : null;
+                            clearRunningToolCall(call.id);
                             persistedToolChips.push({
                                 type: 'native_tool_call',
                                 label: call.function.name || 'tool',

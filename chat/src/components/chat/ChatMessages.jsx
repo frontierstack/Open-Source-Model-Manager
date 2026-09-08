@@ -17,6 +17,9 @@ function StreamingMessage() {
     // Map the in-flight tool records to the ToolCallBlock shape so chips can
     // render live alongside streaming content.
     const liveToolCalls = (streamingToolCalls || []).map(tc => {
+        // A chip handed over by the server on reconnect is already in the
+        // persisted shape — render it as-is.
+        if (tc.chip && typeof tc.chip === 'object') return { ...tc.chip };
         let argPreview = '';
         if (tc.arguments) {
             try {
