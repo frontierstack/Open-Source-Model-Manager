@@ -76,20 +76,35 @@ const TOOL_VERBS = {
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
 };
-function describeRunningTool(toolCalls) {
-    if (!Array.isArray(toolCalls) || !toolCalls.length) return null;
-    // Most recent partial/running tool drives the label.
-    for (let i = toolCalls.length - 1; i >= 0; i--) {
-        const t = toolCalls[i];
-        if (t && (t.status === 'partial' || t.status === 'running')) {
-            const name = t.label || t.name || '';
-            const verb = TOOL_VERBS[name] || (name ? name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : null);
-            // The model's own one-line purpose is the most informative label.
-            if (t.purpose) return verb ? `${verb} — ${t.purpose}` : t.purpose;
-            return verb;
-        }
+function verbFor(t) {
+    const name = (t && (t.label || t.name)) || '';
+    return TOOL_VERBS[name] || (name ? name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Working');
+}
+function runningToolsOf(toolCalls) {
+    if (!Array.isArray(toolCalls)) return [];
+    return toolCalls.filter(t => t && (t.status === 'partial' || t.status === 'running'));
+}
+// Label for the tools still in flight. EVERY running tool is named, not just
+// the newest — a turn that fans out three parallel web reads used to read as
+// one call, and when two finished the label went back to "Generating" while
+// the third was still stuck. The longest-running call carries the elapsed
+// time so a hung tool is visible as such.
+function describeRunningTool(toolCalls, now = Date.now()) {
+    const running = runningToolsOf(toolCalls);
+    if (!running.length) return null;
+    const elapsedOf = (t) => (t.startedAt ? Math.max(0, Math.round((now - t.startedAt) / 1000)) : 0);
+    const oldest = running.reduce((a, b) => (elapsedOf(b) > elapsedOf(a) ? b : a), running[0]);
+    const secs = elapsedOf(oldest);
+    const clock = secs >= 4 ? ` (${secs}s)` : '';
+    if (running.length === 1) {
+        const t = running[0];
+        const verb = verbFor(t);
+        // The model's own one-line purpose is the most informative label.
+        return (t.purpose ? `${verb} — ${t.purpose}` : verb) + clock;
     }
-    return null;
+    const verbs = [...new Set(running.map(verbFor))].join(' / ');
+    const purpose = oldest.purpose ? ` — ${oldest.purpose}` : '';
+    return `${running.length} tools running · ${verbs}${purpose}${clock}`;
 }
 
 // Derive the most informative live label for the streaming bubble.
@@ -97,8 +112,8 @@ function describeRunningTool(toolCalls) {
 // reasoning-only > content streaming > fallback. This keeps the
 // indicator visible AT ALL TIMES while the assistant is producing
 // output, not just before the first content token.
-function deriveStreamingLabel({ toolCalls, streamingStatus, hasContent, hasReasoning }) {
-    const toolLabel = describeRunningTool(toolCalls);
+function deriveStreamingLabel({ toolCalls, streamingStatus, hasContent, hasReasoning, now }) {
+    const toolLabel = describeRunningTool(toolCalls, now);
     if (toolLabel) return toolLabel;
     if (streamingStatus && streamingStatus.text && !hasContent) return streamingStatus.text;
     if (!hasContent && hasReasoning) return 'Thinking';
@@ -140,6 +155,16 @@ export default React.memo(function ChatMessage({
     // For chart calls the chart itself surfaces in the main bubble
     // body anyway, so the chip strip is purely a transparency footer.
     const [toolsExpanded, setToolsExpanded] = useState(false);
+    // Re-render once a second while a tool is in flight so the running-tool
+    // label's elapsed clock advances (nothing else in the bubble changes
+    // while the model waits on a tool).
+    const hasRunningTool = !!(isStreaming && runningToolsOf(toolCalls).length);
+    const [, setToolTick] = useState(0);
+    React.useEffect(() => {
+        if (!hasRunningTool) return undefined;
+        const id = setInterval(() => setToolTick(t => t + 1), 1000);
+        return () => clearInterval(id);
+    }, [hasRunningTool]);
     const prevStreamingRef = useRef(isStreaming);
     React.useEffect(() => {
         if (prevStreamingRef.current && !isStreaming) {
