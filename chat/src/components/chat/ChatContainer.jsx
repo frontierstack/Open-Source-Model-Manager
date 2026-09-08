@@ -811,6 +811,38 @@ export default function ChatContainer({
         if (sig(next) !== sig(cur)) setStreamingToolCalls(next);
     };
 
+    // Feed a background job's polled text to the bubble. When no foreground
+    // stream owns the reveal refs, it goes through the same smooth-reveal pump
+    // the live stream uses (the raw 10 Hz poll otherwise lands as visible
+    // 100 ms lumps — the "skippy" reconnect). `initial` shows what the server
+    // already has at once and smooths only what arrives after that.
+    const toolSigRef = useRef('');
+    const applyJobContent = (conversationId, data, initial) => {
+        const content = data.content || '';
+        const reasoning = data.reasoning || '';
+        if (abortControllerRef.current) {          // a foreground stream owns the refs
+            setStreamingContent(content);
+            setStreamingReasoning(reasoning);
+            return;
+        }
+        if (initial) {
+            pendingContentRef.current = content;
+            displayedContentLenRef.current = content.length;
+            setStreamingContent(content);
+            pendingReasoningRef.current = reasoning;
+            lastReasoningLenRef.current = reasoning.length;
+            setStreamingReasoning(reasoning);
+            streamActiveRef.current = true;
+            ensureSmoothPump(conversationId);
+            return;
+        }
+        if (content.length < (pendingContentRef.current || '').length) displayedContentLenRef.current = 0; // buffer replaced
+        pendingContentRef.current = content;
+        pendingReasoningRef.current = reasoning;
+        ensureSmoothPump(conversationId);
+    };
+    const stopJobContent = () => { if (!abortControllerRef.current) streamActiveRef.current = false; };
+
     const checkActiveStreaming = async (conversationId) => {
         // GUARD: never start a background poll while the FOREGROUND stream for
         // this same conversation is still live. This fires on a fresh send —
@@ -844,9 +876,9 @@ export default function ChatContainer({
                     }
                     // There's active streaming - show the content and start polling
                     setStreaming(true);
-                    setStreamingContent(data.content || '');
-                    setStreamingReasoning(data.reasoning || '');
-                    applyJobToolCalls(data);
+                    applyJobContent(conversationId, data, true);
+                    if (data.toolCalls) applyJobToolCalls(data);
+                    toolSigRef.current = data.toolSig || '';
                     setIsLoading(false);
                     // Map the server's phase to a user-facing status. The
                     // server registers the job up front, so phase can be any
@@ -903,13 +935,12 @@ export default function ChatContainer({
                                 return;
                             }
                             try {
-                                const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
+                                const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming?toolSig=${encodeURIComponent(toolSigRef.current || '')}`, { credentials: 'include' });
                                 if (pollResponse.ok) {
                                     const pollData = await pollResponse.json();
                                     if (pollData.streaming) {
-                                        setStreamingContent(pollData.content || '');
-                                        setStreamingReasoning(pollData.reasoning || '');
-                                        applyJobToolCalls(pollData);
+                                        applyJobContent(conversationId, pollData, false);
+                                        if (pollData.toolCalls) { applyJobToolCalls(pollData); toolSigRef.current = pollData.toolSig || ''; }
                                         // Keep the status indicator in sync as
                                         // the server transitions through phases
                                         // (preparing → chunking → mapping →
@@ -953,6 +984,9 @@ export default function ChatContainer({
                                         // the total count is ≥ the local count (i.e. it
                                         // actually contains our new turn).
                                         clearBackgroundPoll();
+                                        stopJobContent();
+                                        // The pump may still be draining a few chars — show the full server text now.
+                                        if (!abortControllerRef.current && pendingContentRef.current) setStreamingContent(pendingContentRef.current);
                                         let loaded = false;
                                         const localMessages = useChatStore.getState().messages || [];
                                         const storeContent = useChatStore.getState().streamingContent || '';
@@ -1015,6 +1049,7 @@ export default function ChatContainer({
                             } catch (pollError) {
                                 console.error('Failed to poll streaming status:', pollError);
                                 clearBackgroundPoll();
+                                stopJobContent();
                                 const rescueContent = useChatStore.getState().streamingContent || '';
                                 const parsed = rescueContent.trim() ? parseThinkTags(rescueContent) : null;
                                 if (parsed && parsed.content.trim()) {

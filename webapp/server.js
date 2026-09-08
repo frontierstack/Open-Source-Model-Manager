@@ -17173,6 +17173,16 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             return res.json({ streaming: false });
         }
 
+        // Tool chips completed so far + calls in flight, so a client that
+        // reconnects mid-turn (refresh / switch-back) redraws the tool
+        // history instead of showing a bare bubble until the save lands.
+        // The client polls at ~10 Hz, so the list (chips can carry image
+        // thumbnails) rides along ONLY when its signature changed since the
+        // signature the client last saw — the poll stays a few KB otherwise.
+        const chips = Array.isArray(job.toolChips) ? job.toolChips : [];
+        const running = job.runningToolCalls ? Array.from(job.runningToolCalls.values()) : [];
+        const toolSig = `${chips.length}:${running.length}:${job.toolRev || 0}`;
+        const toolsChanged = String(req.query.toolSig || '') !== toolSig;
         res.json({
             streaming: true,
             content: job.content,
@@ -17183,11 +17193,8 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             phase: job.phase || null,
             progress: job.progress || null,
             events: Array.isArray(job.events) ? job.events : [],
-            // Tool chips completed so far + calls in flight, so a client that
-            // reconnects mid-turn (refresh / switch-back) redraws the tool
-            // history instead of showing a bare bubble until the save lands.
-            toolCalls: Array.isArray(job.toolChips) ? job.toolChips : [],
-            runningToolCalls: job.runningToolCalls ? Array.from(job.runningToolCalls.values()) : [],
+            toolSig,
+            ...(toolsChanged ? { toolCalls: chips, runningToolCalls: running } : {}),
         });
     } catch (error) {
         console.error('Error checking streaming status:', error);
@@ -20813,6 +20820,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             if (!streamingConversationId || !call) return;
             const job = activeStreamingJobs.get(streamingConversationId);
             if (!job || !job.runningToolCalls) return;
+            job.toolRev = (job.toolRev || 0) + 1;
             job.runningToolCalls.set(call.id, {
                 tool_call_id: call.id,
                 name: call.function && call.function.name,
@@ -20826,7 +20834,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const clearRunningToolCall = (callId) => {
             if (!streamingConversationId) return;
             const job = activeStreamingJobs.get(streamingConversationId);
-            if (job && job.runningToolCalls) job.runningToolCalls.delete(callId);
+            if (job && job.runningToolCalls) { job.runningToolCalls.delete(callId); job.toolRev = (job.toolRev || 0) + 1; }
         };
 
         // Skills can carry a `systemPrompt` (set in the Tool editor's
