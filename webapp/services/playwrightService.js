@@ -133,6 +133,36 @@ let browserPool = [];
 // check, so a silent raise risks OOM next to the model containers.
 const MAX_POOL_SIZE = Math.max(1, parseInt(process.env.PLAYWRIGHT_MAX_POOL, 10) || 3);
 const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+// Hard deadline on every page function. Playwright bounds navigation and
+// actions, but `page.evaluate` / `page.title` / `page.screenshot` wait on the
+// page's MAIN THREAD with no timeout at all — a page whose renderer never
+// yields (an ad-refresh / anti-adblock loop pegging the CPU at 100%: the
+// macrotrends.net gas-price page, 2026-09-08) stalled a chat turn for 9+
+// minutes with nothing in the log until the browser was killed by hand. A
+// lease is armed at the top of each page function; when it expires it closes
+// the browser context, which rejects every pending page op with "Target
+// closed", and the function's catch maps that to a clear deadline message via
+// lease.errorOf(). getBrowser(lease) also stops waiting for a pool slot once
+// the lease is spent, so hung pages can never starve later callers forever.
+const PLAYWRIGHT_HARD_DEADLINE_MS = Math.max(15000, parseInt(process.env.PLAYWRIGHT_HARD_DEADLINE_MS, 10) || 75000);
+function hardDeadlineFor(timeout, extraMs = 0) {
+    return Math.max(PLAYWRIGHT_HARD_DEADLINE_MS, (parseInt(timeout, 10) || 0) * 3) + Math.max(0, parseInt(extraMs, 10) || 0);
+}
+function armDeadline(label, url, ms) {
+    const lease = { label, url, ms, context: null, expired: false, reason: null, timer: null, startedAt: Date.now() };
+    lease.timer = setTimeout(() => {
+        lease.timer = null;
+        lease.expired = true;
+        lease.reason = `${label}: hard deadline of ${ms}ms exceeded for ${url} — the page never yielded (renderer busy or a request that never completes); browser context closed`;
+        console.log(`[Playwright] ${lease.reason}`);
+        if (lease.context) { try { lease.context.close().catch(() => {}); } catch (_) { /* already gone */ } }
+    }, ms);
+    lease.clear = () => { if (lease.timer) { clearTimeout(lease.timer); lease.timer = null; } };
+    lease.errorOf = (error) => lease.expired ? lease.reason : ((error && error.message) || String(error));
+    return lease;
+}
+
 let poolCleanupInterval = null;
 
 // Stealth configuration - rotated per request
@@ -460,7 +490,7 @@ async function applyStealthPatches(page) {
 /**
  * Get or create a browser from the pool
  */
-async function getBrowser() {
+async function getBrowser(lease = null) {
     // Try to get an available browser from pool. `browser` is null while an entry
     // is still launching (see the slot reservation below), so guard the isConnected
     // call — a reserved slot is never handed out.
@@ -557,9 +587,11 @@ async function getBrowser() {
         }
     }
 
-    // Wait for an available browser
+    // Wait for an available browser — but not past the caller's deadline: with
+    // every pool slot held by a hung page this used to poll forever.
+    if (lease && lease.expired) throw new Error(lease.reason || 'browser pool wait exceeded the hard deadline');
     await new Promise(resolve => setTimeout(resolve, 100));
-    return getBrowser();
+    return getBrowser(lease);
 }
 
 /**
@@ -1149,13 +1181,15 @@ async function fetchUrlContent(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('fetchUrlContent', url, hardDeadlineFor(timeout));
     const dismissed = [];   // overlays clicked away (consent / age gate) — reported to the caller
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
 
         // Create stealth context
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
 
         // Capture JSON API responses from XHR/fetch calls (SPAs load data this way)
         const capturedJsonResponses = [];
@@ -1464,10 +1498,11 @@ async function fetchUrlContent(url, options = {}) {
     } catch (error) {
         return {
             success: false,
-            error: error.message,
+            error: lease.errorOf(error),
             url
         };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -1519,10 +1554,12 @@ async function interactAndFetch(url, actions = [], options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('interactAndFetch', url, hardDeadlineFor(timeout, (Array.isArray(actions) ? actions.length : 0) * 8000));
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -1608,10 +1645,11 @@ async function interactAndFetch(url, actions = [], options = {}) {
     } catch (error) {
         return {
             success: false,
-            error: error.message,
+            error: lease.errorOf(error),
             url
         };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -1636,13 +1674,15 @@ async function downloadFile(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('downloadFile', url, hardDeadlineFor(timeout, 45000));
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext({
             ...getStealthContextOptions(),
             acceptDownloads: true,
         });
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -1703,8 +1743,9 @@ async function downloadFile(url, options = {}) {
         }
         throw new Error(`HTTP ${response?.status() || 'no response'}`);
     } catch (error) {
-        return { success: false, error: error.message, url };
+        return { success: false, error: lease.errorOf(error), url };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -1808,10 +1849,12 @@ async function crawlPages(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('crawlPages', url, hardDeadlineFor(timeout, cappedMaxPages * 25000));
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -1901,8 +1944,9 @@ async function crawlPages(url, options = {}) {
             pages,
         };
     } catch (error) {
-        return { success: false, error: error.message, url };
+        return { success: false, error: lease.errorOf(error), url };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -1954,6 +1998,7 @@ async function sniffMediaStreams(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('sniffMediaStreams', url, hardDeadlineFor(timeout, settleMs + captureMs));
 
     const media = new Map();            // url(no #) -> { url, kind, contentType, phase }
     const counts = { hls: 0, dash: 0, file: 0, segment: 0 };
@@ -1995,8 +2040,9 @@ async function sniffMediaStreams(url, options = {}) {
     };
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2105,12 +2151,13 @@ async function sniffMediaStreams(url, options = {}) {
     } catch (error) {
         return {
             success: false,
-            error: error.message,
+            error: lease.errorOf(error),
             url,
             media: Array.from(media.values()).slice(0, maxResults),
             counts,
         };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -2135,13 +2182,15 @@ async function extractPageImages(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('extractPageImages', url, hardDeadlineFor(timeout, settleMs));
 
     // URL fragments that mark a decorative/non-content image.
     const ASSET = /sprite|favicon|\/icons?\/|[-_]icon[-_.]|\/logos?\/|[-_]logo[-_.]|avatar|placeholder|spinner|loading|1x1|blank\.|pixel\.|spacer|data:image/i;
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2262,8 +2311,9 @@ async function extractPageImages(url, options = {}) {
 
         return { success: true, url, finalUrl, title, images };
     } catch (error) {
-        return { success: false, error: error.message, url, images: [] };
+        return { success: false, error: lease.errorOf(error), url, images: [] };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -2305,10 +2355,12 @@ async function screenshotPageImages(url, options = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('screenshotPageImages', url, hardDeadlineFor(timeout, settleMs + maxShots * 4000));
 
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
+        lease.context = context;
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2455,8 +2507,9 @@ async function screenshotPageImages(url, options = {}) {
         }
         return { success: true, title, finalUrl, url, shots };
     } catch (error) {
-        return { success: false, error: error.message, url };
+        return { success: false, error: lease.errorOf(error), url };
     } finally {
+        lease.clear();
         if (page) await page.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (poolEntry) releaseBrowser(poolEntry);
@@ -2514,18 +2567,20 @@ async function renderLocalPage(opts = {}) {
     let poolEntry = null;
     let context = null;
     let page = null;
+    const lease = armDeadline('renderLocalPage', fileUrl, hardDeadlineFor(timeout, waitMs + (Array.isArray(actions) ? actions.length : 0) * 8000));
     const consoleMsgs = [];
     const pageErrors = [];
     const failedRequests = [];
     const requests = { total: 0, ok: 0 };
     const started = Date.now();
     try {
-        poolEntry = await getBrowser();
+        poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext({
             viewport: { width: Math.max(320, Math.min(2560, viewport.width | 0 || 1280)), height: Math.max(240, Math.min(2000, viewport.height | 0 || 800)) },
             ignoreHTTPSErrors: true,
             deviceScaleFactor: 1,
         });
+        lease.context = context;
         page = await context.newPage();
         page.on('console', (m) => {
             if (consoleMsgs.length >= 200) return;
@@ -2639,6 +2694,10 @@ async function renderLocalPage(opts = {}) {
         if (screenshot) {
             try { shot = await page.screenshot({ type: 'png', fullPage: false }); } catch (_) { shot = null; }
         }
+        // Every step above catches its own failure, so a spent deadline (the page's
+        // main thread never yielded) would otherwise come back looking like an
+        // ordinary render with an empty DOM — name it.
+        if (lease.expired) throw new Error(lease.reason);
         return {
             success: true,
             url: fileUrl,
@@ -2652,7 +2711,12 @@ async function renderLocalPage(opts = {}) {
             actions: actionLog,
             screenshot: shot,
         };
+    } catch (error) {
+        // The deadline closed the context under us — surface WHY, not "Target closed".
+        if (lease.expired) throw new Error(lease.reason);
+        throw error;
     } finally {
+        lease.clear();
         try { if (page) await page.close(); } catch (_) {}
         try { if (context) await context.close(); } catch (_) {}
         if (poolEntry) releaseBrowser(poolEntry);
@@ -2672,5 +2736,9 @@ module.exports = {
     screenshotPageImages,
     renderLocalPage,
     cleanup,
-    getPoolStatus
+    getPoolStatus,
+    // test hooks
+    _armDeadline: armDeadline,
+    _hardDeadlineFor: hardDeadlineFor,
+    _HARD_DEADLINE_MS: PLAYWRIGHT_HARD_DEADLINE_MS,
 };
