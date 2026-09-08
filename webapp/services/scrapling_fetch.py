@@ -80,12 +80,37 @@ def extract_main_content(page) -> str:
         '.ad', '.ads', '.advertisement', '#nav', '#header', '#footer',
         '#sidebar', '#menu', '.skip-nav', '.skip-to-content',
         '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
+        # Ad slots that DECLARE themselves (attribute / exact class token / id
+        # prefix) — mirrors services/adBlock.js. No substring class tests here:
+        # "ad" inside "header"/"read" must never strip content.
+        'ins.adsbygoogle', '[data-ad-slot]', '[data-ad-unit]', '[data-ad-client]', '[data-google-query-id]',
+        '[id^="div-gpt-ad"]', '[id^="google_ads_"]', '[id^="google_ad_"]', '[id^="taboola-"]', '[id^="outbrain_"]',
+        '[class~="ad-slot"]', '[class~="ad-container"]', '[class~="ad-wrapper"]', '[class~="ad-unit"]', '[class~="adunit"]',
+        '[class~="ad-banner"]', '[class~="advert"]', '[class~="advertising"]', '[class~="advertorial"]', '[class~="adsbygoogle"]',
+        '[class~="taboola"]', '[class~="OUTBRAIN"]', '[class~="ob-widget"]', '[class~="mgid"]', '[class~="dfp-ad"]',
+        '[aria-label="Advertisement"]', 'amp-ad', 'amp-sticky-ad', 'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
     ]
+    # Scrapling's Selector has no remove(); drop the wrapped lxml element instead
+    # (drop_tree keeps the element's tail text). Until 2026-09-08 the bare
+    # elem.remove() raised on every element and was swallowed, so NONE of this
+    # noise removal — nav/header/footer/ads — had ever taken effect.
+    def _drop(elem):
+        root = getattr(elem, '_root', None)
+        if root is not None and getattr(root, 'getparent', lambda: None)() is not None:
+            if hasattr(root, 'drop_tree'):
+                root.drop_tree()
+            else:
+                root.getparent().remove(root)
+            return True
+        if hasattr(elem, 'remove'):
+            elem.remove()
+            return True
+        return False
     for selector in noise_selectors:
         try:
             for elem in page.css(selector):
                 try:
-                    elem.remove()
+                    _drop(elem)
                 except Exception:
                     pass
         except Exception:

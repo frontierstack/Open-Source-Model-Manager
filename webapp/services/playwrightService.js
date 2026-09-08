@@ -12,6 +12,59 @@
  */
 
 const { isNonContentUrl, isPlumbingPayload, unusableContentReason, looksOpaque } = require('./contentQuality');
+const adBlock = require('./adBlock');
+
+// Bot-protection / captcha vendors whose requests must pass UNTOUCHED — never
+// aborted (a blocked challenge script is a wall) and never replayed through
+// route.fetch() (which can break the handshake). Everything else that
+// contentQuality's non-content filter names is analytics/ads → abortable.
+const PROTECTION_HOST_RE = /(awswaf|aws-waf|datadome|perimeterx|px-cloud|px-cdn|hcaptcha|recaptcha|challenges\.cloudflare|turnstile|captcha-delivery|kasada|queue-it|arkoselabs|imperva|incapsula|cdn-cgi)/i;
+
+/**
+ * ONE request policy for every page this service opens: ads/trackers are
+ * blocked (adBlock.isAdUrl — the domain list + URL shapes), bot-protection
+ * passes untouched, optional resource types are aborted for speed, and XHR/
+ * fetch JSON can be captured for the SPA enrichment. Blocking ads is also
+ * what keeps the renderer responsive: the ad-refresh loops that peg a page's
+ * main thread at 100% (the class the hard deadline exists for) never load.
+ * Returns a stats object the caller can report (`adsBlocked`).
+ */
+async function installRequestPolicy(context, { blockTypes = [], captureJson = null, stats = null } = {}) {
+    const st = stats || { adsBlocked: 0, typesBlocked: 0 };
+    const blockSet = new Set(blockTypes);
+    await context.route('**/*', async (route) => {
+        const req = route.request();
+        const url = req.url();
+        if (PROTECTION_HOST_RE.test(url)) return route.continue();
+        if (adBlock.isAdUrl(url)) { st.adsBlocked++; return route.abort('blockedbyclient').catch(() => {}); }
+        const resourceType = req.resourceType();
+        if (blockSet.has(resourceType)) { st.typesBlocked++; return route.abort().catch(() => {}); }
+        if (captureJson && (resourceType === 'xhr' || resourceType === 'fetch')) {
+            // Analytics/telemetry endpoints that survived the ad list are still
+            // session plumbing — pass through, never capture.
+            if (isNonContentUrl(url)) return route.continue();
+            try {
+                const response = await route.fetch();
+                const contentType = response.headers()['content-type'] || '';
+                if (contentType.includes('application/json')) {
+                    const body = await response.text();
+                    if (body.length > 100 && body.length < 500000) {
+                        try {
+                            const json = JSON.parse(body);
+                            // {token, next_interval, session…} — plumbing, not data.
+                            if (!isPlumbingPayload(json)) captureJson.push({ url, data: json, size: body.length });
+                        } catch (e) { /* Not valid JSON */ }
+                    }
+                }
+                return route.fulfill({ response });
+            } catch (e) {
+                return route.continue().catch(() => {});
+            }
+        }
+        return route.continue().catch(() => {});
+    });
+    return st;
+}
 
 // ============================================================================
 // SSL INSPECTION BYPASS CONFIGURATION
@@ -649,7 +702,33 @@ function startPoolCleanup() {
 async function extractContent(page, options = {}) {
     const { includeLinks = false, maxLength = 8000 } = options;
 
-    return await page.evaluate(({ includeLinks, maxLength }) => {
+    const adArgs = { tokenSrc: adBlock.AD_TOKEN_RE.source, idPrefixSrc: adBlock.AD_ID_PREFIX_RE.source, attrSelectors: adBlock.AD_ATTR_SELECTORS };
+    return await page.evaluate(({ includeLinks, maxLength, adArgs }) => {
+        // Ad slots first — only elements that DECLARE themselves ads (id/class
+        // TOKENS, data-ad-* attributes), and never one holding a large share of
+        // the page text (a content column named "sponsored" is content). Whole
+        // tokens only: a substring test on "ad" would strip "header"/"read".
+        {
+            const TOKEN = new RegExp(adArgs.tokenSrc, 'i');
+            const IDPFX = new RegExp(adArgs.idPrefixSrc, 'i');
+            const bodyLen = ((document.body && document.body.innerText) || '').length || 1;
+            const declares = (el) => {
+                const id = el.id || '';
+                if (id && (TOKEN.test(id) || IDPFX.test(id))) return true;
+                const cls = typeof el.className === 'string' ? el.className : '';
+                if (!cls) return false;
+                for (const t of cls.split(/\s+/)) if (t && TOKEN.test(t)) return true;
+                return false;
+            };
+            const victims = new Set();
+            try { document.querySelectorAll(adArgs.attrSelectors.join(',')).forEach(el => victims.add(el)); } catch (_) {}
+            document.querySelectorAll('div, section, aside, ins, span, li, figure, iframe').forEach(el => { if (declares(el)) victims.add(el); });
+            for (const el of victims) {
+                if (!el.isConnected) continue;
+                if (((el.innerText || '').length) / bodyLen > 0.4) continue;
+                el.remove();
+            }
+        }
         // Snapshot provider <iframe> video embeds (YouTube/Vimeo/etc.) BEFORE the
         // cleanup below strips all iframes — otherwise the video harvest further
         // down can never see them.
@@ -995,7 +1074,7 @@ async function extractContent(page, options = {}) {
         }
 
         return output.substring(0, maxLength);
-    }, { includeLinks, maxLength });
+    }, { includeLinks, maxLength, adArgs });
 }
 
 // A Cloudflare/Turnstile "managed challenge" returns a 403/503 (or a 200 "Just a
@@ -1191,53 +1270,14 @@ async function fetchUrlContent(url, options = {}) {
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
 
-        // Capture JSON API responses from XHR/fetch calls (SPAs load data this way)
+        // Capture JSON API responses from XHR/fetch calls (SPAs load data this
+        // way); block ads/trackers and, unless we need a screenshot, the heavy
+        // resource types. Bot-protection endpoints pass through untouched —
+        // see installRequestPolicy.
         const capturedJsonResponses = [];
-        await context.route('**/*', async (route) => {
-            const resourceType = route.request().resourceType();
-            // Block heavy resources for speed
-            if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
-                if (!screenshot && resourceType !== 'stylesheet') {
-                    return route.abort();
-                }
-            }
-            // Intercept XHR/fetch responses that return JSON (SPA data loading)
-            if (resourceType === 'xhr' || resourceType === 'fetch') {
-                // Bot-protection, captcha and analytics endpoints are passed
-                // through UNTOUCHED — never re-fetched, never captured. Their JSON
-                // is session plumbing, and presenting it as page content is worse
-                // than having no data at all: an AWS-WAF token blob is long enough
-                // to satisfy every "did we get content?" check downstream, so a
-                // page monitor happily snapshotted it and reported "no change" on
-                // every run for weeks. Replaying a challenge request through
-                // route.fetch() can also break the very handshake that would have
-                // unlocked the real page.
-                if (isNonContentUrl(route.request().url())) return route.continue();
-                try {
-                    const response = await route.fetch();
-                    const contentType = response.headers()['content-type'] || '';
-                    if (contentType.includes('application/json')) {
-                        const body = await response.text();
-                        if (body.length > 100 && body.length < 500000) {
-                            try {
-                                const json = JSON.parse(body);
-                                // {token, next_interval, session…} — plumbing, not data.
-                                if (!isPlumbingPayload(json)) {
-                                    capturedJsonResponses.push({
-                                        url: route.request().url(),
-                                        data: json,
-                                        size: body.length
-                                    });
-                                }
-                            } catch (e) { /* Not valid JSON */ }
-                        }
-                    }
-                    return route.fulfill({ response });
-                } catch (e) {
-                    return route.continue();
-                }
-            }
-            return route.continue();
+        const reqStats = await installRequestPolicy(context, {
+            blockTypes: screenshot ? [] : ['image', 'media', 'font'],
+            captureJson: capturedJsonResponses,
         });
 
         page = await context.newPage();
@@ -1492,6 +1532,7 @@ async function fetchUrlContent(url, options = {}) {
             httpStatus: navStatusOut,
             ...(published ? { published } : {}),
             ...(dismissed.length ? { dismissed } : {}),
+            ...(reqStats.adsBlocked ? { adsBlocked: reqStats.adsBlocked } : {}),
             screenshot: screenshotData?.toString('base64')
         };
 
@@ -1560,6 +1601,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
         poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -1683,6 +1725,7 @@ async function downloadFile(url, options = {}) {
             acceptDownloads: true,
         });
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -1855,6 +1898,7 @@ async function crawlPages(url, options = {}) {
         poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2043,6 +2087,7 @@ async function sniffMediaStreams(url, options = {}) {
         poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2191,6 +2236,7 @@ async function extractPageImages(url, options = {}) {
         poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2361,6 +2407,7 @@ async function screenshotPageImages(url, options = {}) {
         poolEntry = await getBrowser(lease);
         context = await poolEntry.browser.newContext(getStealthContextOptions());
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         await applyStealthPatches(page);
 
@@ -2581,6 +2628,7 @@ async function renderLocalPage(opts = {}) {
             deviceScaleFactor: 1,
         });
         lease.context = context;
+        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
         page.on('console', (m) => {
             if (consoleMsgs.length >= 200) return;

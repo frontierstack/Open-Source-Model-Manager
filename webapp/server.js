@@ -20,6 +20,7 @@ const initializePassport = require('./auth/passport-config');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encryption');
+const adBlockService = require('./services/adBlock');
 
 // ---- llama.cpp speed defaults (top-level so the boot-time container sync can
 // read them too). Measured 2026-08-21 on 2×RTX 5060 Ti 16 GB / Qwen3.8-27B
@@ -13231,6 +13232,10 @@ app.get('/api/search', requireAuth, async (req, res) => {
 // Helper function to extract readable text content from HTML
 function extractTextFromHtml(html, maxLength = 5000) {
     if (!html) return '';
+    // Ad containers out first (token-declared slots only, balanced-tag scan) so
+    // an ad's "Advertisement"/promo text never lands in the paragraphs and a
+    // page's real content is what gets measured.
+    try { html = adBlockService.stripAdMarkup(html).html; } catch (_) { /* keep raw */ }
 
     // Remove script and style elements
     let text = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
@@ -14316,7 +14321,7 @@ async function fetchUrlContent(url, options = {}) {
     const traceStr = () => trace.join(' → ');
     const finish = (r) => {
         r.tried = traceStr();
-        console.log(`[fetchUrlContent] ${url} → ${r.success ? 'served' : 'FAILED'} (${r.source || r.error || '?'}, ${(r.content || '').length} chars) after ${Date.now() - t0}ms: ${r.tried}${r.obstacle ? ` [obstacle ${r.obstacle.kind}${r.obstacle.vendor ? '/' + r.obstacle.vendor : ''}]` : ''}${r.dismissed ? ` [dismissed ${r.dismissed.map(d => d.kind).join('+')}]` : ''}`);
+        console.log(`[fetchUrlContent] ${url} → ${r.success ? 'served' : 'FAILED'} (${r.source || r.error || '?'}, ${(r.content || '').length} chars) after ${Date.now() - t0}ms: ${r.tried}${r.obstacle ? ` [obstacle ${r.obstacle.kind}${r.obstacle.vendor ? '/' + r.obstacle.vendor : ''}]` : ''}${r.dismissed ? ` [dismissed ${r.dismissed.map(d => d.kind).join('+')}]` : ''}${r.adsBlocked ? ` [ads blocked ${r.adsBlocked}]` : ''}`);
         return r;
     };
     // Classify a layer's answer. `escalate` = do not serve this as the page.
