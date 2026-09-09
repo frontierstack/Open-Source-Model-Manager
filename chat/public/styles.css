@@ -5933,6 +5933,39 @@ body[class*="font-size-"] .markdown-content h4 { font-size: calc(15px * var(--fs
 /* Definition-style leading term: "**Term** — rest" is common in model output;
    give the em-dash a touch more room so the term reads as a label. */
 .markdown-content li > strong:first-child { color: var(--ink); }
+
+
+/* ============================================
+   Neutral page surfaces
+   ============================================
+   Themes color the CONTENT — text, accents, buttons, borders, hover states,
+   code and input chrome — but the page itself stays a neutral near-black.
+   Several themes carried their upstream palette's tinted, comparatively light
+   page background (Everforest sat at 4x the luminance of Dark, Ocean/Solarized
+   at 25-28 chroma), which read as a colored haze washed over the whole app
+   rather than as a theme.
+
+   Only the base/page ramp is overridden here. Everything that gives a theme its
+   identity is untouched: --text-*, --accent-*, --border-*, --bg-hover/-active,
+   --user-msg-*, --code-*, --input-*.
+
+   The newer token layer derives from these (--bg-2 <- --bg-secondary,
+   --surface <- --bg-elevated, --ink <- --text-primary), so overriding the four
+   background vars is enough to cover both variable systems.
+
+   Light themes are excluded. Specificity here is (0,1,1) vs a theme block's
+   (0,1,0), so this wins regardless of source order. */
+html:not(.theme-light):not(.theme-research),
+body:not(.theme-light):not(.theme-research) {
+    --bg-primary:   #111113;
+    --bg-secondary: #1a1a1e;
+    --bg-tertiary:  #252529;
+    --bg-elevated:  #161618;
+
+    --surface-primary:   rgba(26, 26, 30, 0.9);
+    --surface-secondary: rgba(37, 37, 41, 0.8);
+    --surface-glass:     rgba(17, 17, 19, 0.9);
+}
 .hover\:underline:hover{
   text-decoration-line: underline;
 }
