@@ -303,6 +303,7 @@ export default function ChatSettings({
             { value: 'ocean', label: 'Ocean' },
             { value: 'sunset', label: 'Sunset' },
             { value: 'sand', label: 'Sand' },
+            { value: 'everforest', label: 'Everforest' },
         ]},
         { label: 'Warm Tones', options: [
             { value: 'copper', label: 'Copper' },
@@ -319,11 +320,10 @@ export default function ChatSettings({
             { value: 'ayu', label: 'Ayu' },
         ]},
         { label: 'Vibrant', options: [
-            { value: 'matrix', label: 'Matrix' },
             { value: 'andromeda', label: 'Andromeda' },
             { value: 'poimandres', label: 'Poimandres' },
             { value: 'oxocarbon', label: 'Oxocarbon' },
-            { value: 'crimson', label: 'Crimson' },
+            { value: 'tokyonight', label: 'Tokyo Night' },
         ]},
     ];
 

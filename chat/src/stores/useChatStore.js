@@ -63,15 +63,21 @@ const migrateSettings = () => {
         }
 
         // Theme lives in its own localStorage key, not inside settings.
-        // Vesper was replaced with Mocha — migrate stored value so the UI
-        // doesn't render unthemed.
+        // Retired themes must be remapped or the body gets a `theme-<gone>`
+        // class with no variables behind it and the UI renders unthemed.
+        const RETIRED_THEMES = {
+            vesper: 'mocha',
+            matrix: 'everforest',   // removed; Everforest is the green option now
+            crimson: 'tokyonight',  // removed; Tokyo Night took its Vibrant slot
+        };
         const storedTheme = localStorage.getItem(STORAGE_KEYS.THEME);
         if (storedTheme) {
             // localStorage stores JSON-encoded strings here
             const parsed = (() => { try { return JSON.parse(storedTheme); } catch { return storedTheme; } })();
-            if (parsed === 'vesper') {
-                localStorage.setItem(STORAGE_KEYS.THEME, JSON.stringify('mocha'));
-                console.log('[Settings] Migrated theme vesper -> mocha (vesper removed)');
+            const replacement = RETIRED_THEMES[parsed];
+            if (replacement) {
+                localStorage.setItem(STORAGE_KEYS.THEME, JSON.stringify(replacement));
+                console.log(`[Settings] Migrated theme ${parsed} -> ${replacement} (${parsed} removed)`);
             }
         }
     } catch (e) {

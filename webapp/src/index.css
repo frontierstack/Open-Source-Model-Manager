@@ -108,7 +108,8 @@ body {
 
 /* Per-theme contrast overrides for accent-ink */
 .theme-light   { --accent-ink: #ffffff; }
-.theme-matrix  { --accent-ink: #050a05; }
+.theme-everforest { --accent-ink: #272e33; }
+.theme-tokyonight { --accent-ink: #16161e; }
 
 /* ---- Anti-haze guard ----
    Kill any inherited filter / backdrop-filter on the page chrome and
@@ -147,7 +148,8 @@ body[data-bubble="cards"] {
 .theme-midnight body[data-bubble="cards"],
 .theme-ocean body[data-bubble="cards"],
 .theme-sunset body[data-bubble="cards"],
-.theme-matrix body[data-bubble="cards"],
+.theme-everforest body[data-bubble="cards"],
+.theme-tokyonight body[data-bubble="cards"],
 .theme-solarized body[data-bubble="cards"],
 .theme-kanagawa body[data-bubble="cards"],
 .theme-palenight body[data-bubble="cards"] {
@@ -432,69 +434,6 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     --shadow-accent-hover: rgba(249, 115, 22, 0.4);
 }
 
-/* ============================================
-   Theme: Matrix
-   Classic green terminal hacker theme
-   ============================================ */
-.theme-matrix {
-    --primary-rgb: 80, 200, 80;
-    --bg-primary: #050a05;
-    --bg-secondary: #0a120a;
-    --bg-tertiary: #101810;
-    --bg-elevated: #071007;
-    --bg-hover: rgba(80, 200, 80, 0.07);
-    --bg-active: rgba(80, 200, 80, 0.12);
-
-    --surface-primary: rgba(8, 20, 8, 0.9);
-    --surface-secondary: rgba(12, 30, 12, 0.8);
-    --surface-glass: rgba(5, 14, 5, 0.95);
-
-    --text-primary: #b8e6b8;
-    --text-secondary: #7dca7d;
-    --text-tertiary: #55a855;
-    --text-muted: #3a7a3a;
-
-    --border-primary: rgba(80, 200, 80, 0.18);
-    --border-secondary: rgba(80, 200, 80, 0.08);
-    --border-hover: rgba(80, 200, 80, 0.28);
-    --border-focus: rgba(100, 210, 100, 0.5);
-
-    --accent-primary: #50c850;
-    --accent-secondary: #3da83d;
-    --accent-hover: #70d870;
-    --accent-muted: rgba(0, 255, 0, 0.15);
-
-    /* User message - dark matrix green */
-    --user-msg-from: #0a2a0a;
-    --user-msg-to: #051a05;
-    --user-msg-hover-from: #103a10;
-    --user-msg-hover-to: #0a2a0a;
-    --user-msg-text: #c8e8c8;
-
-    --assistant-bg: rgba(8, 20, 8, 0.8);
-    --assistant-border: rgba(80, 200, 80, 0.12);
-    --assistant-text: #a8d8a8;
-
-    --scrollbar-thumb: rgba(0, 255, 0, 0.2);
-    --scrollbar-thumb-hover: rgba(0, 255, 0, 0.35);
-
-    --code-bg: #000000;
-    --code-header-bg: rgba(0, 30, 0, 0.7);
-    --code-border: rgba(0, 255, 0, 0.15);
-
-    --input-bg: rgba(0, 15, 0, 0.8);
-    --input-border: rgba(0, 255, 0, 0.25);
-    --input-focus-border: rgba(0, 255, 0, 0.6);
-    --input-focus-ring: rgba(0, 255, 0, 0.2);
-
-    --shadow-accent: rgba(0, 255, 0, 0.3);
-    --shadow-accent-hover: rgba(0, 255, 0, 0.4);
-
-    --success: #00ff00;
-    --warning: #ffff00;
-    --error: #ff0000;
-    --info: #00ffff;
-}
 
 /* ============================================
    Theme: Solarized
@@ -1673,6 +1612,126 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
    Theme: Andromeda
    Purple and pink galaxy-inspired theme
    ============================================ */
+.theme-everforest {
+    --primary-rgb: 167, 192, 128;
+    --bg-primary: #272e33;
+    --bg-secondary: #2d353b;
+    --bg-tertiary: #343f44;
+    --bg-elevated: #2a3237;
+    --bg-hover: rgba(167, 192, 128, 0.08);
+    --bg-active: rgba(167, 192, 128, 0.13);
+
+    --surface-primary: rgba(45, 53, 59, 0.9);
+    --surface-secondary: rgba(52, 63, 68, 0.8);
+    --surface-glass: rgba(39, 46, 51, 0.95);
+
+    --text-primary: #d3c6aa;
+    --text-secondary: #9da9a0;
+    --text-tertiary: #859289;
+    --text-muted: #6b7770;
+
+    --border-primary: rgba(167, 192, 128, 0.2);
+    --border-secondary: rgba(211, 198, 170, 0.1);
+    --border-hover: rgba(167, 192, 128, 0.32);
+    --border-focus: rgba(167, 192, 128, 0.5);
+
+    --accent-primary: #a7c080;
+    --accent-secondary: #83c092;
+    --accent-hover: #b8cf94;
+    --accent-muted: rgba(167, 192, 128, 0.15);
+
+    /* User message - muted forest green */
+    --user-msg-from: #425047;
+    --user-msg-to: #354039;
+    --user-msg-hover-from: #4d5d53;
+    --user-msg-hover-to: #425047;
+    --user-msg-text: #e4dbc5;
+
+    --assistant-bg: rgba(45, 53, 59, 0.8);
+    --assistant-border: rgba(167, 192, 128, 0.12);
+    --assistant-text: #d3c6aa;
+
+    --scrollbar-thumb: rgba(167, 192, 128, 0.28);
+    --scrollbar-thumb-hover: rgba(167, 192, 128, 0.42);
+
+    --code-bg: #232a2e;
+    --code-header-bg: rgba(52, 63, 68, 0.7);
+    --code-border: rgba(167, 192, 128, 0.1);
+
+    --input-bg: rgba(45, 53, 59, 0.8);
+    --input-border: rgba(167, 192, 128, 0.25);
+    --input-focus-border: rgba(167, 192, 128, 0.5);
+    --input-focus-ring: rgba(167, 192, 128, 0.18);
+
+    --shadow-accent: rgba(167, 192, 128, 0.28);
+    --shadow-accent-hover: rgba(131, 192, 146, 0.38);
+
+    --success: #a7c080;
+    --warning: #dbbc7f;
+    --error: #e67e80;
+    --info: #7fbbb3;
+}
+
+.theme-tokyonight {
+    --primary-rgb: 122, 162, 247;
+    --bg-primary: #1a1b26;
+    --bg-secondary: #1f2335;
+    --bg-tertiary: #24283b;
+    --bg-elevated: #16161e;
+    --bg-hover: rgba(122, 162, 247, 0.08);
+    --bg-active: rgba(122, 162, 247, 0.14);
+
+    --surface-primary: rgba(31, 35, 53, 0.9);
+    --surface-secondary: rgba(36, 40, 59, 0.8);
+    --surface-glass: rgba(22, 22, 30, 0.95);
+
+    --text-primary: #c0caf5;
+    --text-secondary: #a9b1d6;
+    --text-tertiary: #787c99;
+    --text-muted: #565f89;
+
+    --border-primary: rgba(122, 162, 247, 0.2);
+    --border-secondary: rgba(192, 202, 245, 0.1);
+    --border-hover: rgba(122, 162, 247, 0.32);
+    --border-focus: rgba(122, 162, 247, 0.55);
+
+    --accent-primary: #7aa2f7;
+    --accent-secondary: #bb9af7;
+    --accent-hover: #8fb3f9;
+    --accent-muted: rgba(122, 162, 247, 0.15);
+
+    /* User message - deep indigo */
+    --user-msg-from: #33406b;
+    --user-msg-to: #283355;
+    --user-msg-hover-from: #3d4c7e;
+    --user-msg-hover-to: #33406b;
+    --user-msg-text: #dbe1fb;
+
+    --assistant-bg: rgba(31, 35, 53, 0.8);
+    --assistant-border: rgba(122, 162, 247, 0.12);
+    --assistant-text: #c0caf5;
+
+    --scrollbar-thumb: rgba(122, 162, 247, 0.28);
+    --scrollbar-thumb-hover: rgba(122, 162, 247, 0.45);
+
+    --code-bg: #16161e;
+    --code-header-bg: rgba(36, 40, 59, 0.7);
+    --code-border: rgba(122, 162, 247, 0.12);
+
+    --input-bg: rgba(31, 35, 53, 0.8);
+    --input-border: rgba(122, 162, 247, 0.25);
+    --input-focus-border: rgba(122, 162, 247, 0.55);
+    --input-focus-ring: rgba(122, 162, 247, 0.18);
+
+    --shadow-accent: rgba(122, 162, 247, 0.3);
+    --shadow-accent-hover: rgba(187, 154, 247, 0.4);
+
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --error: #f7768e;
+    --info: #7dcfff;
+}
+
 .theme-andromeda {
     --primary-rgb: 238, 93, 67;
     --bg-primary: #0e1016;
@@ -2050,69 +2109,6 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     --info: #78a9ff;
 }
 
-/* ============================================
-   Theme: Crimson
-   Deep rich red theme
-   ============================================ */
-.theme-crimson {
-    --primary-rgb: 220, 38, 38;
-    --bg-primary: #0d0404;
-    --bg-secondary: #120707;
-    --bg-tertiary: #1a0b0b;
-    --bg-elevated: #100505;
-    --bg-hover: rgba(220, 38, 38, 0.08);
-    --bg-active: rgba(220, 38, 38, 0.12);
-
-    --surface-primary: rgba(35, 14, 14, 0.9);
-    --surface-secondary: rgba(45, 20, 20, 0.8);
-    --surface-glass: rgba(26, 8, 8, 0.95);
-
-    --text-primary: #f5d8d8;
-    --text-secondary: #c46c6c;
-    --text-tertiary: #a04848;
-    --text-muted: #7a3535;
-
-    --border-primary: rgba(220, 38, 38, 0.2);
-    --border-secondary: rgba(220, 38, 38, 0.1);
-    --border-hover: rgba(220, 38, 38, 0.3);
-    --border-focus: rgba(220, 38, 38, 0.5);
-
-    --accent-primary: #dc2626;
-    --accent-secondary: #ef4444;
-    --accent-hover: #b91c1c;
-    --accent-muted: rgba(220, 38, 38, 0.15);
-
-    /* User message - deep crimson red */
-    --user-msg-from: #7f1d1d;
-    --user-msg-to: #5c1414;
-    --user-msg-hover-from: #991b1b;
-    --user-msg-hover-to: #7f1d1d;
-    --user-msg-text: #fce4e4;
-
-    --assistant-bg: rgba(35, 14, 14, 0.8);
-    --assistant-border: rgba(220, 38, 38, 0.12);
-    --assistant-text: #f5d8d8;
-
-    --scrollbar-thumb: rgba(220, 38, 38, 0.3);
-    --scrollbar-thumb-hover: rgba(220, 38, 38, 0.45);
-
-    --code-bg: #140505;
-    --code-header-bg: rgba(26, 8, 8, 0.7);
-    --code-border: rgba(220, 38, 38, 0.1);
-
-    --input-bg: rgba(35, 14, 14, 0.8);
-    --input-border: rgba(220, 38, 38, 0.25);
-    --input-focus-border: rgba(220, 38, 38, 0.5);
-    --input-focus-ring: rgba(220, 38, 38, 0.15);
-
-    --shadow-accent: rgba(220, 38, 38, 0.3);
-    --shadow-accent-hover: rgba(239, 68, 68, 0.4);
-
-    --success: #34d399;
-    --warning: #fbbf24;
-    --error: #f87171;
-    --info: #60a5fa;
-}
 
 /* ============================================
    Theme: Storm

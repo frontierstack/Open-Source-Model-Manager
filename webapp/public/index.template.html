@@ -38,13 +38,15 @@
             try {
                 var raw = localStorage.getItem('app-storage');
                 var html = document.documentElement;
-                var themes = ['dark','midnight','ocean','sunset','matrix','solarized','kanagawa','palenight','research','research-dark','light','forest','cyberpunk','dracula','nord','gruvbox','mocha','synthwave','rose-pine'];
+                var themes = ['dark','midnight','ocean','sunset','everforest','tokyonight','solarized','kanagawa','palenight','research','research-dark','light','forest','cyberpunk','dracula','nord','gruvbox','mocha','synthwave','rose-pine'];
+                var retired = { matrix: 'everforest', crimson: 'tokyonight', vesper: 'mocha' };
                 var prefs = null;
                 if (raw) {
                     var parsed = JSON.parse(raw);
                     prefs = parsed && parsed.state && parsed.state.preferences;
                 }
                 var theme = prefs && prefs.theme;
+                if (theme && retired[theme]) theme = retired[theme];
                 html.classList.add('theme-' + (theme && themes.indexOf(theme) >= 0 ? theme : 'dark'));
                 var accentMap = {
                     violet:  ['oklch(0.55 0.13 290)','oklch(0.62 0.13 270)','oklch(0.65 0.13 290)','oklch(0.55 0.13 290 / 0.18)'],

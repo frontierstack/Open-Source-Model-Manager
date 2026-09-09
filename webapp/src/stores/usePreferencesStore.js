@@ -48,11 +48,16 @@ const PREFS_URL = '/api/me/preferences?app=webapp';
 
 const VALID_THEMES = [
     // Originals (chat-imported)
-    'dark', 'midnight', 'ocean', 'sunset', 'matrix', 'solarized', 'kanagawa',
+    'dark', 'midnight', 'ocean', 'sunset', 'everforest', 'tokyonight', 'solarized', 'kanagawa',
     'palenight', 'research', 'research-dark', 'light',
     // Webapp-added
     'forest', 'cyberpunk', 'dracula', 'nord', 'gruvbox', 'mocha', 'synthwave', 'rose-pine',
 ];
+// Themes that were removed; map them to their replacement so a saved value
+// still resolves instead of dropping back to plain dark.
+const RETIRED_THEMES = { matrix: 'everforest', crimson: 'tokyonight', vesper: 'mocha' };
+const resolveTheme = (t) => (t && RETIRED_THEMES[t]) || t;
+
 const VALID_ACCENTS = [
     'violet', 'amber', 'emerald', 'slate', 'rose',
     // Added
@@ -109,8 +114,9 @@ function applyPreferencesToDom(prefs) {
     // small enough that pruning by-name is faster than reading the full
     // classList and filtering.
     for (const t of VALID_THEMES) html.classList.remove('theme-' + t);
-    if (prefs.theme && VALID_THEMES.includes(prefs.theme)) {
-        html.classList.add('theme-' + prefs.theme);
+    const themeId = resolveTheme(prefs.theme);
+    if (themeId && VALID_THEMES.includes(themeId)) {
+        html.classList.add('theme-' + themeId);
     } else {
         html.classList.add('theme-dark');
     }

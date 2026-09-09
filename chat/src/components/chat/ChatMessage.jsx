@@ -329,13 +329,9 @@ export default React.memo(function ChatMessage({
                 flexDirection: isUser ? 'row-reverse' : 'row',
                 width: isUser ? undefined : '100%',
             }}>
-                {isUser ? (
+                {isUser && (
                     <div className="msg-badge msg-badge-user">
                         <User strokeWidth={2.25} />
-                    </div>
-                ) : (
-                    <div className="msg-badge msg-badge-ai">
-                        <Sparkles strokeWidth={2} />
                     </div>
                 )}
                 <span className="msg-name">{isUser ? 'You' : (modelName || 'Assistant')}</span>
