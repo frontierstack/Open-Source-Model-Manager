@@ -220,7 +220,10 @@ export default function ChartBlock({ spec, summary }) {
             borderRadius: 8,
             padding: '12px 14px',
             width: '100%',
-            minWidth: 320,
+            /* No hard min-width: at 375px the bubble is ~310px of usable width,
+               so a 320px floor pushed every chart into horizontal scroll. */
+            minWidth: 0,
+            maxWidth: '100%',
         }}>
             {title && (
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>

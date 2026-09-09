@@ -3409,21 +3409,78 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     .composer-wrapper {
         padding: 8px 10px 12px;
     }
-    /* Tighten persona chip label on mobile (keep visible but truncate) */
+    /* The bottom row holds attach + persona + model + effort + send. On a phone
+       that is more content than the row is wide, and because flex items default
+       to min-width:auto they refused to shrink and OVERLAPPED each other
+       (the persona and model labels rendered on top of one another). Let every
+       chip shrink and truncate instead. */
+    .composer-bottom-row .composer-chip-anchor {
+        min-width: 0 !important;
+        flex: 0 1 auto !important;
+    }
     .composer-chip-persona {
-        max-width: 110px !important;
+        max-width: 104px !important;
+        flex: 0 1 auto !important;
+        min-width: 0 !important;
     }
-    /* Cap model chip so it can't push the send button off-screen */
+    /* The model name is the most useful label, so it keeps the most room. */
     .composer-chip-model {
-        max-width: 130px !important;
+        max-width: 132px !important;
+        flex: 1 1 auto !important;
+        min-width: 44px !important;
     }
-    /* Persona / model popovers — cap to viewport so they don't overflow */
-    .composer-bottom-row [class*="popover"],
-    .composer-bottom-row .animate-slide-up {
-        max-width: calc(100vw - 32px) !important;
-        min-width: 240px !important;
+    .composer-chip-label {
+        min-width: 0 !important;
+    }
+    /* Persona / model / effort popovers.
+       They are absolutely positioned against their own chip wrapper, which is
+       only ~120px wide — so a 280px-min popover overflowed the viewport and two
+       of them could visually collide. On mobile we neutralise the per-chip
+       anchor and let them span the whole composer box (position:relative),
+       which is the only sane width on a phone. */
+    .composer-bottom-row .composer-chip-anchor {
+        position: static !important;
+    }
+    .composer-bottom-row .composer-popover {
+        left: 8px !important;
+        right: 8px !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+    }
+    /* Cap the scroll area so a long model/persona list can't run off-screen */
+    .composer-bottom-row .composer-popover > div[style*="overflow"] {
+        max-height: min(46vh, 280px) !important;
+    }
+    /* Bigger tap targets inside the popovers */
+    .composer-bottom-row .composer-popover button {
+        padding-top: 10px !important;
+        padding-bottom: 10px !important;
     }
     /* (composer-box must NOT have overflow:hidden — it would clip the persona/model popovers) */
+}
+
+/* Very narrow phones (iPhone SE / mini): the persona + effort chips become
+   icon-only so the model name and send button always stay fully visible. */
+@media (max-width: 430px) {
+    .composer-chip-persona .composer-chip-label { display: none !important; }
+    .composer-chip-persona { max-width: none !important; padding: 0 8px !important; }
+    .composer-bottom-row { gap: 4px !important; padding: 6px 4px 6px 6px !important; }
+    /* Leave real slack: without it the row overshoots by a few pixels and the
+       right-hand group slides back over the persona chip. */
+    .composer-chip-model { max-width: 118px !important; min-width: 38px !important; }
+    /* Attach + effort + send keep their icons but give back their side padding. */
+    .composer-chip-effort { padding: 0 6px !important; }
+}
+
+/* iPhone SE class (≤360px): the row is only ~258px of usable width, so trim the
+   chip padding as well — otherwise the fixed-size chips still total more than
+   the row and the right-hand group slides back over the persona chip. */
+@media (max-width: 360px) {
+    .composer-bottom-row { gap: 3px !important; padding: 6px 3px 6px 4px !important; }
+    .composer-chip-model { max-width: 84px !important; min-width: 30px !important; padding: 0 6px !important; }
+    .composer-chip-persona { padding: 0 6px !important; }
+    .composer-chip-effort { padding: 0 4px !important; }
 }
 
 /* User bubble — narrower on desktop, wider on mobile so short messages don't wrap awkwardly */
@@ -4216,24 +4273,6 @@ body {
 }
 .composer-box .chat-composer-textarea::placeholder { color: var(--ink-3); opacity: .85; }
 .composer-bottom-row button { transition: background-color var(--ctl-ease), color var(--ctl-ease), transform var(--ctl-ease), opacity var(--ctl-ease), box-shadow var(--ctl-ease); }
-
-/* Empty-state greeting: painted above the composer only when it sits
-   in the centered empty state (never inside the docked .input-area),
-   so the composer width and layout are untouched. */
-.composer-wrapper:not(.input-area .composer-wrapper)::before {
-    content: "How can I help today?";
-    display: block;
-    text-align: center;
-    font-size: 21px;
-    font-weight: 600;
-    letter-spacing: -.015em;
-    color: var(--ink);
-    margin: 0 0 18px;
-    opacity: .92;
-}
-@media (max-height: 560px) {
-    .composer-wrapper:not(.input-area .composer-wrapper)::before { display: none; }
-}
 
 /* Reduced motion — keep the state changes, drop the movement */
 @media (prefers-reduced-motion: reduce) {

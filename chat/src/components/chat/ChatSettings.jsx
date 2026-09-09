@@ -774,7 +774,7 @@ export default function ChatSettings({
                                     {themeOptions.map((group) => (
                                         <div key={group.label}>
                                             <div className="set-group-label">{group.label}</div>
-                                            <div className="grid grid-cols-4 gap-2">
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                                                 {group.options.map((option) => {
                                                     const isActive = currentTheme === option.value;
                                                     return (
@@ -804,7 +804,7 @@ export default function ChatSettings({
                                 <label className="set-label">
                                     Chat Layout
                                 </label>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                     {chatStyleOptions.map((option) => {
                                         const Icon = option.icon;
                                         const isActive = chatStyle === option.value;
@@ -870,7 +870,7 @@ export default function ChatSettings({
                                 <label className="set-label">
                                     Font Size
                                 </label>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                     {fontSizeOptions.map((option) => {
                                         const isActive = fontSize === option.value;
                                         return (

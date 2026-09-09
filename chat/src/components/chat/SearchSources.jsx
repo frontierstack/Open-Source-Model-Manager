@@ -160,6 +160,23 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
         }, 150);
     };
 
+    // Touch devices never fire mouseenter, so the preview popup was unreachable
+    // on a phone. First tap opens the preview, second tap follows the link.
+    const isCoarsePointer = () =>
+        typeof window !== 'undefined' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(hover: none)').matches;
+
+    const handleChipClick = (e) => {
+        if (!isCoarsePointer()) return;      // desktop keeps pure hover behaviour
+        if (isHovered) return;               // already previewing → let the tap navigate
+        e.preventDefault();
+        e.stopPropagation();
+        if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+        setPopupPos(computePopupPos());
+        setHoveredIdx(index);
+    };
+
     const handleMouseLeave = () => {
         if (hoverTimerRef.current) {
             clearTimeout(hoverTimerRef.current);
@@ -167,6 +184,25 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
         }
         setHoveredIdx((current) => (current === index ? null : current));
     };
+
+    // Dismiss a tap-opened preview with an outside tap or Escape (touch has no
+    // mouseleave to close it).
+    useEffect(() => {
+        if (!isHovered) return;
+        const close = (e) => {
+            if (chipRef.current && chipRef.current.contains(e.target)) return;
+            setHoveredIdx((current) => (current === index ? null : current));
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') setHoveredIdx((current) => (current === index ? null : current));
+        };
+        document.addEventListener('pointerdown', close, true);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('pointerdown', close, true);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [isHovered, index, setHoveredIdx]);
 
     // Re-compute popup position on scroll / resize while it's visible —
     // otherwise scrolling leaves a stale anchor point.
@@ -288,6 +324,7 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
             className="relative"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
+            onClick={handleChipClick}
         >
             {isValidUrl ? (
                 <a

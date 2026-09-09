@@ -315,6 +315,11 @@ const DOC_SECTIONS = [
 // on light themes (the previous rgba(255,255,255,...) literals washed out
 // to invisible borders against a white background).
 const compactTableSx = {
+    // On phones let each table scroll horizontally inside its own box instead of
+    // widening the page (several of these have fixed-width, nowrap cells).
+    display: { xs: 'block', md: 'table' },
+    overflowX: { xs: 'auto', md: 'visible' },
+    maxWidth: '100%',
     '& .MuiTableCell-root': {
         py: 0.75,
         px: 1.5,
@@ -10111,7 +10116,7 @@ console.log(chip);`
                                     anchor="right"
                                     open={selectedModelFiles.length > 0}
                                     onClose={() => { setSelectedModelFiles([]); setGgufRepo(''); setGgufFile(''); setFileFilter('all'); }}
-                                    PaperProps={{ sx: { width: 380, bgcolor: 'background.paper', backgroundImage: 'none' } }}
+                                    PaperProps={{ sx: { width: { xs: '100%', sm: 380 }, maxWidth: '100vw', bgcolor: 'background.paper', backgroundImage: 'none' } }}
                                 >
                                     {selectedModelFiles.length > 0 && (() => {
                                         // Classify every sibling so main quants, vision projectors
@@ -13703,7 +13708,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     </>
                                 )}
 
-                                <Dialog open={agentWsClearOpen} onClose={() => !agentWsClearing && setAgentWsClearOpen(false)}>
+                                <Dialog open={agentWsClearOpen} fullScreen={isMobile} maxWidth="sm" fullWidth onClose={() => !agentWsClearing && setAgentWsClearOpen(false)}>
                                     <DialogTitle>Clear all workspaces?</DialogTitle>
                                     <DialogContent>
                                         <Typography variant="body2">
@@ -13720,7 +13725,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     </DialogActions>
                                 </Dialog>
 
-                                <Dialog open={!!agentWsDeleteTarget} onClose={() => !agentWsDeleting && setAgentWsDeleteTarget(null)}>
+                                <Dialog open={!!agentWsDeleteTarget} fullScreen={isMobile} maxWidth="sm" fullWidth onClose={() => !agentWsDeleting && setAgentWsDeleteTarget(null)}>
                                     <DialogTitle>Delete workspace?</DialogTitle>
                                     <DialogContent>
                                         <Typography variant="body2">

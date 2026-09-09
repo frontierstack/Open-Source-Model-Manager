@@ -686,6 +686,26 @@
     /* Chip builder modal: stack its node list above the form. */
     .cf-modal__body { flex-direction: column; }
     .cf-modal__list { width: auto; border-right: none; border-bottom: 1px solid var(--rule); max-height: 30vh; }
+    /* The calendar/time picker sets `display:grid; 1fr 1fr` INLINE, which
+       `flex-direction` above cannot touch — collapse it to one column so its
+       two panes don't share ~180px each on a phone. */
+    .cf-modal__body--split {
+        grid-template-columns: 1fr !important;
+        max-height: 74vh;
+        overflow-y: auto;
+    }
+    .cf-modal__body--split > div { border-right: none !important; }
+    .cf-modal__body--split > div + div { border-top: 1px solid var(--rule); }
+    /* Time inputs are pinned to 110px inline; let them breathe instead. */
+    .cf-modal__body--split input[type="time"],
+    .cf-modal__body--split input[type="date"] { width: auto !important; min-width: 120px; max-width: 100%; }
+    /* Library search: 40vw is a ~150px field on a 375px screen. */
+    .auto-libsearch input { width: 100% !important; max-width: 100% !important; }
+    /* The minimap is unreadable at phone size and steals canvas width. */
+    .react-flow__minimap { display: none !important; }
+    /* With the minimap gone, the run-result overlay can use the full width
+       (it reserved a 150px right gutter for it). */
+    .auto-runresult { right: 12px !important; }
 }
 
 /* ============================================================ *

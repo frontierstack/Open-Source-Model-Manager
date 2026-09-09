@@ -863,9 +863,9 @@ export default function ChatInput({
 
                             {/* Persona (system prompt) chip */}
                             {systemPrompts.length > 0 && (
-                                <div style={{ position: 'relative' }} ref={promptDropdownRef}>
+                                <div className="composer-chip-anchor" style={{ position: 'relative', minWidth: 0 }} ref={promptDropdownRef}>
                                     <button
-                                        onClick={() => setPromptDropdownOpen(!promptDropdownOpen)}
+                                        onClick={() => { setPromptDropdownOpen(o => !o); setModelDropdownOpen(false); setEffortDropdownOpen(false); }}
                                         disabled={disabled || isStreaming}
                                         className="composer-chip-persona"
                                         style={{ ...(selectedPrompt ? chipActive : chip), opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 180, minWidth: 0 }}
@@ -873,13 +873,13 @@ export default function ChatInput({
                                         title={selectedPrompt ? `Persona: ${selectedPrompt.name}` : 'Choose persona'}
                                     >
                                         <Sparkles className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
-                                        <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                             {selectedPrompt ? selectedPrompt.name : 'Persona'}
                                         </span>
                                         <ChevronDown className={`w-[11px] h-[11px] transition-transform duration-150 ${promptDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.75} />
                                     </button>
                                     {promptDropdownOpen && (
-                                        <div style={popover} className="animate-slide-up">
+                                        <div style={popover} className="composer-popover animate-slide-up">
                                             <div style={popHeader}>Persona</div>
                                             <div style={{ maxHeight: 280, overflowY: 'auto' }}>
                                                 <button
@@ -915,10 +915,10 @@ export default function ChatInput({
                         </div>
 
                         {/* Right controls */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}>
                             {/* Model chip */}
                             {onModelChange && (
-                                <div style={{ position: 'relative' }} ref={modelDropdownRef}>
+                                <div className="composer-chip-anchor" style={{ position: 'relative', minWidth: 0 }} ref={modelDropdownRef}>
                                     <button
                                         onClick={() => { setModelDropdownOpen(o => !o); setPromptDropdownOpen(false); setEffortDropdownOpen(false); }}
                                         disabled={disabled || isStreaming}
@@ -944,7 +944,7 @@ export default function ChatInput({
                                         />
                                     </button>
                                     {modelDropdownOpen && (
-                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="animate-slide-up">
+                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="composer-popover animate-slide-up">
                                             <div style={popHeader}>Model</div>
                                             <div style={{ maxHeight: 280, overflowY: 'auto' }}>
                                                 {runningModels.length === 0 ? (
@@ -995,7 +995,7 @@ export default function ChatInput({
 
                             {/* Reasoning effort chip */}
                             {onReasoningEffortChange && (
-                                <div style={{ position: 'relative' }} ref={effortDropdownRef}>
+                                <div className="composer-chip-anchor" style={{ position: 'relative', minWidth: 0 }} ref={effortDropdownRef}>
                                     <button
                                         onClick={() => { setEffortDropdownOpen(o => !o); setModelDropdownOpen(false); setPromptDropdownOpen(false); }}
                                         disabled={disabled || isStreaming}
@@ -1006,14 +1006,14 @@ export default function ChatInput({
                                     >
                                         <Gauge className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
                                         {!compactChips && (
-                                            <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                                 {effortIsSet ? effortLevel.label : 'Effort'}
                                             </span>
                                         )}
                                         <ChevronDown className={`w-[11px] h-[11px] transition-transform duration-150 ${effortDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.75} />
                                     </button>
                                     {effortDropdownOpen && (
-                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="animate-slide-up">
+                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="composer-popover animate-slide-up">
                                             <div style={popHeader}>Reasoning effort</div>
                                             <div>
                                                 {EFFORT_LEVELS.map((lvl) => (

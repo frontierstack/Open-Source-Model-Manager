@@ -1490,7 +1490,7 @@ function FlowEditor({ showSnackbar, models }) {
                         </button>
                     )}
                     {runResult && (
-                        <div style={{ position: 'absolute', bottom: 12, left: 12, right: 150, maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: `1px solid ${runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)'}`, borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: 'var(--ink-2)' }}>
+                        <div className="auto-runresult" style={{ position: 'absolute', bottom: 12, left: 12, right: 150, maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: `1px solid ${runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)'}`, borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: 'var(--ink-2)' }}>
                             <strong style={{ color: runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)' }}>
                                 {runResult.status === 'failed' ? 'Failed' : 'Completed'}
                             </strong>
@@ -2072,7 +2072,7 @@ function CalendarPickerModal({ initialWeekly, initialRunAt, onSave, onClose }) {
                     <b>Calendar &amp; time picker</b>
                     <button className="cf-chip__rm" onClick={onClose}>×</button>
                 </div>
-                <div className="cf-modal__body" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                <div className="cf-modal__body cf-modal__body--split" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
                     {/* Recurring weekly */}
                     <div style={{ padding: 14, borderRight: '1px solid var(--rule)', overflowY: 'auto' }}>
                         <div className="cf-sec__label">Recurring weekly</div>
