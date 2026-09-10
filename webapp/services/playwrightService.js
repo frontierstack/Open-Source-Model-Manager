@@ -700,10 +700,10 @@ function startPoolCleanup() {
  * Extract readable content from a page
  */
 async function extractContent(page, options = {}) {
-    const { includeLinks = false, maxLength = 8000 } = options;
+    const { includeLinks = false, maxLength = 8000, linkFilter = null, find = null } = options;
 
     const adArgs = { tokenSrc: adBlock.AD_TOKEN_RE.source, idPrefixSrc: adBlock.AD_ID_PREFIX_RE.source, attrSelectors: adBlock.AD_ATTR_SELECTORS };
-    return await page.evaluate(({ includeLinks, maxLength, adArgs }) => {
+    return await page.evaluate(({ includeLinks, maxLength, adArgs, linkFilter, find }) => {
         // Ad slots first — only elements that DECLARE themselves ads (id/class
         // TOKENS, data-ad-* attributes), and never one holding a large share of
         // the page text (a content column named "sponsored" is content). Whole
@@ -816,17 +816,54 @@ async function extractContent(page, options = {}) {
             }
         });
 
-        // Extract links if requested
+        // Links (want:"links" / find). The old harvest read only the detected
+        // main region, kept relative hrefs, and the renderer then emitted the
+        // FIRST TEN — appended after the text, i.e. usually cut off entirely by
+        // the char budget. Live (2026-09-09): a 430-link policy directory came
+        // back with zero links, the model guessed the policy's URL from its
+        // number, and spent 24 calls on the guess. Now: the whole document,
+        // absolute hrefs, de-duplicated, content links before nav/footer
+        // links, an optional filter (`linkFilter`/`find`: case-insensitive,
+        // alternatives separated by |, matched on link text AND URL), and a
+        // reserved share of the budget rendered at the very end.
+        const splitTerms = (v) => String(v || '').split('|').map(t => t.trim().toLowerCase()).filter(t => t.length >= 2);
+        const findTerms = splitTerms(find);
+        const linkTerms = splitTerms(linkFilter || find);
         const links = [];
+        let linksTotal = 0, linksMatched = 0;
         if (includeLinks) {
-            mainContent.querySelectorAll('a[href]').forEach(a => {
-                const href = a.getAttribute('href');
-                const text = a.textContent?.trim();
-                if (href && text && !href.startsWith('#') && !href.startsWith('javascript:')) {
-                    links.push({ text: text.substring(0, 100), href });
+            const NAVISH = 'nav, header, footer, [role="navigation"], [role="banner"], [role="contentinfo"], .breadcrumb, .breadcrumbs, [class*="cookie"], [id*="cookie"]';
+            const seenHref = new Set();
+            document.querySelectorAll('a[href]').forEach(a => {
+                let href = '';
+                try { href = a.href; } catch (_) { href = ''; }
+                if (!href || !/^https?:/i.test(href)) return;
+                href = href.replace(/#.*$/, '');
+                if (!href || seenHref.has(href)) return;
+                let text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                if (!text) text = (a.getAttribute('aria-label') || a.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+                if (!text) { const im = a.querySelector('img[alt]'); if (im) text = (im.getAttribute('alt') || '').replace(/\s+/g, ' ').trim(); }
+                if (!text) return;
+                seenHref.add(href);
+                linksTotal++;
+                if (linkTerms.length) {
+                    let hay;
+                    try { hay = (text + ' ' + decodeURIComponent(href)).toLowerCase(); } catch (_) { hay = (text + ' ' + href).toLowerCase(); }
+                    if (!linkTerms.some(t => hay.includes(t))) return;
+                    linksMatched++;
                 }
+                let navish = false;
+                try { navish = !!a.closest(NAVISH); } catch (_) { navish = false; }
+                links.push({ text: text.substring(0, 100), href, navish });
             });
+            // Stable: document order within each group, content links first.
+            if (!linkTerms.length) links.sort((a, b) => (a.navish === b.navish ? 0 : (a.navish ? 1 : -1)));
         }
+        // With links (or a find) requested, the prose gets a smaller share of
+        // the budget so the part the caller asked for is never the part cut.
+        const textBudget = (includeLinks && (links.length || linkTerms.length))
+            ? Math.floor(maxLength * (linkTerms.length ? 0.55 : 0.45))
+            : maxLength;
 
         // Extract table data (important for sites like VirusTotal)
         const tables = [];
@@ -955,13 +992,47 @@ async function extractContent(page, options = {}) {
             : '';
         if (itemsSection) output += itemsSection;
 
+        // `find`: the ctrl-F view. The lines of the page's text that mention
+        // the term (with one line of context each) go FIRST, so a long
+        // index/directory page answers "where is item X" in one read.
+        const findSection = (() => {
+            if (!findTerms.length) return '';
+            const src = (document.body && document.body.innerText) || '';
+            const lines = src.split('\n').map(l => l.replace(/\s+/g, ' ').trim());
+            const hit = (l) => { const x = l.toLowerCase(); return findTerms.some(t => x.includes(t)); };
+            const keep = new Set();
+            let matches = 0;
+            for (let i = 0; i < lines.length; i++) {
+                if (!lines[i] || !hit(lines[i])) continue;
+                matches++;
+                for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 1); j++) if (lines[j]) keep.add(j);
+                if (matches >= 40) break;
+            }
+            if (!matches) {
+                return `Matches for "${find}" in the page text: none — no line of this page's text mentions it` +
+                    (lines.some(Boolean) ? '' : ' (the page text is empty)') +
+                    '. Check the Links section, or try a different spelling / a shorter term.\n\n';
+            }
+            const budget = Math.floor(maxLength * 0.4);
+            let sec = `Matches for "${find}" in the page text (${matches}${matches >= 40 ? '+' : ''}):\n`;
+            let last = -2;
+            for (const j of [...keep].sort((a, b) => a - b)) {
+                if (sec.length > budget) { sec += '  …\n'; break; }
+                if (j !== last + 1) sec += '  ---\n';
+                sec += `  ${hit(lines[j]) ? '>' : ' '} ${lines[j].slice(0, 300)}\n`;
+                last = j;
+            }
+            return sec + '\n';
+        })();
+        if (findSection) output += findSection;
+
         // Videos first — there are only ever a handful and they're high-value
         // (the model passes them to find_video), so emit them before the bulky
         // paragraph content can exhaust the char budget.
         if (videoItems.length > 0) {
             output += 'Videos:\n';
             videoItems.forEach(v => {
-                if (output.length < maxLength - 300) output += `- [${v.kind}] ${v.url}\n`;
+                if (output.length < textBudget - 300) output += `- [${v.kind}] ${v.url}\n`;
             });
             output += '\n';
         }
@@ -969,7 +1040,7 @@ async function extractContent(page, options = {}) {
         if (paragraphs.length > 0) {
             output += 'Content:\n';
             paragraphs.forEach(p => {
-                if (output.length < maxLength - 500) {
+                if (output.length < textBudget - 500) {
                     output += `${p}\n\n`;
                 }
             });
@@ -978,7 +1049,7 @@ async function extractContent(page, options = {}) {
         if (tables.length > 0) {
             output += '\nData:\n';
             tables.forEach(t => {
-                if (output.length < maxLength - 500) {
+                if (output.length < textBudget - 500) {
                     output += `${t}\n\n`;
                 }
             });
@@ -987,20 +1058,13 @@ async function extractContent(page, options = {}) {
         if (imageItems.length > 0) {
             output += '\nImages:\n';
             imageItems.forEach(im => {
-                if (output.length < maxLength - 500) {
+                if (output.length < textBudget - 500) {
                     output += `- ${im.alt}\n`;
                     if (im.link) output += `  post: ${im.link}\n`;
                     if (im.src) output += `  image: ${im.src}\n`;
                 }
             });
             output += '\n';
-        }
-
-        if (includeLinks && links.length > 0) {
-            output += '\nLinks:\n';
-            links.slice(0, 10).forEach(l => {
-                output += `- ${l.text}: ${l.href}\n`;
-            });
         }
 
         // If structured extraction returned too little content, fall back to innerText.
@@ -1059,6 +1123,7 @@ async function extractContent(page, options = {}) {
                 // Keep the per-entry lines: they are the structured half of the
                 // answer, and the flat rescue text cannot reproduce them.
                 if (itemsSection) output += itemsSection;
+                if (findSection) output += findSection;
                 // Collapse horizontal whitespace only. The old blanket /\s+/ → ' '
                 // put the entire page on ONE line (and made the following
                 // paragraph-break restore dead code), which costs every
@@ -1073,8 +1138,28 @@ async function extractContent(page, options = {}) {
             }
         }
 
+        // Links go LAST but inside a reserved share of the budget: the prose
+        // above is cut to make room, never the other way round.
+        if (includeLinks && (links.length || linkTerms.length)) {
+            const filtered = linkTerms.length > 0;
+            const cap = Math.floor(maxLength * (filtered ? 0.8 : 0.6));
+            let sec = filtered
+                ? `\nLinks matching "${linkFilter || find}" (${linksMatched} of ${linksTotal} links on the page):\n`
+                : `\nLinks (${linksTotal} on the page):\n`;
+            let shown = 0;
+            for (const l of links) {
+                const line = `- ${l.text}: ${l.href}\n`;
+                if (sec.length + line.length > cap) break;
+                sec += line;
+                shown++;
+            }
+            if (shown < links.length) sec += `… +${links.length - shown} more links not shown — narrow them with find:"<term>" (matches link text or URL, alternatives separated by |).\n`;
+            if (filtered && !linksMatched) sec += '(none — the term does not occur in any link text or URL on this page; the page may load this list dynamically, or the item may be named differently)\n';
+            const keepText = Math.max(preambleLen, maxLength - sec.length - 2);
+            output = output.substring(0, keepText).replace(/\s+$/, '') + '\n' + sec;
+        }
         return output.substring(0, maxLength);
-    }, { includeLinks, maxLength, adArgs });
+    }, { includeLinks, maxLength, adArgs, linkFilter, find });
 }
 
 // A Cloudflare/Turnstile "managed challenge" returns a 403/503 (or a 200 "Just a
@@ -1254,7 +1339,9 @@ async function fetchUrlContent(url, options = {}) {
         maxLength = 8000,
         screenshot = false,
         rawHtml = false,
-        waitForSelector = null
+        waitForSelector = null,
+        linkFilter = null,
+        find = null
     } = options;
 
     let poolEntry = null;
@@ -1454,7 +1541,7 @@ async function fetchUrlContent(url, options = {}) {
                 return combined.substring(0, maxLen);
             }, maxLength);
         } else {
-            content = await extractContent(page, { includeLinks, maxLength });
+            content = await extractContent(page, { includeLinks, maxLength, linkFilter, find });
         }
 
         const title = await page.title();

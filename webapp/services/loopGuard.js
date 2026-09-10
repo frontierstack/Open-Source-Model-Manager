@@ -261,6 +261,180 @@ function makeProgressLedger(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-round narration repetition
+// ---------------------------------------------------------------------------
+// The content-loop detector above works INSIDE one round: it sees the answer
+// repeat within a single generation. A tool-using turn has another axis: the
+// one-paragraph status line the model writes BEFORE each tool call. Live
+// (2026-09-09, "what's in the new tech policy"): the model wrote "I have the
+// full parent policy (524.0). The 524.0G guidelines page is a separate
+// document that isn't directly indexed. Let me try the exact URL pattern one
+// more time." on ELEVEN consecutive rounds, verbatim, each followed by a
+// search whose results the ledger scored as fresh bytes. Nothing keyed on the
+// call could see it — the model itself was announcing that it had no new
+// plan, and that announcement is the signal.
+//
+// makeNarrationTracker() is fed each round's narration (the text between the
+// previous tool results and this round's tool calls). A near-verbatim repeat
+// of the previous round's narration (char-bigram Dice ≥ NARRATION_DUP_SIM
+// after markdown/punctuation normalization) is a `duplicate`; `repeats` counts
+// how many rounds in a row have now said the same thing (1 = fresh). The
+// caller hides duplicates from the transcript, advises the model at
+// NARRATION_REPEAT_ADVISE and spends the shared checkpoint at
+// NARRATION_REPEAT_CHECKPOINT. Narrations under NARRATION_MIN_CHARS ("Done.")
+// are ignored — a short repeated status line is normal and harmless.
+const NARRATION_MIN_CHARS = envInt('NARRATION_MIN_CHARS', 24);
+const NARRATION_DUP_SIM = envFloat('NARRATION_DUP_SIM', 0.9);
+const NARRATION_REPEAT_ADVISE = envInt('NARRATION_REPEAT_ADVISE', 3);
+const NARRATION_REPEAT_CHECKPOINT = envInt('NARRATION_REPEAT_CHECKPOINT', 5);
+
+function normalizeNarration(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')   // markdown links → their label
+        .replace(/[`*_~#>|]+/g, ' ')                // markdown decoration
+        .replace(/[^\p{L}\p{N}\s./:-]/gu, ' ')      // punctuation (keep url-ish chars)
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function makeNarrationTracker(opts = {}) {
+    const minChars = opts.minChars ?? NARRATION_MIN_CHARS;
+    const dupSim = opts.dupSim ?? NARRATION_DUP_SIM;
+    let prev = null;
+    let streak = 0;        // consecutive duplicates so far (0 = the current one is fresh)
+    let totalDuplicates = 0;
+    return {
+        get repeats() { return streak + 1; },
+        get totalDuplicates() { return totalDuplicates; },
+        /** Feed one round's narration. Returns { duplicate, similarity, repeats, totalDuplicates }. */
+        note(text) {
+            const norm = normalizeNarration(text);
+            if (norm.length < minChars) {
+                prev = null; streak = 0;
+                return { duplicate: false, similarity: 0, repeats: 1, totalDuplicates };
+            }
+            const similarity = prev ? (norm === prev ? 1 : argsSimilarity(prev, norm)) : 0;
+            const duplicate = !!prev && similarity >= dupSim;
+            streak = duplicate ? streak + 1 : 0;
+            if (duplicate) totalDuplicates++;
+            prev = norm;
+            return { duplicate, similarity, repeats: streak + 1, totalDuplicates };
+        },
+        /** After a checkpoint: give the model a fresh run before the next escalation. */
+        resetStreak() { streak = 0; },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Search novelty
+// ---------------------------------------------------------------------------
+// Eight consecutive searches in the same incident each returned five results —
+// non-empty, successful, byte-different (the queries differed) — so every
+// outcome guard and the ledger scored them as progress. Almost all of the
+// pages had already come back from an EARLIER search that turn, and the model
+// had read none of them. A search whose result URLs are mostly ones the turn
+// has already seen from searching (≥ WEB_SEARCH_STALE_RATIO of ≥ minResults)
+// is `stale`: the engine has nothing more on this subject. `unread` is what
+// the model should do instead of searching again.
+const WEB_SEARCH_STALE_RATIO = envFloat('WEB_SEARCH_STALE_RATIO', 0.6);
+const WEB_SEARCH_STALE_MAX = envInt('WEB_SEARCH_STALE_MAX', 3);
+
+function normalizeSearchUrl(u) {
+    return String(u || '').trim().toLowerCase()
+        .replace(/^https?:\/\//, '').replace(/^www\./, '')
+        .replace(/#.*$/, '').replace(/\/+$/, '');
+}
+
+function searchNovelty(urls, priorSearchUrls, readUrls, opts = {}) {
+    const ratio = opts.staleRatio ?? WEB_SEARCH_STALE_RATIO;
+    const minResults = opts.minResults ?? 3;
+    const prior = priorSearchUrls || new Set();
+    const read = readUrls || new Set();
+    const seen = new Set();
+    const list = [];
+    for (const u of urls || []) {
+        const s = String(u || '').trim();
+        const n = normalizeSearchUrl(s);
+        if (!n || seen.has(n)) continue;
+        seen.add(n);
+        list.push({ url: s, norm: n });
+    }
+    const already = list.filter(x => prior.has(x.norm)).map(x => x.url);
+    const fresh = list.filter(x => !prior.has(x.norm)).map(x => x.url);
+    const unread = list.filter(x => !read.has(x.norm)).map(x => x.url);
+    const stale = list.length >= minResults && already.length / list.length >= ratio;
+    return { stale, already, fresh, unread, total: list.length };
+}
+
+// Same-subject search repeats. The novelty rule above needs the RESULTS to
+// repeat; a search engine that keeps mixing in fresh off-topic pages (PDFs
+// from other districts, bullying pages) defeats it while the two on-topic
+// pages come back every time. The QUERY is the other signal: eight queries
+// in the incident all carried "ahschools.us 524.0G" — the same subject,
+// re-phrased. Token Jaccard ≥ WEB_SEARCH_SUBJECT_SIM against an earlier
+// query of the turn marks a subject repeat; from WEB_SEARCH_SUBJECT_REPEATS
+// on, a search is treated as stale even when it surfaced fresh junk.
+const WEB_SEARCH_SUBJECT_SIM = envFloat('WEB_SEARCH_SUBJECT_SIM', 0.5);
+const WEB_SEARCH_SUBJECT_REPEATS = envInt('WEB_SEARCH_SUBJECT_REPEATS', 3);
+const QUERY_STOP = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'who', 'how', 'why', 'when', 'where',
+    'are', 'was', 'were', 'has', 'have', 'does', 'did', 'not', 'any', 'all', 'about', 'into', 'over', 'site', 'www', 'http', 'https',
+    'com', 'org', 'net', 'edu', 'gov', 'page', 'text', 'full', 'official', 'latest', 'new', 'find', 'get', 'list']);
+function queryTokens(q) {
+    const s = String(q || '').toLowerCase()
+        .replace(/\b(site|inurl|intitle|intext|filetype|ext):/g, ' ')
+        .replace(/[^\p{L}\p{N}.]+/gu, ' ');
+    const out = new Set();
+    for (const raw of s.split(' ')) {
+        const t = raw.replace(/^\.+|\.+$/g, '');
+        if (t.length < 3 || QUERY_STOP.has(t)) continue;
+        out.add(t);
+    }
+    return out;
+}
+function querySubjectSimilarity(a, b) {
+    const ta = a instanceof Set ? a : queryTokens(a);
+    const tb = b instanceof Set ? b : queryTokens(b);
+    if (!ta.size || !tb.size) return 0;
+    let inter = 0;
+    for (const t of ta) if (tb.has(t)) inter++;
+    return inter / (ta.size + tb.size - inter);
+}
+
+// URL-guess budget. A URL the model reads that appeared NOWHERE this turn —
+// not in the user's message, a search result, a page it read, a link list —
+// is a guess assembled from a name or a number. Guesses are usually 404s,
+// and every guess is a new string, so no repeat guard can see the run (the
+// real-model reproduction of the incident guessed twelve distinct policy
+// URLs on one host). After WEB_GUESS_404_MAX unseen URLs on one host have
+// come back 404, further unseen URLs on that host are refused with the real
+// way to get links (find / search). Standard discovery paths are exempt.
+const WEB_GUESS_404_MAX = envInt('WEB_GUESS_404_MAX', 3);
+const DISCOVERY_PATH_RE = /\/(?:sitemap[^/]*\.xml|sitemap\/?|robots\.txt|search\/?(?:\?|$)|\?s=|\?q=)/i;
+function isDiscoveryUrl(u) { return DISCOVERY_PATH_RE.test(String(u || '')); }
+
+// Specific identifiers in a search query — a policy number (524.0G), a CVE
+// id, a version, a part/docket number: a token with a digit AND a letter or
+// a dot, not a bare year. When none of a search's results is a page ABOUT
+// that identifier (title/url), the item is most likely an ENTRY inside one
+// of the index/listing pages returned, and the right next step is to read
+// that page with find:"<id>" — not to settle for a similarly-numbered page.
+function specificIdentifiers(query) {
+    const out = [];
+    for (const raw of String(query || '').split(/\s+/)) {
+        const t = raw.replace(/^["'(]+|["'),.:;]+$/g, '');
+        if (t.length < 4 || t.length > 40) continue;
+        if (!/\d/.test(t) || !/[A-Za-z.]/.test(t)) continue;
+        if (/^(19|20)\d\d$/.test(t)) continue;
+        if (/^\d+(\.\d+)?$/.test(t)) continue;               // plain number
+        if (/^[a-z]+:/i.test(t) || /\//.test(t) || /^[\w.-]+\.[a-z]{2,}$/i.test(t)) continue;  // operators, paths, domains
+        if (!out.includes(t)) out.push(t);
+    }
+    return out.slice(0, 3);
+}
+function identifierKey(id) { return String(id || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+// ---------------------------------------------------------------------------
 // Repetition detectors
 // ---------------------------------------------------------------------------
 
@@ -847,6 +1021,21 @@ module.exports = {
     commandInstallsBrowser,
     errorSignature,
     makeErrorStreakTracker,
+    normalizeNarration,
+    makeNarrationTracker,
+    NARRATION_REPEAT_ADVISE,
+    NARRATION_REPEAT_CHECKPOINT,
+    normalizeSearchUrl,
+    searchNovelty,
+    WEB_SEARCH_STALE_MAX,
+    queryTokens,
+    querySubjectSimilarity,
+    WEB_SEARCH_SUBJECT_REPEATS,
+    WEB_SEARCH_SUBJECT_SIM,
+    WEB_GUESS_404_MAX,
+    isDiscoveryUrl,
+    specificIdentifiers,
+    identifierKey,
     TOOL_ARGS_MAX_CHARS,
     TOOL_ARGS_LOOP_MIN_CHARS,
     REASONING_HARD_CAP,

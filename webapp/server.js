@@ -1339,7 +1339,7 @@ function buildChatRuntimePrelude() {
         `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
         `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
         `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. The sandbox has NO web browser and cannot install one (no Chromium, 64 MB /tmp) — playwright/puppeteer/selenium there are refused; to TEST or PREVIEW an HTML/JS/React page you wrote, call preview_html (real headless browser: console errors, exceptions, blank-canvas check, screenshot). When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
-        `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query.`,
+        `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query. BUT when a search comes back with the SAME pages you already saw (the result says noNewResults and lists the unread ones), the engine has nothing more on that subject: stop searching and READ one of those pages, or locate the entry on the index/directory page you already found with find:"<its name or number>" — never guess or re-type a URL from a name, and never announce the same plan twice.`,
         `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
         `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
         `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
@@ -15532,7 +15532,28 @@ const LLM_EXTRACT_SYSTEM_PROMPT =
     '- DO NOT extract the assistant\'s OWN output as facts: article/search-result summaries, quoted passages, headings/bullets/tables, code snippets, commands, links/citations, or "what we found" write-ups are NOT memories. A memory is about the USER (their life/work/projects/environment), their stable preferences/corrections, or a reusable lesson from the task — never the content the assistant produced this turn.\n' +
     '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
     '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
+    '- NEVER add names, places, organizations or expansions of abbreviations that do not appear verbatim in the exchange (a domain like "xyschools.us" is NOT evidence of which district it is — keep the domain, do not guess the name). Invented specifics poison future answers.\n' +
+    '- If the assistant reply ends unfinished, was cut off, or admits it could not complete the task, do NOT turn its excuse into a "limitation" — a failed attempt is not evidence that something is impossible.\n' +
     '- 0 to 5 items. If nothing qualifies, return [].';
+
+// An extracted memory must not name an entity the exchange never mentioned.
+// Live (2026-09-10): from a turn that mentioned only "ahschools.us", the
+// extractor minted "The user's school district is Alhambra Unified School
+// District" AND "…Arlington Heights School District" in the same call — two
+// contradictory expansions of an abbreviation, both stored as facts, and a
+// later turn then dismissed the real site as "the wrong district". Every
+// word of a multi-word Capitalized run in the memory must occur in the
+// source text; a run with an unseen word is an invented entity → drop.
+function memoryUnsupportedEntity(text, sourceText) {
+    const src = String(sourceText || '').toLowerCase();
+    if (!src) return null;
+    const runs = String(text || '').match(/\b[A-Z][\w'&-]*(?:\s+[A-Z][\w'&-]*)+/g) || [];
+    for (const run of runs) {
+        const words = run.split(/\s+/).map(w => w.toLowerCase().replace(/[^a-z0-9'&-]/g, '')).filter(w => w.length >= 3);
+        if (words.length && words.some(w => !src.includes(w))) return run;
+    }
+    return null;
+}
 
 async function llmExtractMemoriesFromTurn(userText, assistantText) {
     if (process.env.MEMORY_LLM_EXTRACTION === '0') return null;
@@ -15591,6 +15612,8 @@ async function llmExtractMemoriesFromTurn(userText, assistantText) {
             const text = shorthandCompress(String(it?.text || '').trim());
             if (text.length < 12 || text.length > 600) continue;
             if (isJunkMemoryLine(text)) continue;
+            const invented = memoryUnsupportedEntity(text, `${u}\n${a}`);
+            if (invented) { console.warn(`[Memory] Dropped extracted memory naming an entity the exchange never mentioned ("${invented}"): ${text.slice(0, 100)}`); continue; }
             const type = (typeof it?.type === 'string' && memoryService.VALID_TYPES.has(it.type) && it.type !== 'procedure')
                 ? it.type : 'fact';
             const isDirectiveType = type !== 'fact';
@@ -15871,7 +15894,15 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
         }
         if (msg.id) newestCursor = msg.id;
         if (!userMsg) continue;
-        pairs.push({ userText: messageText(userMsg), assistantText: messageText(msg), msgId: msg.id || null });
+        // A reply the user stopped, a partial the client saved, or a turn the
+        // loop guard had to cut off is a FAILED attempt: its text is an excuse,
+        // not evidence. Live: an aborted policy lookup minted an "important"
+        // limitation ("sub-policy pages are not accessible … prioritize the
+        // parent policy") that would have steered every later lookup wrong.
+        // The user's own words are still extracted; the reply is not.
+        const assistantAborted = !!(msg.stoppedByUser || msg.isPartial || msg.needsContinuation || msg.loopExhausted);
+        if (assistantAborted) console.log(`[Memory] Skipping assistant side of an aborted/cut-off turn (${msg.id || '?'}) for extraction`);
+        pairs.push({ userText: messageText(userMsg), assistantText: assistantAborted ? '' : messageText(msg), msgId: msg.id || null });
     }
 
     const candidates = [];
@@ -21298,6 +21329,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // the streak, so a wide read of N distinct files or a write→run→fix
         // debug cycle never trips it.
         const progressLedger = loopGuard.makeProgressLedger();
+        // Cross-round narration repeat: the status line the model writes before
+        // each tool call, compared across rounds (see loopGuard.makeNarrationTracker).
+        const narrationTracker = loopGuard.makeNarrationTracker();
+        const NARRATION_REPEAT_ADVISE = loopGuard.NARRATION_REPEAT_ADVISE;
+        const NARRATION_REPEAT_CHECKPOINT = loopGuard.NARRATION_REPEAT_CHECKPOINT;
         // Same-error streak: three consecutive results from one tool carrying the
         // same error CLASS (ENOSPC, Cannot find module 'x', permission denied…)
         // are non-progress even when the runner said success:true and the bytes
@@ -22689,6 +22725,39 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
 
                     const toolNames = finalizedCalls.map(c => c?.function?.name || c?.name).filter(Boolean).join(', ');
                     logChatActivity(`→ ${finalizedCalls.length} tool${finalizedCalls.length === 1 ? '' : 's'}${toolNames ? `: ${toolNames}` : ''} (round ${toolCallRound + 1})`);
+
+                    // ---- Cross-round narration repeat ------------------------
+                    // The one-paragraph status line the model wrote before this
+                    // round's tool calls. A near-verbatim repeat of the previous
+                    // round's line ("Let me try the exact URL pattern one more
+                    // time." ×11, live 2026-09-09) is the model announcing that it
+                    // has no new plan: hide the duplicate from the transcript
+                    // (content_rewind — the model's own context keeps it), advise
+                    // at NARRATION_REPEAT_ADVISE, spend the shared checkpoint at
+                    // NARRATION_REPEAT_CHECKPOINT (round-end accounting below).
+                    const roundNarrationText = fullResponse.slice(roundStart);
+                    let narrationRepeats = 1;
+                    let narrationSnippet = '';
+                    try {
+                        const nr = narrationTracker.note(roundNarrationText);
+                        narrationRepeats = nr.repeats;
+                        narrationSnippet = roundNarrationText.trim().replace(/\s+/g, ' ').slice(0, 160);
+                        if (nr.duplicate) {
+                            const dropped = fullResponse.length - roundStart;
+                            fullResponse = fullResponse.slice(0, roundStart);
+                            if (streamingConversationId) {
+                                const job = activeStreamingJobs.get(streamingConversationId);
+                                if (job) job.content = fullResponse;
+                            }
+                            if (clientConnected) {
+                                try {
+                                    res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'narration_repeat' })}\n\n`);
+                                } catch (_) { clientConnected = false; }
+                            }
+                            console.warn(`[Chat Stream] Narration repeat ×${nr.repeats} (similarity ${nr.similarity.toFixed(2)}) — hid ${dropped} duplicate chars from the transcript: "${narrationSnippet.slice(0, 80)}"`);
+                            if (nr.repeats === 2) logChatActivity('Loop guard: the model repeated its previous status line — duplicate hidden from the transcript');
+                        }
+                    } catch (_) { /* best effort */ }
                     // toolPolicy was hoisted to before the outer loop so the
                     // (potentially large) skills file is read once per request
                     // instead of once per round. policyCache memoizes per name.
@@ -23482,8 +23551,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         try {
                             if (resultMsg && typeof resultMsg.content === 'string' && resultMsg.content.length <= 300000) {
                                 if (!toolCtx._webSeenUrls) toolCtx._webSeenUrls = new Set(urlRecovery.extractUrls(toolCtx.latestUserText || ''));
-                                if (toolCtx._webSeenUrls.size < 500) {
-                                    for (const u of urlRecovery.extractUrls(resultMsg.content).slice(0, 80)) toolCtx._webSeenUrls.add(u);
+                                if (toolCtx._webSeenUrls.size < 3000) {
+                                    for (const u of urlRecovery.extractUrls(resultMsg.content).slice(0, 400)) toolCtx._webSeenUrls.add(u);
                                 }
                             }
                         } catch (_) { /* best effort */ }
@@ -23699,7 +23768,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                         (Array.isArray(parsedRes.files) && parsedRes.files.length === 0) ||
                                         (Array.isArray(parsedRes.entries) && parsedRes.entries.length === 0) ||
                                         (Array.isArray(parsedRes.matches) && parsedRes.matches.length === 0);
-                                    outcomeEmpty = recFailed || emptyCount || emptyArr;
+                                    // A stale web search (every result already seen
+                                    // this turn — see the `web` tool) is valid data
+                                    // and zero new information.
+                                    outcomeEmpty = recFailed || emptyCount || emptyArr || parsedRes.noNewResults === true;
                                 }
                             } catch (_) { /* non-JSON result — treat as success */ }
                             // Path-only key for read-only tools so re-reading
@@ -23989,6 +24061,14 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         const refusedThisRound = perCall.filter((pc, i) =>
                             pc.nudge || (dispatched[i] && dispatched[i]._refusal)).length;
                         deadRoundStreak = refusedThisRound === perCall.length ? deadRoundStreak + 1 : 0;
+                        // Narration stagnation advisory: rides on the round's
+                        // first tool result (non-blocking — the calls ran).
+                        if (NARRATION_REPEAT_ADVISE > 0 && narrationRepeats >= NARRATION_REPEAT_ADVISE && toolResultMessages.length) {
+                            toolResultMessages[0] = attachAdvisory(toolResultMessages[0],
+                                `Loop guard: you have announced the SAME plan ${narrationRepeats} rounds in a row ("${narrationSnippet}") and the calls under it have not produced the result. Saying it again will not change the outcome. Do something materially DIFFERENT now — a different page, a different tool, find:"<term>" on an index page you already have, a different subject — or stop calling tools and answer the user with what you already know, stating plainly what could not be found.`);
+                            console.warn(`[Chat Stream] Narration stagnation advisory (×${narrationRepeats})`);
+                            logChatActivity(`Loop guard: the model announced the same plan ${narrationRepeats} rounds in a row — told it to change approach`);
+                        }
                         // Shared checkpoint spender: the FIRST checkpoint-level hit of
                         // any family restates the task (and quarantines `offenders`,
                         // which may be empty); the second forces synthesis.
@@ -24034,6 +24114,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 `your last ${sum.staleCalls} tool calls produced no new information (${sum.text}${sum.byToolText ? `; ${sum.byToolText}` : ''})`,
                                 'Stagnation');
                         }
+                        if (!loopNudgeExhausted && NARRATION_REPEAT_CHECKPOINT > 0 && narrationRepeats >= NARRATION_REPEAT_CHECKPOINT) {
+                            if (spendCheckpoint([],
+                                `you have announced the same plan ${narrationRepeats} rounds in a row ("${narrationSnippet}") and it has not produced the result — that approach is exhausted`,
+                                'Narration stagnation')) narrationTracker.resetStreak();
+                        }
                         // Context saturation: the window has been FULL for
                         // ctxSaturatedStreak consecutive rounds — every new
                         // tool result evicts an earlier one and each round
@@ -24061,7 +24146,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // Build the next round's message list. The assistant
                     // message must carry ONLY this turn's generated content
                     // (not the cumulative stream) alongside its tool_calls.
-                    const turnContent = fullResponse.slice(roundStart);
+                    // The model's context keeps the narration even when the
+                    // transcript hid a duplicate (fullResponse was rewound).
+                    const turnContent = roundNarrationText;
                     // Sanitize tool_calls arguments before re-shipping. When
                     // the model hit its output cap mid-arguments (handled
                     // above by the truncation guard in executeToolCall),
@@ -24851,7 +24938,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // parity for the server-side save.
                         toolCalls: persistedToolChips.length ? persistedToolChips : undefined,
                         reasoningEffort: effortActive ? effortDirectives.effort : undefined,
-                        backgroundCompleted: !clientConnected
+                        backgroundCompleted: !clientConnected,
+                        // A turn the loop guard had to cut off is a failed attempt:
+                        // memory extraction must not learn "limitations" from it.
+                        loopExhausted: (reasoningLoopExhausted || loopNudgeExhausted || toolCallCapHit) ? true : undefined,
                     };
                     conversationMsgs.push(assistantMessage);
                     await saveConversationMessages(userId, streamingConversationId, conversationMsgs, { memoryUserId: chatMemId });
@@ -27874,10 +27964,12 @@ app.use((req, res) => {
                 function: {
                     name: 'web',
                     description:
-                        'The single tool for everything on the open web: SEARCH and READ pages (including JavaScript/SPA, dynamic, lazy-loaded, and bot-protected sites). ' +
+                        'Search the open web (query) or read any page (url, incl. JS/SPA and bot-protected); find:"term" pinpoints one entry on a long index page. ' +
                         'Pass `query` to search the web (returns up to 5 {title,url,snippet}); pass `url` (or `urls`, up to 3) to read a page\'s readable text. ' +
                         'Reading auto-cascades static fetch → stealth anti-bot → real-browser render, so you do NOT need to pick an engine or re-read the same URL a different way — one call handles Cloudflare / "Just a moment" / CAPTCHA and JS-rendered SPAs. ' +
-                        'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to also collect links. ' +
+                        'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to collect the page\'s links. ' +
+                        'To find ONE entry on a long index/directory/listing/policy page, read that page with find:"<its name or number>" — you get the matching lines plus the matching links, i.e. the entry\'s real URL, in one call. NEVER guess or re-type a URL from an entry\'s name/number: a URL that already returned HTTP 404 this turn is refused on re-read, and the result names the pages actually seen that resemble it. ' +
+                        'A search whose results are pages that earlier searches ALREADY returned carries noNewResults:true and `unread` — the engine has nothing more on that phrasing; read one of the unread pages (copy its url exactly) or answer, do not rephrase again (after 3 such searches, further ones are refused). ' +
                         'For a page that needs interaction first (accept a cookie wall, submit a form, click "load more", scroll for lazy content) use mode:"interact" with an ordered `actions` array. For "top N / most recent N" across a paginated listing use mode:"crawl". ' +
                         'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. A search result carries `relevance` (which query terms the results never matched) and, when the results are generic, a `hint` telling you how to reformulate — follow it rather than repeating the query. ' +
                         'Trust fetched/searched content over training when they conflict, and cite the URL(s). ' +
@@ -27890,7 +27982,8 @@ app.use((req, res) => {
                             url: { type: 'string', description: 'A single page URL to read.' },
                             urls: { type: 'array', items: { type: 'string' }, description: 'Up to 3 page URLs to read in one call.' },
                             mode: { type: 'string', enum: ['auto', 'search', 'read', 'stealth', 'browser', 'interact', 'crawl'], description: 'Default auto (query→search, url→read). stealth/browser force anti-bot/real-browser; interact runs `actions` first; crawl walks pagination.' },
-                            want: { type: 'string', enum: ['text', 'images', 'links'], description: 'When reading: text (default), images (with captions), or links.' },
+                            want: { type: 'string', enum: ['text', 'images', 'links'], description: 'When reading: text (default), images (with captions), or links (every link on the page, content links first, with a count).' },
+                            find: { type: 'string', description: 'Read: locate ONE item on a long index/directory/listing page — returns only the lines of text that mention this term (case-insensitive; alternatives separated by |) plus every link whose text or URL contains it, i.e. the item\'s REAL link. Use it instead of guessing or re-typing a URL from an item\'s name/number, e.g. {url:"https://site/policies", find:"524.0G"}.' },
                             actions: { type: 'array', items: { type: 'object' }, description: 'For mode:"interact" — ordered steps (click/type/wait/scroll/waitForNavigation).' },
                             read: { type: 'integer', minimum: 0, maximum: 3, description: 'On a search, also fetch the top N results\' full text (default 0).' },
                             limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Search: max results (default 5).' },
@@ -27936,8 +28029,84 @@ app.use((req, res) => {
             const wantSearch = mode === 'search' || (mode === 'auto' && a.query && !hasUrl);
 
             // ---- SEARCH ----
+            if (!ctx._webSearchUrls) ctx._webSearchUrls = new Set();   // normalized urls returned by searches this turn
+            if (!ctx._webReadUrls) ctx._webReadUrls = new Set();       // normalized urls successfully read this turn
+            const noteRead = (u) => { try { ctx._webReadUrls.add(loopGuard.normalizeSearchUrl(u)); } catch (_) { /* */ } };
             if (wantSearch || (mode === 'auto' && !hasUrl && a.query)) {
                 const sr = await run('web_search', { query: a.query, limit: a.limit });
+                // ---- Search novelty ------------------------------------------
+                // Eight consecutive searches in one turn each returned five
+                // valid, byte-different results — and almost every page had
+                // already come back from an earlier search that turn, unread.
+                // Every outcome guard scored them as progress. A search whose
+                // results are mostly pages this turn has already seen from
+                // searching is stale: the engine has nothing more on this
+                // subject, and the useful next step is to READ one of the
+                // unread pages, which the result now lists. Past
+                // WEB_SEARCH_STALE_MAX stale searches, further ones are refused.
+                let staleExtra = null;
+                try {
+                    if (typeof ctx._webStaleSearches !== 'number') ctx._webStaleSearches = 0;
+                    const urls = (sr && Array.isArray(sr.results)) ? sr.results.map(r => r && r.url).filter(Boolean) : [];
+                    const nov = loopGuard.searchNovelty(urls, ctx._webSearchUrls, ctx._webReadUrls);
+                    urls.forEach(u => ctx._webSearchUrls.add(loopGuard.normalizeSearchUrl(u)));
+                    // Same subject re-phrased (token Jaccard vs every earlier
+                    // query this turn) — counts as stale from the Nth repeat
+                    // even when the engine mixed in fresh off-topic pages.
+                    if (!Array.isArray(ctx._webQueryTokens)) ctx._webQueryTokens = [];
+                    const qTok = loopGuard.queryTokens(a.query);
+                    const subjectRepeats = ctx._webQueryTokens.filter(t => loopGuard.querySubjectSimilarity(qTok, t) >= loopGuard.WEB_SEARCH_SUBJECT_SIM).length + 1;
+                    ctx._webQueryTokens.push(qTok);
+                    const subjectStale = subjectRepeats >= loopGuard.WEB_SEARCH_SUBJECT_REPEATS;
+                    if (nov.stale || subjectStale) {
+                        ctx._webStaleSearches++;
+                        const refused = ctx._webStaleSearches > loopGuard.WEB_SEARCH_STALE_MAX;
+                        const unreadList = nov.unread.slice(0, 8);
+                        staleExtra = {
+                            noNewResults: true,
+                            alreadySeen: nov.already.length,
+                            unread: unreadList,
+                            ...(subjectStale ? { sameSubjectSearches: subjectRepeats } : {}),
+                            hint: (nov.stale
+                                ? `${nov.already.length} of ${nov.total} results were ALREADY returned by earlier searches this turn`
+                                : `this is search #${subjectRepeats} on the SAME subject this turn (re-phrased), and the on-topic pages it returns are ones you already saw`) +
+                                ' — the search engine has nothing more on this subject, and rephrasing again brings back the same pages. ' +
+                                (unreadList.length
+                                    ? `You have NOT read these yet: ${unreadList.join(' , ')} — READ the most relevant one (pass its url exactly as written here). If what you want is one entry on an index/directory page you already found, read that page with find:"<its name or number>" to get its exact link. `
+                                    : 'You have already read every result. ') +
+                                'Otherwise answer the user now with what you have, saying plainly what could not be found.' +
+                                (refused ? ` This search was REFUSED (stale search #${ctx._webStaleSearches}); no further searches on this subject will run this turn.` : ''),
+                        };
+                        if (refused) staleExtra = { ...staleExtra, success: false, error: 'no_new_results' };
+                        console.warn(`[web] Stale search #${ctx._webStaleSearches}: ${nov.already.length}/${nov.total} results already seen${subjectStale ? `, subject repeat #${subjectRepeats}` : ''} this turn ("${String(a.query).slice(0, 80)}")${refused ? ' — refused' : ''}`);
+                    }
+                } catch (_) { /* best effort */ }
+                // ---- Specific-identifier hint -----------------------------
+                // The query names a coded item (524.0G, CVE-…, v2.1) but no
+                // result is a page about it: the item is an ENTRY inside one
+                // of the listing pages returned. Under the router the model
+                // never sees the `find` parameter's description, so the
+                // result itself has to say how to pin the entry down — the
+                // incident's model settled for the parent policy 524.0.
+                let idHint = null;
+                try {
+                    const ids = loopGuard.specificIdentifiers(a.query);
+                    const rs = (sr && Array.isArray(sr.results)) ? sr.results : [];
+                    if (ids.length && rs.length) {
+                        const missing = ids.filter(id => {
+                            const k = loopGuard.identifierKey(id);
+                            const idLow = id.toLowerCase();
+                            return !rs.some(r => loopGuard.identifierKey(r && r.url).includes(k) || String(r && r.title || '').toLowerCase().includes(idLow));
+                        });
+                        if (missing.length) {
+                            idHint = `None of these results is a page about "${missing[0]}" itself (no title or URL carries it). It is most likely an ENTRY inside one of the index/listing pages above — read that page with find:"${missing[0]}" to get the entry's own link and text. Do not settle for a similarly-numbered page (the parent item, a neighbouring section) and do not guess a URL from the number.`;
+                        }
+                    }
+                } catch (_) { /* best effort */ }
+                if (idHint) {
+                    if (staleExtra) staleExtra = { ...staleExtra, hint: `${staleExtra.hint} ${idHint}` };
+                    else staleExtra = { hint: (sr && sr.hint) ? `${sr.hint} ${idHint}` : idHint };
+                }
                 // Optionally read the top N result URLs in the same call.
                 const readN = Math.min(3, Math.max(0, parseInt(a.read || 0, 10)));
                 if (readN && sr && Array.isArray(sr.results) && sr.results.length) {
@@ -27954,10 +28123,11 @@ app.use((req, res) => {
                         run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
                     top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
                     copied.forEach(r => noteSeen(r && r.url));
-                    return { mode: 'search', ...sr, results: copied };
+                    top.forEach(r => { if (r && r.content) noteRead(r.url); });
+                    return { mode: 'search', ...sr, results: copied, ...(staleExtra || {}) };
                 }
                 if (sr && Array.isArray(sr.results)) sr.results.forEach(r => noteSeen(r && r.url));
-                return { mode: 'search', ...(sr || {}) };
+                return { mode: 'search', ...(sr || {}), ...(staleExtra || {}) };
             }
 
             // ---- READ (single or batch) ----
@@ -27969,11 +28139,15 @@ app.use((req, res) => {
             // download path parses the file and self-escalates to a browser download
             // capture when the host 403s non-browser clients (Akamai/Cloudflare).
             const isBinaryDocUrl = (url) => /\.(pdf|docx?|xlsx?)(?:[?#]|$)/i.test(String(url || '').split('?')[0]);
+            const findTerm = a.find ? String(a.find).trim().slice(0, 200) : '';
             const readOnce = (url) => {
                 if (isBinaryDocUrl(url)) return run('fetch_url', { url, maxLength: a.maxLength });
+                // find / links: the real browser's extractor is the one that
+                // renders link lists (budgeted, filterable — see extractContent).
+                if (findTerm) return run('playwright_fetch', { url, maxLength: a.maxLength || 15000, timeout: a.timeout, waitForJS: true, includeLinks: true, linkFilter: findTerm, find: findTerm });
                 if (mode === 'stealth') return run('scrapling_fetch', { url, maxLength: a.maxLength, timeout: a.timeout });
                 if (mode === 'browser' || want === 'images') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true });
-                if (want === 'links') return run('playwright_fetch', { url, maxLength: a.maxLength, timeout: a.timeout, waitForJS: true, includeLinks: true });
+                if (want === 'links') return run('playwright_fetch', { url, maxLength: a.maxLength || 15000, timeout: a.timeout, waitForJS: true, includeLinks: true });
                 return run('fetch_url', { url, maxLength: a.maxLength });
             };
             // Did this read actually deliver the page? A hard failure is
@@ -28014,9 +28188,94 @@ app.use((req, res) => {
                     note: `The live page could not be read (${why}); this is the Internet Archive snapshot from ${arch.archivedAt}. Cite it as an archived copy (${arch.archiveUrl}) and say the content may be out of date.`,
                 };
             };
+            // Every link a successful read surfaced joins the seen pool, so a
+            // later garbled re-type of one of them can be corrected — and so a
+            // want:"links"/find read makes the real URL of an entry known.
+            const harvestLinks = (r) => {
+                try {
+                    if (!r || typeof r.content !== 'string' || seenUrls.size > 3000) return;
+                    for (const u of urlRecovery.extractUrls(r.content).slice(0, 600)) noteSeen(u);
+                } catch (_) { /* best effort */ }
+            };
+            // ---- Dead-URL memo ------------------------------------------
+            // A URL that came back HTTP 404/410 from every layer is a fact
+            // for the rest of the turn. Live: the model re-read its guessed
+            // policy URL three times (10.9 s, 3.6 s, 5.7 s — the full cascade
+            // each time) because the guesses' results differed (one was
+            // auto-corrected, one was the 404), so the arg-repeat guard never
+            // saw two identical outcomes. Answer the repeat instantly, and
+            // name the pages actually seen that resemble the guess.
+            if (!ctx._webDeadUrls) ctx._webDeadUrls = new Map();
+            const isDeadResult = (r) => !!(r && r.success === false && (r.notFound === true || /\bHTTP 4(?:04|10)\b/i.test(String(r.error || ''))));
+            const nearestSeen = (url) => {
+                const host = urlRecovery.hostOf(url);
+                const scored = [];
+                for (const u of seenUrls) {
+                    if (u === url || (host && urlRecovery.hostOf(u) !== host)) continue;
+                    const sc = urlRecovery.diceSimilarity(url, u);
+                    if (sc >= 0.5) scored.push({ u, sc });
+                }
+                return scored.sort((x, y) => y.sc - x.sc).slice(0, 3).map(x => x.u);
+            };
+            // ---- URL-guess budget (see loopGuard.WEB_GUESS_404_MAX) -------
+            if (!ctx._webGuess404ByHost) ctx._webGuess404ByHost = new Map();
+            const seenNormalized = (url) => {
+                if (seenUrls.has(url)) return true;
+                const n = loopGuard.normalizeSearchUrl(url);
+                for (const u of seenUrls) if (loopGuard.normalizeSearchUrl(u) === n) return true;
+                return false;
+            };
+            const indexPagesSeen = (host) => {
+                const out = [];
+                for (const u of seenUrls) {
+                    if (urlRecovery.hostOf(u) !== host) continue;
+                    if (ctx._webDeadUrls.has(u)) continue;
+                    out.push(u);
+                }
+                // Shortest paths first: those are the listing/index pages.
+                return out.sort((x, y) => x.length - y.length).slice(0, 4);
+            };
             const readOne = async (url) => {
+                const host = urlRecovery.hostOf(url);
+                const unseen = !seenNormalized(url);
+                const guessed404 = (host && ctx._webGuess404ByHost.get(host)) || 0;
+                // Never refuse the remedy itself (a find / links read of an
+                // index page), a shallow index-page URL, a discovery path, or
+                // a garble of a URL we have seen (recovery handles that).
+                const pathDepth = (() => { try { return new URL(url).pathname.split('/').filter(Boolean).length; } catch (_) { return 0; } })();
+                if (unseen && guessed404 >= loopGuard.WEB_GUESS_404_MAX && !findTerm && want !== 'links' && pathDepth >= 2
+                    && !loopGuard.isDiscoveryUrl(url) && !ctx._webDeadUrls.has(url) && !urlRecovery.pickBestUrlMatch(url, seenUrls)) {
+                    const idx = indexPagesSeen(host);
+                    console.warn(`[web] URL guess refused (${guessed404} guessed URLs on ${host} already 404'd this turn): ${url}`);
+                    return {
+                        url, success: false, error: 'url_guessing_exhausted',
+                        hint: `${guessed404} URLs you assembled for ${host} have already returned HTTP 404 this turn, and this one appeared in no page, search result or message either — it is another guess and was NOT fetched. URLs on this site cannot be derived from names or numbers. ` +
+                            (idx.length ? `Get the real link from a page you have: read ${idx[0]} with find:"<the item's name or number>" (other pages seen on this host: ${idx.slice(1).join(' , ') || 'none'}). ` : '') +
+                            'Or search for the item\'s exact title and copy the URL from the result. If neither surfaces it, tell the user it is not linked from the site.',
+                    };
+                }
+                const dead = ctx._webDeadUrls.get(url);
+                if (dead) {
+                    dead.repeats++;
+                    const near = nearestSeen(url);
+                    console.warn(`[web] Dead URL re-read refused ×${dead.repeats} (${dead.error}): ${url}`);
+                    return {
+                        url, success: false, error: dead.error, deadRepeat: dead.repeats,
+                        hint: `This exact URL already failed this turn (${dead.error}) and was NOT fetched again — it does not exist. Never guess a URL from an item's name or number. ` +
+                            (near.length ? `URLs actually seen this turn that resemble it: ${near.join(' , ')}. ` : '') +
+                            'To get the real link, read the index/listing page that mentions the item with find:"<its name or number>", or search for its exact title and copy the URL from the result.',
+                    };
+                }
+                const r = await readOneInner(url);
+                if (isDeadResult(r)) {
+                    ctx._webDeadUrls.set(url, { error: String(r.error || 'HTTP 404').slice(0, 80), repeats: 0 });
+                    if (unseen && host) ctx._webGuess404ByHost.set(host, guessed404 + 1);
+                }
+                return r;
+            };
+            const readOneInner = async (url) => {
                 const first = await readOnce(url);
-                if (!readMissed(first)) { noteSeen(url); return await withArchive(url, first); }
+                if (!readMissed(first)) { noteSeen(url); noteRead(url); harvestLinks(first); return await withArchive(url, first); }
                 const fix = urlRecovery.pickBestUrlMatch(url, seenUrls);
                 if (!fix) {
                     // Nothing to correct to — make a soft 404 read as the
@@ -28037,6 +28296,8 @@ app.use((req, res) => {
                 const second = await readOnce(fix.url);
                 if (readMissed(second)) return await withArchive(url, first);
                 noteSeen(fix.url);
+                noteRead(fix.url);
+                harvestLinks(second);
                 return {
                     ...second,
                     url: fix.url,
@@ -29847,7 +30108,9 @@ app.use((req, res) => {
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 15000, 10)));
             const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
             const waitForJS = args?.waitForJS !== false;
-            const includeLinks = args?.includeLinks === true;
+            const linkFilter = args?.linkFilter ? String(args.linkFilter).slice(0, 200) : null;
+            const find = args?.find ? String(args.find).slice(0, 200) : null;
+            const includeLinks = args?.includeLinks === true || !!find;
             if (!playwrightEnabled || !playwrightService) {
                 try {
                     const fallback = await fetchUrlContentAxios(url, timeout);
@@ -29858,7 +30121,7 @@ app.use((req, res) => {
             }
             try {
                 const result = await playwrightService.fetchUrlContent(url, {
-                    timeout, waitForJS, includeLinks, maxLength,
+                    timeout, waitForJS, includeLinks, maxLength, linkFilter, find,
                 });
                 if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'playwright-challenge');
                 const ob = result?.success ? detectBotChallenge({ title: result.title, content: result.content, layer: 'playwright', url, status: result.httpStatus || 0 }) : null;
