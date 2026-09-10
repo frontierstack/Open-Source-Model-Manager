@@ -18,6 +18,8 @@ cd "$PROJECT_DIR"
 
 # Shared network / certificate helpers (host IP detection, SAN list, WSL mode).
 . "$SCRIPT_DIR/lib/netaccess.sh"
+# Shared build-input checksum (same one build.sh / update.sh use).
+. "$SCRIPT_DIR/lib/buildinputs.sh"
 
 # ============================================================================
 # TERMINAL OUTPUT HELPERS
@@ -107,6 +109,42 @@ if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
     exit 1
 fi
 log_success "Docker images found"
+
+# The chat image (:3002) is cheap to build (~1–3 min) and used to be built only
+# by the very first `docker compose up`, so UI changes never reached an existing
+# install. Rebuild it here whenever its build inputs no longer match the last
+# recorded build (or there is no record / no image at all). The webapp image is
+# too slow to rebuild silently on start — report it and point at ./update.sh.
+BUILD_STATE_DIR="$PROJECT_DIR/.build-state"
+mkdir -p "$BUILD_STATE_DIR"
+ui_image_state() {  # component → current | stale | missing
+    local comp="$1" image="$2" cur rec
+    [[ -z $(docker images -q "$image" 2>/dev/null) ]] && { echo missing; return; }
+    cur=$(ms_build_inputs_hash "$PROJECT_DIR" "$comp")
+    rec=$(cat "$BUILD_STATE_DIR/$comp.state" 2>/dev/null || true)
+    [ -n "$rec" ] && [ "$rec" = "$cur" ] && { echo current; return; }
+    echo stale
+}
+
+chat_state=$(ui_image_state chat modelserver-chat:latest)
+if [ "$chat_state" != "current" ]; then
+    start_spinner "Chat image $chat_state — rebuilding (~1–3 min)"
+    if docker compose build chat > "$BUILD_STATE_DIR/chat.log" 2>&1; then
+        _h=$(ms_build_inputs_hash "$PROJECT_DIR" chat)
+        echo "$_h" > "$BUILD_STATE_DIR/chat.state"; echo "$_h" > "$BUILD_STATE_DIR/chat.tree"
+        stop_spinner; log_success "Chat image rebuilt"
+    else
+        stop_spinner
+        log_warning "Chat image rebuild failed — starting with the existing image (log: .build-state/chat.log)"
+        tail -5 "$BUILD_STATE_DIR/chat.log" 2>/dev/null | sed 's/^/    /'
+    fi
+else
+    log_success "Chat image up to date"
+fi
+
+if [ "$(ui_image_state webapp modelserver-webapp:latest)" = "stale" ]; then
+    log_warning "Webapp image is older than the current source — run  sudo ./update.sh  to rebuild it"
+fi
 
 # SSL certificates. Regenerated when they don't cover this host's current
 # addresses — a cert with only localhost/127.0.0.1 in its SAN makes
