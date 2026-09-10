@@ -177,6 +177,23 @@ sudo firewall-cmd --add-port=3001/tcp --add-port=3002/tcp --permanent && sudo fi
 
 **On WSL2 this needs one extra step** — see below.
 
+### Updating
+
+```bash
+sudo ./update.sh                   # Pull from GitHub, rebuild only what changed, test, clean up
+sudo ./update.sh --dry-run         # Show incoming commits + what would rebuild
+sudo ./update.sh --stop-instances  # Also stop model instances (needed after a llamacpp/sglang rebuild)
+```
+
+The updater fast-forwards the checkout from GitHub (local edits to tracked
+files are stashed and restored; `.env`, `certs/`, `models/` are never touched),
+checksums every image's build inputs against the last recorded build, rebuilds
+only the images whose inputs changed, recreates the containers, runs health and
+"container code equals checkout" checks, and prunes the dangling images and
+stale build cache left behind. A zip-download install (no `.git`) is turned
+into a proper checkout on the first run. Works the same on native Linux and
+WSL2 (Docker Desktop or the native daemon).
+
 ### Build Options
 
 ```bash

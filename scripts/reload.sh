@@ -69,7 +69,7 @@ if [ "$1" == "webapp" ]; then
     echo -e "  ${BOLD}Reload Webapp${NC}"
 
     section "Rebuild & Restart"
-    ./update.sh
+    ./update.sh --no-pull --force webapp
     exit 0
 fi
 
