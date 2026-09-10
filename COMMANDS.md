@@ -54,7 +54,7 @@ Rebuild and restart services without data loss:
 ```bash
 # Reload specific service
 sudo ./reload.sh webapp         # Rebuild and restart webapp only (local files, no pull)
-sudo ./reload.sh all            # Rebuild and restart all services
+sudo ./reload.sh all            # Rebuild webapp + chat and restart all services
 
 # Examples
 sudo ./reload.sh webapp         # After code changes to webapp
@@ -111,11 +111,15 @@ What it does, in order:
 2. **Pull** — `git fetch` + fast-forward from GitHub. Local edits to tracked files are stashed and restored afterwards; a local branch that is *ahead* of the remote is refused (push or rebase first). A zip-download install with no `.git` is bootstrapped into a proper checkout (any hand-edited file is backed up under `.build-state/pre-bootstrap-*/`). `.env`, `certs/`, `models/` and other ignored files are never touched.
 3. **Checksum** — every image's build inputs (all tracked + untracked-not-ignored files under `webapp/`, `chat/`, `sandbox-runtime/`, `llamacpp/`, `sglang/`, minus that context's `.dockerignore`) are hashed and compared with the hash recorded at the last successful build (`.build-state/<component>.tree`). On the first run there is no record, so the plan is decided from what the pull changed plus a comparison of the running container's files with the checkout, and a baseline is recorded.
 4. **Build** — only the images whose inputs changed (parallel by default, `--no-parallel` for low-memory hosts). Build logs: `.build-state/<component>.log`. A failed build leaves the running containers untouched.
-5. **Deploy** — `docker compose up -d webapp chat` (only recreated when the image or compose config changed). `scripts/` is bind-mounted into the webapp, so script changes are live without a rebuild. Running model instances keep the old `llamacpp`/`sglang` image until reloaded (or use `--stop-instances`).
-6. **Test** — images present, containers running with no restarts, `/api/auth/me` → 401, both UIs → 200, the served bundle is fetchable, the webapp/chat containers run byte-identical copies of the checkout's runtime files, core services `require()` cleanly, boot log free of fatal errors; rebuilt base images get a sanity run (Python imports, `llama-server --version`).
+5. **Deploy** — rebuilt services are force-recreated; a container found running an older image than its tag (e.g. after a `./build.sh` that nobody redeployed) is recreated too; otherwise containers are left alone. `scripts/` is bind-mounted into the webapp, so script changes are live without a rebuild. Running model instances keep the old `llamacpp`/`sglang` image until reloaded (or use `--stop-instances`).
+6. **Test** — images present, containers running with no restarts, `/api/auth/me` → 401, both UIs → 200, the bundle/stylesheet each UI actually serves is byte-identical to the file inside its container and sent with `no-cache` headers (no stale copy anywhere between the build and the browser), the webapp/chat containers run byte-identical copies of the checkout's runtime files, core services `require()` cleanly, boot log free of fatal errors; rebuilt base images get a sanity run (Python imports, `llama-server --version`).
 7. **Cleanup** — dangling images left by the rebuild (never `docker image prune -a` — model instances only reference the base images while running), build cache older than 30 days, stale `.build-state` files for removed components, `__pycache__` under the mounted `scripts/`.
 
 Exit codes: `0` ok · `1` preflight/usage · `2` pull failed · `3` build failed · `4` deploy failed · `5` tests failed.
+
+**If the app is not running** the updater says so and still pulls and rebuilds the images; deploy and the runtime checks are skipped, and it tells you to `sudo ./start.sh` (which brings the containers up on the new images).
+
+**"Changes show on :3001 but not :3002"** — before 2026-09-10 nothing ever rebuilt the chat image after the first `docker compose up`: `build.sh` did not know the `chat` component, `reload.sh all` and `reset.sh --rebuild` built only the webapp, and the old checksum only looked at `Dockerfile`/`*.sh`/`*.py`, so UI source changes never counted as "inputs changed". All of those now build `chat` too, and every script shares one full-tree build-input checksum (`scripts/lib/buildinputs.sh`). Run `sudo ./update.sh` (or `sudo ./build.sh && sudo ./start.sh`) once and the chat UI catches up.
 
 **WSL2 notes:** the updater detects WSL, works with Docker Desktop or the native daemon, ignores POSIX file modes on a Windows-filesystem checkout (`/mnt/c/...`, where every file reports the same mode), and reminds you about `./wsl-expose.sh` in NAT mode.
 

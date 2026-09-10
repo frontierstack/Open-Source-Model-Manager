@@ -18,6 +18,8 @@ cd "$PROJECT_DIR"
 
 # Shared network / certificate helpers (host IP detection, SAN list, WSL mode).
 . "$SCRIPT_DIR/lib/netaccess.sh"
+# Shared build-input checksum (same one ./update.sh uses).
+. "$SCRIPT_DIR/lib/buildinputs.sh"
 
 # Build state tracking directory
 BUILD_STATE_DIR="$PROJECT_DIR/.build-state"
@@ -183,21 +185,23 @@ get_checksum() {
     fi
 }
 
-# Checksum EVERY build-input file in a component dir (Dockerfile + shell + python), not
-# just the Dockerfile. These files are COPYed into the image (llamacpp/entrypoint.sh,
-# sglang/entrypoint.sh), so editing one must trigger a rebuild — hashing the
-# Dockerfile alone silently missed those changes.
+# Checksum EVERY build input of a component (all files Docker COPYs into the
+# image, via scripts/lib/buildinputs.sh). The older md5 over Dockerfile/*.sh/*.py
+# never saw webapp/server.js or chat/src, so those images were reported "up to
+# date" after every code change — the chat image in particular was only ever
+# built once, by the first `docker compose up`.
 get_component_checksum() {
-    local component=$1
-    local dir="$PROJECT_DIR/${component}"
-    if [ ! -d "$dir" ]; then
-        echo "missing"
-        return
-    fi
+    ms_build_inputs_hash "$PROJECT_DIR" "$1"
+}
+
+# Legacy checksum format (pre-2026-09-10 state files). Accepted only for the
+# images whose build inputs ARE just Dockerfile+sh+py at the top level, so an
+# existing install is not forced through a 1.5 h llamacpp compile on upgrade.
+get_legacy_component_checksum() {
+    local dir="$PROJECT_DIR/$1"
+    [ -d "$dir" ] || { echo "missing"; return; }
     find "$dir" -maxdepth 1 -type f \( -name 'Dockerfile' -o -name '*.sh' -o -name '*.py' \) -print0 2>/dev/null \
-        | sort -z \
-        | xargs -0 md5sum 2>/dev/null \
-        | md5sum | awk '{print $1}'
+        | sort -z | xargs -0 md5sum 2>/dev/null | md5sum | awk '{print $1}'
 }
 
 # Check if build state is valid
@@ -212,11 +216,19 @@ is_build_complete() {
     local saved_checksum=$(cat "$state_file" 2>/dev/null || echo "")
     local current_checksum=$(get_component_checksum "$component")
 
-    if [ "$saved_checksum" != "$current_checksum" ]; then
-        return 1
+    if [ "$saved_checksum" = "$current_checksum" ]; then
+        return 0
     fi
-
-    return 0
+    case "$component" in
+        llamacpp|sglang|sandbox-runtime)
+            if [ "$saved_checksum" = "$(get_legacy_component_checksum "$component")" ]; then
+                # Upgrade the record to the full-tree format in place.
+                echo "$current_checksum" > "$state_file"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
 }
 
 # Mark build as complete
@@ -224,6 +236,8 @@ mark_build_complete() {
     local component=$1
     local checksum=$(get_component_checksum "$component")
     echo "$checksum" > "$BUILD_STATE_DIR/${component}.state"
+    # update.sh keeps the same value under .tree
+    echo "$checksum" > "$BUILD_STATE_DIR/${component}.tree"
 }
 
 # Build a single image with retry logic
@@ -745,6 +759,7 @@ section "Build Plan"
 BUILD_LLAMACPP=false
 BUILD_SGLANG=false
 BUILD_WEBAPP=false
+BUILD_CHAT=false
 BUILD_SANDBOX=false
 
 # Track reasons for the summary
@@ -778,6 +793,7 @@ analyze_component() {
 analyze_component "llamacpp" "modelserver-llamacpp:latest"
 analyze_component "sglang" "modelserver-sglang:latest"
 analyze_component "webapp" "modelserver-webapp:latest"
+analyze_component "chat" "modelserver-chat:latest"
 
 # sandbox-runtime — analyzed inline because the dash makes the
 # BUILD_<UPPER> eval pattern produce an invalid variable name.
@@ -795,7 +811,7 @@ else
 fi
 
 # Display build plan
-for comp in llamacpp sglang webapp; do
+for comp in llamacpp sglang webapp chat; do
     reason="${BUILD_REASON[$comp]}"
     needs_build=false
     eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
@@ -814,7 +830,7 @@ else
 fi
 
 # Check if anything needs building
-if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ] && [ "$BUILD_SANDBOX" = false ]; then
+if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ] && [ "$BUILD_CHAT" = false ] && [ "$BUILD_SANDBOX" = false ]; then
     echo ""
     log_success "All images up to date — nothing left to build"
     echo ""
@@ -943,6 +959,25 @@ if [ "$BUILD_WEBAPP" = true ]; then
     verify_image "modelserver-webapp:latest" || exit 1
 fi
 
+# Build chat (the :3002 UI). Its image was previously only ever built by the
+# first `docker compose up`, so UI changes never reached :3002 on an existing
+# install no matter how often build.sh ran.
+if [ "$BUILD_CHAT" = true ]; then
+    section "Chat Image"
+
+    > "$BUILD_STATE_DIR/chat.log" 2>/dev/null || true
+    start_build_spinner "Building chat (~1–3 min)" "$BUILD_STATE_DIR/chat.log"
+    if build_image "chat" "modelserver-chat:latest"; then
+        stop_build_spinner
+        local_dur=$(cat "$BUILD_STATE_DIR/chat.duration" 2>/dev/null || echo "?")
+        log_success "chat  ${DIM}$(fmt_duration $local_dur)${NC}"
+    else
+        stop_build_spinner
+        exit 1
+    fi
+    verify_image "modelserver-chat:latest" || exit 1
+fi
+
 # Build sandbox-runtime. Not a docker-compose service, so this uses `docker
 # build` directly. Image is referenced by webapp/services/sandboxRunner.js
 # (SANDBOX_IMAGE='modelserver-sandbox-python:latest'); without it run_python,
@@ -1003,7 +1038,7 @@ TOTAL_DURATION=$(( $(date +%s) - TOTAL_START_TIME ))
 section "Summary"
 
 # Build results table
-for comp in llamacpp sglang webapp; do
+for comp in llamacpp sglang webapp chat; do
     needs_build=false
     eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
     dur_file="$BUILD_STATE_DIR/${comp}.duration"

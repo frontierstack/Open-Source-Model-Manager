@@ -64,6 +64,10 @@ else
     ms_wsl_networking_mode() { echo "unknown"; }
 fi
 
+# Shared build-input checksum — the SAME function build.sh uses, so the two
+# scripts always agree on whether an image is current.
+. "$SCRIPT_DIR/lib/buildinputs.sh"
+
 BUILD_STATE_DIR="$PROJECT_DIR/.build-state"
 mkdir -p "$BUILD_STATE_DIR"
 
@@ -274,86 +278,39 @@ declare -A COMP_SERVICE=( [webapp]="webapp" [chat]="chat" )
 
 # On a Windows filesystem mounted into WSL (/mnt/c, 9p/drvfs) or any FS without
 # real POSIX modes, every file reports the same mode and git may report the
-# whole tree as "modified" — ignore modes there.
+# whole tree as "modified" — ignore modes there (the checksum does the same).
 FS_TYPE=$(stat -f -c %T "$PROJECT_DIR" 2>/dev/null || echo unknown)
 FS_HAS_MODES=true
-case "$FS_TYPE" in
-    9p|v9fs|fuseblk|fuse|vfat|msdos|ntfs|cifs|smb2|drvfs|exfat) FS_HAS_MODES=false ;;
-esac
+ms_fs_has_modes "$PROJECT_DIR" || FS_HAS_MODES=false
 if [ "$FS_HAS_MODES" = false ]; then
     git() { command git -c core.filemode=false "$@"; }
 fi
 
 tree_state_file() { echo "$BUILD_STATE_DIR/$1.tree"; }
 
-# Hash every build input of a component's Docker context.
-#   - git ls-files: tracked + untracked-not-ignored (so a local hotfix counts)
-#   - deleted-but-indexed files are skipped (git still lists them)
-#   - the context's .dockerignore patterns are applied as simple globs
-#     (node_modules, .env, *.md, ...) so a README edit never rebuilds an image
-#   - file MODE is included where the FS has one: chmod +x on entrypoint.sh
-#     changes the image
-component_tree_hash() {
-    local comp="$1"
-    local dir="${COMP_DIR[$comp]}"
-    [ -d "$PROJECT_DIR/$dir" ] || { echo "missing"; return; }
+component_tree_hash() { ms_build_inputs_hash "$PROJECT_DIR" "${COMP_DIR[$1]}"; }
 
-    local -a ignore_globs=()
-    if [ -f "$PROJECT_DIR/$dir/.dockerignore" ]; then
-        while IFS= read -r line; do
-            line="${line%%#*}"; line="${line// /}"; line="${line%$'\r'}"
-            [ -z "$line" ] && continue
-            ignore_globs+=("$line")
-        done < "$PROJECT_DIR/$dir/.dockerignore"
-    fi
-
-    (
-        cd "$PROJECT_DIR"
-        git ls-files -z --cached --others --exclude-standard -- "$dir" 2>/dev/null \
-        | while IFS= read -r -d '' f; do
-            [ -f "$f" ] || continue
-            local rel="${f#$dir/}"
-            local skip=false
-            for g in "${ignore_globs[@]}"; do
-                case "$rel" in
-                    $g|$g/*|*/$g|*/$g/*) skip=true; break ;;
-                esac
-                case "$(basename "$rel")" in
-                    $g) skip=true; break ;;
-                esac
-            done
-            [ "$skip" = true ] && continue
-            printf '%s\0' "$f"
-        done \
-        | sort -z \
-        | while IFS= read -r -d '' f; do
-            if [ "$FS_HAS_MODES" = true ]; then
-                printf '%s %s ' "$f" "$(stat -c '%a' "$f")"
-            else
-                printf '%s - ' "$f"
-            fi
-            sha256sum "$f" | cut -d' ' -f1
-        done \
-        | sha256sum | cut -d' ' -f1
-    )
-}
-
-# build.sh keeps its own (narrower) checksum in .build-state/<comp>.state —
-# keep it in sync after we build, so ./build.sh agrees the image is current.
-buildsh_component_checksum() {
-    local dir="$PROJECT_DIR/${COMP_DIR[$1]}"
-    [ -d "$dir" ] || { echo "missing"; return; }
-    find "$dir" -maxdepth 1 -type f \( -name 'Dockerfile' -o -name '*.sh' -o -name '*.py' \) -print0 2>/dev/null \
-        | sort -z | xargs -0 md5sum 2>/dev/null | md5sum | awk '{print $1}'
-}
-
+# build.sh reads .build-state/<comp>.state — same value, so ./build.sh agrees
+# the image is current after an update (and vice versa).
 record_component_built() {
-    local comp="$1"
-    component_tree_hash "$comp" > "$(tree_state_file "$comp")"
-    buildsh_component_checksum "$comp" > "$BUILD_STATE_DIR/$comp.state"
+    local comp="$1" h
+    h=$(component_tree_hash "$comp")
+    echo "$h" > "$(tree_state_file "$comp")"
+    echo "$h" > "$BUILD_STATE_DIR/$comp.state"
 }
 
 image_exists() { [ -n "$(docker images -q "$1" 2>/dev/null)" ]; }
+
+# True when the service's container runs an image OLDER than the current tag
+# (e.g. ./build.sh rebuilt it but nothing recreated the container).
+container_image_stale() {
+    local svc="$1" tag="$2" cid cur run
+    cid=$(docker compose ps -q "$svc" 2>/dev/null | head -1)
+    [ -n "$cid" ] || return 1
+    cur=$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null)
+    run=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null)
+    [ -n "$cur" ] && [ -n "$run" ] && [ "$cur" != "$run" ]
+}
 
 # Files to compare host↔container for a component (relative to PROJECT_DIR).
 verify_file_list() {
@@ -449,6 +406,27 @@ fi
 FREE_GB=$(df -BG --output=avail "$PROJECT_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')
 FREE_GB=${FREE_GB:-0}
 log_success "Free disk  ${DIM}${FREE_GB} GB${NC}"
+
+# Is the app running? Updating works either way (images are rebuilt on disk);
+# without running containers there is nothing to redeploy or probe.
+service_running() {
+    local cid
+    cid=$(docker compose ps -q "$1" 2>/dev/null | head -1)
+    [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ]
+}
+SERVICES_RUNNING=true
+NOT_RUNNING=""
+for svc in webapp chat; do
+    service_running "$svc" || NOT_RUNNING="$NOT_RUNNING $svc"
+done
+if [ -z "$NOT_RUNNING" ]; then
+    log_success "App running  ${DIM}webapp :3001, chat :3002${NC}"
+else
+    SERVICES_RUNNING=false
+    log_warning "App is not running (${NOT_RUNNING# })"
+    echo -e "      ${DIM}The update will still pull and rebuild images, but nothing can be redeployed or${NC}"
+    echo -e "      ${DIM}health-checked until the app is running. Start it with:  sudo ./start.sh${NC}"
+fi
 
 # Load .env so the same proxy/SSL settings build.sh uses reach git and the builds.
 if [ -f "$PROJECT_DIR/.env" ]; then
@@ -756,7 +734,16 @@ for comp in "${COMPONENTS[@]}"; do
     fi
 done
 
-if [ "$ANY_BUILD" = false ] && [ "$COMPOSE_CHANGED" = false ]; then
+declare -A REDEPLOY_STALE
+for comp in webapp chat; do
+    REDEPLOY_STALE[$comp]=false
+    if [ "${NEEDS_BUILD[$comp]}" != true ] && container_image_stale "$comp" "${COMP_IMAGE[$comp]}"; then
+        REDEPLOY_STALE[$comp]=true
+        log_step "${comp}  ${DIM}container runs an older image than ${COMP_IMAGE[$comp]} — will be recreated${NC}"
+    fi
+done
+
+if [ "$ANY_BUILD" = false ] && [ "$COMPOSE_CHANGED" = false ] && [ "${REDEPLOY_STALE[webapp]}" = false ] && [ "${REDEPLOY_STALE[chat]}" = false ]; then
     echo ""
     log_success "Nothing to rebuild"
 fi
@@ -897,12 +884,30 @@ fi
 # ============================================================================
 
 SERVICES_REDEPLOYED=()
+if [ "$DO_DEPLOY" = true ] && [ "$SERVICES_RUNNING" = false ]; then
+    if [ "${NEEDS_BUILD[webapp]}" = true ] || [ "${NEEDS_BUILD[chat]}" = true ] || [ "$COMPOSE_CHANGED" = true ] || [ "${REDEPLOY_STALE[webapp]}" = true ] || [ "${REDEPLOY_STALE[chat]}" = true ]; then
+        section "Deploy"
+        log_warning "App is not running — images are updated on disk, containers were not started"
+        echo -e "      ${DIM}Run  sudo ./start.sh  to bring the app up on the new images.${NC}"
+    fi
+    DO_DEPLOY=false
+fi
 if [ "$DO_DEPLOY" = true ]; then
-    if [ "${NEEDS_BUILD[webapp]}" = true ] || [ "${NEEDS_BUILD[chat]}" = true ] || [ "$COMPOSE_CHANGED" = true ]; then
+    if [ "${NEEDS_BUILD[webapp]}" = true ] || [ "${NEEDS_BUILD[chat]}" = true ] || [ "$COMPOSE_CHANGED" = true ] || [ "${REDEPLOY_STALE[webapp]}" = true ] || [ "${REDEPLOY_STALE[chat]}" = true ]; then
         section "Deploy"
         start_spinner "Recreating containers"
-        # `up -d` recreates only the services whose image or config changed.
-        if ! docker compose up -d --remove-orphans webapp chat > "$BUILD_STATE_DIR/update.deploy.log" 2>&1; then
+        # Rebuilt services are force-recreated so the container can never keep
+        # running an older image; the rest are recreated only if compose config
+        # changed.
+        declare -a RECREATE=()
+        { [ "${NEEDS_BUILD[webapp]}" = true ] || [ "${REDEPLOY_STALE[webapp]}" = true ]; } && RECREATE+=(webapp)
+        { [ "${NEEDS_BUILD[chat]}" = true ] || [ "${REDEPLOY_STALE[chat]}" = true ]; } && RECREATE+=(chat)
+        if [ "${#RECREATE[@]}" -gt 0 ]; then
+            docker compose up -d --force-recreate --no-deps "${RECREATE[@]}" > "$BUILD_STATE_DIR/update.deploy.log" 2>&1 || true
+        else
+            : > "$BUILD_STATE_DIR/update.deploy.log"
+        fi
+        if ! docker compose up -d --remove-orphans webapp chat >> "$BUILD_STATE_DIR/update.deploy.log" 2>&1; then
             stop_spinner
             log_error "docker compose up failed"
             sed 's/^/    /' "$BUILD_STATE_DIR/update.deploy.log" | tail -20
@@ -964,6 +969,21 @@ wait_http() {
     echo "$code"; return 1
 }
 
+if [ "$DO_TEST" = true ] && [ "$SERVICES_RUNNING" = false ]; then
+    section "Tests"
+    log_warning "App is not running — only the images were checked"
+    for comp in "${COMPONENTS[@]}"; do
+        [ "${CUR_HASH[$comp]}" = "missing" ] && continue
+        if image_exists "${COMP_IMAGE[$comp]}"; then
+            test_pass "image ${COMP_IMAGE[$comp]}  ${DIM}$(docker image inspect -f '{{.Id}}' "${COMP_IMAGE[$comp]}" | cut -c8-19)${NC}"
+        else
+            test_fail "image ${COMP_IMAGE[$comp]} missing"
+        fi
+    done
+    echo -e "      ${DIM}Start the app (sudo ./start.sh) and re-run  sudo ./update.sh --no-pull  for the full checks.${NC}"
+    DO_TEST=false
+fi
+
 if [ "$DO_TEST" = true ]; then
     section "Tests"
 
@@ -1023,6 +1043,51 @@ if [ "$DO_TEST" = true ]; then
             else
                 test_fail "webapp bundle $bundle → HTTP $code"
             fi
+        fi
+    fi
+
+    # --- container image == current tag --------------------------------------
+    for comp in webapp chat; do
+        if container_image_stale "$comp" "${COMP_IMAGE[$comp]}"; then
+            test_fail "$comp container runs an older image than ${COMP_IMAGE[$comp]}"
+        else
+            test_pass "$comp container runs the current ${COMP_IMAGE[$comp]}"
+        fi
+    done
+
+    # --- served assets == the files inside the container (no cache layer) ------
+    # The browser gets whatever the container serves; prove that is the freshly
+    # built bundle/stylesheet and that it is sent with no-cache headers.
+    check_served_asset() {
+        local svc="$1" base="$2" html_path="$3" asset_re="$4" cont_file="$5"
+        local cid html ref served_sha cont_sha cc
+        cid=$(docker compose ps -q "$svc" 2>/dev/null | head -1)
+        html=$(curl -sk --max-time 10 "$base$html_path" 2>/dev/null) || html=""
+        ref=$(echo "$html" | grep -oE "$asset_re" | head -1)
+        if [ -z "$ref" ]; then
+            test_fail "$svc: page does not reference $(basename "$cont_file")"
+            return
+        fi
+        served_sha=$(curl -sk --max-time 20 "$base/${ref#/}" 2>/dev/null | sha256sum | cut -d' ' -f1)
+        cont_sha=$(docker exec "$cid" sha256sum "$cont_file" 2>/dev/null | cut -d' ' -f1)
+        if [ -n "$cont_sha" ] && [ "$served_sha" = "$cont_sha" ]; then
+            cc=$(curl -skI --max-time 10 "$base/${ref#/}" 2>/dev/null | grep -i '^cache-control' | tr -d '\r' | sed 's/^[^:]*: *//')
+            test_pass "$svc serves the container's $(basename "$cont_file")  ${DIM}${ref%%\?*} · cache-control: ${cc:-none}${NC}"
+        else
+            test_fail "$svc serves a $(basename "$cont_file") that differs from the container's file — a stale copy is being served"
+        fi
+    }
+    check_served_asset chat   https://localhost:3002 / 'bundle\.js(\?v=[0-9]+)?'  /usr/src/app/public/bundle.js
+    check_served_asset chat   https://localhost:3002 / 'styles\.css(\?v=[0-9]+)?' /usr/src/app/public/styles.css
+    if [ -n "$bundle" ]; then
+        check_served_asset webapp https://localhost:3001 / "$bundle" "/usr/src/app/public/$bundle"
+    fi
+    # The chat's committed public/ build output is what git ships; if it lags the
+    # source, the image build regenerates it anyway — say so rather than fail.
+    if [ -f "$PROJECT_DIR/chat/public/styles.css" ]; then
+        cid=$(docker compose ps -q chat 2>/dev/null | head -1)
+        if [ "$(sha256sum "$PROJECT_DIR/chat/public/styles.css" | cut -d' ' -f1)" != "$(docker exec "$cid" sha256sum /usr/src/app/public/styles.css 2>/dev/null | cut -d' ' -f1)" ]; then
+            log_step "chat: committed public/styles.css differs from the image's fresh build  ${DIM}(expected when src changed; the image build wins)${NC}"
         fi
     fi
 

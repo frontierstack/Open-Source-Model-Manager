@@ -191,6 +191,8 @@ if [ "$REBUILD_IMAGES" = true ]; then
     log_success "sglang rebuilt"
     docker compose build webapp --no-cache 2>&1 | tail -3
     log_success "webapp rebuilt"
+    docker compose build chat --no-cache 2>&1 | tail -3
+    log_success "chat rebuilt"
 fi
 
 section "Restart"

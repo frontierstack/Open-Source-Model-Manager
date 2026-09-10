@@ -85,10 +85,10 @@ if [ "$1" == "all" ]; then
     log_success "Services stopped"
 
     section "Rebuilding"
-    start_spinner "Building webapp"
-    docker compose build webapp > /dev/null 2>&1
+    start_spinner "Building webapp + chat"
+    docker compose build webapp chat > /dev/null 2>&1
     stop_spinner
-    log_success "Webapp rebuilt"
+    log_success "Webapp + chat rebuilt"
 
     section "Starting"
     start_spinner "Starting services"
