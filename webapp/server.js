@@ -22813,6 +22813,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 const pa = JSON.parse(call.function.arguments || '{}');
                                 if (pa && typeof pa === 'object' && !Array.isArray(pa) && 'purpose' in pa) {
                                     const pv = pa.purpose;
+                                    // Keep the model's ORIGINAL arguments for the copy
+                                    // that goes back into its history: the model
+                                    // imitates its own earlier tool calls, and when
+                                    // those came back with `purpose` stripped it stopped
+                                    // filling it after the first call of every turn
+                                    // (live: 1 of 24 calls carried a purpose).
+                                    call.historyArguments = call.function.arguments;
                                     delete pa.purpose;
                                     call.function.arguments = JSON.stringify(pa);
                                     if (typeof pv === 'string' && pv.trim()) call.purpose = pv.trim().replace(/\s+/g, ' ').slice(0, 200);
@@ -24163,12 +24170,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     const safeToolCalls = finalizedCalls.map(tc => {
                         const a = tc?.function?.arguments;
                         if (typeof a !== 'string') return tc;
-                        try { JSON.parse(a); return tc; }
+                        // History copy: the args as the model wrote them (with
+                        // `purpose`), so its own precedent keeps the commentary
+                        // going; the dispatched/fingerprinted args stay stripped.
+                        const hist = typeof tc.historyArguments === 'string' ? tc.historyArguments : a;
+                        const clean = { id: tc.id, type: tc.type || 'function', function: { name: tc.function.name, arguments: hist } };
+                        try { JSON.parse(hist); return clean; }
                         catch (_) {
-                            return {
-                                ...tc,
-                                function: { ...tc.function, arguments: '{}' },
-                            };
+                            try { JSON.parse(a); return { ...clean, function: { ...clean.function, arguments: a } }; }
+                            catch (_) { return { ...clean, function: { ...clean.function, arguments: '{}' } }; }
                         }
                     });
                     // If any skill in this round carried a Prompt, emit one
