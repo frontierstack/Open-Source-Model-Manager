@@ -57,6 +57,20 @@ const migrateSettings = () => {
                 console.log(`[Settings] Migrated chatStyle ${prev} -> default (${prev} removed)`);
             }
 
+            // One-time clear of the role defaults that were shipped as
+            // concrete values. They were never a user CHOICE, but the chat
+            // sends every set field in the request body and the body beats the
+            // Models page — so a stored 'auto' / 'off' silently overrode the
+            // server-wide setting on every turn. '' means "use the server
+            // default"; the Settings panel offers it explicitly.
+            if (!settings.roleDefaultsCleared) {
+                if (settings.roleMode === 'auto') settings.roleMode = '';
+                if (settings.roleReview === 'off') settings.roleReview = '';
+                settings.roleDefaultsCleared = true;
+                dirty = true;
+                console.log('[Settings] Cleared the shipped role defaults so the server-wide setting applies');
+            }
+
             // Two-model roles, two older generations — and they migrate
             // DIFFERENTLY, because the meaning of `rolePrimaryModel` flipped.
             //
@@ -257,7 +271,12 @@ export const useChatStore = create(
             roleSecondaryModel: '',
             // When the SECONDARY takes over:
             // 'off' | 'auto' (only on substantial work) | 'always' | '' (server default)
-            roleMode: 'auto',
+            // '' means USE THE SERVER DEFAULT. These must not default to a
+            // concrete value: modelRolesFromSettings sends every truthy field
+            // in the request body, and the body WINS over the Models page — so
+            // a default of 'auto' silently overrode an admin's "Every turn" on
+            // every single request (user-reported: the secondary never ran).
+            roleMode: '',
             // The primary prepares a short brief before the secondary starts.
             roleFirstPass: true,
             // The secondary hands jobs BACK to the primary, run concurrently.
@@ -265,7 +284,7 @@ export const useChatStore = create(
             // On turns the PRIMARY answered alone, what the secondary does:
             // 'off' | 'note' (append the verdict) | 'edit' (hands back a
             // corrected version) | '' (server default)
-            roleReview: 'off',
+            roleReview: '',        // '' = use the server default (see roleMode)
             // The secondary reviews parallel worker-agent reports.
             roleCheckWorkers: false,
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
