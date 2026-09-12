@@ -2508,6 +2508,12 @@ async function syncModelInstances() {
                     kvCacheDtype: getEnvValue('SGLANG_KV_CACHE_DTYPE') || 'auto',
                     trustRemoteCode: getEnvValue('SGLANG_TRUST_REMOTE_CODE') !== 'false',
                     toolCallParser: getEnvValue('SGLANG_TOOL_CALL_PARSER') || '',
+                    // Read these back too, else a webapp restart makes a running
+                    // instance LOOK unconfigured in the UI and the API while the
+                    // container still carries the real flags.
+                    reasoningParser: getEnvValue('SGLANG_REASONING_PARSER') || '',
+                    chunkedPrefillSize: parseInt(getEnvValue('SGLANG_CHUNKED_PREFILL_SIZE') || '4096'),
+                    schedulePolicy: getEnvValue('SGLANG_SCHEDULE_POLICY') || 'lpm',
                     gpuDevices: normalizeGpuDevices(getEnvValue('MODELSERVER_GPU_DEVICES'), 0)
                 };
                 // HF-repo instances: container is `sglang-hf-<owner>--<name>` and
@@ -5134,13 +5140,18 @@ app.get('/api/models/hf-cache', requireAuth, async (req, res) => {
             const dirName = e.name; // models--Qwen--Qwen2.5-1.5B-Instruct-AWQ
             const repoId = dirName.slice('models--'.length).replace(/--/g, '/');
             const fullPath = path.join(HF_CACHE_DIR, dirName);
-            // Walk to sum byte size; symlink-following so blob storage is counted.
+            // Walk to sum byte size. A HF cache stores each weight ONCE in
+            // blobs/ and links to it from snapshots/, so following symlinks
+            // counted every file twice and the UI reported exactly 2× the real
+            // size. lstat leaves the link as a link (its own few bytes) and the
+            // blob is still counted once, under blobs/.
             let sizeBytes = 0;
             let lastModified = 0;
             try {
                 const walk = async (p) => {
-                    const st = await fs.stat(p).catch(() => null);
+                    const st = await fs.lstat(p).catch(() => null);
                     if (!st) return;
+                    if (st.isSymbolicLink()) return;
                     if (st.isDirectory()) {
                         const kids = await fs.readdir(p);
                         for (const k of kids) await walk(path.join(p, k));
@@ -19261,6 +19272,11 @@ function modelContextFor(name) {
 const modelSpeed = new Map();          // name -> { decode, at }
 const modelSpeedInFlight = new Set();
 const MODEL_SPEED_TTL_MS = 30 * 60 * 1000;
+// A wall-clock figure (no backend timings) is re-taken far sooner: the first
+// one after a load is measured against a cold model.
+const MODEL_SPEED_DERIVED_TTL_MS = 5 * 60 * 1000;
+const SPEED_PROBE_TOKENS = 32;              // enough when the backend reports its own rate
+const SPEED_PROBE_TOKENS_NO_TIMINGS = 160;  // amortizes HTTP + prefill when it does not
 
 // llama.cpp returns `timings.predicted_per_second` on every non-streaming
 // completion, so ordinary traffic (reviews, consults, first passes) measures
@@ -19292,19 +19308,39 @@ async function probeModelSpeed(name) {
         const host = inst.containerName || 'host.docker.internal';
         const port = inst.internalPort || inst.port;
         const url = `http://${host}:${port}/v1/chat/completions`;
-        const { data } = await axios.post(url, {
+        const ask = (maxTokens) => axios.post(url, {
             messages: [{ role: 'user', content: 'Count to five.' }],
-            max_tokens: 32, temperature: 0, cache_prompt: false, stream: false,
+            max_tokens: maxTokens, temperature: 0, cache_prompt: false, stream: false,
         }, { timeout: 60000 });
-        const t = data && data.timings;
+
+        // llama.cpp hands back its own decode rate and needs nothing else.
+        // sglang does NOT: its ChatCompletionResponse carries no `timings`, so
+        // the only signal is completion_tokens over the wall clock — which
+        // includes HTTP, queueing, prefill and, on the very first call after a
+        // load, CUDA-graph capture and a cold cache. Probing once at load time
+        // therefore measured warm-up, not the model, and `noteModelSpeedSample`
+        // latched that wrong number for the full 30-minute TTL. So: warm the
+        // model up first, discard that, then measure a longer generation where
+        // the fixed overhead is a small fraction of the total.
+        let { data } = await ask(SPEED_PROBE_TOKENS);
+        let t = data && data.timings;
         let decode = t && Number(t.predicted_per_second);
+        let derived = false;
         if (!Number.isFinite(decode) || decode <= 0) {
-            const out = data && data.usage && Number(data.usage.completion_tokens);
-            const secs = (Date.now() - t0) / 1000;
-            decode = (Number.isFinite(out) && out > 0 && secs > 0) ? out / secs : null;
+            const t1 = Date.now();
+            ({ data } = await ask(SPEED_PROBE_TOKENS_NO_TIMINGS));
+            t = data && data.timings;
+            decode = t && Number(t.predicted_per_second);
+            if (!Number.isFinite(decode) || decode <= 0) {
+                const out = data && data.usage && Number(data.usage.completion_tokens);
+                const secs = (Date.now() - t1) / 1000;
+                // Only trust a wall-clock figure with enough tokens behind it.
+                decode = (Number.isFinite(out) && out >= 32 && secs > 0) ? out / secs : null;
+                derived = true;
+            }
         }
         if (Number.isFinite(decode) && decode > 0) {
-            noteModelSpeedSample(name, decode, quiet && hostIdleExcept(name));
+            noteModelSpeedSample(name, decode, quiet && hostIdleExcept(name), derived);
             return decode;
         }
         return null;
@@ -19321,13 +19357,16 @@ async function probeModelSpeed(name) {
 // generating reflects contention, not the model (observed: a 9B that really
 // does 70 tok/s measured 36.8 while its neighbour was starting up). An
 // untrusted sample is only kept when there is nothing better.
-function noteModelSpeedSample(name, decode, trusted) {
+function noteModelSpeedSample(name, decode, trusted, derived = false) {
     if (!name || !Number.isFinite(decode) || decode <= 0) return;
     const prev = modelSpeed.get(name);
     if (!trusted && prev && prev.trusted) return;
-    modelSpeed.set(name, { decode, at: Date.now(), trusted: !!trusted });
+    // A figure derived from the wall clock (a backend that reports no timings)
+    // is weaker evidence than one the backend measured itself, so it expires
+    // sooner and gets re-taken rather than sitting for the full TTL.
+    modelSpeed.set(name, { decode, at: Date.now(), trusted: !!trusted, derived: !!derived });
     if (!prev || Math.abs(prev.decode - decode) / decode > 0.15) {
-        console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode${trusted ? '' : ' (contended sample)'}`);
+        console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode${trusted ? '' : ' (contended sample)'}${derived ? ' (wall-clock)' : ''}`);
     }
 }
 
@@ -19362,7 +19401,8 @@ function startModelSpeedSweep() {
                 if (!inst || inst.status !== 'running') continue;
                 if (inst.backend !== 'llamacpp' && inst.backend !== 'sglang') continue;
                 const rec = modelSpeed.get(name);
-                const stale = !rec || !rec.trusted || (Date.now() - rec.at > MODEL_SPEED_TTL_MS);
+                const ttl = (rec && rec.derived) ? MODEL_SPEED_DERIVED_TTL_MS : MODEL_SPEED_TTL_MS;
+                const stale = !rec || !rec.trusted || (Date.now() - rec.at > ttl);
                 if (!stale) continue;
                 if (modelBusy.get(name) > 0 || !hostIdleExcept(name)) continue;
                 await probeModelSpeed(name).catch(() => {});
