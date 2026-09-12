@@ -48,13 +48,24 @@ const EXPLICIT_RE = /\b(work together|both models|two models|team up|with the (?
 // "Do it yourself / quickly" — an explicit opt-out.
 const EXPLICIT_OFF_RE = /\b(just you|yourself only|don'?t (?:hand|pass) (?:it |this )?off|no (?:hand-?off|collaboration)|quick(?:ly)? answer|one liner|one-liner|short answer|just tell me)\b/i;
 
+// Security / forensics work is never a quick lookup: it means reading files,
+// greping for indicators and reasoning about intent. Reported by the user after
+// a repo malware review ran entirely on the primary.
+const SECURITY_RE = /\b(malware|malicious|trojan|backdoor|ransomware|spyware|keylogger|rootkit|payload|exfiltrat\w*|obfuscat\w*|deobfuscat\w*|c2|command[- ]and[- ]control|beacon\w*|phish\w*|exploit|vulnerab\w*|cve-\d|ioc|indicators? of compromise|threat intel\w*|forensic\w*|reverse[- ]engineer\w*|suspicious|compromised|breach)\b/i;
+// A URL or repo reference plus something to DO with it — fetching a page or a
+// repository and working through it is real work, whatever the verb.
+const URL_RE = /\b(https?:\/\/\S+|github\.com\/\S+|gitlab\.com\/\S+|npmjs\.com\/\S+|\S+\.(?:com|org|net|io|dev|ai|co|gov|edu)\/\S+)/i;
+const FETCH_VERB = /\b(check|scan|analy[sz]e|audit|review|inspect|examine|read|download|fetch|clone|crawl|browse|go through|look (?:at|into|through)|dig (?:into|through)|work through|walk through|vet|verify|assess|evaluate|summari[sz]e|extract|pull)\b/i;
+// Research that needs several sources and a synthesis, as opposed to one fact.
+const RESEARCH_RE = /\b(what (?:are )?people (?:are )?(?:saying|think)|latest (?:news|developments|state)|state of|compare|comparison|pros and cons|tradeoffs?|landscape|survey|round[- ]?up|options for|alternatives to|best practices|how do (?:i|we|you)\b.{0,60}\b(?:set up|build|implement|configure|deploy))\b/i;
+
 // Verbs that mean the model is about to PRODUCE something substantial.
 const BUILD_VERB = /\b(build|write|code|implement|create|make|develop|design|refactor|rewrite|port|migrate|scaffold|generate|produce|draft|compose|architect|automate|debug|fix|optimi[sz]e|improve|extend|add (?:a|an|the)|convert|translate)\b/i;
 // Things worth building. Kept concrete: a "make me a sandwich" joke should not
 // route through two models.
-const ARTIFACT = /\b(app|application|game|script|program|tool|library|module|package|component|page|website|site|web ?app|api|endpoint|server|service|bot|parser|scraper|crawler|pipeline|workflow|automation|dashboard|report|spreadsheet|document|pdf|docx|presentation|slide|chart|graph|diagram|test|tests|suite|class|function|algorithm|model|schema|database|query|migration|config|dockerfile|ci|readme|plugin|extension|patch|feature|prototype|mock ?up|wireframe|landing page|form|ui|frontend|backend|cli)\b/i;
+const ARTIFACT = /\b(app|application|game|script|program|tool|library|module|package|component|page|website|site|web ?app|api|endpoint|server|service|bot|parser|scraper|crawler|pipeline|workflow|automation|dashboard|report|spreadsheet|document|pdf|docx|presentation|slide|chart|graph|diagram|test|tests|suite|class|function|algorithm|model|schema|database|query|migration|config|dockerfile|ci|readme|plugin|extension|patch|feature|prototype|mock ?up|wireframe|landing page|form|ui|frontend|backend|cli|repo|repository|codebase|project|gist|commit|branch|binary|executable|archive|capture|dataset|dump|log|logs|file|files|folder|directory|code|bug|bugs|stack ?trace|regression|crash)\b/i;
 // Analysis / investigation work.
-const ANALYSIS_VERB = /\b(analy[sz]e|audit|review|investigate|inspect|examine|diagnose|troubleshoot|compare|contrast|evaluate|assess|benchmark|profile|research|study|summari[sz]e|explain how|walk me through|figure out|work out|reverse[- ]engineer|decompile|trace)\b/i;
+const ANALYSIS_VERB = /\b(analy[sz]e|audit|review|investigate|inspect|examine|diagnose|troubleshoot|compare|contrast|evaluate|assess|benchmark|profile|research|study|summari[sz]e|explain how|walk me through|figure out|work out|reverse[- ]engineer|decompile|trace|scan|deobfuscat\w*|cross[- ]reference|go through|dig (?:into|through)|look (?:into|through)|work through|walk through|vet)\b/i;
 // Multi-part shapes.
 const MULTI_STEP = /\b(step[- ]by[- ]step|first.{0,40}\bthen\b|and then|after that|as well as|in addition|multiple|several|each of|for each|all of the|one by one|end[- ]to[- ]end|from scratch|full(?:y)? working|complete(?:ly)?|comprehensive|in depth|in-depth|thorough)\b/i;
 // A question that is just a lookup.
@@ -117,6 +128,21 @@ function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [],
 
     if (build) return { substantial: true, reason: 'builds an artifact', explicit: false };
     if (heavyAttachment) return { substantial: true, reason: 'works through an attached file', explicit: false };
+    // Security work is never a quick lookup — reading files, greping for
+    // indicators and judging intent is exactly what the stronger model is for.
+    if (SECURITY_RE.test(ask)) return { substantial: true, reason: 'security or forensics work', explicit: false };
+    // Something to fetch AND something to do with it.
+    if (URL_RE.test(ask) && (FETCH_VERB.test(ask) || BUILD_VERB.test(ask) || ANALYSIS_VERB.test(ask))) {
+        return { substantial: true, reason: 'works through a linked page or repo', explicit: false };
+    }
+    // An analysis verb aimed at a concrete THING needs no length test — "scan
+    // the extracted files" is four words and is real work.
+    if (analysis && ARTIFACT.test(ask)) return { substantial: true, reason: 'analysis or investigation', explicit: false };
+    // Same for fetching one: "download this repo and tell me if it is safe".
+    if (FETCH_VERB.test(ask) && ARTIFACT.test(ask) && words >= 5) {
+        return { substantial: true, reason: 'fetches and works through something', explicit: false };
+    }
+    if (RESEARCH_RE.test(ask) && words >= 5) return { substantial: true, reason: 'multi-source research', explicit: false };
     if (analysis && (words >= minWords || hasAttachments)) return { substantial: true, reason: 'analysis or investigation', explicit: false };
     if (multi && words >= minWords) return { substantial: true, reason: 'multi-step request', explicit: false };
     if (code && words >= 12) return { substantial: true, reason: 'works on supplied code', explicit: false };
@@ -211,13 +237,33 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
 // model's habit. Handing it a SHORT LIST OF CONCRETE JOBS, chosen by a model
 // that has just read the task, turns the decision into "dispatch these" rather
 // than "invent something to delegate".
+// The chat prepends runtime context to the latest user message — a /no_think
+// switch, the account-memory block, the experience block, workspace and image
+// pre-flight notes, and whole uploaded files. Measured at 7,043 characters on
+// an ordinary turn, which meant `userText.slice(0, 6000)` handed the first pass
+// nothing but the memory block: it replied "the user did not specify any task"
+// and proposed no legwork. Strip the runtime blocks, keep a marker for each
+// attachment, and if it is still long keep the TAIL — the notes are prepended,
+// so the user's own words are at the end.
+function askForFirstPass(userText, limit = 6000) {
+    let t = String(userText || '').replace(/^\s*\/(no_?think|think)\b\s*/i, '');
+    t = t.replace(SYSTEM_NOTE_RE, ' ');
+    t = t.replace(
+        /===\s*FILE\s+(\d+)\s*:\s*([^=\n]+?)\s*===[\s\S]*?(?:===\s*END\s+FILE\s+\1\s*===|(?![\s\S]))/gi,
+        (_m, _n, name) => `[the user attached a file: ${String(name).trim()}]`,
+    );
+    t = t.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (t.length > limit) t = '…' + t.slice(-limit);
+    return t;
+}
+
 function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
     return [
         'You are the FIRST PASS on a task that the main model is about to take over.',
         `Your job is NOT to answer it. Your job is to hand ${leadModel || 'the main model'} a short, useful brief so it can start immediately — and to line up work that YOU can do in parallel while it writes.`,
         '',
         'THE USER ASKED:',
-        String(userText || '').slice(0, 6000),
+        askForFirstPass(userText),
         '',
         'Produce, in under 300 words, exactly these sections:',
         '1. TASK — one or two sentences restating exactly what is wanted, including any constraint the user gave (language, framework, file, format, length).',
@@ -237,7 +283,15 @@ function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
 // to dispatch exactly those. Tolerant of the shapes a small model produces
 // (numbered or bare heading, "- name: brief" or "name — brief").
 function parseLegwork(brief) {
-    const text = String(brief || '');
+    // Models write the section as markdown — `**4. LEGWORK**`, `### LEGWORK`,
+    // and job names in backticks. Strip the decoration before matching;
+    // a bolded heading silently produced zero jobs, which is why the secondary
+    // never dispatched anything (user-reported: "not seeing any queue jobs").
+    const text = String(brief || '')
+        .replace(/\*\*/g, '')
+        .replace(/__/g, '')
+        .replace(/`/g, '')
+        .replace(/^\s{0,3}#{1,6}\s*/gm, '');
     // NOTE: the trailing alternative must be (?![\s\S]), not $ — the /m flag
     // makes $ mean end-of-LINE, which cut the section off after its first job.
     const m = text.match(/^\s*(?:\d+[.)]\s*)?LEGWORK\b[^\n]*\n([\s\S]*?)(?=\n\s*(?:\d+[.)]\s*)?[A-Z][A-Z ]{3,}\b|(?![\s\S]))/mi);
@@ -260,7 +314,7 @@ function parseLegwork(brief) {
 // The note the primary sees. Goes in the LATEST USER MESSAGE (never a trailing
 // system message — templates that require alternating roles 500 on those, and
 // the user slot is prefix-cache friendly).
-function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true }) {
+function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null }) {
     const body = String(brief || '').trim();
     if (!body) return '';
     const meta = [
@@ -270,9 +324,12 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
     ].filter(Boolean).join(', ');
     const who = assistantModel || 'the primary model';
     const jobs = legworkAvailable ? parseLegwork(body) : [];
+    const started = Array.isArray(startedJobs) ? startedJobs.filter(Boolean) : [];
     const tail = !legworkAvailable
         ? 'You are working alone on this one.'
-        : jobs.length
+        : started.length
+            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now (${started.map(n => `"${n}"`).join(', ')}) — do NOT redo that work yourself. Start on the parts only you can do; each result is delivered to you as it lands, and you can hand over more with \`ask_assistant\` at any time.`
+            : jobs.length
             ? `${who} is idle and waiting for work. Your FIRST action should be a single \`ask_assistant\` call dispatching the LEGWORK jobs above (${jobs.map(j => `"${j.name}"`).join(', ')}) — it returns immediately and they run on ${who}'s own GPU while you write. Then start writing without waiting; each result is delivered to you as it lands.`
             : `${who} is standing by — hand it any lookup, file read or script run you would otherwise stop to do yourself with \`ask_assistant\`, and keep working while it runs.`;
     return [
@@ -300,6 +357,7 @@ function buildLeadPrelude({ assistantModel, maxParallel }) {
 module.exports = {
     MODES,
     cleanAsk,
+    askForFirstPass,
     parseLegwork,
     attachmentKindsFromText,
     askLength,

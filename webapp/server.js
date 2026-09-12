@@ -2593,6 +2593,9 @@ async function syncModelInstances() {
                     await probeModelSpeed(name).catch(() => {});
                 }
             }
+            // …and keep them fresh: the one-shot pass above cannot cover a model
+            // that was loading, busy, or briefly unreachable at boot.
+            startModelSpeedSweep();
         }, 5000);
         // Start monitoring unconditionally — the UI resource panel needs
         // CPU/GPU/RAM samples even when no model is loaded. nvidia-smi at a
@@ -19259,11 +19262,28 @@ const modelSpeed = new Map();          // name -> { decode, at }
 const modelSpeedInFlight = new Set();
 const MODEL_SPEED_TTL_MS = 30 * 60 * 1000;
 
+// llama.cpp returns `timings.predicted_per_second` on every non-streaming
+// completion, so ordinary traffic (reviews, consults, first passes) measures
+// throughput for free and keeps the figure current between sweeps.
+function noteSpeedFromTimings(model, data) {
+    try {
+        const t = data && data.timings;
+        const decode = t && Number(t.predicted_per_second);
+        const n = t && Number(t.predicted_n);
+        // Too few tokens and the per-second figure is dominated by warm-up.
+        if (!Number.isFinite(decode) || decode <= 0 || !(n >= 24)) return;
+        noteModelSpeedSample(model, decode, hostIdleExcept(model) && (modelBusy.get(model) || 0) <= 1);
+    } catch (_) { /* telemetry only */ }
+}
+
 async function probeModelSpeed(name) {
     const inst = modelInstances.get(name);
     if (!inst || (inst.status && inst.status !== 'running')) return null;
     if (modelSpeedInFlight.has(name)) return null;
     modelSpeedInFlight.add(name);
+    // Remember whether the host was quiet BEFORE the probe, so a sample taken
+    // next to a busy neighbour is not stored as the model's true speed.
+    const quiet = hostIdleExcept(name) && !(modelBusy.get(name) > 0);
     const t0 = Date.now();
     try {
         // Model containers are on the shared Docker network — reach them by
@@ -19284,8 +19304,7 @@ async function probeModelSpeed(name) {
             decode = (Number.isFinite(out) && out > 0 && secs > 0) ? out / secs : null;
         }
         if (Number.isFinite(decode) && decode > 0) {
-            modelSpeed.set(name, { decode, at: Date.now() });
-            console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode`);
+            noteModelSpeedSample(name, decode, quiet && hostIdleExcept(name));
             return decode;
         }
         return null;
@@ -19297,17 +19316,63 @@ async function probeModelSpeed(name) {
     }
 }
 
+// Record a throughput sample. A sample is only TRUSTED when nothing else was
+// running on the host — a measurement taken while another model is loading or
+// generating reflects contention, not the model (observed: a 9B that really
+// does 70 tok/s measured 36.8 while its neighbour was starting up). An
+// untrusted sample is only kept when there is nothing better.
+function noteModelSpeedSample(name, decode, trusted) {
+    if (!name || !Number.isFinite(decode) || decode <= 0) return;
+    const prev = modelSpeed.get(name);
+    if (!trusted && prev && prev.trusted) return;
+    modelSpeed.set(name, { decode, at: Date.now(), trusted: !!trusted });
+    if (!prev || Math.abs(prev.decode - decode) / decode > 0.15) {
+        console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode${trusted ? '' : ' (contended sample)'}`);
+    }
+}
+
+// Is the host quiet enough for a meaningful measurement?
+function hostIdleExcept(name) {
+    for (const [k, n] of modelBusy.entries()) { if (k !== name && n > 0) return false; }
+    return true;
+}
+
 // Known speed, kicking off a background probe when it is missing or stale. The
 // caller never waits — a first delegate on a cold fleet just uses the
 // no-speed-data ordering, and the next one has real numbers.
 function modelSpeedFor(name) {
     const rec = modelSpeed.get(name);
     if (!rec || Date.now() - rec.at > MODEL_SPEED_TTL_MS) {
-        // Only probe an idle instance: a probe against a busy model measures
-        // contention, not the model.
         if (!(modelBusy.get(name) > 0)) setImmediate(() => { probeModelSpeed(name).catch(() => {}); });
     }
     return rec ? rec.decode : null;
+}
+
+// Keep the numbers honest and present. A single pass at boot was not enough:
+// a model that was still loading, busy, or briefly unreachable never got a
+// second chance, so the Models page showed a speed for one model and nothing
+// for the other (user-reported). This retries anything missing and refreshes
+// anything stale or contended, one model at a time, only while the host is
+// otherwise quiet.
+const MODEL_SPEED_SWEEP_MS = Math.max(30000, parseInt(process.env.MODEL_SPEED_SWEEP_MS || '120000', 10) || 120000);
+function startModelSpeedSweep() {
+    const tick = async () => {
+        try {
+            for (const [name, inst] of modelInstances.entries()) {
+                if (!inst || inst.status !== 'running') continue;
+                if (inst.backend !== 'llamacpp' && inst.backend !== 'sglang') continue;
+                const rec = modelSpeed.get(name);
+                const stale = !rec || !rec.trusted || (Date.now() - rec.at > MODEL_SPEED_TTL_MS);
+                if (!stale) continue;
+                if (modelBusy.get(name) > 0 || !hostIdleExcept(name)) continue;
+                await probeModelSpeed(name).catch(() => {});
+                return;   // one per tick — never a burst of probes
+            }
+        } catch (_) { /* best effort */ }
+    };
+    const t = setInterval(tick, MODEL_SPEED_SWEEP_MS);
+    if (t.unref) t.unref();
+    return t;
 }
 
 // Which model each worker of a delegate call should run on. See
@@ -21370,6 +21435,14 @@ const chatStreamHandlerInner = async (req, res) => {
         toolCatalog = toolCatalog.map(withPurposeParam);
         const fullToolCatalog = toolCatalog.slice();
         const fullByName = new Map(fullToolCatalog.map(d => [d.function?.name, d]));
+        // On a handed-up turn the whole point is that the lead can push work
+        // back to the primary. If ask_assistant never made it into the catalog
+        // the pair silently degenerates into one model doing everything, which
+        // looks from the outside exactly like the feature not working — say so
+        // loudly rather than leaving it to be inferred.
+        if (handoff.engaged && handoff.legwork && !fullByName.has('ask_assistant')) {
+            console.warn('[Chat Stream] Hand-off: ask_assistant is NOT in the catalog — the lead cannot hand work back to ' + handoff.primary);
+        }
         toolCtx.fullToolCatalog = fullToolCatalog;
         toolCtx._forcedToolNames = new Set();      // find_tools pushes discovered names here
         const preflightForcedTools = new Set();    // pre-flights that NAME a tool force-include it
@@ -21777,9 +21850,50 @@ const chatStreamHandlerInner = async (req, res) => {
                     })
                     : '';
                 const proposed = (note && handoff.legwork) ? leadHandoff.parseLegwork(fp.answer) : [];
+                    // START the proposed jobs ourselves rather than hoping the
+                    // lead calls ask_assistant. Measured: the first pass named
+                    // three good background jobs and the lead still did every
+                    // fetch itself — from the outside that is indistinguishable
+                    // from the two models never talking, which is exactly what
+                    // the user reported. The jobs the first pass chose are the
+                    // ones the model that just read the task wanted, so start
+                    // them now and let the results land mid-turn.
+                    if (handoff.legwork && proposed.length && toolCtx._assistantJobs) {
+                        const items = proposed.slice(0, HANDOFF_AUTO_JOBS);
+                        try {
+                            const started = startAssistantJobs(toolCtx, items, handoff.primary);
+                            handoff.autoJobs = started.map(d => d.name);
+                            logChatActivity(`Two models: started ${started.length} background job(s) on ${handoff.primary} — ${started.map(d => `"${d.name}"`).join(', ')}`);
+                            console.log(`[Chat Stream] Hand-off: auto-started ${started.length} background job(s) on ${handoff.primary}`);
+                            persistedToolChips.push({
+                                type: 'native_tool_call',
+                                label: 'ask_assistant',
+                                model: handoff.secondary,
+                                purpose: `Handed ${started.length} background job${started.length === 1 ? '' : 's'} to ${handoff.primary}`,
+                                query: items.map(i => i.name).join(', ').slice(0, 60),
+                                args: { requests: items.map(i => ({ name: i.name, task: i.task })) },
+                                status: 'success',
+                            });
+                        } catch (e) {
+                            console.warn('[Chat Stream] Hand-off: auto-dispatch failed:', e.message);
+                        }
+                    }
                 if (note) {
                     const um = chatMessages[latestUserMsgIdx];
-                    const block = note + '\n\n';
+                    // Re-render once the jobs are actually running so the note
+                    // tells the lead they are in flight rather than asking it
+                    // to start them.
+                    const finalNote = (handoff.autoJobs && handoff.autoJobs.length)
+                        ? leadHandoff.renderBriefNote({
+                            brief: fp.answer,
+                            assistantModel: handoff.primary,
+                            firstPassSeconds: fpSecs,
+                            toolCalls: fp.toolCalls,
+                            legworkAvailable: handoff.legwork,
+                            startedJobs: handoff.autoJobs,
+                        })
+                        : note;
+                    const block = finalNote + '\n\n';
                     if (typeof um.content === 'string') um.content = block + um.content;
                     else if (Array.isArray(um.content)) {
                         const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
@@ -21789,11 +21903,41 @@ const chatStreamHandlerInner = async (req, res) => {
                     handoff.brief = fp.answer;
                     handoff.firstPassSeconds = fpSecs;
                     handoff.firstPassCalls = fp.toolCalls || 0;
+                    // Make the hand-over VISIBLE in the transcript. Without
+                    // this the first pass exists only as a live SSE frame, so
+                    // after the turn there is no sign the other model did
+                    // anything — the user's report was exactly "I'm not seeing
+                    // any queue jobs ... it should be a back and forth thing".
+                    persistedToolChips.push({
+                        type: 'native_tool_call',
+                        label: 'first_pass',
+                        model: handoff.primary,
+                        purpose: `Sized up the task and handed ${handoff.secondary} a brief`,
+                        query: (fp.answer || '').slice(0, 60),
+                        args: { task: latestUserText.slice(0, 200) },
+                        status: 'success',
+                        durationMs: Date.now() - fpStart,
+                        result: {
+                            model: handoff.primary,
+                            seconds: fpSecs,
+                            toolCalls: fp.toolCalls || 0,
+                            brief: String(fp.answer || '').slice(0, 4000),
+                            ...(proposed.length ? { proposedJobs: proposed.map(j => j.name) } : {}),
+                        },
+                    });
                     logChatActivity(`Two models: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
                         + (proposed.length ? ` — proposed ${proposed.length} background job(s): ${proposed.map(j => `"${j.name}"`).join(', ')}` : '')
                         + ` — ${handoff.secondary} is now writing`);
                     console.log(`[Chat Stream] Hand-off first pass: ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
                         + (proposed.length ? `legwork proposed: ${proposed.map(j => j.name).join(' | ')}` : 'no legwork proposed'));
+                    // When the brief names no background jobs the secondary has
+                    // nothing to hand back, which looks to the user like the two
+                    // models never talk. Print the tail so the cause is visible
+                    // (missing section vs a shape parseLegwork does not read).
+                    if (handoff.legwork && !proposed.length) {
+                        const tail = String(fp.answer || '').slice(-400).replace(/\s+/g, ' ');
+                        console.log(`[Chat Stream] Hand-off: brief ended with … ${tail}`);
+                    }
                 } else {
                     // A failed first pass is not a reason to fail the turn —
                     // the lead can do the whole job itself.
@@ -26089,6 +26233,9 @@ const HANDOFF_FIRST_PASS_TOOLS = Math.max(0, parseInt(process.env.HANDOFF_FIRST_
 const HANDOFF_FIRST_PASS_ROUNDS = Math.max(1, parseInt(process.env.HANDOFF_FIRST_PASS_ROUNDS || '4', 10) || 4);
 // Background legwork the lead can have running at once (ask_assistant).
 const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
+// How many of the jobs the first pass proposes the server starts on its own.
+// 0 disables the auto-dispatch and leaves it entirely to the lead.
+const HANDOFF_AUTO_JOBS = Math.max(0, parseInt(process.env.HANDOFF_AUTO_JOBS || '2', 10) || 0);
 const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
 const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
 const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
@@ -26096,6 +26243,99 @@ const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWE
 // the primary gets when the checker flags issues, and the review call's cap.
 const DELEGATE_FIX_ROUNDS = Math.max(0, parseInt(process.env.DELEGATE_FIX_ROUNDS || '1', 10) || 0);
 const CHECKER_TIMEOUT_MS = Math.max(15000, parseInt(process.env.CHECKER_TIMEOUT_MS || '180000', 10) || 180000);
+
+// ── background jobs the lead hands back to the primary ──────────────────────
+// Shared by the `ask_assistant` tool and by the server's own auto-dispatch of
+// the jobs the first pass proposed. Never awaited: the caller keeps working and
+// `deliverAssistantResults` folds each result into a later round.
+function assistantProgressFrame(jobs, model) {
+    return {
+        type: 'assistant_progress',
+        model,
+        jobs: [...jobs.values()].map(j => ({
+            id: j.id,
+            name: j.name,
+            model: j.model || model,
+            status: j.status,
+            calls: j.calls || 0,
+            current: j.current || '',
+            ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+            tools: (j.tools || []).slice(-12).map(x => ({
+                name: x.name,
+                ...(x.purpose ? { purpose: x.purpose } : {}),
+                status: x.status,
+                ...(typeof x.ms === 'number' ? { ms: x.ms } : {}),
+            })),
+        })),
+    };
+}
+
+function startAssistantJobs(ctx, items, model) {
+    const jobs = ctx._assistantJobs;
+    if (!jobs || !Array.isArray(items) || !items.length) return [];
+    const dispatched = [];
+    for (const t of items) {
+        const id = `a${jobs.size + 1}`;
+        // Own controller per job, chained to the turn's, so the turn can
+        // reclaim the slot from a job nobody ever waited for.
+        const ac = new AbortController();
+        if (ctx.abortSignal) {
+            if (ctx.abortSignal.aborted) ac.abort();
+            else ctx.abortSignal.addEventListener('abort', () => ac.abort(), { once: true });
+        }
+        const job = { id, name: t.name, task: t.task, status: 'running', startedAt: Date.now(), model, dispatchCallId: ctx._toolCallId || null, abort: () => ac.abort() };
+        jobs.set(id, job);
+        job.promise = runDelegatedTurn({
+            parentReq: ctx._req,
+            task: t.task,
+            label: t.name,
+            siblings: [],
+            model,
+            reasoningEffort: ctx.reasoningEffort,
+            modelRoles: { primary: model, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
+            workspaceBucket: ctx.workspaceBucket,
+            depth: (ctx.delegateDepth || 0),
+            signal: ac.signal,
+            onEvent: (ev) => {
+                // Per-job tool trace, so the transcript can show WHICH model
+                // made each call and what the background work was.
+                if (ev && ev.kind === 'tool_start') {
+                    job.calls = (job.calls || 0) + 1;
+                    job.current = ev.purpose || ev.name;
+                    job.tools = job.tools || [];
+                    job.tools.push({ id: ev.id || null, name: ev.name, purpose: ev.purpose || undefined, status: 'running', startedAt: Date.now() });
+                    if (job.tools.length > 40) job.tools.splice(0, job.tools.length - 40);
+                } else if (ev && ev.kind === 'tool_end') {
+                    job.current = `${ev.name} done`;
+                    const list = job.tools || [];
+                    let entry = ev.id ? list.find(x => x.id === ev.id && x.status === 'running') : null;
+                    if (!entry) for (let i = list.length - 1; i >= 0; i--) { if (list[i].status === 'running' && list[i].name === ev.name) { entry = list[i]; break; } }
+                    if (entry) {
+                        entry.status = ev.ok === false ? 'failed' : 'ok';
+                        entry.ms = typeof ev.ms === 'number' ? ev.ms : Date.now() - entry.startedAt;
+                    }
+                }
+                if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+            },
+        }).then((r) => {
+            job.status = r && r.status === 'ok' ? 'done' : 'failed';
+            job.result = r;
+            job.seconds = r && r.seconds;
+            job.finishedAt = Date.now();
+            logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${job.seconds}s on ${model} (${(r && r.toolCalls) || 0} tool calls)`);
+            if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+            return r;
+        }).catch((e) => {
+            job.status = 'failed';
+            job.error = e && e.message ? e.message : String(e);
+            job.finishedAt = Date.now();
+            return null;
+        });
+        dispatched.push({ id, name: t.name });
+    }
+    if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+    return dispatched;
+}
 
 async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent }) {
     const controller = new AbortController();
@@ -26639,6 +26879,8 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
     }
     const choice = response.data && response.data.choices && response.data.choices[0];
     const msg = choice && choice.message;
+    // Free, always-current throughput sample from real work.
+    noteSpeedFromTimings(busyName, response.data);
     return {
         content: (msg && msg.content) || '',
         reasoningContent: (msg && msg.reasoning_content) || '',
@@ -32925,27 +33167,6 @@ app.use((req, res) => {
             const model = ctx && ctx.assistantModel;
             if (!model) return { error: 'No assistant model on this turn.' };
             const jobs = ctx._assistantJobs;
-            // One shape for every progress frame: the chat renders a row per
-            // job with the model that ran it and its own tool calls.
-            const assistantProgressFrame = (map, m) => ({
-                type: 'assistant_progress',
-                model: m,
-                jobs: [...map.values()].map(j => ({
-                    id: j.id,
-                    name: j.name,
-                    model: j.model || m,
-                    status: j.status,
-                    calls: j.calls || 0,
-                    current: j.current || '',
-                    ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
-                    tools: (j.tools || []).slice(-12).map(x => ({
-                        name: x.name,
-                        ...(x.purpose ? { purpose: x.purpose } : {}),
-                        status: x.status,
-                        ...(typeof x.ms === 'number' ? { ms: x.ms } : {}),
-                    })),
-                })),
-            });
             if (!jobs) return { error: 'The assistant queue is not available on this turn.' };
             let list = args && (args.requests || args.tasks || args.jobs || args.request);
             if (typeof list === 'string') { try { list = JSON.parse(list); } catch (_) { list = [{ task: list }]; } }
@@ -33003,69 +33224,8 @@ app.use((req, res) => {
                 }
             } catch (_) { /* the guard is advisory — never block a dispatch on it */ }
 
-            const dispatched = [];
-            for (const t of taken) {
-                const id = `a${jobs.size + 1}`;
-                // Own controller per job, chained to the turn's, so the turn
-                // can reclaim the slot from a job the lead never waited for.
-                const ac = new AbortController();
-                if (ctx.abortSignal) {
-                    if (ctx.abortSignal.aborted) ac.abort();
-                    else ctx.abortSignal.addEventListener('abort', () => ac.abort(), { once: true });
-                }
-                const job = { id, name: t.name, task: t.task, status: 'running', startedAt: Date.now(), model, dispatchCallId: ctx._toolCallId || null, abort: () => ac.abort() };
-                jobs.set(id, job);
-                // Deliberately NOT awaited — that is the whole point.
-                job.promise = runDelegatedTurn({
-                    parentReq: ctx._req,
-                    task: t.task,
-                    label: t.name,
-                    siblings: [],
-                    model,
-                    reasoningEffort: ctx.reasoningEffort,
-                    modelRoles: { primary: model, checker: '', checkWorkers: false, checkFinal: 'off' },
-                    workspaceBucket: ctx.workspaceBucket,
-                    depth: (ctx.delegateDepth || 0),
-                    signal: ac.signal,
-                    onEvent: (ev) => {
-                        // Per-job tool trace, so the transcript can show WHICH
-                        // model made each call and what the background work was.
-                        if (ev && ev.kind === 'tool_start') {
-                            job.calls = (job.calls || 0) + 1;
-                            job.current = ev.purpose || ev.name;
-                            job.tools = job.tools || [];
-                            job.tools.push({ id: ev.id || null, name: ev.name, purpose: ev.purpose || undefined, status: 'running', startedAt: Date.now() });
-                            if (job.tools.length > 40) job.tools.splice(0, job.tools.length - 40);
-                        } else if (ev && ev.kind === 'tool_end') {
-                            job.current = `${ev.name} done`;
-                            const list = job.tools || [];
-                            let entry = ev.id ? list.find(x => x.id === ev.id && x.status === 'running') : null;
-                            if (!entry) for (let i = list.length - 1; i >= 0; i--) { if (list[i].status === 'running' && list[i].name === ev.name) { entry = list[i]; break; } }
-                            if (entry) {
-                                entry.status = ev.ok === false ? 'failed' : 'ok';
-                                entry.ms = typeof ev.ms === 'number' ? ev.ms : Date.now() - entry.startedAt;
-                            }
-                        }
-                        if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
-                    },
-                }).then((r) => {
-                    job.status = r && r.status === 'ok' ? 'done' : 'failed';
-                    job.result = r;
-                    job.seconds = r && r.seconds;
-                    job.finishedAt = Date.now();
-                    logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${job.seconds}s on ${model} (${(r && r.toolCalls) || 0} tool calls)`);
-                    if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
-                    return r;
-                }).catch((e) => {
-                    job.status = 'failed';
-                    job.error = e && e.message ? e.message : String(e);
-                    job.finishedAt = Date.now();
-                    return null;
-                });
-                dispatched.push({ id, name: t.name });
-            }
+            const dispatched = startAssistantJobs(ctx, taken, model);
             logUserActivity(ctx.userId, `Assistant: ${ctx.model || 'the lead'} dispatched ${dispatched.length} job(s) to ${model} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
-            if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
             return {
                 success: true,
                 dispatched,
