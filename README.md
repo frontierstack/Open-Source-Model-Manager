@@ -24,6 +24,8 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 | **llama.cpp** | Maxwell 5.2+ (GTX 900, Quadro M4000) | GGUF models, older GPUs, CPU offload, single-stream chat, **Multi-Token Prediction (MTP) & draft-model speculative decoding** for 1.5–2× tok/s on DeepSeek-V3/R1, Qwen3-Next-MTP, and Qwen3.5/3.6-MTP variants |
 | **sglang** | Turing 7.5+ (RTX 20-series, T4) — driver R570+ recommended | High-throughput concurrent serving, RadixAttention prefix caching, GGUF + safetensors + AWQ/GPTQ/FP8/NVFP4, native `--tool-call-parser` and `--reasoning-parser` for Qwen / DeepSeek / GLM / Kimi / Llama-3/4 / Mistral / GPT-OSS |
 
+Each model can be **pinned to specific GPUs** at load time. By default a model is given every card and llama.cpp splits it across them — which buys VRAM, not speed, since a layer split runs the cards in sequence. Pinning one model to a subset leaves the others free to run a second model at full speed, which is what makes the two-model pairing above pay off. The load dialog shows each card's free VRAM and what already occupies it.
+
 ### Core Capabilities
 
 - **HuggingFace Integration** — Search and download GGUF models directly
@@ -44,6 +46,28 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
+### Two Models, One Task
+
+Load two models and they work a single request together instead of taking turns. Configure the pair on the **My Models** page (**Model roles**) or per-account in the chat's Settings:
+
+- **Primary** — your everyday model. It answers every turn on its own, so a quick question stays quick.
+- **Secondary** — the model you trust with hard work. It stays out of the way until the ask is substantial (building something, analysing a file or repo, security work, multi-step research), then **takes the lead and writes the answer itself**.
+
+When the secondary takes over, the two run genuinely concurrently on their own GPUs:
+
+1. The **primary** spends a few seconds sizing up the task and hands over a short brief, including a list of background jobs worth running in parallel.
+2. The **secondary** writes the answer.
+3. While it writes, those jobs run **back on the primary** — look something up, read or list files, run a script and report back. The secondary never waits; each result is delivered into its context the moment it lands, and it can dispatch more at any time.
+4. Optionally the secondary **reviews** answers the primary wrote alone, adding a note or handing back a corrected version.
+
+The chat shows who is doing what: one live row per model that is currently working, with its own activity and a running clock, the model name on every tool chip, and `Assistant · <model>` on the finished message. Everything is visible in the transcript afterwards, including each background job and the tools it ran.
+
+Pairs work **across backends** — a llama.cpp model and an sglang model can be primary and secondary in either direction.
+
+### Parallel Worker Agents
+
+The chat can fan a request out to several worker agents at once via the `delegate` tool — each a full turn with its own tools — and synthesize their reports. Workers are placed by **measured decode speed** across every loaded model: the platform probes each model's tok/s and solves for the shortest finish time rather than blindly spreading one worker per model (on mixed hardware, handing a worker to a much slower model makes the whole turn slower). A second chat message also starts immediately on a free slot instead of queueing behind the first.
+
 ### Native Tool Calling
 
 The chat model can invoke tools on its own via OpenAI-style function calls. Every enabled skill in your workspace is surfaced to the model as a named tool; the UI renders each call as an inline chip showing the tool name, arguments, and (on click) the full result. There are no "web search" or "URL fetch" toggles anymore — the model decides when to reach for them.
@@ -54,7 +78,7 @@ The chat model can invoke tools on its own via OpenAI-style function calls. Ever
 - **Multi-round reasoning** — the model can call several tools in sequence and see each result before responding
 - **One `web` tool for retrieval** — search and read pages (including JS-rendered, dynamic, and bot-protected sites) through a single consolidated tool that routes internally to the search engines (DuckDuckGo → Scrapling → Brave → Playwright), direct file download (PDF/DOCX/XLSX), Scrapling stealth fetch, Playwright full-browser rendering with XHR interception, page interaction, and multi-page crawling
 - **Media & data tools** — `find_image` (searched or extracted images rendered as inline thumbnail grids, every URL liveness-probed; also takes page screenshots), `find_video` (click-to-play inline players, including HLS streams), `sniff_media_streams` (DevTools-style network inspection to find the stream URLs a JS player loads), `render_chart` (inline Recharts), `fetch_timeseries` (Yahoo Finance quotes/history)
-- **Analysis & security tools** — `dns_lookup`, `virustotal_lookup`, `base64_decode`, `extract_strings` (printable-string extraction from binaries), `extract_archive` (zip/tar/gz/bz2/xz with magic-byte detection), `search_knowledge_base` (semantic retrieval over the user's uploaded documents), plus every built-in skill (file ops, git, code navigation, system info, OCR, PDF, email parsing, and more)
+- **Analysis & security tools** — `dns_lookup`, `virustotal_lookup`, `base64_decode`, `extract_strings` (printable-string extraction from binaries), `extract_archive` (zip/tar/gz/bz2/xz with magic-byte detection), plus every built-in skill (file ops, git, code navigation, system info, OCR, PDF, email parsing, and more)
 - **Self-improving** — a `record_learning` tool lets the model save outcome-aware lessons and per-task recipes into account memory, so repeat tasks use fewer tool calls
 - **No silent dead-ends** — if the tool-iteration cap is reached, the model still returns a final user-visible message
 
@@ -82,7 +106,9 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
 
 - Native tool-call chips rendered inline with each assistant message
 - Inline media from tool results — image thumbnail grids, click-to-play video players (including HLS via hls.js), and Recharts charts
-- Queue follow-up messages while the model is still streaming (dispatched automatically when the turn finishes)
+- Queue follow-up messages while the model is still streaming — a new topic starts straight away in its own window on a free slot, a follow-up waits for the current reply so it has the full context
+- Per-model attribution: which model wrote the answer, which made each tool call, and live rows for both models when a pair is working
+- **Reasoning effort** control (off / low / medium / high) per message, using each model's native lever where it has one
 - 18 themes and 6 chat layouts (Default, Centered, Timeline, Bubbles, Slack, Minimal)
 - 54 font choices with dynamic Google Fonts loading
 - Clipboard image paste and drag-and-drop file attachments
@@ -110,6 +136,8 @@ The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil
 - **Persistent shell & SSH sessions** — first-party Pi tools (`ssh_connect`, `shell_open`, `shell_exec`, `shell_send`, `shell_read`, `shell_close`, `shell_list`) hold a real interactive PTY open across turns — SSH logins with password prompts, REPLs, `docker exec -it`, live `tail -f`, control keys (ctrl-c/-d/…) — with no native modules required (works even when the model server is unreachable)
 - **Shared account memory** — Pi turns read and write the same persona/experience memory as the web chat (create the bearer key while signed in so it's tied to your account)
 - **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
+- **Catalog sized to the model** — Pi sends its whole tool catalog on every request, and the full skill set is ~27k tokens of schema and system prompt, which simply does not fit a small-context model. The extension budgets the catalog against the smallest loaded model's context window (`MODELSERVER_TOOL_BUDGET`, default 18%; `0` disables the cap) and trims in priority order — interpreters, file reading and search, fetch, archive and delivery tools first — so a small model gets a working agent instead of a request the server has to reject
+- **Multi-model aware** — `/v1/models` lists every running instance so Pi can address any of them by id, across both backends; llama.cpp advertises the GGUF file path, sglang the HuggingFace repo id
 - **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
 
 ### Automation — Workflow Engine
@@ -423,6 +451,15 @@ docker stats                        # Container resource usage
 ```
 
 ---
+
+**Pi returns nothing and exits 0**
+The model's context window is too small for the tool catalog. `pi -p` renders the error as empty output; `--mode json` shows it. The extension trims the catalog automatically — if you still hit it, lower `MODELSERVER_TOOL_BUDGET` or point Pi at a larger model.
+
+**A model answers that isn't the one you asked for**
+A `model` id that matches no running instance is served by the first one loaded. Check the server log for `matched no running instance` — it names what you sent and what is actually available. Use the exact id from `GET /v1/models`.
+
+**sglang won't start, or starts with almost no KV cache**
+`--mem-fraction-static` sets the *reserve* in sglang 0.5.17+, not the allocation — lowering it to "share a card" gives you **less** cache, and past a point a hard `ValueError`. To fit beside another model use roughly `1 - (free_VRAM - weights) / free_VRAM`, plus ~0.1.
 
 ## Documentation
 
