@@ -605,14 +605,20 @@ export default function ChatSettings({
                                 </label>
                             </div>
 
-                            {/* Two-model roles: primary does the work, checker reviews it. */}
+                            {/* Two models working together: the PRIMARY does the
+                                work and writes every answer; the HELPER is a
+                                faster second model that assists and never writes
+                                the answer. Each duty is independently toggleable
+                                and each field can fall back to the server-wide
+                                default set on the Models page. */}
                             <div className="set-divider" style={{ paddingTop: 16 }}>
-                                <div className="set-row-title">Model roles</div>
+                                <div className="set-row-title">Two models working together</div>
                                 <div className="set-row-help" style={{ marginBottom: 10 }}>
-                                    With two models loaded, a fast <strong>primary</strong> does the work — the composer's model runs the chat and parallel worker agents (the <code>delegate</code> tool) run on the primary — and a stronger <strong>checker</strong> reviews what it produced and answers the primary's <code>consult_expert</code> questions. Leave a field unset to use the server default from the Models page{serverRoles && (serverRoles.primary || serverRoles.checker) ? <> (currently primary: <strong>{serverRoles.primary || 'composer'}</strong>, checker: <strong>{serverRoles.checker || 'none'}</strong>, after each answer: <strong>{serverRoles.checkFinal === 'edit' ? 'edits' : serverRoles.checkFinal === 'note' ? 'notes issues' : 'nothing'}</strong>)</> : ' (none set)'}.
+                                    Pair a second, faster model with the one doing the work. The <strong>primary</strong> writes every answer; the <strong>helper</strong> assists it — sizing up the task first, running background jobs at the same time, and reviewing the result. Leave a field on <em>Server default</em> to follow the setting from the Models page.
                                 </div>
                                 {(() => {
-                                    const opts = [...new Set([...(runningModels || []), settings?.rolePrimaryModel, settings?.roleCheckerModel].filter(Boolean))];
+                                    const sr = serverRoles || {};
+                                    const opts = [...new Set([...(runningModels || []), settings?.rolePrimaryModel, settings?.roleHelperModel].filter(Boolean))];
                                     const stale = (v) => v && !(runningModels || []).includes(v);
                                     const renderSelect = (key, placeholder) => (
                                         <div className="relative">
@@ -633,61 +639,189 @@ export default function ChatSettings({
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                             <div>
                                                 <label className="set-label">Primary (does the work)</label>
-                                                {renderSelect('rolePrimaryModel', serverRoles && serverRoles.primary ? `Server default (${serverRoles.primary})` : 'Composer\'s model')}
+                                                {renderSelect('rolePrimaryModel', sr.primary ? `Server default (${sr.primary})` : 'Composer\'s model')}
+                                                <div className="set-row-help" style={{ marginTop: 4 }}>The main model. It writes every answer you see.</div>
                                             </div>
                                             <div>
-                                                <label className="set-label">Checker (refines it)</label>
-                                                {renderSelect('roleCheckerModel', serverRoles && serverRoles.checker ? `Server default (${serverRoles.checker})` : 'None — no checking')}
+                                                <label className="set-label">Helper (assists it)</label>
+                                                {renderSelect('roleHelperModel', sr.helper ? `Server default (${sr.helper})` : 'None — one model only')}
+                                                <div className="set-row-help" style={{ marginTop: 4 }}>A faster second model that helps out. It never writes the answer.</div>
                                             </div>
                                         </div>
                                     );
                                 })()}
-                                {settings?.roleCheckerModel && settings.roleCheckerModel === (settings.rolePrimaryModel || settings?.model || '') && (
-                                    <div className="set-row-help" style={{ marginTop: 6, color: 'var(--warning, #d29922)' }}>
-                                        The checker is the same model as the one doing the work, so it is ignored — a model does not check itself. Pick a different, stronger model as the checker (needs two models loaded).
-                                    </div>
-                                )}
-                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="set-row-title">Each worker agent's report</div>
-                                        <div className="set-row-help">A parallel worker's report is handed to the checker before the primary builds on it — refined in place when Refine is on, otherwise sent back for one revision round.</div>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={settings?.roleCheckWorkers !== false}
-                                        disabled={!settings?.roleCheckerModel}
-                                        onClick={() => onUpdateSettings({ roleCheckWorkers: settings?.roleCheckWorkers === false })}
-                                        className={`set-toggle ${settings?.roleCheckWorkers !== false ? 'is-on' : ''}`}
-                                    >
-                                        <span className="set-toggle-knob" />
-                                    </button>
-                                </label>
                                 {(() => {
-                                    const hasChecker = !!(settings?.roleCheckerModel || (serverRoles && serverRoles.checker));
-                                    const mode = settings?.roleCheckFinal === true ? 'note' : (typeof settings?.roleCheckFinal === 'string' && settings.roleCheckFinal) ? settings.roleCheckFinal : '';
-                                    const effective = mode || (serverRoles && serverRoles.checkFinal) || 'off';
+                                    const sr = serverRoles || {};
+                                    const helper = settings?.roleHelperModel || '';
+                                    const primary = settings?.rolePrimaryModel || sr.primary || settings?.model || '';
+                                    return helper && helper === primary ? (
+                                        <div className="set-row-help" style={{ marginTop: 6, color: 'var(--warning, #d29922)' }}>
+                                            The helper is the same model as the primary, so it is ignored — a model does not assist itself. Pick a different model as the helper (needs two models loaded).
+                                        </div>
+                                    ) : null;
+                                })()}
+
+                                {/* When the pair works together at all. */}
+                                {(() => {
+                                    const sr = serverRoles || {};
+                                    const hasHelper = !!(settings?.roleHelperModel || sr.helper);
+                                    const mode = typeof settings?.roleMode === 'string' ? settings.roleMode : '';
+                                    const serverMode = sr.mode || 'auto';
+                                    const MODE_WORDS = { off: 'never', auto: 'only on substantial work', always: 'on every turn' };
                                     return (
-                                        <div style={{ marginTop: 12, opacity: hasChecker ? 1 : 0.55 }}>
-                                            <div className="set-row-title">The finished answer, before you see it</div>
+                                        <div style={{ marginTop: 12, opacity: hasHelper ? 1 : 0.55 }}>
+                                            <div className="set-row-title">When they work together</div>
                                             <div className="set-row-help" style={{ marginBottom: 6 }}>
-                                The primary's draft goes to the checker with the evidence behind it. <strong>Add a note</strong> leaves the answer alone and appends the verdict underneath; <strong>Refine it</strong> hands back the checker's corrected version in place with a list of what changed. Only substantial replies are checked (tools used, or longer than a few lines). Adds the checker's generation time.{!mode && serverRoles && serverRoles.checkFinal ? ` Server default: ${effective}.` : ''}
+                                                <strong>Only on substantial work</strong> pairs them up for building, analysing, and anything multi-step, and leaves a quick question as a single fast turn. <strong>Every turn</strong> always pairs them; <strong>Never</strong> keeps the primary working alone.{!mode ? ` Server default: ${MODE_WORDS[serverMode] || serverMode}.` : ''}
                                             </div>
-                                            <div className="set-seg" role="radiogroup" aria-label="Checker action on final answers">
-                                                {[['', 'Server default'], ['off', 'Send it as is'], ['note', 'Add a note'], ['edit', 'Refine it']].map(([v, label]) => (
+                                            <div className="set-seg" role="radiogroup" aria-label="When the two models work together">
+                                                {[['', 'Server default'], ['off', 'Never'], ['auto', 'Only on substantial work'], ['always', 'Every turn']].map(([v, label]) => (
                                                     <button
                                                         key={v || 'default'}
                                                         type="button"
                                                         role="radio"
                                                         aria-checked={mode === v}
-                                                        disabled={!hasChecker}
+                                                        disabled={!hasHelper}
                                                         className={`set-seg-btn${mode === v ? ' is-active' : ''}`}
-                                                        onClick={() => onUpdateSettings({ roleCheckFinal: v })}
+                                                        onClick={() => onUpdateSettings({ roleMode: v })}
                                                     >
                                                         {label}
                                                     </button>
                                                 ))}
                                             </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Helper duty 1 — the brief, before the primary starts. */}
+                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleHelperModel ? 1 : 0.55 }}>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="set-row-title">Size up the task first</div>
+                                        <div className="set-row-help">Before the primary starts, the helper spends a few seconds reading the request and writing a short brief — what is being asked, what to look at first. The primary starts from that instead of from cold.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={settings?.roleFirstPass !== false}
+                                        disabled={!settings?.roleHelperModel}
+                                        onClick={() => onUpdateSettings({ roleFirstPass: settings?.roleFirstPass === false })}
+                                        className={`set-toggle ${settings?.roleFirstPass !== false ? 'is-on' : ''}`}
+                                    >
+                                        <span className="set-toggle-knob" />
+                                    </button>
+                                </label>
+
+                                {/* Helper duty 2 — concurrent background jobs. The headline. */}
+                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleHelperModel ? 1 : 0.55 }}>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="set-row-title">Hand the helper background jobs</div>
+                                        <div className="set-row-help">While the primary works, it passes the helper jobs to run at the same time — searches, file reads, running a script. The primary does not wait for them, so both models are busy at once. You can watch each of them live while the answer streams.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={settings?.roleLegwork !== false}
+                                        disabled={!settings?.roleHelperModel}
+                                        onClick={() => onUpdateSettings({ roleLegwork: settings?.roleLegwork === false })}
+                                        className={`set-toggle ${settings?.roleLegwork !== false ? 'is-on' : ''}`}
+                                    >
+                                        <span className="set-toggle-knob" />
+                                    </button>
+                                </label>
+
+                                {/* Helper duty 3 — worker-agent reports. */}
+                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleHelperModel ? 1 : 0.55 }}>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="set-row-title">Check each worker agent's report</div>
+                                        <div className="set-row-help">When a turn fans out to parallel worker agents, each one's report goes to the helper before the primary builds on it — corrected in place when Refine is on, otherwise sent back for one revision round.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={settings?.roleCheckWorkers === true}
+                                        disabled={!settings?.roleHelperModel}
+                                        onClick={() => onUpdateSettings({ roleCheckWorkers: settings?.roleCheckWorkers !== true })}
+                                        className={`set-toggle ${settings?.roleCheckWorkers === true ? 'is-on' : ''}`}
+                                    >
+                                        <span className="set-toggle-knob" />
+                                    </button>
+                                </label>
+
+                                {/* Helper duty 4 — the finished answer. */}
+                                {(() => {
+                                    const sr = serverRoles || {};
+                                    const hasHelper = !!(settings?.roleHelperModel || sr.helper);
+                                    const review = settings?.roleReview === true
+                                        ? 'note'
+                                        : (typeof settings?.roleReview === 'string' ? settings.roleReview : '');
+                                    const REVIEW_WORDS = { off: 'sends it as is', note: 'adds a note', edit: 'refines it' };
+                                    const serverReview = sr.review || 'off';
+                                    return (
+                                        <div style={{ marginTop: 12, opacity: hasHelper ? 1 : 0.55 }}>
+                                            <div className="set-row-title">The finished answer, before you see it</div>
+                                            <div className="set-row-help" style={{ marginBottom: 6 }}>
+                                                The primary's answer goes to the helper with the evidence behind it. <strong>Add a note</strong> leaves the answer alone and appends the verdict underneath; <strong>Refine it</strong> hands back a corrected version in place with a list of what changed. Only substantial replies are reviewed (tools used, or longer than a few lines). Adds the helper's generation time.{!review ? ` Server default: ${REVIEW_WORDS[serverReview] || serverReview}.` : ''}
+                                            </div>
+                                            <div className="set-seg" role="radiogroup" aria-label="What the helper does with the finished answer">
+                                                {[['', 'Server default'], ['off', 'Send it as is'], ['note', 'Add a note'], ['edit', 'Refine it']].map(([v, label]) => (
+                                                    <button
+                                                        key={v || 'default'}
+                                                        type="button"
+                                                        role="radio"
+                                                        aria-checked={review === v}
+                                                        disabled={!hasHelper}
+                                                        className={`set-seg-btn${review === v ? ' is-active' : ''}`}
+                                                        onClick={() => onUpdateSettings({ roleReview: v })}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* What the current settings actually add up to, in order,
+                                    naming the real models. Steps that are off never appear. */}
+                                {(() => {
+                                    const sr = serverRoles || {};
+                                    const primary = settings?.rolePrimaryModel || sr.primary || settings?.model || 'The primary model';
+                                    const helper = settings?.roleHelperModel || sr.helper || '';
+                                    const mode = (typeof settings?.roleMode === 'string' && settings.roleMode) ? settings.roleMode : (sr.mode || 'auto');
+                                    const review = settings?.roleReview === true
+                                        ? 'note'
+                                        : ((typeof settings?.roleReview === 'string' && settings.roleReview) ? settings.roleReview : (sr.review || 'off'));
+                                    const solo = !helper || helper === primary || mode === 'off';
+                                    const steps = [];
+                                    if (!solo) {
+                                        if (settings?.roleFirstPass !== false) steps.push(`${helper} sizes up the task`);
+                                        steps.push(`${primary} writes the answer`);
+                                        if (settings?.roleLegwork !== false) steps.push(`${primary} hands ${helper} background jobs that run at the same time`);
+                                        if (review === 'note') steps.push(`${helper} reviews the answer`);
+                                        else if (review === 'edit') steps.push(`${helper} refines the answer`);
+                                    }
+                                    return (
+                                        <div style={{ marginTop: 14 }}>
+                                            <div className="set-row-title">What happens on a turn</div>
+                                            <div className="set-row-help" style={{ marginTop: 4 }}>
+                                                {solo ? (
+                                                    <span>{primary} answers on its own.</span>
+                                                ) : (
+                                                    <span>
+                                                        {steps.map((text, i) => (
+                                                            <span key={i}>
+                                                                {i > 0 ? ' → ' : ''}
+                                                                <strong style={{ fontWeight: 600 }}>{i + 1}.</strong> {text}
+                                                            </span>
+                                                        ))}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {!solo && mode === 'auto' && (
+                                                <div className="set-row-help" style={{ marginTop: 4 }}>
+                                                    On substantial work only — a quick question stays a single fast turn on {primary}.
+                                                </div>
+                                            )}
                                         </div>
                                     );
                                 })()}

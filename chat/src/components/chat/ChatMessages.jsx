@@ -13,6 +13,9 @@ function StreamingMessage() {
     const streamingReasoning = useChatStore(state => state.streamingReasoning);
     const streamingToolCalls = useChatStore(state => state.streamingToolCalls);
     const streamingStatus = useChatStore(state => state.streamingStatus);
+    // Two-model pairing: who is working right now (primary, helper, or both)
+    // and what each is doing. Live for this turn only; nothing persists.
+    const streamingHandoff = useChatStore(state => state.streamingHandoff);
 
     // Map the in-flight tool records to the ToolCallBlock shape so chips can
     // render live alongside streaming content.
@@ -129,6 +132,7 @@ function StreamingMessage() {
             streamingReasoning={streamingReasoning}
             toolCalls={liveToolCalls.length ? liveToolCalls : undefined}
             streamingStatus={streamingStatus}
+            handoff={streamingHandoff}
         />
     );
 }

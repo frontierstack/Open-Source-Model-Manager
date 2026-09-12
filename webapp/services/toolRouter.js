@@ -78,6 +78,13 @@ const CORE = [
     // The stronger model's help line — only present when a checker is
     // configured (build() null-gates it), so it costs nothing otherwise.
     'consult_expert',
+    // The lead hand-off pair — only present on a turn where the stronger model
+    // took the lead (build() null-gates both on ctx.assistantModel). They are
+    // core for the same reason delegate is: the whole point is that the lead
+    // dispatches legwork EARLY and keeps writing, which it cannot do if the
+    // router hid the tool behind the embedding of "find me the canvas docs".
+    'ask_assistant',
+    'await_assistant',
 ];
 // Diffusion runs on a tiny budget — a leaner core (drop record_learning/make_downloadable).
 const CORE_DIFFUSION = ['web', 'base64_decode', 'run_python', 'read_file', 'load_skill'];

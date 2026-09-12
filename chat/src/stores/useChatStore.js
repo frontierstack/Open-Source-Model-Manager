@@ -57,6 +57,31 @@ const migrateSettings = () => {
                 console.log(`[Settings] Migrated chatStyle ${prev} -> default (${prev} removed)`);
             }
 
+            // Two-model roles were renamed: the "checker" became the HELPER
+            // (a faster second model that assists but never writes the answer),
+            // `roleCheckFinal` became `roleReview`, and `roleConsult` is gone.
+            if (settings.roleCheckerModel !== undefined) {
+                if (!settings.roleHelperModel) settings.roleHelperModel = settings.roleCheckerModel || '';
+                delete settings.roleCheckerModel;
+                dirty = true;
+                console.log('[Settings] Migrated roleCheckerModel -> roleHelperModel');
+            }
+            if (settings.roleCheckFinal !== undefined) {
+                if (settings.roleReview === undefined) {
+                    settings.roleReview = settings.roleCheckFinal === true
+                        ? 'note'
+                        : (typeof settings.roleCheckFinal === 'string' ? settings.roleCheckFinal : 'off');
+                }
+                delete settings.roleCheckFinal;
+                dirty = true;
+                console.log('[Settings] Migrated roleCheckFinal -> roleReview');
+            }
+            if (settings.roleConsult !== undefined) {
+                delete settings.roleConsult;
+                dirty = true;
+                console.log('[Settings] Dropped roleConsult (removed)');
+            }
+
             if (dirty) {
                 localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
             }
@@ -120,6 +145,14 @@ export const useChatStore = create(
         // assistant message on commit.
         streamingToolCalls: [],
 
+        // Two-model hand-off for the CURRENT turn only (never persisted):
+        //   { phase: 'first_pass' | 'lead', helper, primary, reason,
+        //     firstPassSeconds, briefChars,
+        //     jobs: [{ id, name, status: 'running'|'done'|'failed', calls, current }] }
+        // Drives the live "who is working right now" rows in the streaming
+        // bubble. Cleared wherever streamingStatus is.
+        streamingHandoff: null,
+
         // Optional server-driven status for the streaming bubble (chunking,
         // synthesizing, etc.). Cleared when streaming ends or when token
         // content arrives. Shape: { kind, text } or null.
@@ -178,16 +211,27 @@ export const useChatStore = create(
             // Synced to the server (see serverPreferencesSync) so the backend
             // can honor it; managed in the webapp Memory tab.
             memoryDisabled: false,
-            // Two-model roles: the PRIMARY does the work (worker agents from the
-            // delegate tool run on it), the CHECKER reviews it. '' = unset
-            // (primary falls back to the composer's model; no checker = no
-            // review). Synced to the server so API callers get the same roles.
+            // Two-model pairing. The PRIMARY is the main model: it does the
+            // work and writes every answer. The HELPER is a faster second
+            // model that assists it and never writes the answer. '' on a
+            // model/mode/review field = "use the server default" (set on the
+            // Models page). Synced to the server so API callers get the same
+            // roles; also sent on every request so the server never depends
+            // on the prefs sync having landed.
             rolePrimaryModel: '',
-            roleCheckerModel: '',
-            roleCheckWorkers: true,
-            // 'off' | 'note' (append the verdict) | 'edit' (checker rewrites the answer)
-            roleCheckFinal: 'off',
-            ...(() => { const s = loadFromStorage(STORAGE_KEYS.SETTINGS, {}); if (s && typeof s.roleCheckFinal === 'boolean') s.roleCheckFinal = s.roleCheckFinal ? 'note' : 'off'; return s; })(),
+            roleHelperModel: '',
+            // 'off' | 'auto' (only on substantial work) | 'always' | '' (server default)
+            roleMode: 'auto',
+            // Helper prepares a short brief before the primary starts.
+            roleFirstPass: true,
+            // Primary hands the helper background jobs that run concurrently.
+            roleLegwork: true,
+            // 'off' | 'note' (append the verdict) | 'edit' (helper hands back a
+            // corrected version) | '' (server default)
+            roleReview: 'off',
+            // Helper reviews parallel worker-agent reports.
+            roleCheckWorkers: false,
+            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
         },
 
         // ==================== Theme Actions ====================
@@ -259,6 +303,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 isStreaming: false
             }));
         },
@@ -277,6 +322,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 isStreaming: false,
                 attachments: []
             }));
@@ -416,6 +462,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 isStreaming: false,
                 attachments: []
             });
@@ -538,6 +585,14 @@ export const useChatStore = create(
 
         setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
 
+        // Live two-model hand-off. `handoff` and `assistant_progress` frames
+        // arrive independently and each must keep the other's fields, so the
+        // patch merges rather than replaces. Pass null to clear.
+        setStreamingHandoff: (streamingHandoff) => set({ streamingHandoff }),
+        patchStreamingHandoff: (patch) => set(state => (
+            patch ? { streamingHandoff: { ...(state.streamingHandoff || {}), ...patch } } : {}
+        )),
+
         // Atomically append the final assistant message(s) AND clear the
         // streaming state in one set() call. Doing these separately (append
         // first, clear in a later finally block) left a one-frame window
@@ -556,6 +611,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 streamingToolCalls: [],
                 isStreaming: false,
                 collapsedMessageIds: (() => {
@@ -571,6 +627,7 @@ export const useChatStore = create(
             streamingToolDrafts: {},
             streamingReasoning: '',
             streamingStatus: null,
+            streamingHandoff: null,
             streamingToolCalls: [],
             isStreaming: false,
             // Clear the streaming message collapse entry when streaming ends
@@ -660,6 +717,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 isStreaming: false,
                 attachments: []
             });
@@ -676,6 +734,7 @@ export const useChatStore = create(
                 streamingToolDrafts: {},
                 streamingReasoning: '',
                 streamingStatus: null,
+                streamingHandoff: null,
                 isStreaming: false,
                 attachments: []
             });

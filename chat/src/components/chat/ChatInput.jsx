@@ -69,6 +69,13 @@ export default function ChatInput({
     models = [],
     selectedModel,
     onModelChange,
+    // The configured two-model pair ({primary, helper, mode}) or null. The
+    // server runs a turn on the PRIMARY whenever the request names either
+    // member, so the picker offers the pair as ONE entry and the composer's
+    // model for that entry is the primary.
+    modelPair = null,
+    // name -> measured tokens/sec, for the picker rows.
+    modelSpeeds = {},
     reasoningEffort = 'default',
     onReasoningEffortChange,
     queuedMessages = [],
@@ -226,6 +233,18 @@ export default function ChatInput({
     }, [promptDropdownOpen, modelDropdownOpen, effortDropdownOpen]);
 
     const runningModels = Array.isArray(models) ? models.filter(m => m.status === 'running') : [];
+    // A pair is "selected" when the composer is on its primary — that is the
+    // model the request carries and the model the server actually runs.
+    const pairSelected = !!(modelPair && selectedModel === modelPair.primary);
+    // The pair's two members are NOT offered individually: picking either one
+    // would still run the pair, so listing them would be a lie.
+    const soloModels = modelPair
+        ? runningModels.filter(m => m.name !== modelPair.primary && m.name !== modelPair.helper)
+        : runningModels;
+    const speedOf = (name) => {
+        const v = modelSpeeds && modelSpeeds[name];
+        return v ? `${Math.round(v)} tok/s` : '';
+    };
     const selectedModelData = Array.isArray(models) ? models.find(m => m.name === selectedModel) : null;
     const effortLevel = EFFORT_LEVELS.find(l => l.id === reasoningEffort) || EFFORT_LEVELS[0];
     const effortIsSet = effortLevel.id !== 'default';
@@ -931,8 +950,10 @@ export default function ChatInput({
                                         disabled={disabled || isStreaming}
                                         className="composer-chip-model"
                                         style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220, minWidth: 0 }}
-                                        aria-label="Choose model"
-                                        title={selectedModel ? `Model: ${selectedModel}` : 'Select model'}
+                                        aria-label={pairSelected ? `Choose model — currently the pair ${modelPair.primary} plus ${modelPair.helper}` : 'Choose model'}
+                                        title={pairSelected
+                                            ? `Pair: ${modelPair.primary} + ${modelPair.helper}`
+                                            : (selectedModel ? `Model: ${selectedModel}` : 'Select model')}
                                     >
                                         <Circle
                                             className="shrink-0"
@@ -945,6 +966,12 @@ export default function ChatInput({
                                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                             {selectedModel || 'Select model'}
                                         </span>
+                                        {/* The "+1" rides OUTSIDE the ellipsizing span and never
+                                            shrinks, so the pair stays legible as a pair even when
+                                            the name is truncated to a few characters on a phone. */}
+                                        {pairSelected && (
+                                            <span style={{ flexShrink: 0, color: 'var(--accent)', fontWeight: 600 }}>+1</span>
+                                        )}
                                         <ChevronDown
                                             className={`w-[11px] h-[11px] transition-transform duration-150 ${modelDropdownOpen ? 'rotate-180' : ''}`}
                                             strokeWidth={1.75}
@@ -954,12 +981,57 @@ export default function ChatInput({
                                         <div style={{ ...popover, left: 'auto', right: 0 }} className="composer-popover animate-slide-up">
                                             <div style={popHeader}>Model</div>
                                             <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                                                {/* The configured pair, as ONE entry. Choosing it sets
+                                                    the composer to the primary — the model the server
+                                                    actually runs the turn on. */}
+                                                {modelPair && (
+                                                    <button
+                                                        key="__pair__"
+                                                        onClick={() => { onModelChange(modelPair.primary); setModelDropdownOpen(false); }}
+                                                        style={pairSelected ? popItemActive : popItem}
+                                                        onMouseEnter={(e) => { if (!pairSelected) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                                        onMouseLeave={(e) => { if (!pairSelected) e.currentTarget.style.background = 'transparent'; }}
+                                                    >
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                                            <Circle
+                                                                style={{
+                                                                    width: 6, height: 6,
+                                                                    fill: getModelStatusColor('running'),
+                                                                    color: getModelStatusColor('running'),
+                                                                    flexShrink: 0,
+                                                                }}
+                                                            />
+                                                            <span style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                                                                {modelPair.primary} + {modelPair.helper}
+                                                            </span>
+                                                            <span style={{
+                                                                fontSize: 9, padding: '1px 5px', borderRadius: 3,
+                                                                background: 'var(--accent-soft)', color: 'var(--accent)',
+                                                                fontWeight: 600, letterSpacing: '.03em', textTransform: 'uppercase',
+                                                                flexShrink: 0,
+                                                            }}>pair</span>
+                                                        </div>
+                                                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                                                            primary + helper — the big model writes, the fast one assists
+                                                        </div>
+                                                        {(speedOf(modelPair.primary) || speedOf(modelPair.helper)) && (
+                                                            <div style={{ fontSize: 10.5, color: 'var(--ink-4)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                {`${modelPair.primary}${speedOf(modelPair.primary) ? ` ${speedOf(modelPair.primary)}` : ''} · ${modelPair.helper}${speedOf(modelPair.helper) ? ` ${speedOf(modelPair.helper)}` : ''}`}
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                )}
+                                                {modelPair && soloModels.length > 0 && (
+                                                    <div style={{ ...popHeader, borderTop: '1px solid var(--rule)', marginTop: 4, paddingTop: 8 }}>
+                                                        Or a single model
+                                                    </div>
+                                                )}
                                                 {runningModels.length === 0 ? (
                                                     <div style={{ padding: '10px 12px', textAlign: 'center' }}>
                                                         <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No models running</div>
                                                         <div style={{ fontSize: 10.5, color: 'var(--ink-4)', marginTop: 2 }}>Load a model from the main app</div>
                                                     </div>
-                                                ) : runningModels.map(m => (
+                                                ) : soloModels.map(m => (
                                                     <button
                                                         key={m.name}
                                                         onClick={() => { onModelChange(m.name); setModelDropdownOpen(false); }}
@@ -987,13 +1059,18 @@ export default function ChatInput({
                                                                 </span>
                                                             )}
                                                         </div>
-                                                        {m.contextSize && (
+                                                        {(m.contextSize || speedOf(m.name)) && (
                                                             <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
-                                                                {Math.round(m.contextSize / 1000)}k context
+                                                                {[m.contextSize ? `${Math.round(m.contextSize / 1000)}k context` : '', speedOf(m.name)].filter(Boolean).join(' · ')}
                                                             </div>
                                                         )}
                                                     </button>
                                                 ))}
+                                                {modelPair && soloModels.length === 0 && (
+                                                    <div style={{ padding: '8px 10px', fontSize: 10.5, color: 'var(--ink-4)' }}>
+                                                        No other models loaded
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     )}

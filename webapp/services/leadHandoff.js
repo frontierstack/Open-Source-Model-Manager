@@ -1,0 +1,306 @@
+'use strict';
+// ───────────────────────────────────────────────────────────────────────────
+// Lead hand-off: two models working one task together.
+//
+// The shape the user asked for (2026-09-12):
+//
+//     user ask
+//        ↓
+//     PRIMARY (fast)   first pass — restate the task, gather what is cheap,
+//        ↓             hand over a brief
+//     LEAD (stronger)  writes the real answer
+//        ├─→ "find me the canvas API docs"  ─┐
+//        │                                   ├─ the primary runs these
+//        ├─→ "run the file and report back"  ─┘  CONCURRENTLY
+//        └─→ results arrive mid-turn, the lead keeps writing
+//        ↓
+//     final answer
+//
+// This is not the same thing as the checker: the checker reviews a finished
+// answer, the lead WRITES it. When a hand-off engages, the turn runs on the
+// lead model and the checker step is redundant (the strong model is already
+// the author), so it is skipped.
+//
+// It only engages on substantial work. A one-line factual question routed
+// through a model 2.8× slower per token is a worse experience, not a better
+// one, so `isSubstantialWork` is deliberately conservative: it wants evidence
+// that the turn involves building, analysing, or multi-step work.
+// ───────────────────────────────────────────────────────────────────────────
+
+const MODES = ['off', 'auto', 'always'];
+
+// Strip the runtime's own injected notes before classifying — they are the
+// same on every turn and would make everything look substantial.
+const SYSTEM_NOTE_RE = /\[SYSTEM:[\s\S]*?\]/g;
+// The chat wraps an upload as "=== FILE n: name ===\n<content>\n=== END FILE n ===".
+// Strip the WHOLE block: its contents are the user's data, not their request,
+// and a pasted source file is full of build verbs and artifact nouns.
+const FILE_BLOCK_RE = /===\s*FILE\s+\d+\b[\s\S]*?(?:===\s*END\s+FILE\s+\d+\s*===|$)/gi;
+
+function cleanAsk(text) {
+    return String(text || '')
+        .replace(SYSTEM_NOTE_RE, ' ')
+        .replace(FILE_BLOCK_RE, ' ')
+        .replace(/^\/(no_?think|think)\b/i, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// "Do this together" / "use both models" — an explicit request always wins,
+// including over the substantial-work test.
+const EXPLICIT_RE = /\b(work together|both models|two models|team up|with the (?:big|bigger|large|larger|strong|stronger|smart|smarter) model|hand (?:it |this )?off|use the (?:expert|stronger|bigger) model|pair (?:up|on)|collaborat\w*)\b/i;
+// "Do it yourself / quickly" — an explicit opt-out.
+const EXPLICIT_OFF_RE = /\b(just you|yourself only|don'?t (?:hand|pass) (?:it |this )?off|no (?:hand-?off|collaboration)|quick(?:ly)? answer|one liner|one-liner|short answer|just tell me)\b/i;
+
+// Verbs that mean the model is about to PRODUCE something substantial.
+const BUILD_VERB = /\b(build|write|code|implement|create|make|develop|design|refactor|rewrite|port|migrate|scaffold|generate|produce|draft|compose|architect|automate|debug|fix|optimi[sz]e|improve|extend|add (?:a|an|the)|convert|translate)\b/i;
+// Things worth building. Kept concrete: a "make me a sandwich" joke should not
+// route through two models.
+const ARTIFACT = /\b(app|application|game|script|program|tool|library|module|package|component|page|website|site|web ?app|api|endpoint|server|service|bot|parser|scraper|crawler|pipeline|workflow|automation|dashboard|report|spreadsheet|document|pdf|docx|presentation|slide|chart|graph|diagram|test|tests|suite|class|function|algorithm|model|schema|database|query|migration|config|dockerfile|ci|readme|plugin|extension|patch|feature|prototype|mock ?up|wireframe|landing page|form|ui|frontend|backend|cli)\b/i;
+// Analysis / investigation work.
+const ANALYSIS_VERB = /\b(analy[sz]e|audit|review|investigate|inspect|examine|diagnose|troubleshoot|compare|contrast|evaluate|assess|benchmark|profile|research|study|summari[sz]e|explain how|walk me through|figure out|work out|reverse[- ]engineer|decompile|trace)\b/i;
+// Multi-part shapes.
+const MULTI_STEP = /\b(step[- ]by[- ]step|first.{0,40}\bthen\b|and then|after that|as well as|in addition|multiple|several|each of|for each|all of the|one by one|end[- ]to[- ]end|from scratch|full(?:y)? working|complete(?:ly)?|comprehensive|in depth|in-depth|thorough)\b/i;
+// A question that is just a lookup.
+const LOOKUP_RE = /^(?:what|who|when|where|which|how (?:much|many|old|far|long)|is|are|was|were|does|do|did|can|could|should|will|would|has|have)\b/i;
+
+const CODE_FENCE_RE = /```|\bfunction\s+\w+\s*\(|\bclass\s+\w+|\bdef\s+\w+\s*\(|=>|;\s*$/m;
+
+// What KIND of things were attached, read off the chat's own upload markers
+// ("=== FILE 1: capture.pcap (2.1 MB) ==="). Used only to tell a heavy
+// attachment (repo, capture, spreadsheet) from a snapshot someone pasted.
+const EXT_KIND = [
+    [/\.(zip|tar|tgz|gz|bz2|xz|7z|rar)$/i, 'archive'],
+    [/\.(pcap|pcapng|cap)$/i, 'capture'],
+    [/\.(csv|tsv|xlsx?|ods)$/i, 'spreadsheet'],
+    [/\.(pdf|docx?|odt|rtf|pptx?)$/i, 'document'],
+    [/\.(log|txt|md|json|ya?ml|xml|ini|conf|toml)$/i, 'log'],
+    [/\.(js|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|sh|sql|swift|scala|sol|vue|svelte)$/i, 'code'],
+    [/\.(png|jpe?g|gif|bmp|webp|tiff?|heic|svg)$/i, 'image'],
+    [/\.(mp3|wav|m4a|flac|ogg|mp4|mov|mkv|webm|avi)$/i, 'media'],
+];
+function attachmentKindsFromText(text) {
+    const kinds = new Set();
+    const re = /===\s*FILE\s+\d+\s*:\s*([^=\n(]+?)\s*(?:\([^)]*\))?\s*===/gi;
+    let m;
+    while ((m = re.exec(String(text || ''))) !== null) {
+        const name = m[1].trim();
+        const hit = EXT_KIND.find(([rx]) => rx.test(name));
+        kinds.add(hit ? hit[1] : 'file');
+    }
+    return [...kinds];
+}
+
+// Words in the ask, ignoring anything the runtime injected.
+function askLength(text) {
+    return cleanAsk(text).split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Is this turn substantial enough that two models should work it together?
+ * Conservative on purpose — a false positive costs the user real seconds.
+ *
+ * @returns {{substantial:boolean, reason:string, explicit:boolean}}
+ */
+function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [], minWords = 6 } = {}) {
+    const ask = cleanAsk(text);
+    if (!ask) return { substantial: false, reason: 'empty', explicit: false };
+
+    if (EXPLICIT_OFF_RE.test(ask)) return { substantial: false, reason: 'user asked for a quick single-model answer', explicit: true };
+    if (EXPLICIT_RE.test(ask)) return { substantial: true, reason: 'user asked for the models to work together', explicit: true };
+
+    const words = ask.split(/\s+/).filter(Boolean).length;
+    const build = BUILD_VERB.test(ask) && ARTIFACT.test(ask);
+    const analysis = ANALYSIS_VERB.test(ask);
+    const multi = MULTI_STEP.test(ask);
+    const code = CODE_FENCE_RE.test(ask);
+
+    // A file/repo/archive to work through is substantial on its own; a plain
+    // image usually is not (OCR, "what is this") unless the ask says otherwise.
+    const heavyAttachment = hasAttachments && attachmentKinds.some(k => /archive|repo|code|pdf|spreadsheet|csv|document|data|capture|log/i.test(String(k)));
+
+    if (build) return { substantial: true, reason: 'builds an artifact', explicit: false };
+    if (heavyAttachment) return { substantial: true, reason: 'works through an attached file', explicit: false };
+    if (analysis && (words >= minWords || hasAttachments)) return { substantial: true, reason: 'analysis or investigation', explicit: false };
+    if (multi && words >= minWords) return { substantial: true, reason: 'multi-step request', explicit: false };
+    if (code && words >= 12) return { substantial: true, reason: 'works on supplied code', explicit: false };
+
+    // Everything else — including a long-winded factual question — stays on one
+    // fast model.
+    if (LOOKUP_RE.test(ask)) return { substantial: false, reason: 'lookup question', explicit: false };
+    return { substantial: false, reason: 'no substantial-work signal', explicit: false };
+}
+
+/**
+ * Plan the two-model turn.
+ *
+ * The PRIMARY is the main model: when one is configured and loaded it answers
+ * every turn, because that is what "primary" means to a reader. The HELPER
+ * joins in — first pass and background legwork — according to `mode`:
+ * 'off' never, 'auto' only on substantial work, 'always' every turn.
+ *
+ * The pair only applies when the turn's model IS one of the two. A user who
+ * deliberately picks some third model in the composer gets that model alone.
+ *
+ * @returns {{
+ *   runOn: string,            the model this turn should actually run on
+ *   switched: boolean,        true when that differs from the requested model
+ *   engaged: boolean,         does the helper participate at all
+ *   firstPass: boolean,       should the helper prepare a brief first
+ *   legwork: boolean,         should the primary get ask_assistant
+ *   primary: string|null, helper: string|null,
+ *   reason: string, substantial: boolean
+ * }}
+ */
+function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds } = {}) {
+    const r = roles || {};
+    const m = MODES.includes(mode) ? mode : (MODES.includes(r.mode) ? r.mode : 'auto');
+    const loaded = running instanceof Set ? running : new Set(Array.isArray(running) ? running : []);
+    const isLoaded = (name) => !!name && (loaded.size === 0 || loaded.has(name));
+
+    const primary = r.primary || null;
+    const helper = r.helper || null;
+    const requested = targetModel || null;
+    const verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds });
+
+    const alone = (reason, runOn) => ({
+        runOn: runOn || requested,
+        switched: !!(runOn && runOn !== requested),
+        engaged: false, firstPass: false, legwork: false,
+        primary, helper: null, reason, substantial: verdict.substantial,
+    });
+
+    if (!primary || !isLoaded(primary)) return alone('no primary model configured');
+    // Only take over a turn that was aimed at this pair.
+    if (requested && requested !== primary && requested !== helper) {
+        return alone(`the turn names a third model (${requested})`);
+    }
+    // The primary is the main model — it answers, whatever the helper does.
+    const runOn = primary;
+
+    if (!helper || helper === primary) return alone('no helper model configured', runOn);
+    if (!isLoaded(helper)) return alone('the helper model is not loaded', runOn);
+    if (m === 'off') return alone('the helper is switched off', runOn);
+    if (m === 'auto' && !verdict.substantial) return alone(verdict.reason, runOn);
+
+    return {
+        runOn,
+        switched: runOn !== requested,
+        engaged: true,
+        firstPass: r.firstPass !== false,
+        legwork: r.legwork !== false,
+        primary,
+        helper,
+        reason: m === 'always' ? 'the helper joins every turn' : verdict.reason,
+        substantial: verdict.substantial,
+    };
+}
+
+// The brief the fast model produces before the primary starts. Deliberately
+// bounded: the primary is waiting on it, so it must be quick and must not try
+// to do the actual job.
+//
+// The LEGWORK section is what makes the pair actually work in parallel. Left to
+// itself the primary just does everything (measured: two full builds, zero
+// ask_assistant calls) — general "you may delegate" guidance loses to the
+// model's habit. Handing it a SHORT LIST OF CONCRETE JOBS, chosen by a model
+// that has just read the task, turns the decision into "dispatch these" rather
+// than "invent something to delegate".
+function buildFirstPassTask({ userText, leadModel, helperModel, toolBudget = 3 }) {
+    return [
+        'You are the FIRST PASS on a task that the main model is about to take over.',
+        `Your job is NOT to answer it. Your job is to hand ${leadModel || 'the main model'} a short, useful brief so it can start immediately — and to line up work that YOU can do in parallel while it writes.`,
+        '',
+        'THE USER ASKED:',
+        String(userText || '').slice(0, 6000),
+        '',
+        'Produce, in under 300 words, exactly these sections:',
+        '1. TASK — one or two sentences restating exactly what is wanted, including any constraint the user gave (language, framework, file, format, length).',
+        '2. WHAT I FOUND — only facts you actually verified this turn: existing files in /workspace and their paths, the shape of any supplied data, a version or API detail you looked up. Write "nothing needed" if you looked and there was nothing.',
+        '3. PLAN — the 3-6 steps you would take, in order.',
+        '4. LEGWORK — 0 to 3 jobs the main model should hand BACK to you to run in the background while it works. Each on its own line as `- <short name>: <one-line brief>`.',
+        '   A good legwork job is independent of anything the main model has not written yet: looking up an API, a spec, a version or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; running an EXISTING script or test.',
+        '   A bad one depends on output that does not exist yet ("check the file it writes"), or is the task itself. If there is genuinely nothing useful, write "- none".',
+        '5. OPEN QUESTIONS — anything genuinely ambiguous, or "none".',
+        '',
+        `Use at most ${toolBudget} tool calls, and only for things that are cheap and clearly needed (listing the workspace, reading a supplied file, one lookup). Do NOT start building, do NOT write the code, do NOT write the final answer.`,
+        'Never invent a fact to fill a section — an empty section is better than a wrong one.',
+    ].join('\n');
+}
+
+// Pull the LEGWORK lines back out of the brief so the note can tell the primary
+// to dispatch exactly those. Tolerant of the shapes a small model produces
+// (numbered or bare heading, "- name: brief" or "name — brief").
+function parseLegwork(brief) {
+    const text = String(brief || '');
+    // NOTE: the trailing alternative must be (?![\s\S]), not $ — the /m flag
+    // makes $ mean end-of-LINE, which cut the section off after its first job.
+    const m = text.match(/^\s*(?:\d+[.)]\s*)?LEGWORK\b[^\n]*\n([\s\S]*?)(?=\n\s*(?:\d+[.)]\s*)?[A-Z][A-Z ]{3,}\b|(?![\s\S]))/mi);
+    if (!m) return [];
+    const jobs = [];
+    for (const raw of m[1].split('\n')) {
+        const line = raw.replace(/^\s*[-*•]\s*/, '').trim();
+        if (!line) continue;
+        if (/^none\b/i.test(line) || /^n\/a\b/i.test(line)) continue;
+        const split = line.match(/^(.{2,60}?)\s*[:—–-]\s+(.+)$/);
+        const name = split ? split[1].trim() : line.slice(0, 50);
+        const task = split ? split[2].trim() : line;
+        if (task.length < 8) continue;
+        jobs.push({ name: name.replace(/[."]+$/, ''), task });
+        if (jobs.length >= 3) break;
+    }
+    return jobs;
+}
+
+// The note the primary sees. Goes in the LATEST USER MESSAGE (never a trailing
+// system message — templates that require alternating roles 500 on those, and
+// the user slot is prefix-cache friendly).
+function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true }) {
+    const body = String(brief || '').trim();
+    if (!body) return '';
+    const meta = [
+        assistantModel ? `by ${assistantModel}` : null,
+        typeof firstPassSeconds === 'number' ? `${firstPassSeconds}s` : null,
+        typeof toolCalls === 'number' ? `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` : null,
+    ].filter(Boolean).join(', ');
+    const who = assistantModel || 'your helper model';
+    const jobs = legworkAvailable ? parseLegwork(body) : [];
+    const tail = !legworkAvailable
+        ? 'You are working alone on this one.'
+        : jobs.length
+            ? `${who} is idle and waiting for work. Your FIRST action should be a single \`ask_assistant\` call dispatching the LEGWORK jobs above (${jobs.map(j => `"${j.name}"`).join(', ')}) — it returns immediately and they run on ${who}'s own GPU while you write. Then start writing without waiting; each result is delivered to you as it lands.`
+            : `${who} is standing by — hand it any lookup, file read or script run you would otherwise stop to do yourself with \`ask_assistant\`, and keep working while it runs.`;
+    return [
+        `[SYSTEM: FIRST-PASS BRIEF${meta ? ` (${meta})` : ''} — you are the main model on this task and you write the final answer.`,
+        '',
+        body,
+        '',
+        `Treat the brief as a starting point, not as truth: re-check anything it asserts that matters, and ignore its plan if you have a better one. Do the substantive work — the design, the code, the writing — yourself. ${tail}]`,
+    ].join('\n');
+}
+
+// Framing for the lead turn itself, appended to the shared prelude.
+function buildLeadPrelude({ assistantModel, maxParallel }) {
+    const who = assistantModel ? `a faster assistant model (${assistantModel})` : 'a faster assistant model';
+    return [
+        'YOU ARE THE LEAD ON THIS TASK.',
+        `${who.charAt(0).toUpperCase()}${who.slice(1)} has already done a first pass and is standing by. You write the final answer — the user sees your work, not the assistant's, so do the designing, the writing and the code yourself.`,
+        `\`ask_assistant\` hands it a job and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands.`,
+        'HAND OFF things that are independent of what you are writing and that you would otherwise stop to do: looking up an API, a version, a spec or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; running an existing script or test and reporting what it printed; checking an external claim.',
+        'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet — it cannot read a file you have not written, and asking it to "verify /workspace/x" before you create x just wastes it; or a step so small you would finish it before the reply came back.',
+        'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write, and then keep going without waiting. `await_assistant` blocks and is only for when you genuinely cannot continue.',
+    ].join(' ');
+}
+
+module.exports = {
+    MODES,
+    cleanAsk,
+    parseLegwork,
+    attachmentKindsFromText,
+    askLength,
+    isSubstantialWork,
+    planHandoff,
+    buildFirstPassTask,
+    renderBriefNote,
+    buildLeadPrelude,
+};

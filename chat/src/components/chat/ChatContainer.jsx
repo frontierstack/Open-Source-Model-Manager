@@ -343,18 +343,31 @@ function agentResultsOf(name, result) {
 }
 
 // Turn a snake_case tool id into a friendly verb phrase for the status row.
-// Two-model roles as the server expects them (services/modelRoles.js).
+// Two-model pairing as the server expects it (services/modelRoles.js).
+// PRIMARY = the main model; it does the work and writes every answer.
+// HELPER  = a faster second model that assists and never writes the answer.
+// An empty string means "not set here" — the server falls back to its own
+// default (Models page), so those fields are omitted rather than sent blank.
 function modelRolesFromSettings(settings) {
     if (!settings) return undefined;
     const primary = settings.rolePrimaryModel || '';
-    const checker = settings.roleCheckerModel || '';
-    if (!primary && !checker) return undefined;
-    return {
-        primary,
-        checker,
-        checkWorkers: settings.roleCheckWorkers !== false,
-        checkFinal: settings.roleCheckFinal === true ? 'note' : (typeof settings.roleCheckFinal === 'string' ? settings.roleCheckFinal : 'off'),
-    };
+    const helper = settings.roleHelperModel || '';
+    const mode = typeof settings.roleMode === 'string' ? settings.roleMode : '';
+    const review = settings.roleReview === true
+        ? 'note'
+        : (typeof settings.roleReview === 'string' ? settings.roleReview : '');
+    const roles = {};
+    if (primary) roles.primary = primary;
+    if (helper) roles.helper = helper;
+    if (mode) roles.mode = mode;
+    if (review) roles.review = review;
+    if (helper) {
+        // Helper duties only mean anything once a helper is chosen.
+        roles.firstPass = settings.roleFirstPass !== false;
+        roles.legwork = settings.roleLegwork !== false;
+        roles.checkWorkers = settings.roleCheckWorkers === true;
+    }
+    return Object.keys(roles).length ? roles : undefined;
 }
 
 function humanizeToolName(name) {
@@ -565,6 +578,8 @@ export default function ChatContainer({
         clearStreaming,
         commitStreamingMessage,
         setStreamingStatus,
+        setStreamingHandoff,
+        patchStreamingHandoff,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -601,6 +616,8 @@ export default function ChatContainer({
         clearStreaming: state.clearStreaming,
         commitStreamingMessage: state.commitStreamingMessage,
         setStreamingStatus: state.setStreamingStatus,
+        setStreamingHandoff: state.setStreamingHandoff,
+        patchStreamingHandoff: state.patchStreamingHandoff,
         addAttachment: state.addAttachment,
         removeAttachment: state.removeAttachment,
         clearAttachments: state.clearAttachments,
@@ -1655,6 +1672,8 @@ export default function ChatContainer({
             setStreaming(true);
             setStreamingContent('');
             setStreamingReasoning('');
+            // No hand-off until this turn's server frames say otherwise.
+            setStreamingHandoff(null);
             setIsLoading(true);
         }
         // Prepare messages for API (use fullContent for the last message to include attachments)
@@ -1751,8 +1770,8 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
-                // Two-model roles (primary worker / checker) — sent every turn so
-                // the server never depends on the prefs sync having landed.
+                // Two-model pairing (primary writes / helper assists) — sent
+                // every turn so the server never depends on the prefs sync.
                 modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
@@ -1984,6 +2003,44 @@ export default function ChatContainer({
                                         ? `Calling ${human} — ${argSummary}`
                                         : `Calling ${human}`;
                                 }
+                                continue;
+                            }
+                            if (parsed.type === 'handoff') {
+                                // Two-model pairing. 'first_pass' = the helper is
+                                // preparing a brief right now; 'lead' = the primary
+                                // has taken over and is writing the answer. Merged
+                                // (not replaced) so the job list from
+                                // assistant_progress survives a phase change.
+                                patchStreamingHandoff({
+                                    phase: parsed.phase || 'lead',
+                                    helper: parsed.helper || undefined,
+                                    primary: parsed.primary || undefined,
+                                    reason: parsed.reason || undefined,
+                                    firstPassSeconds: parsed.firstPassSeconds,
+                                    briefChars: parsed.briefChars,
+                                });
+                                continue;
+                            }
+                            if (parsed.type === 'assistant_progress') {
+                                // Background jobs the primary handed the helper —
+                                // they run CONCURRENTLY with the primary's own
+                                // work, which is exactly what the live rows show.
+                                patchStreamingHandoff({
+                                    jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+                                });
+                                continue;
+                            }
+                            if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
+                                // The helper's verdict on the finished answer. The
+                                // addendum itself arrives as ordinary content
+                                // deltas (note mode) or a content_rewind (edit
+                                // mode); this frame only names the reviewer, so
+                                // the live rows can say who is reviewing.
+                                // `checker` is the legacy field name for `reviewer`.
+                                patchStreamingHandoff({
+                                    reviewing: parsed.status !== 'done',
+                                    reviewer: parsed.reviewer || parsed.checker || undefined,
+                                });
                                 continue;
                             }
                             if (parsed.type === 'delegate_progress') {
@@ -2878,8 +2935,8 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
-                // Two-model roles (primary worker / checker) — sent every turn so
-                // the server never depends on the prefs sync having landed.
+                // Two-model pairing (primary writes / helper assists) — sent
+                // every turn so the server never depends on the prefs sync.
                 modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
@@ -2975,6 +3032,44 @@ export default function ChatContainer({
                                         setStreamingContent(joinContinuation(originalContent, assistantContent));
                                         setStreamingReasoning(originalReasoning || '');
                                     }
+                                    continue;
+                                }
+                                if (parsed.type === 'handoff') {
+                                    // Two-model pairing. 'first_pass' = the helper is
+                                    // preparing a brief right now; 'lead' = the primary
+                                    // has taken over and is writing the answer. Merged
+                                    // (not replaced) so the job list from
+                                    // assistant_progress survives a phase change.
+                                    patchStreamingHandoff({
+                                        phase: parsed.phase || 'lead',
+                                        helper: parsed.helper || undefined,
+                                        primary: parsed.primary || undefined,
+                                        reason: parsed.reason || undefined,
+                                        firstPassSeconds: parsed.firstPassSeconds,
+                                        briefChars: parsed.briefChars,
+                                    });
+                                    continue;
+                                }
+                                if (parsed.type === 'assistant_progress') {
+                                    // Background jobs the primary handed the helper —
+                                    // they run CONCURRENTLY with the primary's own
+                                    // work, which is exactly what the live rows show.
+                                    patchStreamingHandoff({
+                                        jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+                                    });
+                                    continue;
+                                }
+                                if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
+                                    // The helper's verdict on the finished answer. The
+                                    // addendum itself arrives as ordinary content
+                                    // deltas (note mode) or a content_rewind (edit
+                                    // mode); this frame only names the reviewer, so
+                                    // the live rows can say who is reviewing.
+                                    // `checker` is the legacy field name for `reviewer`.
+                                    patchStreamingHandoff({
+                                        reviewing: parsed.status !== 'done',
+                                        reviewer: parsed.reviewer || parsed.checker || undefined,
+                                    });
                                     continue;
                                 }
                                 if (parsed.type === 'delegate_progress') {
@@ -3182,6 +3277,60 @@ export default function ChatContainer({
         return Array.from(modelMap.values());
     }, [models, runningInstances]);
 
+    // ── Two-model pair for the composer's model picker ────────────────────
+    // The server-wide roles (Models page) plus this account's overrides. The
+    // server moves a turn onto the PRIMARY whenever the request names either
+    // member of the pair (services/leadHandoff.js planHandoff), so the picker
+    // must offer the pair as ONE entry rather than two models that silently
+    // collapse into the same run.
+    const [modelRoleInfo, setModelRoleInfo] = useState(null);
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/model-roles', { credentials: 'include' })
+            .then(r => (r.ok ? r.json() : null))
+            .then(d => { if (!cancelled && d) setModelRoleInfo(d); })
+            .catch(() => {});
+        return () => { cancelled = true; };
+        // Re-read when the set of loaded models changes: a pair only counts
+        // once both of its models are actually running.
+    }, [runningInstances.length]);
+
+    // Measured generation speed per model, for the picker rows (it is how a
+    // user tells the big model from the fast one).
+    const modelSpeeds = React.useMemo(() => {
+        const out = {};
+        const running = (modelRoleInfo && Array.isArray(modelRoleInfo.running)) ? modelRoleInfo.running : [];
+        running.forEach(r => { if (r && r.name && r.tokensPerSecond) out[r.name] = r.tokensPerSecond; });
+        return out;
+    }, [modelRoleInfo]);
+
+    // The effective pair, or null when there isn't one. Requires a primary AND
+    // a different helper, both LOADED, with pairing not switched off.
+    const modelPair = React.useMemo(() => {
+        const sr = (modelRoleInfo && modelRoleInfo.roles) || {};
+        const primary = settings.rolePrimaryModel || sr.primary || '';
+        const helper = settings.roleHelperModel || sr.helper || '';
+        const mode = (typeof settings.roleMode === 'string' && settings.roleMode) ? settings.roleMode : (sr.mode || 'auto');
+        if (!primary || !helper || primary === helper || mode === 'off') return null;
+        const running = new Set(combinedModels.filter(m => m.status === 'running').map(m => m.name));
+        if (!running.has(primary) || !running.has(helper)) return null;
+        return { primary, helper, mode };
+    }, [modelRoleInfo, settings.rolePrimaryModel, settings.roleHelperModel, settings.roleMode, combinedModels]);
+
+    // The pair is the default pick. Naming the HELPER in the composer is a
+    // no-op (the server runs the turn on the primary anyway), and an unset or
+    // stale selection is not a deliberate third-model choice — both mean "the
+    // pair", whose request model is the primary. A genuinely chosen third
+    // model is left alone.
+    useEffect(() => {
+        if (!modelPair) return;
+        const cur = settings.model;
+        const running = combinedModels.filter(m => m.status === 'running').map(m => m.name);
+        if ((!cur || cur === modelPair.helper || !running.includes(cur)) && cur !== modelPair.primary) {
+            updateSettings({ model: modelPair.primary });
+        }
+    }, [modelPair, settings.model, combinedModels]);
+
     // Get the context size for the selected model
     const selectedModelContextSize = React.useMemo(() => {
         if (!settings.model) return 4096; // Default
@@ -3267,6 +3416,8 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                modelPair={modelPair}
+                                modelSpeeds={modelSpeeds}
                                 reasoningEffort={settings.reasoningEffort || 'default'}
                                 onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
                                 queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId && q.status !== 'starting' && q.status !== 'working' && q.status !== 'done')}
@@ -3324,6 +3475,8 @@ export default function ChatContainer({
                                 models={combinedModels}
                                 selectedModel={settings.model}
                                 onModelChange={handleModelChange}
+                                modelPair={modelPair}
+                                modelSpeeds={modelSpeeds}
                                 reasoningEffort={settings.reasoningEffort || 'default'}
                                 onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
                                 queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId && q.status !== 'starting' && q.status !== 'working' && q.status !== 'done')}

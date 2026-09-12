@@ -257,6 +257,7 @@ const reasoningEffort = require('./services/reasoningEffort');
 const modelRolesSvc = require('./services/modelRoles');
 const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
+const leadHandoff = require('./services/leadHandoff');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
 // manifest scripts/download_model.py writes into each model dir (and applies
@@ -2702,7 +2703,7 @@ async function loadSystemSettings() {
 // Server-wide model roles (set on the Models page): the PRIMARY does the work,
 // the CHECKER reviews/edits it and answers the primary's consult_expert calls.
 // Per-account chat prefs and a request body override these per field.
-let systemModelRoles = { primary: '', checker: '', checkWorkers: true, checkFinal: 'off', consult: true };
+let systemModelRoles = { primary: '', helper: '', mode: 'auto', firstPass: true, legwork: true, review: 'off', checkWorkers: false };
 
 async function saveSystemSettings() {
     const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles };
@@ -3736,9 +3737,13 @@ const PREF_FIELDS = new Set([
     'density',       // comfortable | compact
     'fontFamily',    // any value from the chat font list
     'fontSize',      // small | medium | large
-    // Two-model roles (chat): primary does the work (worker agents run on it),
-    // the checker reviews it. See services/modelRoles.js.
-    'rolePrimaryModel', 'roleCheckerModel', 'roleCheckWorkers', 'roleCheckFinal',
+    // Two-model roles (chat): the PRIMARY is the main model and writes every
+    // answer; the HELPER is a faster model that assists it. See
+    // services/modelRoles.js. The old roleCheckerModel / roleCheckFinal /
+    // roleConsult keys are still accepted so a saved pre-swap preference keeps
+    // working (resolveModelRoles migrates them).
+    'rolePrimaryModel', 'roleHelperModel', 'roleMode', 'roleFirstPass', 'roleLegwork', 'roleReview', 'roleCheckWorkers',
+    'roleCheckerModel', 'roleCheckFinal', 'roleConsult', 'roleHandoff',
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
     'memoryDisabled', // boolean — chat: turn off account memory (inject + extract + record_learning)
@@ -19328,14 +19333,46 @@ function resolveBusyKey(model) {
 }
 
 const chatStreamHandler = async (req, res) => {
-    const busyKey = resolveBusyKey(req.body && req.body.model);
-    modelBusyInc(busyKey);
+    // Held in an object so the handler can MOVE the count when a lead hand-off
+    // switches the turn onto the stronger model — otherwise capacity would
+    // report the fast model busy while the slow one is doing the work.
+    const busy = { key: resolveBusyKey(req.body && req.body.model) };
+    modelBusyInc(busy.key);
+    req._busy = busy;
     try {
         return await chatStreamHandlerInner(req, res);
     } finally {
-        modelBusyDec(busyKey);
+        modelBusyDec(busy.key);
     }
 };
+
+// The latest user message as the REQUEST carried it. The handler computes a
+// richer `latestUserText` later, but the hand-off decision has to be made
+// before the turn's model is fixed, which is well before that point.
+function latestUserAskFromBody(inputMessages, message) {
+    if (Array.isArray(inputMessages)) {
+        for (let i = inputMessages.length - 1; i >= 0; i--) {
+            const m = inputMessages[i];
+            if (!m || m.role !== 'user') continue;
+            if (typeof m.content === 'string') return m.content;
+            if (Array.isArray(m.content)) {
+                return m.content.filter(p => p && p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
+            }
+        }
+    }
+    return typeof message === 'string' ? message : '';
+}
+
+// Re-point the busy accounting after the turn's model changes.
+function retargetBusy(req, model) {
+    const busy = req && req._busy;
+    if (!busy) return;
+    const next = resolveBusyKey(model);
+    if (next === busy.key) return;
+    modelBusyDec(busy.key);
+    busy.key = next;
+    modelBusyInc(next);
+}
 
 const chatStreamHandlerInner = async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
@@ -19385,6 +19422,56 @@ const chatStreamHandlerInner = async (req, res) => {
             targetInstance = modelInstances.get(targetModel);
             if (!targetInstance) {
                 return res.status(400).json({ error: `Model ${targetModel} is not running. Please load it first.` });
+            }
+        }
+
+        // ── Two-model hand-off (services/leadHandoff.js) ────────────────────
+        // Resolved HERE, before the host/port are derived, because engaging a
+        // hand-off changes which model this turn actually RUNS on: the
+        // stronger model leads and writes the answer while the faster one
+        // becomes its assistant (first pass now, legwork on request later).
+        // A worker or sidecar turn never hands off — it would recurse.
+        let handoff = { engaged: false, lead: null, assistant: null, reason: 'not evaluated' };
+        if (!req.delegate && !req.sidecar) {
+            try {
+                const runningNames = [];
+                for (const [k, inst] of modelInstances.entries()) { runningNames.push(k); if (inst && inst.modelName) runningNames.push(inst.modelName); }
+                // No targetModel here on purpose: we want the raw primary/checker
+                // pair before one of them becomes the turn's model.
+                const pairRoles = modelRolesSvc.resolveModelRoles({
+                    body: req.body,
+                    prefs: await getChatPrefsForUser(req.user?.id || null),
+                    system: systemModelRoles,
+                    running: runningNames,
+                });
+                const askText = latestUserAskFromBody(inputMessages, message);
+                handoff = leadHandoff.planHandoff({
+                    roles: pairRoles,
+                    targetModel,
+                    userText: askText,
+                    mode: pairRoles.mode,
+                    running: runningNames,
+                    hasAttachments: /===\s*FILE\s+\d+/i.test(askText),
+                    attachmentKinds: leadHandoff.attachmentKindsFromText(askText),
+                });
+                // The PRIMARY is the main model: when one is configured it
+                // answers the turn even if the composer aimed at the helper.
+                if (handoff.switched && handoff.runOn && modelInstances.has(handoff.runOn)) {
+                    console.log(`[Chat Stream] Roles: turn moved from ${targetModel} to the primary ${handoff.runOn}`);
+                    targetModel = handoff.runOn;
+                    targetInstance = modelInstances.get(handoff.runOn);
+                    retargetBusy(req, targetModel);
+                }
+                if (handoff.engaged && !modelInstances.has(handoff.helper)) {
+                    handoff = { ...handoff, engaged: false, firstPass: false, legwork: false, reason: 'helper model disappeared' };
+                }
+                if (handoff.engaged) {
+                    console.log(`[Chat Stream] Helper engaged (${handoff.reason}): ${handoff.primary} does the work, ${handoff.helper} assists (` +
+                        [handoff.firstPass ? 'first pass' : null, handoff.legwork ? 'legwork' : null].filter(Boolean).join(' + ') + ')');
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] hand-off planning failed:', e.message);
+                handoff = { engaged: false, lead: null, assistant: null, reason: 'planning failed' };
             }
         }
 
@@ -19809,8 +19896,10 @@ const chatStreamHandlerInner = async (req, res) => {
             // prompt starts with the same bytes as the parent's — the backend's
             // prompt cache then skips re-prefilling those tokens.
             if (req.delegate) prelude = `${prelude}\n\n${buildDelegatePrelude(req.delegate)}`;
-            if (modelRoles.checker && modelRoles.consult !== false && modelRoles.checker !== targetModel) {
-                prelude += `\nEXPERT MODEL AVAILABLE: a stronger model (${modelRoles.checker}) is loaded alongside you and reachable through the \`consult_expert\` tool. Consult it when you are stuck, unsure, or facing hard reasoning, tricky math, non-trivial code design or a decision with real consequences — ask ONE specific question with the context it needs, then continue the work yourself using its answer. Do not consult it for routine steps or things you know.${modelRoles.checkFinal !== 'off' || modelRoles.checkWorkers ? ' The same model reviews your work afterwards, so be accurate and cite your evidence.' : ''}`;
+            // Lead framing goes after the shared prelude for the same
+            // prompt-cache reason the worker framing does.
+            if (handoff.engaged && handoff.legwork) {
+                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.helper, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
             }
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
@@ -21132,8 +21221,8 @@ const chatStreamHandlerInner = async (req, res) => {
             if (modelRoles.sameModel && !req.delegate) {
                 console.log(`[Chat Stream] Model roles: checker is the same model as the primary (${targetModel}) — checker/consult ignored`);
             }
-            if (modelRoles.checker && modelRoles.source !== 'none') {
-                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} checker=${modelRoles.checker} checkWorkers=${modelRoles.checkWorkers} checkFinal=${modelRoles.checkFinal} consult=${modelRoles.consult}`);
+            if (modelRoles.helper && modelRoles.source !== 'none') {
+                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} helper=${modelRoles.helper} mode=${modelRoles.mode} firstPass=${modelRoles.firstPass} legwork=${modelRoles.legwork} review=${modelRoles.review} checkWorkers=${modelRoles.checkWorkers}`);
             }
         } catch (e) { console.warn('[Chat Stream] model roles resolution failed:', e.message); }
         const toolCtx = {
@@ -21166,11 +21255,22 @@ const chatStreamHandlerInner = async (req, res) => {
             model: targetModel,
             reasoningEffort: requestedEffort || null,
             modelRoles,
-            workerModel: modelRoles.primary || targetModel,
-            checkerModel: modelRoles.checker || null,
-            checkWorkers: !!(modelRoles.checker && modelRoles.checkWorkers),
-            // The stronger model the primary may ask for help (consult_expert).
-            consultModel: (modelRoles.checker && modelRoles.consult !== false) ? modelRoles.checker : null,
+            // Parallel worker agents prefer the HELPER (the faster model);
+            // assignWorkerModels spreads them by measured speed from there.
+            workerModel: modelRoles.helper || targetModel,
+            checkerModel: modelRoles.helper || null,
+            checkWorkers: !!(modelRoles.helper && modelRoles.checkWorkers),
+            // consult_expert is retired by the role swap: the primary IS the
+            // stronger model now, so there is nobody above it to consult. The
+            // tool stays registered but never builds (it null-gates on this),
+            // and ask_assistant covers the delegation case instead.
+            consultModel: null,
+            // ── lead hand-off ────────────────────────────────────────────
+            // On a handed-off turn THIS model is the lead and the faster one is
+            // its assistant: ask_assistant dispatches legwork without blocking,
+            // and finished jobs are delivered into the next round.
+            assistantModel: (handoff.engaged && handoff.legwork) ? handoff.helper : null,
+            _assistantJobs: (handoff.engaged && handoff.legwork) ? new Map() : null,
             workspaceBucket: (req.delegate && req.delegate.workspaceBucket)
                 || (req.sidecar && req.sidecar.workspaceBucket)
                 || (conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null),
@@ -21588,6 +21688,85 @@ const chatStreamHandlerInner = async (req, res) => {
             }
         } catch (e) {
             console.warn('[Chat Stream] image pre-flight failed:', e.message);
+        }
+
+        // --- First pass by the assistant model, when a hand-off engaged ------
+        // The fast model restates the task, gathers anything cheap, and hands
+        // the lead a short brief. The lead then writes the real answer. The
+        // brief goes in the LATEST USER MESSAGE, like every other pre-flight:
+        // a trailing system message 500s on templates that require alternating
+        // roles, and the user slot is the prefix-cache-friendly one.
+        if (handoff.engaged && handoff.firstPass && latestUserMsgIdx >= 0) {
+            const fpStart = Date.now();
+            try {
+                if (clientConnected) {
+                    try {
+                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'first_pass', helper: handoff.helper, primary: handoff.primary, reason: handoff.reason })}\n\n`);
+                        if (res.flush) res.flush();
+                    } catch (_) { clientConnected = false; }
+                }
+                logChatActivity(`Helper: ${handoff.helper} is sizing up the task, then ${handoff.primary} writes the answer (${handoff.reason})`);
+                const fp = await runDelegatedTurn({
+                    parentReq: req,
+                    task: leadHandoff.buildFirstPassTask({
+                        userText: latestUserText,
+                        leadModel: handoff.primary,
+                        helperModel: handoff.helper,
+                        toolBudget: HANDOFF_FIRST_PASS_TOOLS,
+                    }),
+                    label: 'first pass',
+                    siblings: [],
+                    model: handoff.helper,
+                    reasoningEffort: 'off',
+                    modelRoles: { primary: handoff.helper, helper: '', mode: 'off', checkWorkers: false, review: 'off' },
+                    workspaceBucket: conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null,
+                    depth: 0,
+                    maxRounds: HANDOFF_FIRST_PASS_ROUNDS,
+                    signal: streamAbortController.signal,
+                });
+                const fpSecs = Math.round((Date.now() - fpStart) / 100) / 10;
+                const note = (fp && fp.status === 'ok')
+                    ? leadHandoff.renderBriefNote({
+                        brief: fp.answer,
+                        assistantModel: handoff.helper,
+                        firstPassSeconds: fpSecs,
+                        toolCalls: fp.toolCalls,
+                        legworkAvailable: handoff.legwork,
+                    })
+                    : '';
+                const proposed = (note && handoff.legwork) ? leadHandoff.parseLegwork(fp.answer) : [];
+                if (note) {
+                    const um = chatMessages[latestUserMsgIdx];
+                    const block = note + '\n\n';
+                    if (typeof um.content === 'string') um.content = block + um.content;
+                    else if (Array.isArray(um.content)) {
+                        const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                        if (tIdx >= 0) um.content[tIdx].text = block + um.content[tIdx].text;
+                        else um.content.unshift({ type: 'text', text: block });
+                    }
+                    handoff.brief = fp.answer;
+                    handoff.firstPassSeconds = fpSecs;
+                    handoff.firstPassCalls = fp.toolCalls || 0;
+                    logChatActivity(`Helper: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
+                        + (proposed.length ? ` — proposed ${proposed.length} background job(s): ${proposed.map(j => `"${j.name}"`).join(', ')}` : '')
+                        + ` — ${handoff.primary} is now writing`);
+                    console.log(`[Chat Stream] Hand-off first pass: ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
+                        + (proposed.length ? `legwork proposed: ${proposed.map(j => j.name).join(' | ')}` : 'no legwork proposed'));
+                } else {
+                    // A failed first pass is not a reason to fail the turn —
+                    // the lead can do the whole job itself.
+                    console.warn(`[Chat Stream] Hand-off first pass produced nothing (${fp && fp.status}); the lead continues without a brief`);
+                    logChatActivity('Hand-off: first pass produced nothing — the lead is working without a brief');
+                }
+                if (clientConnected) {
+                    try {
+                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'lead', helper: handoff.helper, primary: handoff.primary, firstPassSeconds: fpSecs, briefChars: String(handoff.brief || '').length })}\n\n`);
+                        if (res.flush) res.flush();
+                    } catch (_) { clientConnected = false; }
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] hand-off first pass failed:', e.message);
+            }
         }
 
         // --- Honor explicit tool prohibitions in the user's system prompt ----
@@ -22789,7 +22968,43 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 policyCache.set(toolName, result);
                 return result;
             };
-            while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS) {
+            // A delegated turn can carry a tighter cap than the global one: a
+            // hand-off FIRST PASS is supposed to produce a brief in a couple of
+            // rounds, not work the task (the lead is waiting on it).
+            const roundCap = Math.min(
+                chatTools.MAX_TOOL_ITERATIONS,
+                (req.delegate && Number(req.delegate.maxRounds) > 0) ? Math.trunc(Number(req.delegate.maxRounds)) : chatTools.MAX_TOOL_ITERATIONS
+            );
+            // Deliver any assistant job that finished since the last round, as
+            // a system message in the same slot the loop guards use. This is
+            // what makes ask_assistant non-blocking: the lead never waits, the
+            // result simply appears in its context the moment it lands.
+            const deliverAssistantResults = () => {
+                const jobs = toolCtx._assistantJobs;
+                if (!jobs || !jobs.size) return null;
+                const ready = [...jobs.values()].filter(j => j.status !== 'running' && !j.delivered);
+                if (!ready.length) return null;
+                const parts = ready.map(j => {
+                    j.delivered = true;
+                    if (j.status !== 'done') {
+                        return `• "${j.name}" (${j.id}) FAILED${j.error ? `: ${j.error}` : ''}. Do it yourself or work around it.`;
+                    }
+                    const body = String((j.result && j.result.answer) || '').slice(0, DELEGATE_ANSWER_CHARS);
+                    const files = (j.result && j.result.filesWritten) || [];
+                    return `• "${j.name}" (${j.id}, ${j.seconds}s)${files.length ? ` — wrote ${files.join(', ')}` : ''}:\n${body}`;
+                });
+                const stillRunning = [...jobs.values()].filter(j => j.status === 'running');
+                logChatActivity(`Assistant: delivered ${ready.length} finished job(s) to ${targetModel}${stillRunning.length ? `, ${stillRunning.length} still running` : ''}`);
+                console.log(`[Chat Stream] Hand-off: delivered ${ready.length} assistant result(s) to ${targetModel} — ${ready.map(j => `"${j.name}" (${j.status})`).join(', ')}${stillRunning.length ? `; ${stillRunning.length} still running` : ''}`);
+                return {
+                    role: 'system',
+                    content: `[ASSISTANT RESULTS — your assistant finished ${ready.length} job${ready.length === 1 ? '' : 's'}. Use ${ready.length === 1 ? 'it' : 'them'} in the work you are doing now; do not redo what it already did.]\n`
+                        + parts.join('\n\n')
+                        + (stillRunning.length ? `\n\n(Still running: ${stillRunning.map(j => `"${j.name}" (${j.id})`).join(', ')} — keep working, ${stillRunning.length === 1 ? 'it' : 'they'} will reach you when done.)` : ''),
+                };
+            };
+
+            while (toolCallRound <= roundCap) {
                 // --- Tool router grow-only expansion (before reset) ----------
                 // A tool the model just used, or discovered via find_tools, is
                 // advertised on the NEXT round. The advertised set only GROWS
@@ -24465,7 +24680,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
                                 : null;
                             clearRunningToolCall(call.id);
-                            if (modelRoles.checker && modelRoles.checkFinal && toolEvidenceForChecker.length < 40) {
+                            if (modelRoles.helper && modelRoles.review !== 'off' && toolEvidenceForChecker.length < 40) {
                                 toolEvidenceForChecker.push({ name: call.function.name || 'tool', purpose: call.purpose || '', failed: !!failedChip, content: String(resultMsg.content || '').slice(0, 6000) });
                             }
                             persistedToolChips.push({
@@ -24676,6 +24891,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // prompts: after the tool results, so the model reads the
                     // quarantine + the restated task right before its next
                     // round instead of being cut off (see LOOP GUARD above).
+                    // Assistant jobs that finished while this round ran land
+                    // in the same slot — the lead reads them right before its
+                    // next round without ever having waited on them.
+                    const assistantMsg = deliverAssistantResults();
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -24685,6 +24904,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         },
                         ...toolResultMessages,
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
+                        ...(assistantMsg ? [assistantMsg] : []),
                         ...(pendingLoopCheckpoint ? [pendingLoopCheckpoint] : []),
                     ];
                     if (pendingLoopCheckpoint) pendingLoopCheckpoint = null;
@@ -24897,7 +25117,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             //    trigger: rather than dead-stopping, we suppress tools AND
             //    thinking (/no_think) and make the model answer from what it
             //    has. Handled in the trigger below + the synthesis message.
-            const hitIterationCap = (toolCallRound > chatTools.MAX_TOOL_ITERATIONS
+            const hitIterationCap = (toolCallRound > roundCap
                 && (finishReason === 'tool_calls'
                     || (finishReason === 'length' && accumulatedToolCalls.length > 0)))
                 || toolCallCapHit;
@@ -25400,14 +25620,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // is streamed as an addendum and persisted with the answer. Skipped
         // for worker turns (the delegate tool checks their REPORTS), trivial
         // chat, cancelled turns, and when no checker is configured.
-        if (!req.delegate && modelRoles.checker && modelRoles.checkFinal && modelRoles.checkFinal !== 'off'
+        if (!req.delegate && modelRoles.helper && modelRoles.review && modelRoles.review !== 'off'
+            && modelRoles.helper !== targetModel
             && !streamAbortController.signal.aborted && fullResponse
             && modelRolesSvc.shouldCheckFinal({ answer: fullResponse, toolCalls: persistedToolChips.length })) {
             const t0 = Date.now();
             updateJobPhase('checking');
-            logChatActivity(`Checker: ${modelRoles.checker} reviewing the answer…`);
+            logChatActivity(`Helper: ${modelRoles.helper} is reviewing the answer…`);
             if (clientConnected && !res.writableEnded) {
-                try { res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'running', checker: modelRoles.checker })}\n\n`); } catch (_) { clientConnected = false; }
+                try { res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'running', checker: modelRoles.helper, reviewer: modelRoles.helper })}\n\n`); } catch (_) { clientConnected = false; }
             }
             let review = null;
             try {
@@ -25418,10 +25639,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     userAsk: latestUserText,
                     answer: fullResponse,
                     toolSummary: evidence,
-                    mode: modelRoles.checkFinal,
+                    mode: modelRoles.review,
                 });
                 const r = await Promise.race([
-                    requestModelCompletion({ messages: msgs, model: modelRoles.checker, temperature: 0.2, maxTokens: modelRoles.checkFinal === 'edit' ? Math.max(1500, Math.ceil(fullResponse.length / 2.5) + 800) : 1500, disableThinking: true }),
+                    requestModelCompletion({ messages: msgs, model: modelRoles.helper, temperature: 0.2, maxTokens: modelRoles.review === 'edit' ? Math.max(1500, Math.ceil(fullResponse.length / 2.5) + 800) : 1500, disableThinking: true }),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
                 ]);
                 review = modelRolesSvc.parseReview(r && r.content);
@@ -25430,28 +25651,28 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             }
             let addendum;
             let edited = false;
-            if (modelRoles.checkFinal === 'edit' && review.verdict === 'issues' && review.revised) {
+            if (modelRoles.review === 'edit' && review.verdict === 'issues' && review.revised) {
                 // The checker rewrote the answer: replace what the user saw
                 // (content_rewind swaps the bubble text; the pump reveals the
                 // rest) and persist the corrected version.
                 edited = true;
                 review.edited = true;
-                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.helper);
                 fullResponse = review.revised + addendum;
                 if (clientConnected && !res.writableEnded) {
                     try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
                 }
             } else {
-                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.helper);
                 fullResponse += addendum;
             }
             const secs = Math.round((Date.now() - t0) / 100) / 10;
-            logChatActivity(`Checker: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)${edited ? ', answer edited' : ''}` : 'review failed'} (${modelRoles.checker}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
-            console.log(`[Chat Stream] Checker ${modelRoles.checker}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
+            logChatActivity(`Helper review: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)${edited ? ', answer rewritten' : ''}` : 'review failed'} (${modelRoles.helper}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
+            console.log(`[Chat Stream] Helper review ${modelRoles.helper}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
             if (clientConnected && !res.writableEnded) {
                 try {
                     if (!edited) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
-                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.checker, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.helper, reviewer: modelRoles.helper, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
                 } catch (_) { clientConnected = false; }
             }
         }
@@ -25499,6 +25720,17 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 }
             } catch (saveErr) {
                 console.error(`[Chat Stream] Failed to save response:`, saveErr);
+            }
+        }
+
+        // Any assistant job the lead never waited for is abandoned here: the
+        // answer is written, so the job can only burn a slot from now on.
+        if (toolCtx._assistantJobs && toolCtx._assistantJobs.size) {
+            const orphans = [...toolCtx._assistantJobs.values()].filter(j => j.status === 'running');
+            if (orphans.length) {
+                console.log(`[Chat Stream] Hand-off: cancelling ${orphans.length} assistant job(s) the lead finished without — ${orphans.map(j => `"${j.name}"`).join(', ')}`);
+                logChatActivity(`Assistant: cancelled ${orphans.length} unfinished job(s) — the answer was already written`);
+                for (const j of orphans) { try { j.abort && j.abort(); } catch (_) {} }
             }
         }
 
@@ -25767,6 +25999,13 @@ const DELEGATE_MAX_PARALLEL = Math.max(1, parseInt(process.env.DELEGATE_MAX_PARA
 // its task, so a model with less per-slot context than this is not a usable
 // worker host and is skipped when fanning out.
 const WORKER_MIN_CONTEXT = Math.max(2048, parseInt(process.env.DELEGATE_WORKER_MIN_CONTEXT || '12288', 10) || 12288);
+// Lead hand-off: how much the assistant model may do in its first pass before
+// the lead takes over. The lead is WAITING on this, so it is deliberately
+// tight — a brief, not an attempt at the job.
+const HANDOFF_FIRST_PASS_TOOLS = Math.max(0, parseInt(process.env.HANDOFF_FIRST_PASS_TOOLS || '3', 10) || 0);
+const HANDOFF_FIRST_PASS_ROUNDS = Math.max(1, parseInt(process.env.HANDOFF_FIRST_PASS_ROUNDS || '4', 10) || 4);
+// Background legwork the lead can have running at once (ask_assistant).
+const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
 const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
 const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
 const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
@@ -25775,7 +26014,7 @@ const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWE
 const DELEGATE_FIX_ROUNDS = Math.max(0, parseInt(process.env.DELEGATE_FIX_ROUNDS || '1', 10) || 0);
 const CHECKER_TIMEOUT_MS = Math.max(15000, parseInt(process.env.CHECKER_TIMEOUT_MS || '180000', 10) || 180000);
 
-async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, signal, onEvent }) {
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent }) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
     if (signal) {
@@ -25791,7 +26030,8 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
         ...(reasoningEffort ? { reasoningEffort } : {}),
         // Explicit so the worker never re-reads prefs; a worker's report is
         // checked by the delegate tool, never inside its own turn.
-        modelRoles: { primary: model, checker: (modelRoles && modelRoles.checker) || '', checkWorkers: false, checkFinal: false },
+        // A delegated turn is never itself paired: it runs alone on `model`.
+        modelRoles: { primary: model, helper: '', mode: 'off', checkWorkers: false, review: 'off' },
     };
     const req = {
         body,
@@ -25803,7 +26043,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
         setTimeout() {},
         on() {},
         once() {},
-        delegate: { label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, signal: controller.signal },
+        delegate: { label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, maxRounds: maxRounds || null, signal: controller.signal },
     };
 
     let content = '';
@@ -26640,20 +26880,27 @@ app.get('/api/model-roles', requireAuth, (req, res) => {
     const running = [];
     for (const [name, inst] of modelInstances.entries()) {
         if (inst && inst.status && inst.status !== 'running') continue;
-        running.push({ name, backend: inst && inst.backend, slots: modelSlotCount(inst) });
+        const sp = modelSpeed.get(name);
+        running.push({
+            name, backend: inst && inst.backend, slots: modelSlotCount(inst),
+            // Measured decode speed — this is how a user tells which of two
+            // loaded models is the big one (see probeModelSpeed).
+            ...(sp ? { tokensPerSecond: Math.round(sp.decode * 10) / 10 } : {}),
+        });
     }
     res.json({ roles: systemModelRoles, running });
 });
 app.put('/api/model-roles', requireAdmin, async (req, res) => {
     try {
         const next = modelRolesSvc.sanitizeSystemRoles({ ...systemModelRoles, ...(req.body && typeof req.body === 'object' ? req.body : {}) });
-        if (next.primary && next.checker && next.primary === next.checker) {
-            // Allowed (same model gives a second opinion), but say so.
-            console.log('[model-roles] primary and checker are the same model');
+        if (next.primary && next.helper && next.primary === next.helper) {
+            // Stored as given, but ignored at resolution — a model does not
+            // assist itself. The card warns about it.
+            console.log('[model-roles] primary and helper name the same model — the helper will be ignored');
         }
         systemModelRoles = next;
         await saveSystemSettings();
-        console.log(`[model-roles] primary=${next.primary || '(composer)'} checker=${next.checker || '(none)'} checkWorkers=${next.checkWorkers} checkFinal=${next.checkFinal} consult=${next.consult} by ${req.user?.username || req.userId || 'admin'}`);
+        console.log(`[model-roles] primary=${next.primary || '(composer)'} helper=${next.helper || '(none)'} mode=${next.mode} firstPass=${next.firstPass} legwork=${next.legwork} review=${next.review} checkWorkers=${next.checkWorkers} by ${req.user?.username || req.userId || 'admin'}`);
         res.json({ roles: systemModelRoles });
     } catch (err) {
         console.error('[model-roles] update failed:', err);
@@ -32447,7 +32694,11 @@ app.use((req, res) => {
     // ── consult_expert ────────────────────────────────────────────────────────
     // Two models working together: the (weaker, faster) primary asks the
     // stronger checker model a specific question when it is stuck. Present only
-    // when a checker is configured with consult enabled (toolCtx.consultModel).
+    // when ctx.consultModel is set — which, since the 2026-09-12 role swap, is
+    // never: the PRIMARY is the stronger model now, so there is nobody above it
+    // to consult, and `ask_assistant` covers handing work DOWN to the helper.
+    // Kept registered (not deleted) so an operator can re-enable the path by
+    // setting consultModel, and so older saved chips still render.
     tools.registerTool({
         name: 'consult_expert',
         build(ctx) {
@@ -32491,6 +32742,213 @@ app.use((req, res) => {
             } catch (e) {
                 return { error: `consult_expert failed: ${e.message || String(e)}`, model };
             }
+        },
+    });
+
+    // ── ask_assistant / await_assistant ───────────────────────────────────────
+    // The lead half of the two-model hand-off. Where consult_expert asks a
+    // question and BLOCKS on the answer, ask_assistant hands the faster model a
+    // piece of legwork and returns immediately with a ticket — the lead keeps
+    // writing while the assistant works, and finished results are delivered
+    // into the next round automatically (see deliverAssistantResults in the
+    // tool loop). This is what makes the two models genuinely concurrent
+    // instead of taking turns.
+    //
+    // Present only on a turn where a hand-off engaged (ctx.assistantModel).
+    tools.registerTool({
+        name: 'ask_assistant',
+        build(ctx) {
+            if (!ctx || !ctx.assistantModel) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'ask_assistant',
+                    description:
+                        `Hand legwork to your assistant model (${ctx.assistantModel}) and KEEP WORKING — this returns immediately, it does not wait. ` +
+                        'Use it for anything you would otherwise stop and do yourself: look something up, read or list files, run a script and report what it printed, gather reference material, check a fact. ' +
+                        `Up to ${ASSISTANT_MAX_PARALLEL} run at once and results are delivered to you as they finish, so dispatch what you will need EARLY and carry on. Keep the thinking, design and writing for yourself.`,
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            requests: {
+                                type: 'array',
+                                description: `The jobs to start now (1–${ASSISTANT_MAX_PARALLEL}). Each is a complete brief.`,
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        name: { type: 'string', description: 'Short label, e.g. "canvas docs" or "run the tests".' },
+                                        task: { type: 'string', description: 'The full brief: what to find or do, where to look, and exactly what to report back.' },
+                                    },
+                                    required: ['task'],
+                                },
+                            },
+                            purpose: { type: 'string', description: 'One short line on why you need this, shown to the user.' },
+                        },
+                        required: ['requests'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const model = ctx && ctx.assistantModel;
+            if (!model) return { error: 'No assistant model on this turn.' };
+            const jobs = ctx._assistantJobs;
+            if (!jobs) return { error: 'The assistant queue is not available on this turn.' };
+            let list = args && (args.requests || args.tasks || args.jobs || args.request);
+            if (typeof list === 'string') { try { list = JSON.parse(list); } catch (_) { list = [{ task: list }]; } }
+            if (list && !Array.isArray(list) && typeof list === 'object') {
+                list = Object.entries(list).map(([k, v]) => (v && typeof v === 'object' ? v : { name: k, task: String(v) }));
+            }
+            if (!Array.isArray(list) || list.length === 0) {
+                return { error: 'requests must be a non-empty array of {name, task}.' };
+            }
+            const running = [...jobs.values()].filter(j => j.status === 'running').length;
+            const room = Math.max(0, ASSISTANT_MAX_PARALLEL - running);
+            if (room === 0) {
+                return {
+                    error: `All ${ASSISTANT_MAX_PARALLEL} assistant jobs are already running.`,
+                    running: [...jobs.values()].filter(j => j.status === 'running').map(j => j.name),
+                    note: 'Their results will reach you as they finish, or call await_assistant to wait for one now.',
+                };
+            }
+            const taken = list.slice(0, room).map((r, i) => {
+                const o = (r && typeof r === 'object') ? r : { task: String(r) };
+                const task = String(o.task || o.brief || o.request || o.objective || o.purpose || '').trim();
+                // Models label these variously; `id` is common (observed live).
+                const name = String(o.name || o.label || o.id || o.job || o.title || `job ${jobs.size + i + 1}`)
+                    .trim().replace(/_/g, ' ').slice(0, 60);
+                return { name, task };
+            }).filter(x => x.task);
+            if (!taken.length) return { error: 'Every request was missing a `task`.' };
+
+            // Guard the mistake this tool invites: dispatching the assistant to
+            // read/verify a /workspace file the lead has not written YET. The
+            // assistant cannot find it, burns a slot hunting (observed: four
+            // calls, 39 s, including web searches for "snake.html"), and the
+            // lead gets a useless report. Checked against the real bucket.
+            try {
+                const refs = new Set();
+                for (const t of taken) {
+                    for (const m of String(t.task).matchAll(/\/workspace\/[A-Za-z0-9._\/-]+/g)) refs.add(m[0]);
+                }
+                if (refs.size) {
+                    const ws = await sandboxRunner.describeWorkspaceBucket(ctx.userId, ctx.workspaceBucket).catch(() => null);
+                    const present = new Set();
+                    if (ws) {
+                        for (const f of (ws.files || [])) present.add(`/workspace/${f.rel}`);
+                        for (const d of (ws.dirs || [])) present.add(`/workspace/${d.rel}`);
+                        for (const r of (ws.repos || [])) present.add(`/workspace/${r.rel}`);
+                    }
+                    const missing = [...refs].filter(r => ![...present].some(p => p === r || p.startsWith(r + '/') || r.startsWith(p + '/')));
+                    if (missing.length && missing.length === refs.size) {
+                        return {
+                            error: 'not_written_yet',
+                            missing,
+                            note: `Those paths do not exist yet — you have not written them. The assistant cannot inspect work you have not produced; it would waste a slot hunting for the file. Write the file yourself first, then verify it yourself (run_python / preview_html). Hand the assistant OUTWARD-facing legwork instead: looking something up, gathering reference material, reading a file the USER supplied, or running an existing script.`,
+                        };
+                    }
+                }
+            } catch (_) { /* the guard is advisory — never block a dispatch on it */ }
+
+            const dispatched = [];
+            for (const t of taken) {
+                const id = `a${jobs.size + 1}`;
+                // Own controller per job, chained to the turn's, so the turn
+                // can reclaim the slot from a job the lead never waited for.
+                const ac = new AbortController();
+                if (ctx.abortSignal) {
+                    if (ctx.abortSignal.aborted) ac.abort();
+                    else ctx.abortSignal.addEventListener('abort', () => ac.abort(), { once: true });
+                }
+                const job = { id, name: t.name, task: t.task, status: 'running', startedAt: Date.now(), model, abort: () => ac.abort() };
+                jobs.set(id, job);
+                // Deliberately NOT awaited — that is the whole point.
+                job.promise = runDelegatedTurn({
+                    parentReq: ctx._req,
+                    task: t.task,
+                    label: t.name,
+                    siblings: [],
+                    model,
+                    reasoningEffort: ctx.reasoningEffort,
+                    modelRoles: { primary: model, checker: '', checkWorkers: false, checkFinal: 'off' },
+                    workspaceBucket: ctx.workspaceBucket,
+                    depth: (ctx.delegateDepth || 0),
+                    signal: ac.signal,
+                    onEvent: (ev) => {
+                        if (ev && ev.kind === 'tool_start') { job.calls = (job.calls || 0) + 1; job.current = ev.purpose || ev.name; }
+                        else if (ev && ev.kind === 'tool_end') { job.current = `${ev.name} done`; }
+                        if (typeof ctx.emitEvent === 'function') {
+                            ctx.emitEvent({ type: 'assistant_progress', jobs: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status, calls: j.calls || 0, current: j.current || '' })) });
+                        }
+                    },
+                }).then((r) => {
+                    job.status = r && r.status === 'ok' ? 'done' : 'failed';
+                    job.result = r;
+                    job.seconds = r && r.seconds;
+                    job.finishedAt = Date.now();
+                    logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${job.seconds}s on ${model} (${(r && r.toolCalls) || 0} tool calls)`);
+                    return r;
+                }).catch((e) => {
+                    job.status = 'failed';
+                    job.error = e && e.message ? e.message : String(e);
+                    job.finishedAt = Date.now();
+                    return null;
+                });
+                dispatched.push({ id, name: t.name });
+            }
+            logUserActivity(ctx.userId, `Assistant: ${ctx.model || 'the lead'} dispatched ${dispatched.length} job(s) to ${model} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
+            if (typeof ctx.emitEvent === 'function') {
+                ctx.emitEvent({ type: 'assistant_progress', jobs: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status, calls: j.calls || 0, current: j.current || '' })) });
+            }
+            return {
+                success: true,
+                dispatched,
+                model,
+                running: [...jobs.values()].filter(j => j.status === 'running').length,
+                note: 'Started. These are running NOW in the background — do not wait for them. Carry on with your own work; each result is delivered to you as soon as it lands. Only call await_assistant if you truly cannot continue without one.',
+            };
+        },
+    });
+
+    tools.registerTool({
+        name: 'await_assistant',
+        build(ctx) {
+            if (!ctx || !ctx.assistantModel) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'await_assistant',
+                    description:
+                        'Wait for assistant jobs you started with ask_assistant and get their reports. Only call this when you genuinely cannot continue without a result — otherwise keep working, results arrive on their own.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            ids: { type: 'array', items: { type: 'string' }, description: 'Which job ids to wait for. Omit to wait for all outstanding jobs.' },
+                        },
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const jobs = ctx && ctx._assistantJobs;
+            if (!jobs || jobs.size === 0) return { error: 'No assistant jobs have been started on this turn.' };
+            let ids = args && args.ids;
+            if (typeof ids === 'string') ids = [ids];
+            const wanted = Array.isArray(ids) && ids.length
+                ? [...jobs.values()].filter(j => ids.includes(j.id) || ids.includes(j.name))
+                : [...jobs.values()].filter(j => j.status === 'running' || !j.delivered);
+            if (!wanted.length) return { error: 'No matching assistant jobs.', known: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status })) };
+            await Promise.all(wanted.map(j => j.promise).filter(Boolean));
+            const reports = wanted.map(j => {
+                j.delivered = true;
+                return {
+                    id: j.id, name: j.name, status: j.status, seconds: j.seconds,
+                    ...(j.error ? { error: j.error } : {}),
+                    report: j.result && j.result.answer ? String(j.result.answer).slice(0, DELEGATE_ANSWER_CHARS) : '',
+                    filesWritten: (j.result && j.result.filesWritten) || [],
+                };
+            });
+            return { success: true, reports, note: 'Continue the work with these. Anything still running will reach you as it finishes.' };
         },
     });
 
@@ -32647,7 +33105,7 @@ app.use((req, res) => {
             emit();
             // Checker pass on one worker report. Returns the parsed review
             // (verdict 'unknown' on any failure — never blocks the worker).
-            const editMode = ctx.modelRoles && ctx.modelRoles.checkFinal === 'edit';
+            const editMode = ctx.modelRoles && ctx.modelRoles.review === 'edit';
             const reviewReport = async (t, r, reviewer) => {
                 try {
                     const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name, mode: editMode ? 'edit' : 'note' });

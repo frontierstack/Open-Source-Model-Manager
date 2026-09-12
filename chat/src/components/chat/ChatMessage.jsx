@@ -113,13 +113,138 @@ function describeRunningTool(toolCalls, now = Date.now()) {
 // reasoning-only > content streaming > fallback. This keeps the
 // indicator visible AT ALL TIMES while the assistant is producing
 // output, not just before the first content token.
-function deriveStreamingLabel({ toolCalls, streamingStatus, hasContent, hasReasoning, now }) {
+function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent, hasReasoning, now }) {
+    // With two models paired, naming BOTH of them is the most informative
+    // one-liner there is — the user could otherwise not tell that the primary
+    // had handed work to the helper at all.
+    const pairLabel = describeHandoff(handoff);
+    if (pairLabel) return pairLabel;
     const toolLabel = describeRunningTool(toolCalls, now);
     if (toolLabel) return toolLabel;
     if (streamingStatus && streamingStatus.text && !hasContent) return streamingStatus.text;
     if (!hasContent && hasReasoning) return 'Thinking';
     if (hasContent) return 'Generating';
     return 'Thinking';
+}
+
+// ── Two-model pairing: primary writes, helper assists ─────────────────────
+// The primary is the main model and writes every answer; the helper is a
+// faster second model that prepares a brief up front and then runs background
+// jobs CONCURRENTLY while the primary writes. Both of those are invisible
+// without the frames the server streams (`handoff`, `assistant_progress`).
+
+function runningJobsOf(handoff) {
+    const jobs = (handoff && Array.isArray(handoff.jobs)) ? handoff.jobs : [];
+    return jobs.filter(j => j && (j.status === 'running' || !j.status));
+}
+
+// One-line summary naming whichever models are busy.
+function describeHandoff(handoff) {
+    // Unnamed = nothing worth saying; fall through to the ordinary tool label.
+    if (!handoff || (!handoff.primary && !handoff.helper)) return null;
+    const phase = handoff.phase || 'lead';
+    const primary = handoff.primary || 'Primary';
+    const helper = handoff.helper || 'Helper';
+    if (phase === 'first_pass') return `${helper} is sizing up the task…`;
+    if (handoff.reviewing) return `${handoff.reviewer || helper} is reviewing the answer`;
+    const running = runningJobsOf(handoff);
+    if (running.length) {
+        const current = running[0].current || verbFor(running[0]);
+        const count = running.length > 1 ? ` (${running.length} jobs)` : '';
+        return `${primary} writing · ${helper}: ${current}${count}`;
+    }
+    return `${primary} is writing · ${helper} standing by`;
+}
+
+// One row per model that is DOING something right now, so when both work at
+// the same time both are visible, each with its own activity and clock.
+// `startsRef` remembers when each row's work began — the server frames carry
+// no start timestamps, and the clock must not restart on every re-render.
+function handoffRows({ handoff, toolCalls, now, startsRef }) {
+    if (!handoff || (!handoff.primary && !handoff.helper)) return [];
+    const phase = handoff.phase || 'lead';
+    const starts = startsRef.current || (startsRef.current = {});
+    const since = (key) => {
+        if (!starts[key]) starts[key] = now;
+        return Math.max(0, Math.round((now - starts[key]) / 1000));
+    };
+    const rows = [];
+
+    // The primary — writing the answer, plus whatever tool it has in flight.
+    if (phase !== 'first_pass' && handoff.primary) {
+        const running = runningToolsOf(toolCalls);
+        const parts = [handoff.reviewing ? 'answer written' : 'writing the answer'];
+        if (running.length) {
+            const elapsedOf = (t) => (t.startedAt ? now - t.startedAt : 0);
+            const oldest = running.reduce((a, b) => (elapsedOf(b) > elapsedOf(a) ? b : a), running[0]);
+            const extra = running.length > 1 ? ` (+${running.length - 1})` : '';
+            parts.push(`${verbFor(oldest)}${oldest.purpose ? ` — ${oldest.purpose}` : ''}${extra}`);
+        }
+        rows.push({ key: 'primary', model: handoff.primary, parts, seconds: since('lead') });
+    }
+
+    // The helper — the first-pass brief, its background jobs, or the review.
+    if (handoff.helper) {
+        const running = runningJobsOf(handoff);
+        if (phase === 'first_pass') {
+            rows.push({ key: 'helper', model: handoff.helper, parts: ['sizing up the task'], seconds: since('first_pass') });
+        } else if (running.length) {
+            const j = running[0];
+            const label = verbFor(j);
+            const parts = [];
+            if (j.current) parts.push(j.current);
+            parts.push(running.length > 1 ? `${label} (${running.length} jobs)` : label);
+            // Clock from the oldest job still running, not from this frame.
+            const oldestKey = running
+                .map(x => `job:${x.id || x.name || 'job'}`)
+                .reduce((a, b) => ((starts[a] || now) <= (starts[b] || now) ? a : b));
+            running.forEach(x => since(`job:${x.id || x.name || 'job'}`));
+            rows.push({ key: 'helper', model: handoff.helper, parts, seconds: since(oldestKey) });
+        } else if (handoff.reviewing) {
+            rows.push({ key: 'helper', model: handoff.helper, parts: ['reviewing the answer'], seconds: since('review') });
+        }
+    }
+    return rows;
+}
+
+// Compact, quiet live block — one line per busy model. Disappears with the turn.
+function HandoffRows({ rows }) {
+    if (!rows.length) return null;
+    return (
+        <div className="handoff-rows" aria-live="polite" style={{ margin: '6px 0 2px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {rows.map(r => (
+                <div
+                    key={r.key}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        minWidth: 0,
+                        '--fs': '11.5px',
+                        color: 'var(--ink-4)',
+                        lineHeight: 1.35,
+                    }}
+                >
+                    <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'helper' ? '0.3s' : '0s' }} />
+                    <span style={{
+                        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                        color: 'var(--ink-3)',
+                        flexShrink: 0,
+                        maxWidth: 190,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}>{r.model}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+                        {r.parts.join(' · ')}
+                    </span>
+                    {r.seconds >= 1 && (
+                        <span style={{ flexShrink: 0, opacity: 0.75 }}>{r.seconds}s</span>
+                    )}
+                </div>
+            ))}
+        </div>
+    );
 }
 
 export default React.memo(function ChatMessage({
@@ -143,6 +268,7 @@ export default React.memo(function ChatMessage({
     modelName,
     onOpenArtifacts,
     streamingStatus,
+    handoff,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -167,8 +293,12 @@ export default React.memo(function ChatMessage({
     // Re-render once a second while a tool is in flight so the running-tool
     // label's elapsed clock advances (nothing else in the bubble changes
     // while the model waits on a tool).
-    const hasRunningTool = !!(isStreaming && runningToolsOf(toolCalls).length);
+    // ...and while a two-model hand-off is live, whose per-model rows carry
+    // their own clocks even when no tool of the primary's is in flight.
+    const handoffActive = !!(isStreaming && handoff && (handoff.primary || handoff.helper));
+    const hasRunningTool = !!(isStreaming && runningToolsOf(toolCalls).length) || handoffActive;
     const [, setToolTick] = useState(0);
+    const handoffStartsRef = useRef({});
     React.useEffect(() => {
         if (!hasRunningTool) return undefined;
         const id = setInterval(() => setToolTick(t => t + 1), 1000);
@@ -413,11 +543,20 @@ export default React.memo(function ChatMessage({
                         <ToolMilestones toolCalls={toolCalls} />
                     )}
 
+                    {/* Two-model pairing: one live row per model that is
+                        working right now, so "the primary is writing WHILE
+                        the helper runs two background jobs" is visible
+                        instead of reading as a single silent model. */}
+                    {isStreaming && handoffActive && (
+                        <HandoffRows rows={handoffRows({ handoff, toolCalls, now: Date.now(), startsRef: handoffStartsRef })} />
+                    )}
+
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
                         <ThinkingIndicator label={deriveStreamingLabel({
                             toolCalls,
                             streamingStatus,
+                            handoff,
                             hasContent: false,
                             hasReasoning: !!displayReasoning,
                         })} />
@@ -463,6 +602,7 @@ export default React.memo(function ChatMessage({
                         const label = deriveStreamingLabel({
                             toolCalls,
                             streamingStatus,
+                            handoff,
                             hasContent: true,
                             hasReasoning: !!displayReasoning,
                         });

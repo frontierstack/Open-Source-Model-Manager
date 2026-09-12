@@ -1,83 +1,161 @@
 'use strict';
-// Model ROLES for a two-model setup: a PRIMARY model does the work (the chat
-// turn + delegated worker agents — usually the weaker/faster one) and a
-// SECONDARY "checker" model reviews what the primary produced. Pure helpers:
-// resolving the roles from a request body / user prefs, building the review
-// prompts, parsing the checker's verdict, and rendering it for the user.
-// server.js owns the wiring (delegate tool + the chat-stream final check).
+// Model ROLES for a two-model setup.
+//
+// NAMING (swapped 2026-09-12 at the user's request — "most would see primary as
+// being the main worker"): the PRIMARY is the MAIN model. It does the work and
+// writes every answer the user sees, and it is normally the bigger/slower one.
+// The HELPER is a faster second model that assists and never writes the answer:
+//
+//   • firstPass   — before the primary starts, the helper spends a few seconds
+//                   restating the task and gathering what is cheap, then hands
+//                   over a brief (services/leadHandoff.js).
+//   • legwork     — while the primary works it hands the helper background jobs
+//                   (`ask_assistant`) that run CONCURRENTLY on the helper's own
+//                   GPU. The primary never waits. This is the headline feature.
+//   • review      — after the answer is written the helper can append a note,
+//                   or hand back a corrected version ('off' | 'note' | 'edit').
+//   • checkWorkers— the helper reviews parallel worker-agent reports.
+//   • mode        — when the pair works together at all: 'off' | 'auto'
+//                   (substantial work only) | 'always'.
+//
+// Before the swap the fields were { primary (the fast worker), checker (the
+// strong reviewer), checkFinal, consult, handoff }. `migrateLegacyRoles` maps a
+// stored config forward: the old CHECKER becomes the new PRIMARY, and the old
+// primary becomes the HELPER.
+//
+// Pure helpers only — server.js owns the wiring.
 
-const ROLE_KEYS = ['rolePrimaryModel', 'roleCheckerModel', 'roleCheckWorkers', 'roleCheckFinal', 'roleConsult'];
-const CHECK_MODES = ['off', 'note', 'edit'];
+const ROLE_KEYS = ['rolePrimaryModel', 'roleHelperModel', 'roleMode', 'roleFirstPass', 'roleLegwork', 'roleReview', 'roleCheckWorkers'];
+const REVIEW_MODES = ['off', 'note', 'edit'];
+const CHECK_MODES = REVIEW_MODES;          // back-compat alias
+const MODES = ['off', 'auto', 'always'];
+const HANDOFF_MODES = MODES;               // back-compat alias
 
 const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 200) : '');
 const bool = (v, dflt) => (typeof v === 'boolean' ? v : (v === 'true' ? true : v === 'false' ? false : dflt));
-// checkFinal: 'off' | 'note' (append the verdict) | 'edit' (the checker
-// rewrites the answer when it finds problems). Legacy booleans map true→note.
-const checkMode = (v, dflt) => {
+// mode: when the helper joins in at all.
+const workMode = (v, dflt) => {
+    if (typeof v === 'boolean') return v ? 'auto' : 'off';
+    if (typeof v === 'string' && MODES.includes(v.trim().toLowerCase())) return v.trim().toLowerCase();
+    if (v === 'true') return 'auto';
+    if (v === 'false') return 'off';
+    return dflt;
+};
+// review: 'off' | 'note' (append the verdict) | 'edit' (hand back a corrected
+// version). Legacy booleans map true→note.
+const reviewMode = (v, dflt) => {
     if (typeof v === 'boolean') return v ? 'note' : 'off';
-    if (typeof v === 'string' && CHECK_MODES.includes(v.trim().toLowerCase())) return v.trim().toLowerCase();
+    if (typeof v === 'string' && REVIEW_MODES.includes(v.trim().toLowerCase())) return v.trim().toLowerCase();
     if (v === 'true') return 'note';
     if (v === 'false') return 'off';
     return dflt;
 };
 
-/** Server-wide default roles (system-settings.json) — sanitized. */
-function sanitizeSystemRoles(input) {
+/**
+ * Map a stored pre-swap config onto the new field names. The old `checker` was
+ * the STRONGER model, which is exactly what the new `primary` means, so the two
+ * model slots trade places. A config that already uses the new names, or that
+ * never named a checker, passes through unchanged.
+ */
+function migrateLegacyRoles(input) {
     const o = input && typeof input === 'object' ? input : {};
+    const isLegacy = ('checker' in o) || ('checkFinal' in o) || ('consult' in o) || ('handoff' in o);
+    if (!isLegacy) return o;
+    const legacyChecker = clean(o.checker);
+    const out = {
+        // The old checker (the strong model) is the new main model. With no
+        // checker set there is nothing to swap, so the old primary stays.
+        primary: legacyChecker || clean(o.primary),
+        helper: legacyChecker ? clean(o.primary) : '',
+        mode: 'handoff' in o ? o.handoff : undefined,
+        review: 'checkFinal' in o ? o.checkFinal : undefined,
+        checkWorkers: o.checkWorkers,
+        // `consult` let the weak model ask the strong one a question. With the
+        // roles swapped that is backwards; the primary hands the helper legwork
+        // instead, so the flag carries over to `legwork`.
+        legwork: o.consult,
+        firstPass: o.firstPass,
+    };
+    // Anything the caller already set under a new name wins over the mapping.
+    for (const k of ['primary', 'helper', 'mode', 'review', 'checkWorkers', 'legwork', 'firstPass']) {
+        if (o[k] !== undefined && k !== 'primary' && k !== 'helper') out[k] = o[k];
+    }
+    if (o.helper !== undefined) out.helper = o.helper;
+    if (!legacyChecker && o.primary !== undefined) out.primary = o.primary;
+    return out;
+}
+
+/** Server-wide default roles (system-settings.json) — sanitized + migrated. */
+function sanitizeSystemRoles(input) {
+    const o = migrateLegacyRoles(input);
     return {
         primary: clean(o.primary),
-        checker: clean(o.checker),
-        checkWorkers: bool(o.checkWorkers, true),
-        checkFinal: checkMode(o.checkFinal, 'off'),
-        consult: bool(o.consult, true),
+        helper: clean(o.helper),
+        mode: workMode(o.mode, 'auto'),
+        firstPass: bool(o.firstPass, true),
+        legwork: bool(o.legwork, true),
+        review: reviewMode(o.review, 'off'),
+        checkWorkers: bool(o.checkWorkers, false),
     };
 }
 
 /**
- * Resolve the roles for one turn. `body.modelRoles` (sent by the chat UI on
- * every request) wins, then the account's saved chat prefs. A role naming a
- * model that is not running is dropped (never route to a dead instance).
- * @param {{ body?: object, prefs?: object, running?: string[] }} o
- * @returns {{ primary: string|null, checker: string|null, checkWorkers: boolean, checkFinal: boolean, source: string }}
+ * Resolve the roles for one turn: request body → the account's chat prefs →
+ * the server-wide default. A role naming a model that is not running is
+ * dropped (never route to a dead instance), and a helper that IS the primary
+ * is dropped too — a model does not assist itself.
  */
 function resolveModelRoles({ body, prefs, system, running, targetModel } = {}) {
     const runningSet = Array.isArray(running) ? new Set(running) : null;
-    const fromBody = body && body.modelRoles && typeof body.modelRoles === 'object' ? body.modelRoles : null;
+    const fromBody = body && body.modelRoles && typeof body.modelRoles === 'object'
+        ? migrateLegacyRoles(body.modelRoles) : null;
     const p = prefs && typeof prefs === 'object' ? prefs : {};
     const sys = system && typeof system === 'object' ? system : {};
     const has = (v) => v !== undefined && v !== null && v !== '';
-    // Per field: request body → the account's chat prefs → the server-wide
-    // default set on the Models page. An empty string means "not set here".
     const pick = (bodyKey, prefKey, sysKey) => {
         if (fromBody && has(fromBody[bodyKey])) return fromBody[bodyKey];
         if (has(p[prefKey])) return p[prefKey];
+        // A pre-swap account pref still names the old keys.
+        if (prefKey === 'roleHelperModel' && has(p.roleCheckerModel) && has(p.rolePrimaryModel)) return p.rolePrimaryModel;
+        if (prefKey === 'roleReview' && has(p.roleCheckFinal)) return p.roleCheckFinal;
+        if (prefKey === 'roleMode' && has(p.roleHandoff)) return p.roleHandoff;
+        if (prefKey === 'roleLegwork' && has(p.roleConsult)) return p.roleConsult;
         return sys[sysKey];
     };
-    let primary = clean(pick('primary', 'rolePrimaryModel', 'primary'));
-    let checker = clean(pick('checker', 'roleCheckerModel', 'checker'));
-    const checkWorkers = bool(pick('checkWorkers', 'roleCheckWorkers', 'checkWorkers'), true);
-    const checkFinal = checkMode(pick('checkFinal', 'roleCheckFinal', 'checkFinal'), 'off');
-    const consult = bool(pick('consult', 'roleConsult', 'consult'), true);
+    // A pre-swap account pref named the STRONG model as the checker; under the
+    // new naming that model is the primary.
+    const prefPrimary = has(p.roleCheckerModel) ? p.roleCheckerModel : p.rolePrimaryModel;
+    let primary = clean(
+        (fromBody && has(fromBody.primary)) ? fromBody.primary
+            : has(prefPrimary) ? prefPrimary
+                : sys.primary
+    );
+    let helper = clean(pick('helper', 'roleHelperModel', 'helper'));
+    const mode = workMode(pick('mode', 'roleMode', 'mode'), 'auto');
+    const firstPass = bool(pick('firstPass', 'roleFirstPass', 'firstPass'), true);
+    const legwork = bool(pick('legwork', 'roleLegwork', 'legwork'), true);
+    const review = reviewMode(pick('review', 'roleReview', 'review'), 'off');
+    const checkWorkers = bool(pick('checkWorkers', 'roleCheckWorkers', 'checkWorkers'), false);
     if (runningSet) {
         if (primary && !runningSet.has(primary)) primary = '';
-        if (checker && !runningSet.has(checker)) checker = '';
+        if (helper && !runningSet.has(helper)) helper = '';
     }
-    // The primary/checker split exists for TWO DIFFERENT models. One model
-    // (even with several parallel slots) checking itself is not a second
-    // opinion — it doubles the latency for nothing — so when the checker is
-    // the same model as the one doing the work, the checker role is ignored.
+    // One model cannot assist itself: a helper that is the same model as the
+    // primary (even with several parallel slots) buys nothing but latency.
     const effectivePrimary = primary || clean(targetModel) || '';
     let sameModel = false;
-    if (checker && effectivePrimary && checker === effectivePrimary) { checker = ''; sameModel = true; }
-    const source = (fromBody && (has(fromBody.primary) || has(fromBody.checker))) ? 'request'
-        : (has(p.rolePrimaryModel) || has(p.roleCheckerModel)) ? 'prefs'
-        : (has(sys.primary) || has(sys.checker)) ? 'system' : 'none';
+    if (helper && effectivePrimary && helper === effectivePrimary) { helper = ''; sameModel = true; }
+    const source = (fromBody && (has(fromBody.primary) || has(fromBody.helper))) ? 'request'
+        : (has(p.rolePrimaryModel) || has(p.roleHelperModel) || has(p.roleCheckerModel)) ? 'prefs'
+            : (has(sys.primary) || has(sys.helper)) ? 'system' : 'none';
     return {
         primary: primary || null,
-        checker: checker || null,
+        helper: helper || null,
+        mode,
+        firstPass,
+        legwork,
+        review,
         checkWorkers,
-        checkFinal,
-        consult,
         source,
         sameModel,
     };
@@ -299,7 +377,11 @@ function assignWorkerModels({ count, capacity, preferred, contextOf, speedOf, mi
 
 module.exports = {
     ROLE_KEYS,
+    REVIEW_MODES,
     CHECK_MODES,
+    MODES,
+    HANDOFF_MODES,
+    migrateLegacyRoles,
     sanitizeSystemRoles,
     buildConsultMessages,
     resolveModelRoles,
