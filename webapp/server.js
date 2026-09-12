@@ -19482,7 +19482,7 @@ function startModelSpeedSweep() {
 // Which model each worker of a delegate call should run on. See
 // modelRoles.assignWorkerModels — the parent's own slot is already counted as
 // busy by chatCapacity(), so this only ever hands out real spare capacity.
-function planWorkerModels(count, preferred) {
+function planWorkerModels(count, preferred, exclude) {
     return modelRolesSvc.assignWorkerModels({
         count,
         capacity: chatCapacity(),
@@ -19490,6 +19490,12 @@ function planWorkerModels(count, preferred) {
         contextOf: modelContextFor,
         speedOf: modelSpeedFor,
         minContext: WORKER_MIN_CONTEXT,
+        // Keeping a model OUT of the fan-out is how `checkWorkers` stays
+        // honest: a worker that lands on the checker cannot be reviewed (it
+        // would be reviewing itself). `assignWorkerModels` falls back to
+        // `preferred` if the exclusion leaves nothing usable, so this can
+        // never strand the fan-out.
+        exclude,
     });
 }
 
@@ -33751,8 +33757,17 @@ app.use((req, res) => {
             // on one model's two slots measured SLOWER than doing the task
             // single-agent (58 s vs 33 s), because they share one card's
             // throughput. One worker per model is the whole point of delegation.
-            const workerModels = planWorkerModels(tasks.length, workerModel);
             const checker = (ctx.checkWorkers && ctx.checkerModel) ? ctx.checkerModel : null;
+            // Keep the checker out of the fan-out. `assignWorkerModels` sorts
+            // by measured speed, so whenever the checker is the FASTEST model
+            // it attracted workers — and every worker placed on it then had
+            // its review silently skipped (`reviewer` refuses self-review, and
+            // nothing said so: no log line, no field, while the result still
+            // advertised `checkedBy`). Opting into checkWorkers means every
+            // report gets checked; that is worth more than the last few
+            // percent of placement speed. If the exclusion leaves nothing
+            // usable the assigner falls back to the preferred worker model.
+            const workerModels = planWorkerModels(tasks.length, workerModel, checker || undefined);
             const fanout = [...new Set(workerModels)];
             tasks.forEach((t, i) => { const st = state.get(t.name); if (st) st.model = workerModels[i] || workerModel; });
             logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} parallel worker agent(s) across ${fanout.length} model(s) [${workerModels.join(', ')}]${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
@@ -33763,8 +33778,22 @@ app.use((req, res) => {
             const reviewReport = async (t, r, reviewer) => {
                 try {
                     const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name, mode: editMode ? 'edit' : 'note' });
+                    // In EDIT mode the reviewer must emit the ENTIRE rewritten
+                    // report inside a JSON string, so a flat 1500 tokens caps
+                    // the report it can edit at roughly 4 kB. Past that the
+                    // completion stops at `finish_reason:'length'` mid-`revised`,
+                    // parseReview's brace slice discards the unterminated field,
+                    // and edit mode silently degrades to note mode — having
+                    // spent the whole budget AND triggered a full extra worker
+                    // revision round on a review that could never produce an
+                    // edit (measured: 7.3 kB report → revised:'' , 25–31 s
+                    // wasted per review). Same scaling as the final-answer
+                    // review path.
+                    const reviewBudget = editMode
+                        ? Math.max(1500, Math.ceil(String(r.answer || '').length / 2.5) + 800)
+                        : 1500;
                     const out = await Promise.race([
-                        requestModelCompletion({ messages: msgs, model: reviewer, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
+                        requestModelCompletion({ messages: msgs, model: reviewer, temperature: 0.2, maxTokens: reviewBudget, disableThinking: true }),
                         new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
                     ]);
                     return modelRolesSvc.parseReview(out && out.content);
@@ -33821,6 +33850,11 @@ app.use((req, res) => {
                     // A worker that ran ON the checker model would be reviewing
                     // itself — pure latency, no independent signal.
                     const reviewer = (checker && checker !== taskModel) ? checker : null;
+                    // Placement keeps workers off the checker, but the assigner
+                    // can still fall back onto it when nothing else is usable.
+                    // Say so rather than returning a report that merely LOOKS
+                    // checked because the call advertised `checkedBy`.
+                    if (checker && !reviewer) r.reviewSkipped = 'ran on the checker model';
                     if (reviewer && r.status === 'ok' && r.answer) {
                         let rounds = 0;
                         let review;
@@ -33860,8 +33894,12 @@ app.use((req, res) => {
             const okCount = results.filter(r => r.status === 'ok').length;
             const totalCalls = results.reduce((a, r) => a + (r.toolCalls || 0), 0);
             const wall = Math.round((Date.now() - started) / 100) / 10;
-            logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s on ${r.model || workerModel}${r.review ? ` ✓${r.review.verdict}` : ''}`).join(', ')})`);
+            logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s on ${r.model || workerModel}${r.review ? ` ✓${r.review.verdict}` : (r.reviewSkipped ? ' (unchecked)' : '')}`).join(', ')})`);
             const flagged = results.filter(r => r.review && r.review.verdict === 'issues');
+            const unchecked = checker ? results.filter(r => r.reviewSkipped).map(r => r.name) : [];
+            if (unchecked.length) {
+                logUserActivity(ctx.userId, `Delegate: ${unchecked.length} report(s) NOT checked — they ran on the checker model itself (${unchecked.join(', ')})`);
+            }
             return {
                 success: okCount > 0,
                 workers: results.length,
@@ -33870,12 +33908,19 @@ app.use((req, res) => {
                 workerModel,
                 workerModels,
                 ...(fanout.length > 1 ? { ranInParallelOn: fanout } : {}),
-                ...(checker ? { checkedBy: checker, reportsWithOpenIssues: flagged.map(r => r.name) } : {}),
+                ...(checker ? {
+                    checkedBy: checker,
+                    reportsWithOpenIssues: flagged.map(r => r.name),
+                    // Never let `checkedBy` imply a report was checked when it
+                    // was not — the worker landed on the checker itself.
+                    ...(unchecked.length ? { reportsNotChecked: unchecked } : {}),
+                } : {}),
                 results,
                 note: (okCount === results.length
                     ? 'All workers finished. Answer the user NOW from these reports — synthesize into ONE answer citing the sources/paths they list; do NOT re-search or re-verify what a worker already established unless two reports conflict. If the user asked for a chart, build it from the data in the reports with render_chart. To deliver a file a worker wrote, call make_downloadable on its /workspace path.'
                     : 'Some workers did not finish (see status/error). Use what came back; redo a failed sub-task yourself only if it is essential.')
-                    + (flagged.length ? ` The checker model still has OPEN issues on: ${flagged.map(r => `"${r.name}"`).join(', ')} (see results[].review) — treat those points as unverified and say so, or verify them yourself.` : ''),
+                    + (flagged.length ? ` The checker model still has OPEN issues on: ${flagged.map(r => `"${r.name}"`).join(', ')} (see results[].review) — treat those points as unverified and say so, or verify them yourself.` : '')
+                    + (unchecked.length ? ` These reports were NOT checked (they ran on the checker model itself): ${unchecked.map(n => `"${n}"`).join(', ')} — treat their claims as unverified.` : ''),
             };
         },
     });
