@@ -54,8 +54,8 @@ function describeCheckWorkers(on, primaryName, secondaryName) {
 function describeReview(review, primaryName, secondaryName) {
     const p = primaryName || 'the primary';
     const sec = secondaryName || 'the secondary';
-    if (review === 'note') return `${sec} reads the answer and appends its verdict underneath. The answer itself is left alone.`;
-    if (review === 'edit') return `${sec} reads the answer and, when it finds a problem, replaces it with a corrected version and lists what changed.`;
+    if (review === 'note') return `${sec} reads the answer and appends its verdict underneath as a second block. The answer itself is left alone.`;
+    if (review === 'edit') return `${p} does the work, ${sec} checks it and corrects it behind the scenes — you get one polished answer, with nothing appended to it. What it changed is recorded beside the message, not inside it.`;
     return `Answers ${p} wrote alone are sent straight through, unread by ${sec}.`;
 }
 
@@ -565,7 +565,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                         control={<Switch size="small" checked={roles.legwork !== false} disabled={jobsDisabled} onChange={(e) => save({ legwork: e.target.checked })} />}
                     />
                     <OptionRow
-                        title="Review of the answers the primary wrote alone"
+                        title="What the secondary does with answers the primary wrote alone"
                         help={describeReview(roles.review || 'off', roles.primary, roles.secondary)}
                         dim={jobsDisabled}
                         control={(
@@ -579,7 +579,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                             >
                                 <ToggleButton value="off">Off</ToggleButton>
                                 <ToggleButton value="note">Add a note</ToggleButton>
-                                <ToggleButton value="edit">Rewrite it</ToggleButton>
+                                <ToggleButton value="edit">Polish silently</ToggleButton>
                             </ToggleButtonGroup>
                         )}
                     />

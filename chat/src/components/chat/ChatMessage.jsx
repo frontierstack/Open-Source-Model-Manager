@@ -315,42 +315,110 @@ function HandoffRows({ rows }) {
 // exchange in with ordinary tool calls is what made the pairing invisible —
 // the user had to know to expand a generic strip to find out the two models
 // had talked at all.
-function exchangeSteps(toolCalls) {
-    if (!Array.isArray(toolCalls)) return [];
+// One plain sentence per hand-off, naming BOTH models and WHAT passed between
+// them — "X briefed Y on ...", "Y delegated N tasks to X" — rather than a bare
+// step label. User's ask, verbatim: "I want to see things like 'primary gave so
+// and so info to secondary', 'secondary delegated the task xyz'".
+function clipSentence(text, max = 110) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    const first = t.split(/(?<=[.;:])\s/)[0].replace(/[.;:,]$/, '');
+    const out = first.length > 12 ? first : t;
+    return out.length > max ? out.slice(0, max - 1).replace(/\s+\S*$/, '') + '\u2026' : out;
+}
+
+// A brief's own TASK/PLAN line is the most useful one-liner about what was
+// handed over; fall back to its first substantial line.
+function briefSubject(brief) {
+    const t = String(brief || '');
+    const m = t.match(/^[ \t]*(?:\*+[ \t]*)?(?:\d[.)][ \t]*)?(?:TASK|PLAN)\b[^\n:]*:?[ \t]*(.+)$/im);
+    if (m) return clipSentence(m[1]);
+    const line = t.split('\n').map(l => l.replace(/^[\s*#\d.)-]+/, '').trim()).find(l => l.length > 20);
+    return clipSentence(line || t);
+}
+
+function exchangeSteps(toolCalls, review) {
     const steps = [];
-    for (const tc of toolCalls) {
+    const calls = Array.isArray(toolCalls) ? toolCalls : [];
+    for (const tc of calls) {
         const label = tc && (tc.label || tc.name);
         if (label === 'first_pass') {
             const r = tc.result || {};
+            const to = r.handedTo;
+            const subject = briefSubject(r.brief);
+            const extras = [];
+            if (r.toolCalls) extras.push(`gathered with ${r.toolCalls} tool call${r.toolCalls === 1 ? '' : 's'}`);
+            if (Array.isArray(r.proposedJobs) && r.proposedJobs.length) extras.push(`proposed: ${r.proposedJobs.join(', ')}`);
+            // A COMMITTED message keeps the chip's `purpose` but not its full
+            // `result` (the client drops tool results to keep messages small),
+            // so the server writes the brief's subject into `purpose` and that
+            // is what survives a reload. Prefer the structured fields while
+            // they exist (live), fall back to the purpose sentence after.
+            const purposeText = String(tc.purpose || '').replace(/^Briefed /, 'briefed ').replace(/^Sized /, 'sized ');
             steps.push({
                 key: `fp${steps.length}`,
                 dir: 'out',
                 from: tc.model || r.model,
-                text: r.handedTo ? `briefed ${r.handedTo}` : 'sized up the task and handed over a brief',
+                to,
+                text: subject
+                    ? `briefed ${to || 'the other model'} on ${subject}`
+                    : (purposeText || `handed ${to || 'the other model'} a brief`),
+                detail: extras.join(' \u00b7 '),
                 seconds: typeof r.seconds === 'number' ? r.seconds : undefined,
                 failed: tc.status === 'failed',
             });
         } else if (label === 'ask_assistant') {
             const jobs = Array.isArray(tc.assistantJobs) ? tc.assistantJobs : [];
+            // The chip's ARGS carry each job's task text; the job rows carry the
+            // outcome. Join them so every line says what was actually asked for.
+            const asked = {};
+            const reqs = (tc.args && (tc.args.requests || tc.args.tasks)) || [];
+            if (Array.isArray(reqs)) for (const r of reqs) if (r && r.name) asked[r.name] = r.task;
+            const to = jobs.length ? jobs[0].model : undefined;
+            const n = jobs.length || (Array.isArray(reqs) ? reqs.length : 0);
             steps.push({
                 key: `aa${steps.length}`,
                 dir: 'back',
                 from: tc.model,
-                text: jobs.length
-                    ? `handed back ${jobs.length} job${jobs.length === 1 ? '' : 's'}`
-                    : 'handed work back',
-                jobs,
+                to,
+                text: n
+                    ? `delegated ${n} task${n === 1 ? '' : 's'} to ${to || 'the other model'}`
+                    : (String(tc.purpose || '').replace(/^Handed /, 'handed ').replace(/^Handing /, 'handed ')
+                       || 'handed work to the other model'),
+                jobs: jobs.map(j => ({ ...j, task: asked[j.name] })),
             });
         } else if (label === 'await_assistant') {
-            steps.push({ key: `aw${steps.length}`, dir: 'wait', from: tc.model, text: 'waited for the results' });
+            steps.push({ key: `aw${steps.length}`, dir: 'wait', from: tc.model, text: 'waited for those results before answering' });
         }
+    }
+    // The secondary's pass over the finished answer. In EDIT mode it rewrites
+    // the answer in place and appends NOTHING to it, so this row is the only
+    // place the user can see that it happened and what it changed.
+    if (review && review.reviewer) {
+        const n = Number(review.issues) || 0;
+        const text = review.edited
+            ? `reviewed and polished the answer${n ? ` \u00b7 ${n} correction${n === 1 ? '' : 's'}` : ''}`
+            : review.verdict === 'issues'
+                ? `found ${n} issue${n === 1 ? '' : 's'} but could not rewrite \u2014 treat those points as unverified`
+                : review.verdict === 'pass'
+                    ? 'read the answer \u00b7 no changes needed'
+                    : 'review did not complete';
+        steps.push({
+            key: 'review',
+            dir: 'review',
+            from: review.reviewer,
+            text,
+            detail: review.edited && review.summary ? clipSentence(review.summary, 140) : '',
+            seconds: typeof review.seconds === 'number' ? review.seconds : undefined,
+            warn: review.verdict === 'issues' && !review.edited,
+        });
     }
     return steps;
 }
 
 function ExchangePanel({ steps }) {
     if (!steps.length) return null;
-    const arrow = { out: '\u2192', back: '\u2190', wait: '\u22ef' };
+    const arrow = { out: '\u2192', back: '\u2190', wait: '\u22ef', review: '\u270e' };
     return (
         <div
             className="msg-exchange"
@@ -373,19 +441,28 @@ function ExchangePanel({ steps }) {
                             color: 'var(--ink-2, var(--text-primary))', flexShrink: 0,
                             maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>{st.from || 'model'}</span>
-                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                        <span style={{
+                            minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1,
+                            ...(st.warn ? { color: 'var(--warn, #d1a35c)' } : null),
+                        }}>
                             {st.text}
                         </span>
                         {st.seconds >= 0.1 && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(st.seconds)}s</span>}
                     </div>
+                    {st.detail && (
+                        <div style={{ paddingLeft: 18, opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {st.detail}
+                        </div>
+                    )}
                     {(st.jobs || []).map((j, i) => (
                         <div key={`${st.key}j${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 18, minWidth: 0, opacity: 0.9 }}>
                             <span style={{
                                 flexShrink: 0, width: 8, textAlign: 'center',
                                 color: j.status === 'failed' ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)',
                             }}>{j.status === 'failed' ? '\u00d7' : '\u2713'}</span>
-                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                                {j.name || `job ${i + 1}`}
+                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+                                <span style={{ color: 'var(--ink-2, var(--text-primary))' }}>{j.name || `job ${i + 1}`}</span>
+                                {j.task ? <span style={{ opacity: 0.75 }}>{` \u2014 ${clipSentence(j.task, 90)}`}</span> : null}
                             </span>
                             {!!j.calls && <span style={{ flexShrink: 0, opacity: 0.7 }}>{j.calls} tool call{j.calls === 1 ? '' : 's'}</span>}
                             {typeof j.seconds === 'number' && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(j.seconds)}s</span>}
@@ -422,6 +499,9 @@ export default React.memo(function ChatMessage({
     modelName,
     // Tooltip for the name — e.g. why the secondary stayed out of this turn.
     modelTitle,
+    // The secondary's pass over the answer. In edit mode the polish is silent,
+    // so this is what makes it visible without touching the answer itself.
+    review,
     // Two-model turns: the model that did the first pass + background legwork
     // for whoever wrote the answer. Undefined on a single-model chat.
     assistedBy,
@@ -912,7 +992,7 @@ export default React.memo(function ChatMessage({
                         main body above (see ChartBlock pass) — this strip
                         is the transparency footer. */}
                     {!isUser && !bodyCollapsed && !isStreaming && (
-                        <ExchangePanel steps={exchangeSteps(toolCalls)} />
+                        <ExchangePanel steps={exchangeSteps(toolCalls, review)} />
                     )}
 
                     {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {

@@ -2068,6 +2068,17 @@ export default function ChatContainer({
                                 patchStreamingHandoff({
                                     reviewing: parsed.status !== 'done',
                                     reviewer: parsed.reviewer || parsed.checker || undefined,
+                                    // In EDIT mode nothing is appended to the answer, so this
+                                    // frame is the ONLY record that the secondary polished it.
+                                    ...(parsed.status === 'done' ? { review: {
+                                        reviewer: parsed.reviewer || parsed.checker || undefined,
+                                        verdict: parsed.verdict,
+                                        edited: !!parsed.edited,
+                                        mode: parsed.mode,
+                                        summary: parsed.summary,
+                                        issues: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
+                                        seconds: parsed.seconds,
+                                    } } : null),
                                 });
                                 continue;
                             }
@@ -2524,6 +2535,7 @@ export default function ChatContainer({
             // The `assistant_progress` frames are cumulative for the turn, so
             // the record of the background work is folded onto the LAST
             // ask_assistant chip — the same place the server's save puts it.
+            const turnReview = (turnHandoff && turnHandoff.review) ? turnHandoff.review : undefined;
             const turnJobs = (turnHandoff && Array.isArray(turnHandoff.jobs)) ? turnHandoff.jobs : [];
             if (turnJobs.length) {
                 for (let i = toolCalls.length - 1; i >= 0; i--) {
@@ -2607,6 +2619,9 @@ export default function ChatContainer({
                     // Who wrote it / who assisted — paired turns only.
                     answeredBy,
                     assistedBy,
+                    // What the secondary's review did. In EDIT mode the answer
+                    // is polished silently, so this is the only durable trace.
+                    review: turnReview,
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
@@ -3144,6 +3159,17 @@ export default function ChatContainer({
                                     patchStreamingHandoff({
                                         reviewing: parsed.status !== 'done',
                                         reviewer: parsed.reviewer || parsed.checker || undefined,
+                                        // In EDIT mode nothing is appended to the answer, so this
+                                        // frame is the ONLY record that the secondary polished it.
+                                        ...(parsed.status === 'done' ? { review: {
+                                            reviewer: parsed.reviewer || parsed.checker || undefined,
+                                            verdict: parsed.verdict,
+                                            edited: !!parsed.edited,
+                                            mode: parsed.mode,
+                                            summary: parsed.summary,
+                                            issues: Array.isArray(parsed.issues) ? parsed.issues.length : 0,
+                                            seconds: parsed.seconds,
+                                        } } : null),
                                     });
                                     continue;
                                 }

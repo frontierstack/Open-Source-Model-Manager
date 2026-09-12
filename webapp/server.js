@@ -22210,8 +22210,23 @@ const chatStreamHandlerInner = async (req, res) => {
                     // after the turn there is no sign the other model did
                     // anything — the user's report was exactly "I'm not seeing
                     // any queue jobs ... it should be a back and forth thing".
+                    // The chip's `purpose` is the ONLY rich field the client
+                    // persists (full tool `result`s are deliberately dropped to
+                    // keep messages small), so the SUBJECT of the brief has to
+                    // ride here or the saved transcript can only say "handed
+                    // over a brief" with no hint of what about.
+                    const briefSubject = (() => {
+                        const t = String(fp.answer || '');
+                        const m = t.match(/^[ \t]*(?:\*+[ \t]*)?(?:\d[.)][ \t]*)?(?:TASK|PLAN)\b[^\n:]*:?[ \t]*(.+)$/im);
+                        const line = m ? m[1]
+                            : (t.split('\n').map(l => l.replace(/^[\s*#\d.)-]+/, '').trim()).find(l => l.length > 20) || '');
+                        const one = line.replace(/\s+/g, ' ').trim().split(/(?<=[.;:])\s/)[0].replace(/[.;:,]$/, '');
+                        return one.length > 120 ? one.slice(0, 119).replace(/\s+\S*$/, '') + '\u2026' : one;
+                    })();
                     closeHandoffChip(fpChip, {
-                        purpose: `Sized up the task and handed ${handoff.secondary} a brief`,
+                        purpose: briefSubject
+                            ? `Briefed ${handoff.secondary} on ${briefSubject}`
+                            : `Sized up the task and handed ${handoff.secondary} a brief`,
                         query: (fp.answer || '').slice(0, 60),
                         result: {
                             model: handoff.primary,
@@ -26199,19 +26214,29 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             } catch (e) {
                 review = { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
             }
-            let addendum;
+            let addendum = '';
             let edited = false;
-            if (modelRoles.review === 'edit' && review.verdict === 'issues' && review.revised) {
-                // The checker rewrote the answer: replace what the user saw
-                // (content_rewind swaps the bubble text; the pump reveals the
-                // rest) and persist the corrected version.
-                edited = true;
-                review.edited = true;
-                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.secondary);
-                fullResponse = review.revised + addendum;
-                if (clientConnected && !res.writableEnded) {
-                    try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
+            if (modelRoles.review === 'edit') {
+                // EDIT mode is a SILENT polish, by user instruction: "I do not
+                // want the agent to create a new response AFTER the primary
+                // writes … secondary sees that work and corrects behind the
+                // scenes and then provide a polished response in the end."
+                // So the corrected text REPLACES the answer and nothing is
+                // appended to it — not the changes list, not a "checked by"
+                // line, not even on a clean pass. The record of what the
+                // secondary did still reaches the user, but through the
+                // `checker_review` frame that the transcript's two-model panel
+                // renders beside the message, never inside the answer.
+                if (review.verdict === 'issues' && review.revised) {
+                    edited = true;
+                    review.edited = true;
+                    fullResponse = review.revised;
+                    if (clientConnected && !res.writableEnded) {
+                        try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
+                    }
                 }
+                // verdict pass / issues-without-a-rewrite / unknown: the answer
+                // is left exactly as the primary wrote it. Nothing is appended.
             } else {
                 addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.secondary);
                 fullResponse += addendum;
@@ -26221,8 +26246,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             console.log(`[Chat Stream] Helper review ${modelRoles.secondary}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
             if (clientConnected && !res.writableEnded) {
                 try {
-                    if (!edited) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
-                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.secondary, reviewer: modelRoles.secondary, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
+                    if (addendum) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.secondary, reviewer: modelRoles.secondary, verdict: review.verdict, edited, mode: modelRoles.review, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
                 } catch (_) { clientConnected = false; }
             }
         }

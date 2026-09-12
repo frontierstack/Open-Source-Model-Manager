@@ -353,6 +353,7 @@ const ChatMessages = React.memo(function ChatMessages({
                     toolCalls={message.toolCalls}
                     modelName={assistantLabel(message)}
                     assistedBy={message.assistedBy}
+                    review={message.review}
                     searchResults={message.searchResults}
                     onContinue={onContinue}
                     isLoading={isLoading}
