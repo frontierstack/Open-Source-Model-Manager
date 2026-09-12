@@ -21,9 +21,13 @@ function StreamingMessage() {
         // persisted shape — render it as-is.
         if (tc.chip && typeof tc.chip === 'object') return { ...tc.chip };
         let argPreview = '';
+        // Parsed args mid-flight too, so the chip's args table renders the
+        // structured view (delegate's per-task lines) instead of raw JSON.
+        let parsedArgs = null;
         if (tc.arguments) {
             try {
                 const args = JSON.parse(tc.arguments);
+                parsedArgs = args;
                 argPreview = Object.entries(args)
                     .map(([k, v]) => {
                         let s;
@@ -82,6 +86,7 @@ function StreamingMessage() {
             label: tc.name,
             purpose: tc.purpose || undefined,
             query: argPreview,
+            args: parsedArgs || undefined,
             durationMs: tc.durationMs,
             // Drives ToolCallBlock's live "running… 4.2s" clock.
             startedAt: tc.startedAt,
