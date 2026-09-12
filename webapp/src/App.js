@@ -124,6 +124,7 @@ import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import MemoryPanel from './components/MemoryPanel';
 import AppsPanel from './components/AppsPanel';
+import ModelRolesCard from './components/ModelRolesCard';
 import MyModelsPanel from './components/MyModelsPanel';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
 import UserDialog from './components/UserDialog';
@@ -10786,6 +10787,11 @@ console.log(chip);`
                                         </Card>
                                     </Grid>
                                 )}
+
+                                {/* Model roles: primary (does the work) / checker (reviews, edits, answers consult_expert) */}
+                                <Grid item xs={12}>
+                                    <ModelRolesCard instances={instances} isAdmin={user?.role === 'admin'} />
+                                </Grid>
 
                                 {/* Available Models */}
                                 <Grid item xs={12}>

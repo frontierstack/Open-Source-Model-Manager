@@ -34,6 +34,12 @@ export default function ToolCallBlock({ tool }) {
         const id = setInterval(tick, 200);
         return () => clearInterval(id);
     }, [running, startedAt]);
+    // A running delegate chip opens itself: the worker agents' tool calls
+    // are the whole point of watching it, like a chart auto-expanding.
+    const isDelegateChip = tool?.type === 'native_tool_call' && tool?.label === 'delegate';
+    useEffect(() => {
+        if (isDelegateChip && running) setOpen(true);
+    }, [isDelegateChip, running]);
 
     if (!tool) return null;
 
@@ -57,7 +63,14 @@ export default function ToolCallBlock({ tool }) {
         sandboxed,
         sandboxNetwork,
         sandboxSource,
+        agents,
+        agentResults,
     } = tool;
+    // Per-agent view for a delegate chip: live progress frames while running,
+    // else the compact results lifted off the tool result, else (a chip saved
+    // server-side in the background) the raw delegate result if it is there.
+    const agentRows = isDelegateChip ? mergeAgentRows(agents, agentResults, tool.result) : null;
+    const hasAgents = Array.isArray(agentRows) && agentRows.length > 0;
 
     const isRunning = status === 'partial';
     const isFailed = status === 'failed';
@@ -123,7 +136,7 @@ export default function ToolCallBlock({ tool }) {
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts || hasAgents;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -181,6 +194,7 @@ export default function ToolCallBlock({ tool }) {
             </button>
             {open && hasDetail && (
                 <div className="tool-chip-body">
+                    {hasAgents && <AgentsPanel rows={agentRows} running={isRunning} />}
                     {chartSpec && (
                         <ChartBlock spec={chartSpec} summary={chartSummary || ''} />
                     )}
@@ -229,11 +243,31 @@ function ArgsTable({ entries }) {
     return (
         <div className="tool-chip-args">
             {entries.map(([k, v]) => {
+                // delegate's `tasks`: one line per worker brief, not one JSON blob.
+                if (k === 'tasks' && Array.isArray(v) && v.length && v.every(t => t && typeof t === 'object')) {
+                    return (
+                        <React.Fragment key={k}>
+                            <span className="tool-chip-argk">{k}</span>
+                            <span className="tool-chip-argv">
+                                {v.map((t, i) => {
+                                    const brief = String(t.task || t.instructions || t.prompt || t.description || '');
+                                    return (
+                                        <span key={i} style={{ display: 'block' }}>
+                                            <strong>{String(t.name || t.label || `worker ${i + 1}`)}</strong>
+                                            {brief ? ` — ${brief.length > 90 ? brief.slice(0, 90) + '…' : brief}` : ''}
+                                        </span>
+                                    );
+                                })}
+                            </span>
+                        </React.Fragment>
+                    );
+                }
                 let display;
                 if (v == null) display = String(v);
                 else if (typeof v === 'string') display = v;
                 else if (typeof v === 'object') {
                     try { display = JSON.stringify(v); } catch { display = String(v); }
+                    if (display.length > 160) display = display.slice(0, 160) + '…';
                 } else display = String(v);
                 if (display.length > 600) display = display.slice(0, 600) + '…';
                 return (
@@ -241,6 +275,132 @@ function ArgsTable({ entries }) {
                         <span className="tool-chip-argk">{k}</span>
                         <span className="tool-chip-argv">{display}</span>
                     </React.Fragment>
+                );
+            })}
+        </div>
+    );
+}
+
+// Merge the live progress rows (delegate_progress frames) with the final
+// per-agent results into one row per agent. Live rows win for the tool list
+// while the call is running; results supply the outcome/review at the end.
+function mergeAgentRows(agents, agentResults, rawResult) {
+    const live = Array.isArray(agents) ? agents : [];
+    let finals = Array.isArray(agentResults) ? agentResults : [];
+    if (!finals.length && rawResult && typeof rawResult === 'object' && Array.isArray(rawResult.results)) {
+        finals = rawResult.results.map(x => ({
+            name: x && x.name, status: x && x.status, calls: x && x.toolCalls, seconds: x && x.seconds,
+            tools: Array.isArray(x && x.tools) ? x.tools : [],
+            answerChars: x && typeof x.answer === 'string' ? x.answer.length : undefined,
+            review: x && x.review ? { verdict: x.review.verdict, edited: !!x.review.edited, issues: Array.isArray(x.review.issues) ? x.review.issues.length : 0 } : undefined,
+        }));
+    }
+    const byName = new Map();
+    const order = [];
+    const add = (name) => { const key = String(name || ''); if (!byName.has(key)) { byName.set(key, { name: key }); order.push(key); } return byName.get(key); };
+    for (const a of live) {
+        if (!a || typeof a !== 'object') continue;
+        const row = add(a.name);
+        row.phase = a.phase; row.calls = a.calls; row.current = a.current; row.chars = a.chars; row.preview = a.preview;
+        row.tools = Array.isArray(a.tools) ? a.tools : row.tools;
+    }
+    for (const f of finals) {
+        if (!f || typeof f !== 'object') continue;
+        const row = add(f.name);
+        row.status = f.status; row.seconds = f.seconds; row.review = f.review;
+        if (typeof f.calls === 'number') row.calls = f.calls;
+        if (typeof f.answerChars === 'number') row.chars = f.answerChars;
+        // Final tool list is strings ("web — purpose"); keep the structured
+        // live list when we have it, else parse the strings.
+        if (!Array.isArray(row.tools) || !row.tools.length) {
+            row.tools = (f.tools || []).map(s => {
+                const str = String(s);
+                const failed = /\(failed\)/.test(str);
+                const cleaned = str.replace(/\s*\(failed\)/, '');
+                const idx = cleaned.indexOf(' — ');
+                return idx >= 0
+                    ? { name: cleaned.slice(0, idx), purpose: cleaned.slice(idx + 3), status: failed ? 'failed' : 'ok' }
+                    : { name: cleaned, purpose: '', status: failed ? 'failed' : 'ok' };
+            });
+        }
+        if (!row.phase) row.phase = f.status === 'ok' ? 'done' : (f.status || 'done');
+    }
+    return order.map(k => byName.get(k));
+}
+
+const PHASE_LABEL = { starting: 'starting', running: 'running', checking: 'checking', done: 'done', failed: 'failed', timeout: 'timed out', cancelled: 'cancelled', empty: 'no answer', ok: 'done' };
+function phaseColor(phase) {
+    if (phase === 'done' || phase === 'ok') return 'var(--ok)';
+    if (phase === 'failed' || phase === 'timeout' || phase === 'cancelled' || phase === 'empty') return 'var(--danger)';
+    return 'var(--accent)';
+}
+function fmtSecs(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms)) return '';
+    const s = ms / 1000;
+    return s >= 1 ? `${s.toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+// One block per worker agent: header (name · phase · calls · time), the
+// agent's tool calls in order with status dots, a muted draft preview, and
+// the checker verdict when there is one.
+function AgentsPanel({ rows, running }) {
+    return (
+        <div className="tool-chip-agents" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            {rows.map((row, i) => {
+                const phase = row.phase || (running ? 'running' : 'done');
+                const live = phase === 'starting' || phase === 'running' || phase === 'checking';
+                const color = phaseColor(phase);
+                const tools = Array.isArray(row.tools) ? row.tools : [];
+                const rev = row.review;
+                const revText = rev
+                    ? (rev.edited ? '✎ edited by checker' : rev.verdict === 'issues' ? `⚠ ${rev.issues} issue${rev.issues === 1 ? '' : 's'}` : rev.verdict === 'pass' ? '✓ checked' : null)
+                    : null;
+                return (
+                    <div key={`${row.name}-${i}`} style={{ borderLeft: `2px solid ${color}`, paddingLeft: 8, minWidth: 0 }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontSize: 12, lineHeight: 1.3 }}>
+                            <strong style={{ color: 'var(--ink-2, inherit)' }}>{row.name || 'worker'}</strong>
+                            <span style={{ ...badgeStyle(color, 12, 30), borderRadius: 999, padding: '0 6px', fontSize: 10.5, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                {live && <Loader2 className="animate-spin" style={{ width: 9, height: 9 }} strokeWidth={2.5} />}
+                                {PHASE_LABEL[phase] || phase}
+                            </span>
+                            {typeof row.calls === 'number' && (
+                                <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>{row.calls} call{row.calls === 1 ? '' : 's'}</span>
+                            )}
+                            {typeof row.seconds === 'number' && !live && (
+                                <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>done in {row.seconds}s</span>
+                            )}
+                            {typeof row.chars === 'number' && row.chars > 0 && (
+                                <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>{row.chars} chars</span>
+                            )}
+                            {revText && (
+                                <span style={{ fontSize: 11, color: rev.edited ? 'var(--accent)' : rev.verdict === 'issues' ? 'var(--danger)' : 'var(--ok)' }}>{revText}</span>
+                            )}
+                        </div>
+                        {tools.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+                                {tools.map((t, j) => {
+                                    const st = t.status === 'running' ? 'running' : t.status === 'failed' ? 'failed' : 'ok';
+                                    const dot = st === 'running' ? 'var(--accent)' : st === 'failed' ? 'var(--danger)' : 'var(--ok)';
+                                    return (
+                                        <div key={j} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 6, fontSize: 11.5, lineHeight: 1.35, minWidth: 0 }}>
+                                            <span className={st === 'running' ? 'animate-pulse' : ''} style={{ width: 7, height: 7, borderRadius: 999, background: dot, flexShrink: 0, alignSelf: 'center' }} />
+                                            <code style={{ fontSize: 11, color: 'var(--ink-3, inherit)' }}>{String(t.name || 'tool').replace(/_/g, ' ')}</code>
+                                            {t.purpose && <span style={{ color: 'var(--ink-3, inherit)', minWidth: 0, overflowWrap: 'anywhere' }}>{t.purpose}</span>}
+                                            {typeof t.ms === 'number' && <span style={{ color: 'var(--ink-4)', fontSize: 10.5 }}>{fmtSecs(t.ms)}</span>}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                        {live && !tools.length && row.current && (
+                            <div style={{ fontSize: 11.5, color: 'var(--ink-4)', marginTop: 3 }}>{row.current}</div>
+                        )}
+                        {row.preview && (
+                            <div style={{ fontSize: 11.5, color: 'var(--ink-4)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontStyle: 'italic' }}>
+                                …{row.preview}
+                            </div>
+                        )}
+                    </div>
                 );
             })}
         </div>

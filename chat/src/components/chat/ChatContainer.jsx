@@ -261,7 +261,7 @@ function buildNativeChipEntries(streamingToolCalls) {
             try {
                 parsedArgsForChip = JSON.parse(tc.arguments);
                 const pairs = Object.entries(parsedArgsForChip)
-                    .map(([k, v]) => { const s = String(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`; });
+                    .map(([k, v]) => { const s = argValueText(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`; });
                 argPreview = pairs.join(', ');
             } catch (_) {
                 argPreview = (String(tc.arguments).length > 80 ? String(tc.arguments).slice(0, 80) + '…' : String(tc.arguments));
@@ -307,9 +307,38 @@ function buildNativeChipEntries(streamingToolCalls) {
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,
             sandboxNetwork: tc.sandboxNetwork,
+            // delegate: the worker agents' live progress (tool calls, draft
+            // preview) and their compact final results, so the chip can show
+            // what each agent did after the message commits.
+            agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
+            agentResults: agentResultsOf(tc.name, tc.result),
         });
     }
     return out;
+}
+
+// One-line text for an argument value — objects/arrays as JSON, never
+// "[object Object]".
+function argValueText(v) {
+    if (v == null) return String(v);
+    if (typeof v === 'string') return v;
+    if (typeof v === 'object') { try { return JSON.stringify(v); } catch (_) { return String(v); } }
+    return String(v);
+}
+
+// Compact per-agent outcome lifted off a delegate result (kept small so the
+// persisted message never carries the workers' full reports).
+function agentResultsOf(name, result) {
+    if (name !== 'delegate' || !result || typeof result !== 'object' || !Array.isArray(result.results)) return undefined;
+    return result.results.slice(0, 8).map(r => ({
+        name: r && r.name,
+        status: r && r.status,
+        calls: r && r.toolCalls,
+        seconds: r && r.seconds,
+        tools: Array.isArray(r && r.tools) ? r.tools.slice(0, 12) : [],
+        answerChars: r && typeof r.answer === 'string' ? r.answer.length : undefined,
+        review: r && r.review ? { verdict: r.review.verdict, edited: !!r.review.edited, issues: Array.isArray(r.review.issues) ? r.review.issues.length : 0 } : undefined,
+    }));
 }
 
 // Turn a snake_case tool id into a friendly verb phrase for the status row.
@@ -323,7 +352,7 @@ function modelRolesFromSettings(settings) {
         primary,
         checker,
         checkWorkers: settings.roleCheckWorkers !== false,
-        checkFinal: settings.roleCheckFinal === true,
+        checkFinal: settings.roleCheckFinal === true ? 'note' : (typeof settings.roleCheckFinal === 'string' ? settings.roleCheckFinal : 'off'),
     };
 }
 
@@ -2693,7 +2722,7 @@ export default function ChatContainer({
             }
         };
         tick();
-        const t = setInterval(tick, 1500);
+        const t = setInterval(tick, 600);
         return () => { stopped = true; clearInterval(t); };
     }, [workingJobsKey]);
 

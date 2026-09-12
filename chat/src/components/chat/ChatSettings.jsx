@@ -59,6 +59,18 @@ export default function ChatSettings({
     const [uploadMaxDraft, setUploadMaxDraft] = useState('');  // input field contents
     const [uploadLimitEditable, setUploadLimitEditable] = useState(false);
     const [uploadLimitSaving, setUploadLimitSaving] = useState(false);
+    // Server-wide model roles (set on the Models page) — shown as the default
+    // behind the per-account choices below.
+    const [serverRoles, setServerRoles] = useState(null);
+    useEffect(() => {
+        if (!open) return;
+        let cancelled = false;
+        fetch('/api/model-roles', { credentials: 'include' })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => { if (!cancelled && d && d.roles) setServerRoles(d.roles); })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, [open]);
     const [uploadLimitError, setUploadLimitError] = useState('');
 
     useEffect(() => {
@@ -597,7 +609,7 @@ export default function ChatSettings({
                             <div className="set-divider" style={{ paddingTop: 16 }}>
                                 <div className="set-row-title">Model roles</div>
                                 <div className="set-row-help" style={{ marginBottom: 10 }}>
-                                    With two models loaded, a fast <strong>primary</strong> does the work — the composer's model runs the chat and parallel worker agents (the <code>delegate</code> tool) run on the primary — and a stronger <strong>checker</strong> reviews what it produced. Leave the primary unset to use the composer's model for workers.
+                                    With two models loaded, a fast <strong>primary</strong> does the work — the composer's model runs the chat and parallel worker agents (the <code>delegate</code> tool) run on the primary — and a stronger <strong>checker</strong> reviews what it produced and answers the primary's <code>consult_expert</code> questions. Leave a field unset to use the server default from the Models page{serverRoles && (serverRoles.primary || serverRoles.checker) ? <> (currently primary: <strong>{serverRoles.primary || 'composer'}</strong>, checker: <strong>{serverRoles.checker || 'none'}</strong>, after each answer: <strong>{serverRoles.checkFinal === 'edit' ? 'edits' : serverRoles.checkFinal === 'note' ? 'notes issues' : 'nothing'}</strong>)</> : ' (none set)'}.
                                 </div>
                                 {(() => {
                                     const opts = [...new Set([...(runningModels || []), settings?.rolePrimaryModel, settings?.roleCheckerModel].filter(Boolean))];
@@ -621,18 +633,18 @@ export default function ChatSettings({
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                             <div>
                                                 <label className="set-label">Primary (does the work)</label>
-                                                {renderSelect('rolePrimaryModel', 'Composer\'s model')}
+                                                {renderSelect('rolePrimaryModel', serverRoles && serverRoles.primary ? `Server default (${serverRoles.primary})` : 'Composer\'s model')}
                                             </div>
                                             <div>
                                                 <label className="set-label">Checker (reviews it)</label>
-                                                {renderSelect('roleCheckerModel', 'None — no checking')}
+                                                {renderSelect('roleCheckerModel', serverRoles && serverRoles.checker ? `Server default (${serverRoles.checker})` : 'None — no checking')}
                                             </div>
                                         </div>
                                     );
                                 })()}
-                                {settings?.roleCheckerModel && settings.roleCheckerModel === (settings.rolePrimaryModel || '') && (
+                                {settings?.roleCheckerModel && settings.roleCheckerModel === (settings.rolePrimaryModel || settings?.model || '') && (
                                     <div className="set-row-help" style={{ marginTop: 6, color: 'var(--warning, #d29922)' }}>
-                                        The checker is the same model as the primary — it will still review, but a different, stronger model catches more.
+                                        The checker is the same model as the one doing the work, so it is ignored — a model does not check itself. Pick a different, stronger model as the checker (needs two models loaded).
                                     </div>
                                 )}
                                 <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
@@ -651,22 +663,34 @@ export default function ChatSettings({
                                         <span className="set-toggle-knob" />
                                     </button>
                                 </label>
-                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="set-row-title">Check final answers</div>
-                                        <div className="set-row-help">After each substantial reply (tools were used, or it is longer than a few lines) the checker reviews it and a verdict is appended to the message. Adds the checker's generation time to every such turn.</div>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={settings?.roleCheckFinal === true}
-                                        disabled={!settings?.roleCheckerModel}
-                                        onClick={() => onUpdateSettings({ roleCheckFinal: settings?.roleCheckFinal !== true })}
-                                        className={`set-toggle ${settings?.roleCheckFinal === true ? 'is-on' : ''}`}
-                                    >
-                                        <span className="set-toggle-knob" />
-                                    </button>
-                                </label>
+                                {(() => {
+                                    const hasChecker = !!(settings?.roleCheckerModel || (serverRoles && serverRoles.checker));
+                                    const mode = settings?.roleCheckFinal === true ? 'note' : (typeof settings?.roleCheckFinal === 'string' && settings.roleCheckFinal) ? settings.roleCheckFinal : '';
+                                    const effective = mode || (serverRoles && serverRoles.checkFinal) || 'off';
+                                    return (
+                                        <div style={{ marginTop: 12, opacity: hasChecker ? 1 : 0.55 }}>
+                                            <div className="set-row-title">After each answer, the checker…</div>
+                                            <div className="set-row-help" style={{ marginBottom: 6 }}>
+                                                <strong>Notes issues</strong> appends a verdict; <strong>Edits the answer</strong> rewrites it when it finds problems and lists the changes. Only substantial replies are checked (tools used, or longer than a few lines). Adds the checker's generation time.{!mode && serverRoles && serverRoles.checkFinal ? ` Server default: ${effective}.` : ''}
+                                            </div>
+                                            <div className="set-seg" role="radiogroup" aria-label="Checker action on final answers">
+                                                {[['', 'Server default'], ['off', 'Does nothing'], ['note', 'Notes issues'], ['edit', 'Edits the answer']].map(([v, label]) => (
+                                                    <button
+                                                        key={v || 'default'}
+                                                        type="button"
+                                                        role="radio"
+                                                        aria-checked={mode === v}
+                                                        disabled={!hasChecker}
+                                                        className={`set-seg-btn${mode === v ? ' is-active' : ''}`}
+                                                        onClick={() => onUpdateSettings({ roleCheckFinal: v })}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                             </div>
 
                             {/* Upload size limit — server-wide; editable by admins only. */}

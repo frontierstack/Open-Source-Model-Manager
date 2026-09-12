@@ -25,7 +25,13 @@ function StreamingMessage() {
             try {
                 const args = JSON.parse(tc.arguments);
                 argPreview = Object.entries(args)
-                    .map(([k, v]) => { const s = String(v); return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`; })
+                    .map(([k, v]) => {
+                        let s;
+                        if (v == null) s = String(v);
+                        else if (typeof v === 'string') s = v;
+                        else { try { s = JSON.stringify(v); } catch (_) { s = String(v); } }
+                        return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`;
+                    })
                     .join(', ');
             } catch (_) { argPreview = (String(tc.arguments).length > 80 ? String(tc.arguments).slice(0, 80) + '…' : String(tc.arguments)); }
         }
@@ -93,6 +99,17 @@ function StreamingMessage() {
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,
             sandboxNetwork: tc.sandboxNetwork,
+            // delegate: live worker-agent progress (delegate_progress frames)
+            // and, once the result is in, each agent's compact outcome.
+            agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
+            agentResults: (tc.name === 'delegate' && r && typeof r === 'object' && Array.isArray(r.results))
+                ? r.results.slice(0, 8).map(x => ({
+                    name: x && x.name, status: x && x.status, calls: x && x.toolCalls, seconds: x && x.seconds,
+                    tools: Array.isArray(x && x.tools) ? x.tools.slice(0, 12) : [],
+                    answerChars: x && typeof x.answer === 'string' ? x.answer.length : undefined,
+                    review: x && x.review ? { verdict: x.review.verdict, edited: !!x.review.edited, issues: Array.isArray(x.review.issues) ? x.review.issues.length : 0 } : undefined,
+                }))
+                : undefined,
         };
     });
 
@@ -124,6 +141,36 @@ function StreamingMessage() {
 // composer pill. Committed into `messages` in order once the first reply lands.
 function ParallelTurn({ turn }) {
     const running = Array.isArray(turn.runningToolCalls) ? turn.runningToolCalls : [];
+    // Smooth reveal: the poll delivers text in ~600 ms lumps; reveal the
+    // backlog a slice per animation frame (same feel as the foreground
+    // bubble's pump) so the second window reads as streaming, not jumping.
+    const targetText = (turn.status === 'done' && turn.result) ? (turn.result.content || '') : (turn.partial || '');
+    const [shown, setShown] = useState(turn.status === 'done' ? targetText : '');
+    const shownRef = useRef(shown);
+    const targetRef = useRef(targetText);
+    targetRef.current = targetText;
+    useEffect(() => {
+        if (turn.status === 'done') { shownRef.current = targetText; setShown(targetText); return undefined; }
+        let raf = 0;
+        let cancelled = false;
+        const step = () => {
+            if (cancelled) return;
+            const target = targetRef.current;
+            const cur = shownRef.current;
+            if (!target.startsWith(cur)) { shownRef.current = target; setShown(target); }
+            else if (cur.length < target.length) {
+                const backlog = target.length - cur.length;
+                // ~12% of the backlog per frame, at least 2 chars, at most 40 —
+                // finishes a 600 ms lump in ~40 frames without racing ahead.
+                const take = Math.max(2, Math.min(40, Math.ceil(backlog * 0.12)));
+                const next = target.slice(0, cur.length + take);
+                shownRef.current = next; setShown(next);
+            }
+            raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+        return () => { cancelled = true; cancelAnimationFrame(raf); };
+    }, [turn.status, turn.status === 'done' ? targetText : '']);
     const done = Array.isArray(turn.toolChips) ? turn.toolChips : [];
     const liveToolCalls = [
         ...done.map(c => ({ ...c })),
@@ -136,7 +183,7 @@ function ParallelTurn({ turn }) {
             status: 'partial',
         })),
     ];
-    const content = (turn.status === 'done' && turn.result) ? (turn.result.content || '') : (turn.partial || '');
+    const content = turn.status === 'done' ? targetText : shown;
     const isLive = turn.status !== 'done';
     const statusText = turn.status === 'done'
         ? 'Finished — will be placed after the current reply'

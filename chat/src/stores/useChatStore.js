@@ -185,8 +185,9 @@ export const useChatStore = create(
             rolePrimaryModel: '',
             roleCheckerModel: '',
             roleCheckWorkers: true,
-            roleCheckFinal: false,
-            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
+            // 'off' | 'note' (append the verdict) | 'edit' (checker rewrites the answer)
+            roleCheckFinal: 'off',
+            ...(() => { const s = loadFromStorage(STORAGE_KEYS.SETTINGS, {}); if (s && typeof s.roleCheckFinal === 'boolean') s.roleCheckFinal = s.roleCheckFinal ? 'note' : 'off'; return s; })(),
         },
 
         // ==================== Theme Actions ====================

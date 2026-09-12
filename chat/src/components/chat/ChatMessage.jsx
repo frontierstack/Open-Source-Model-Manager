@@ -156,6 +156,14 @@ export default React.memo(function ChatMessage({
     // For chart calls the chart itself surfaces in the main bubble
     // body anyway, so the chip strip is purely a transparency footer.
     const [toolsExpanded, setToolsExpanded] = useState(false);
+    // A delegate call in flight is the one chip worth watching (each worker
+    // agent's tool calls stream into it) — unfold the strip for it unless the
+    // user has folded it by hand.
+    const toolsToggledRef = useRef(false);
+    const delegateRunning = !!(isStreaming && Array.isArray(toolCalls) && toolCalls.some(tc => tc && (tc.name === 'delegate' || tc.label === 'delegate') && (tc.status === 'partial' || tc.status === 'running')));
+    React.useEffect(() => {
+        if (delegateRunning && !toolsToggledRef.current) setToolsExpanded(true);
+    }, [delegateRunning]);
     // Re-render once a second while a tool is in flight so the running-tool
     // label's elapsed clock advances (nothing else in the bubble changes
     // while the model waits on a tool).
@@ -615,7 +623,7 @@ export default React.memo(function ChatMessage({
                             <div className="msg-tools-section">
                                 <button
                                     type="button"
-                                    onClick={() => setToolsExpanded(v => !v)}
+                                    onClick={() => { toolsToggledRef.current = true; setToolsExpanded(v => !v); }}
                                     className="msg-tools-toggle"
                                     aria-expanded={toolsExpanded}
                                     aria-label={toolsExpanded ? 'Collapse tool calls' : 'Expand tool calls'}

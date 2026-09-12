@@ -75,6 +75,9 @@ const CORE = [
     // the model must be able to fan a multi-part request out on its own, and
     // "research X and Y" embeds nowhere near a tool called delegate.
     'delegate',
+    // The stronger model's help line — only present when a checker is
+    // configured (build() null-gates it), so it costs nothing otherwise.
+    'consult_expert',
 ];
 // Diffusion runs on a tiny budget — a leaner core (drop record_learning/make_downloadable).
 const CORE_DIFFUSION = ['web', 'base64_decode', 'run_python', 'read_file', 'load_skill'];

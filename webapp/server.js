@@ -1344,7 +1344,7 @@ function buildChatRuntimePrelude() {
         `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query. BUT when a search comes back with the SAME pages you already saw (the result says noNewResults and lists the unread ones), the engine has nothing more on that subject: stop searching and READ one of those pages, or locate the entry on the index/directory page you already found with find:"<its name or number>" — never guess or re-type a URL from a name, and never announce the same plan twice.`,
         `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
         `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `PARALLEL WORKER AGENTS: the \`delegate\` tool runs several worker agents AT THE SAME TIME, each with its own tools (web, files, sandbox) and its own context window, sharing this conversation's /workspace. Use it on your own initiative — the user does not need to ask for "agents" — whenever a request splits into 2 or more INDEPENDENT parts that each need tool work: research two or more topics/companies/products, read or audit several sites/files/repos, compare options, gather several kinds of evidence. Call it ONCE with every sub-task in \`tasks\` (each self-contained: what to find, where to look, what to return), then SYNTHESIZE the workers' reports into one answer, citing what they found. Do NOT delegate a single-step task, a question you can answer directly, or steps that depend on each other's results — do those yourself in order.`,
+        `PARALLEL WORKER AGENTS: the \`delegate\` tool runs several worker agents AT THE SAME TIME, each with its own tools (web, files, sandbox) and its own context window, sharing this conversation's /workspace. Use it on your own initiative — the user does not need to ask for "agents" — whenever a request splits into 2 or more INDEPENDENT parts that each need tool work: research two or more topics/companies/products, read or audit several sites/files/repos, compare options, gather several kinds of evidence. Call it ONCE with every sub-task in \`tasks\` (each self-contained: what to find, where to look, what to return), then SYNTHESIZE the workers' reports into one answer, citing what they found. Delegation pays off only when each part needs real work (several searches, pages or files) AND the backend has free model slots (the tool description says how many); with one free slot the workers run one after another and the turn gets SLOWER. Do NOT delegate a small task (2–3 tool calls total), a question you can answer directly, or steps that depend on each other's results — do those yourself in order. When the user explicitly asks for agents, delegate anyway, but split the work into genuinely parallel parts and answer straight from the reports.`,
         `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -1363,7 +1363,7 @@ function buildDelegatePrelude(delegate) {
     return [
         `You are worker agent "${label}", one of ${Math.max(1, siblings.length)} agents running IN PARALLEL on behalf of a parent agent that is answering the user. You have been given ONE sub-task. Complete it fully and autonomously with your tools — do not ask questions, do not wait for input, do not address the user.`,
         siblings.length > 1 ? `Other workers are handling in parallel: ${siblings.filter(x => x !== label).map(x => `"${x}"`).join(', ')} — stay on YOUR sub-task only; do not duplicate theirs.` : '',
-        `Your FINAL message is the only thing the parent will see (it never sees your tool results), so make it a complete report: the findings, every URL/path/identifier/number you relied on written out in full, and what you could NOT establish. Prefer facts over prose; keep it under ~600 words unless the task needs more. If you wrote files, list their exact /workspace paths. Do not use make_downloadable — the parent delivers files.`,
+        `Your FINAL message is the only thing the parent will see (it never sees your tool results), so make it a complete but COMPACT report: bullet the findings with every URL/path/identifier/number you relied on written out in full, put any numeric data the parent may chart in a small table, note what you could NOT establish, and stop — no preamble, no restating the task, no closing offers; aim for 150–300 words unless the task genuinely needs more. Work fast: gather in ONE broad search or read where possible, do not re-verify a fact two sources already agree on. Do not render charts, write documents or create deliverables unless your task says so — return the data (as a table) and the parent builds them. If you wrote files, list their exact /workspace paths. Do not use make_downloadable — the parent delivers files.`,
     ].filter(Boolean).join('\n');
 }
 
@@ -2553,16 +2553,22 @@ async function loadSystemSettings() {
     }
     allowInternalNetworkFlag = settings.allowInternalNetwork === true;
     try { require('./services/egressProxy').setAllowInternal(allowInternalNetworkFlag); } catch (_) {}
+    systemModelRoles = modelRolesSvc.sanitizeSystemRoles(settings.modelRoles);
     const savedUploadMax = clampUploadMaxMb(settings.uploadMaxMb);
     if (savedUploadMax !== null && savedUploadMax !== uploadMaxMbSetting) {
         uploadMaxMbSetting = savedUploadMax;
         rebuildJsonBodyParser();
     }
-    return { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting };
+    return { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles };
 }
 
+// Server-wide model roles (set on the Models page): the PRIMARY does the work,
+// the CHECKER reviews/edits it and answers the primary's consult_expert calls.
+// Per-account chat prefs and a request body override these per field.
+let systemModelRoles = { primary: '', checker: '', checkWorkers: true, checkFinal: 'off', consult: true };
+
 async function saveSystemSettings() {
-    const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting };
+    const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles };
     await fs.writeFile(SYSTEM_SETTINGS_FILE, JSON.stringify(settings, null, 2));
     return settings;
 }
@@ -19392,7 +19398,10 @@ const chatStreamHandlerInner = async (req, res) => {
                 // recall its own experience. Falls back to the raw text when
                 // normalization leaves nothing.
                 const memoryQuery = experienceMemory.summarizeTask(latestUserText) || latestUserText;
-                if (latestUserText) {
+                // A delegated worker skips the memory/experience lookup: the
+                // parent turn already had it, the block would differ per worker
+                // (no prefix sharing), and it is pure latency on a sub-task.
+                if (latestUserText && !req.delegate) {
                     // Predict THIS turn's activity (from the ask + any attachments,
                     // before any tools run) so the matching experience memory is
                     // surfaced first — that's what front-loads the proven approach.
@@ -19501,7 +19510,13 @@ const chatStreamHandlerInner = async (req, res) => {
             let prelude = effortDirectives.systemHint
                 ? `${buildChatRuntimePrelude()}\n${effortDirectives.systemHint}`
                 : buildChatRuntimePrelude();
-            if (req.delegate) prelude = `${buildDelegatePrelude(req.delegate)}\n\n${prelude}`;
+            // Worker framing goes AFTER the shared prelude so a worker's system
+            // prompt starts with the same bytes as the parent's — the backend's
+            // prompt cache then skips re-prefilling those tokens.
+            if (req.delegate) prelude = `${prelude}\n\n${buildDelegatePrelude(req.delegate)}`;
+            if (modelRoles.checker && modelRoles.consult !== false && modelRoles.checker !== targetModel) {
+                prelude += `\nEXPERT MODEL AVAILABLE: a stronger model (${modelRoles.checker}) is loaded alongside you and reachable through the \`consult_expert\` tool. Consult it when you are stuck, unsure, or facing hard reasoning, tricky math, non-trivial code design or a decision with real consequences — ask ONE specific question with the context it needs, then continue the work yourself using its answer. Do not consult it for routine steps or things you know.${modelRoles.checkFinal !== 'off' || modelRoles.checkWorkers ? ' The same model reviews your work afterwards, so be accurate and cite your evidence.' : ''}`;
+            }
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
                 if (typeof existing === 'string') {
@@ -20805,17 +20820,25 @@ const chatStreamHandlerInner = async (req, res) => {
         // the CHECKER reviews it. Request body wins (the chat UI sends it every
         // turn), then the account's saved chat prefs; a role naming a model
         // that is not loaded is dropped. A worker turn inherits its parent's.
-        let modelRoles = { primary: null, checker: null, checkWorkers: true, checkFinal: false, source: 'none' };
+        let modelRoles = { primary: null, checker: null, checkWorkers: true, checkFinal: 'off', consult: true, source: 'none' };
         try {
             const runningNames = [];
             for (const [k, inst] of modelInstances.entries()) { runningNames.push(k); if (inst && inst.modelName) runningNames.push(inst.modelName); }
             modelRoles = modelRolesSvc.resolveModelRoles({
                 body: req.body,
-                prefs: req.body && req.body.modelRoles ? null : await getChatPrefsForUser(req.user?.id || null),
+                prefs: await getChatPrefsForUser(req.user?.id || null),
+                system: systemModelRoles,
                 running: runningNames,
+                // A checker that IS the model doing this turn is ignored: the
+                // primary/checker split is for two different models only (a
+                // single model with several parallel slots does not check itself).
+                targetModel,
             });
+            if (modelRoles.sameModel && !req.delegate) {
+                console.log(`[Chat Stream] Model roles: checker is the same model as the primary (${targetModel}) — checker/consult ignored`);
+            }
             if (modelRoles.checker && modelRoles.source !== 'none') {
-                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} checker=${modelRoles.checker} checkWorkers=${modelRoles.checkWorkers} checkFinal=${modelRoles.checkFinal}`);
+                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} checker=${modelRoles.checker} checkWorkers=${modelRoles.checkWorkers} checkFinal=${modelRoles.checkFinal} consult=${modelRoles.consult}`);
             }
         } catch (e) { console.warn('[Chat Stream] model roles resolution failed:', e.message); }
         const toolCtx = {
@@ -20851,6 +20874,8 @@ const chatStreamHandlerInner = async (req, res) => {
             workerModel: modelRoles.primary || targetModel,
             checkerModel: modelRoles.checker || null,
             checkWorkers: !!(modelRoles.checker && modelRoles.checkWorkers),
+            // The stronger model the primary may ask for help (consult_expert).
+            consultModel: (modelRoles.checker && modelRoles.consult !== false) ? modelRoles.checker : null,
             workspaceBucket: (req.delegate && req.delegate.workspaceBucket)
                 || (req.sidecar && req.sidecar.workspaceBucket)
                 || (conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null),
@@ -25080,7 +25105,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // is streamed as an addendum and persisted with the answer. Skipped
         // for worker turns (the delegate tool checks their REPORTS), trivial
         // chat, cancelled turns, and when no checker is configured.
-        if (!req.delegate && modelRoles.checker && modelRoles.checkFinal
+        if (!req.delegate && modelRoles.checker && modelRoles.checkFinal && modelRoles.checkFinal !== 'off'
             && !streamAbortController.signal.aborted && fullResponse
             && modelRolesSvc.shouldCheckFinal({ answer: fullResponse, toolCalls: persistedToolChips.length })) {
             const t0 = Date.now();
@@ -25098,24 +25123,40 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     userAsk: latestUserText,
                     answer: fullResponse,
                     toolSummary: evidence,
+                    mode: modelRoles.checkFinal,
                 });
                 const r = await Promise.race([
-                    requestModelCompletion({ messages: msgs, model: modelRoles.checker, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
+                    requestModelCompletion({ messages: msgs, model: modelRoles.checker, temperature: 0.2, maxTokens: modelRoles.checkFinal === 'edit' ? Math.max(1500, Math.ceil(fullResponse.length / 2.5) + 800) : 1500, disableThinking: true }),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
                 ]);
                 review = modelRolesSvc.parseReview(r && r.content);
             } catch (e) {
                 review = { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
             }
-            const addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
-            fullResponse += addendum;
+            let addendum;
+            let edited = false;
+            if (modelRoles.checkFinal === 'edit' && review.verdict === 'issues' && review.revised) {
+                // The checker rewrote the answer: replace what the user saw
+                // (content_rewind swaps the bubble text; the pump reveals the
+                // rest) and persist the corrected version.
+                edited = true;
+                review.edited = true;
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
+                fullResponse = review.revised + addendum;
+                if (clientConnected && !res.writableEnded) {
+                    try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
+                }
+            } else {
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
+                fullResponse += addendum;
+            }
             const secs = Math.round((Date.now() - t0) / 100) / 10;
-            logChatActivity(`Checker: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)` : 'review failed'} (${modelRoles.checker}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
-            console.log(`[Chat Stream] Checker ${modelRoles.checker}: ${review.verdict} (${review.issues.length} issues, ${secs}s)`);
+            logChatActivity(`Checker: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)${edited ? ', answer edited' : ''}` : 'review failed'} (${modelRoles.checker}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
+            console.log(`[Chat Stream] Checker ${modelRoles.checker}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
             if (clientConnected && !res.writableEnded) {
                 try {
-                    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
-                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.checker, verdict: review.verdict, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
+                    if (!edited) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.checker, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
                 } catch (_) { clientConnected = false; }
             }
         }
@@ -25477,10 +25518,21 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
     let resolveDone;
     const done = new Promise((resolve) => { resolveDone = resolve; });
     const finish = () => { if (!finished) { finished = true; resolveDone(); } };
+    // Draft preview for the parent's live UI: the worker's answer text so far,
+    // throttled so a token stream does not emit a frame per token.
+    let lastTextEmit = 0;
+    const emitText = (force) => {
+        if (!onEvent) return;
+        const now = Date.now();
+        if (!force && now - lastTextEmit < 700) return;
+        lastTextEmit = now;
+        const flat = String(content || '').replace(/\s+/g, ' ').trim();
+        onEvent({ kind: 'text', chars: content.length, preview: flat.slice(-160) });
+    };
 
     const handleEvent = (ev) => {
         if (!ev || typeof ev !== 'object') return;
-        if (ev.type === 'content_rewind' && typeof ev.content === 'string') { content = ev.content; return; }
+        if (ev.type === 'content_rewind' && typeof ev.content === 'string') { content = ev.content; emitText(); return; }
         if (ev.type === 'tool_executing') {
             pending.set(ev.tool_call_id, { name: ev.name, purpose: ev.purpose, at: Date.now() });
             try {
@@ -25490,7 +25542,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
                     if (typeof v === 'string' && /^\/?workspace\//.test(v)) filesWritten.add(v.startsWith('/') ? v : '/' + v);
                 }
             } catch (_) { /* args may be partial */ }
-            if (onEvent) onEvent({ kind: 'tool_start', name: ev.name, purpose: ev.purpose || '' });
+            if (onEvent) onEvent({ kind: 'tool_start', id: ev.tool_call_id, name: ev.name, purpose: ev.purpose || '' });
             return;
         }
         if (ev.type === 'tool_result') {
@@ -25498,13 +25550,14 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
             pending.delete(ev.tool_call_id);
             const r = ev.result;
             const failed = !!(r && typeof r === 'object' && (r.error || r.success === false));
-            toolTrace.push({ name: ev.name, purpose: (p && p.purpose) || undefined, ok: !failed, ms: p ? Date.now() - p.at : undefined });
-            if (onEvent) onEvent({ kind: 'tool_end', name: ev.name, ok: !failed });
+            const ms = p ? Date.now() - p.at : undefined;
+            toolTrace.push({ name: ev.name, purpose: (p && p.purpose) || undefined, ok: !failed, ms });
+            if (onEvent) onEvent({ kind: 'tool_end', id: ev.tool_call_id, name: ev.name, ok: !failed, ms });
             return;
         }
         if (ev.error && ev.done) { error = String(ev.error); finish(); return; }
         const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
-        if (delta && typeof delta.content === 'string') content += delta.content;
+        if (delta && typeof delta.content === 'string') { content += delta.content; emitText(); }
         if (ev.done) finish();
     };
     const consume = (chunk) => {
@@ -25551,6 +25604,8 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
     let truncated = false;
     if (answer.length > DELEGATE_ANSWER_CHARS) { answer = answer.slice(0, DELEGATE_ANSWER_CHARS); truncated = true; }
     const status = httpError ? 'failed' : error ? 'failed' : timedOut ? 'timeout' : aborted ? 'cancelled' : answer ? 'ok' : 'empty';
+    // Final preview, unthrottled — the last throttled frame may be stale.
+    if (onEvent) onEvent({ kind: 'text', chars: answer.length, preview: answer.replace(/\s+/g, ' ').trim().slice(-160) });
     return {
         name: label,
         status,
@@ -26277,7 +26332,34 @@ function getHostIp() {
 // security posture); the /public variant below exposes only the harmless
 // values every authenticated client needs (upload pre-checks in the UIs).
 app.get('/api/system-settings', requireAdmin, async (req, res) => {
-    res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting });
+    res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles });
+});
+
+// Model roles: readable by any signed-in user (the chat shows the server
+// default), writable by admins from the Models page.
+app.get('/api/model-roles', requireAuth, (req, res) => {
+    const running = [];
+    for (const [name, inst] of modelInstances.entries()) {
+        if (inst && inst.status && inst.status !== 'running') continue;
+        running.push({ name, backend: inst && inst.backend, slots: modelSlotCount(inst) });
+    }
+    res.json({ roles: systemModelRoles, running });
+});
+app.put('/api/model-roles', requireAdmin, async (req, res) => {
+    try {
+        const next = modelRolesSvc.sanitizeSystemRoles({ ...systemModelRoles, ...(req.body && typeof req.body === 'object' ? req.body : {}) });
+        if (next.primary && next.checker && next.primary === next.checker) {
+            // Allowed (same model gives a second opinion), but say so.
+            console.log('[model-roles] primary and checker are the same model');
+        }
+        systemModelRoles = next;
+        await saveSystemSettings();
+        console.log(`[model-roles] primary=${next.primary || '(composer)'} checker=${next.checker || '(none)'} checkWorkers=${next.checkWorkers} checkFinal=${next.checkFinal} consult=${next.consult} by ${req.user?.username || req.userId || 'admin'}`);
+        res.json({ roles: systemModelRoles });
+    } catch (err) {
+        console.error('[model-roles] update failed:', err);
+        res.status(500).json({ error: 'Failed to save model roles' });
+    }
 });
 
 app.get('/api/system-settings/public', requireAuth, async (req, res) => {
@@ -26305,7 +26387,11 @@ app.put('/api/system-settings', requireAdmin, async (req, res) => {
                 console.log(`[system-settings] uploadMaxMb set to ${mb} by ${req.user?.username || req.userId || 'admin'}`);
             }
         }
-        res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting });
+        if (req.body?.modelRoles && typeof req.body.modelRoles === 'object') {
+            systemModelRoles = modelRolesSvc.sanitizeSystemRoles({ ...systemModelRoles, ...req.body.modelRoles });
+            await saveSystemSettings();
+        }
+        res.json({ allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles });
     } catch (err) {
         console.error('[system-settings] update failed:', err);
         res.status(500).json({ error: 'Failed to update system settings' });
@@ -32059,6 +32145,56 @@ app.use((req, res) => {
         },
     });
 
+    // ── consult_expert ────────────────────────────────────────────────────────
+    // Two models working together: the (weaker, faster) primary asks the
+    // stronger checker model a specific question when it is stuck. Present only
+    // when a checker is configured with consult enabled (toolCtx.consultModel).
+    tools.registerTool({
+        name: 'consult_expert',
+        build(ctx) {
+            if (!ctx || !ctx.consultModel) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'consult_expert',
+                    description:
+                        `Ask the stronger expert model (${ctx.consultModel}) ONE specific question when you are stuck, unsure, or facing hard reasoning, tricky math, or non-trivial code/design decisions — then continue the work yourself with its answer. ` +
+                        'Give it the context it needs (the task, the evidence you have, what you tried). Do not use it for routine steps, lookups a tool can do, or things you already know.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            question: { type: 'string', description: 'The exact question or decision you need help with.' },
+                            context: { type: 'string', description: 'Relevant context: the user\'s task, evidence/tool results so far, file contents or code that matter.' },
+                            attempt: { type: 'string', description: 'What you tried or your current draft answer, so the expert can correct it rather than start over.' },
+                        },
+                        required: ['question'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const model = ctx && ctx.consultModel;
+            if (!model) return { error: 'No expert model is configured (set a checker model on the Models page).' };
+            const question = String((args && args.question) || '').trim();
+            if (!question) return { error: 'question is required.' };
+            const t0 = Date.now();
+            try {
+                const msgs = modelRolesSvc.buildConsultMessages({ question, context: args && args.context, attempt: args && args.attempt, primaryModel: ctx.model });
+                const r = await Promise.race([
+                    requestModelCompletion({ messages: msgs, model, temperature: 0.3, maxTokens: 3000 }),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('expert model timed out')), CHECKER_TIMEOUT_MS)),
+                ]);
+                const answer = String((r && (r.content || r.reasoningContent)) || '').trim();
+                const secs = Math.round((Date.now() - t0) / 100) / 10;
+                logUserActivity(ctx.userId, `Consult: ${ctx.model || 'primary'} asked ${model} — "${question.slice(0, 90)}" (${secs}s)`);
+                if (!answer) return { error: 'The expert model returned no answer.', model, seconds: secs };
+                return { success: true, model, answer: answer.slice(0, 16000), seconds: secs, note: 'Use this answer to continue the task yourself; verify anything checkable with your tools.' };
+            } catch (e) {
+                return { error: `consult_expert failed: ${e.message || String(e)}`, model };
+            }
+        },
+    });
+
     // ── delegate ──────────────────────────────────────────────────────────────
     // Parallel worker agents. Each task runs a full chat turn (tools, router,
     // guards) through chatStreamHandler in-process on the same model, all at
@@ -32076,9 +32212,19 @@ app.use((req, res) => {
                 function: {
                     name: 'delegate',
                     description:
-                        `Run 2–${DELEGATE_MAX_PARALLEL} INDEPENDENT sub-tasks IN PARALLEL with worker agents that each have their own tools (web, files, sandbox) — use for research on several topics/sites/files, comparisons, or any request with separable parts. ` +
-                        'Each worker gets one self-contained task and returns a report; you then synthesize. Workers share this conversation\'s /workspace, so they can read files here and write new ones. ' +
-                        'Do not use for a single task or for steps that depend on each other. Write each task as a complete brief: what to find or do, where to look (URLs/paths if known), and exactly what to return.',
+                        `Run 2–${DELEGATE_MAX_PARALLEL} INDEPENDENT sub-tasks IN PARALLEL with worker agents that each have their own tools (web, files, sandbox) — use for research on several topics/sites/files, comparisons, or any request with separable parts that each need real work (several searches, pages or files). ` +
+                        (() => {
+                            try {
+                                const cap = chatCapacity();
+                                const m = cap.models.find(x => x.name === (ctx.workerModel || ctx.model)) || null;
+                                const free = m ? m.free : cap.totalFree;
+                                return free <= 1
+                                    ? `NOTE: ${free <= 0 ? 'no' : 'only one'} model slot is free right now, so workers would run ONE AT A TIME — delegate only when the sub-tasks are large; a task of 2–3 tool calls is faster done yourself. `
+                                    : `${free} model slots are free, so up to ${Math.min(free, DELEGATE_MAX_PARALLEL)} workers truly run at once. Each worker costs a full model turn, so a task of 2–3 tool calls is still faster done yourself. `;
+                            } catch (_) { return ''; }
+                        })() +
+                        'Each worker gets one self-contained task and returns a compact report; you then answer from the reports without re-verifying them. Workers share this conversation\'s /workspace. ' +
+                        'Do not use for steps that depend on each other. Write each task as a complete brief: what to find or do, where to look (URLs/paths if known), and exactly what to return (ask for a data table when you will chart it).',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -32122,8 +32268,9 @@ app.use((req, res) => {
                 .map((t, i) => {
                     if (typeof t === 'string') return { name: `worker ${i + 1}`, task: t.trim() };
                     if (!t || typeof t !== 'object') return null;
-                    const text = String(t.task || t.instructions || t.prompt || t.description || '').trim();
-                    return text ? { name: String(t.name || t.label || `worker ${i + 1}`).trim().slice(0, 60) || `worker ${i + 1}`, task: text } : null;
+                    // Models name the brief many ways — accept the common ones.
+                    const text = String(t.task || t.instructions || t.prompt || t.description || t.objective || t.goal || t.brief || t.question || t.query || t.text || '').trim();
+                    return text ? { name: String(t.name || t.label || t.id || t.title || t.agent || t.worker || `worker ${i + 1}`).trim().slice(0, 60) || `worker ${i + 1}`, task: text } : null;
                 })
                 .filter(Boolean);
             if (!tasks.length) {
@@ -32142,10 +32289,29 @@ app.use((req, res) => {
             const context = String((args && args.context) || '').trim();
             const callId = ctx._toolCallId || null;
             const started = Date.now();
-            const state = new Map(labels.map(l => [l, { phase: 'starting', calls: 0, current: '' }]));
+            const state = new Map(labels.map(l => [l, { phase: 'starting', calls: 0, current: '', chars: 0, preview: '', tools: [] }]));
             const emit = () => {
                 if (typeof ctx.emitEvent !== 'function') return;
-                const agents = labels.map(l => ({ name: l, ...state.get(l) }));
+                // Each agent carries its OWN tool calls (last 12, in order) and
+                // a preview of the answer it is drafting, so the chat can show
+                // what every worker is doing instead of one summary line.
+                const agents = labels.map(l => {
+                    const st = state.get(l) || {};
+                    return {
+                        name: l,
+                        phase: st.phase,
+                        calls: st.calls || 0,
+                        current: st.current || '',
+                        chars: st.chars || 0,
+                        preview: st.preview || '',
+                        tools: (st.tools || []).slice(-12).map(x => ({
+                            name: x.name,
+                            ...(x.purpose ? { purpose: x.purpose } : {}),
+                            status: x.status,
+                            ...(typeof x.ms === 'number' ? { ms: x.ms } : {}),
+                        })),
+                    };
+                });
                 const running = agents.filter(a => a.phase === 'running' || a.phase === 'starting');
                 const summary = running.length
                     ? `${running.length}/${agents.length} agents working · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
@@ -32158,9 +32324,10 @@ app.use((req, res) => {
             emit();
             // Checker pass on one worker report. Returns the parsed review
             // (verdict 'unknown' on any failure — never blocks the worker).
+            const editMode = ctx.modelRoles && ctx.modelRoles.checkFinal === 'edit';
             const reviewReport = async (t, r) => {
                 try {
-                    const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name });
+                    const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name, mode: editMode ? 'edit' : 'note' });
                     const out = await Promise.race([
                         requestModelCompletion({ messages: msgs, model: checker, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
                         new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
@@ -32187,8 +32354,28 @@ app.use((req, res) => {
                         depth: ctx.delegateDepth || 0,
                         signal: ctx.abortSignal,
                         onEvent: (ev) => {
-                            if (ev.kind === 'tool_start') { st.calls += 1; st.current = ev.purpose || ev.name; }
-                            else if (ev.kind === 'tool_end') { st.current = `${ev.name} done`; }
+                            if (ev.kind === 'tool_start') {
+                                st.calls += 1;
+                                st.current = ev.purpose || ev.name;
+                                st.tools.push({ id: ev.id || null, name: ev.name, purpose: ev.purpose || undefined, status: 'running', startedAt: Date.now() });
+                                // Bounded history; emit() only ships the last 12.
+                                if (st.tools.length > 40) st.tools.splice(0, st.tools.length - 40);
+                            } else if (ev.kind === 'tool_end') {
+                                let entry = ev.id ? st.tools.find(x => x.id === ev.id && x.status === 'running') : null;
+                                if (!entry) {
+                                    for (let i = st.tools.length - 1; i >= 0; i--) {
+                                        if (st.tools[i].status === 'running' && st.tools[i].name === ev.name) { entry = st.tools[i]; break; }
+                                    }
+                                }
+                                if (entry) {
+                                    entry.status = ev.ok === false ? 'failed' : 'ok';
+                                    entry.ms = typeof ev.ms === 'number' ? ev.ms : Date.now() - entry.startedAt;
+                                }
+                                st.current = `${ev.name} done`;
+                            } else if (ev.kind === 'text') {
+                                st.chars = ev.chars || 0;
+                                st.preview = ev.preview || '';
+                            }
                             emit();
                         },
                     });
@@ -32201,6 +32388,14 @@ app.use((req, res) => {
                         for (;;) {
                             st.phase = 'checking'; st.current = `report being checked by ${checker}`; emit();
                             review = await reviewReport(t, r);
+                            if (review.verdict === 'issues' && editMode && review.revised) {
+                                // The checker rewrote the report itself — cheaper
+                                // than another primary round, and it is the
+                                // stronger model's text.
+                                r = { ...r, answer: review.revised, editedBy: checker };
+                                review = { ...review, edited: true };
+                                break;
+                            }
                             if (review.verdict !== 'issues' || rounds >= DELEGATE_FIX_ROUNDS || (ctx.abortSignal && ctx.abortSignal.aborted)) break;
                             rounds += 1;
                             logUserActivity(ctx.userId, `Delegate: checker flagged ${review.issues.length} issue(s) in "${t.name}" — revision round ${rounds}`);
@@ -32211,7 +32406,7 @@ app.use((req, res) => {
                                 r = { ...fixed, toolCalls: (prev.toolCalls || 0) + (fixed.toolCalls || 0), tools: [...prev.tools, ...fixed.tools].slice(0, 40), filesWritten: [...new Set([...prev.filesWritten, ...fixed.filesWritten])], seconds: Math.round((prev.seconds + fixed.seconds) * 10) / 10, revised: rounds };
                             } else break;
                         }
-                        r.review = { checker, verdict: review.verdict, summary: review.summary, issues: review.issues, confidence: review.confidence, revisions: rounds };
+                        r.review = { checker, verdict: review.verdict, edited: !!review.edited, summary: review.summary, issues: review.issues, confidence: review.confidence, revisions: rounds };
                     }
                     st.phase = r.status === 'ok' ? 'done' : r.status;
                     st.current = r.status === 'ok' ? `done in ${r.seconds}s${r.review ? ` · check: ${r.review.verdict}` : ''}` : (r.error || r.status);
@@ -32236,7 +32431,7 @@ app.use((req, res) => {
                 ...(checker ? { checkedBy: checker, reportsWithOpenIssues: flagged.map(r => r.name) } : {}),
                 results,
                 note: (okCount === results.length
-                    ? 'All workers finished. Synthesize their reports into ONE answer for the user, citing the sources/paths they list. To deliver a file a worker wrote, call make_downloadable on its /workspace path.'
+                    ? 'All workers finished. Answer the user NOW from these reports — synthesize into ONE answer citing the sources/paths they list; do NOT re-search or re-verify what a worker already established unless two reports conflict. If the user asked for a chart, build it from the data in the reports with render_chart. To deliver a file a worker wrote, call make_downloadable on its /workspace path.'
                     : 'Some workers did not finish (see status/error). Use what came back; redo a failed sub-task yourself only if it is essential.')
                     + (flagged.length ? ` The checker model still has OPEN issues on: ${flagged.map(r => `"${r.name}"`).join(', ')} (see results[].review) — treat those points as unverified and say so, or verify them yourself.` : ''),
             };
