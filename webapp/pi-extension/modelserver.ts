@@ -743,6 +743,11 @@ export default async function (pi: ExtensionAPI) {
         } catch { return; }
     });
 
+    // Smallest context window across every model this server advertises —
+    // the tool catalog must fit in it, because Pi sends one catalog whichever
+    // model the user picks. Infinity until /v1/models answers.
+    let smallestContextWindow = Infinity;
+
     // 1) Register the model server as an OpenAI-compatible provider.
     try {
         const r = await authedFetch("/v1/models");
@@ -757,6 +762,13 @@ export default async function (pi: ExtensionAPI) {
                 contextWindow: m.context_window ?? 32768,
                 maxTokens: m.max_tokens ?? 4096
             }));
+            // The tool catalog below has to fit in whatever model the user
+            // points Pi at, and Pi sends the SAME catalog whichever one that
+            // is — so budget against the SMALLEST window on offer.
+            for (const m of models) {
+                const w = Number(m.contextWindow);
+                if (Number.isFinite(w) && w > 0) smallestContextWindow = Math.min(smallestContextWindow, w);
+            }
             (pi as any).registerProvider("modelserver", {
                 baseUrl: `${baseUrl}/v1`,
                 // Pi resolves `apiKey` as a config-value template: a leading
@@ -777,6 +789,21 @@ export default async function (pi: ExtensionAPI) {
     }
 
     // 2) Pull the skill catalog and expose each as a Pi tool.
+    //
+    // BUDGETED, because an unbounded catalog makes Pi unusable on a small
+    // model. Measured with a tee proxy on Pi's very first request ("hi"):
+    // 97 tools — 4 of Pi's own plus 93 of ours — cost ~48 KB of JSON schema
+    // and ~46 KB of system prompt, ~27k tokens on the wire. Against a
+    // 16,384-token model the server's context guard (correctly) rejected it,
+    // Pi retried with a byte-identical payload, and `pi -p` printed NOTHING
+    // and exited 0. The extension already knows every model's context window
+    // from /v1/models and simply never consulted it.
+    //
+    // So: spend at most TOOL_SCHEMA_BUDGET_FRACTION of the smallest window on
+    // tool schemas, and register in catalog order until that is used up. A
+    // large model is unaffected (the whole catalog fits); a small one gets a
+    // usable subset instead of a hard failure. MODELSERVER_TOOL_BUDGET
+    // overrides the fraction, and 0 disables the cap entirely.
     let skills: Skill[] = [];
     try {
         const r = await authedFetch("/api/skills");
@@ -791,10 +818,45 @@ export default async function (pi: ExtensionAPI) {
     }
 
     const includeLocalShadow = process.env.MODELSERVER_INCLUDE_LOCAL_SHADOW === "1";
+    // When the budget forces a trim, WHICH tools survive matters more than how
+    // many. Catalog order is arbitrary, so register the load-bearing ones
+    // first: an agent that can run code, read and search files, fetch a page
+    // and hand a file back is still a useful agent on a small model; one left
+    // with a random third of the catalog is not.
+    const PRIORITY_SKILLS = [
+        "run_python", "run_node", "run_bash", "run_npm",
+        "read_file", "grep_code", "scan_source_files", "outline_file", "list_directory",
+        "create_file", "append_to_file", "replace_lines", "make_downloadable",
+        "fetch_url", "http_request", "download_file",
+        "extract_archive", "tar_extract", "unzip_file",
+        "query_sqlite", "read_xlsx", "create_pdf",
+        "git_status", "git_diff", "git_log", "git_clone_shallow",
+    ];
+    const priorityRank = (name: string) => {
+        const i = PRIORITY_SKILLS.indexOf(name);
+        return i === -1 ? PRIORITY_SKILLS.length : i;
+    };
+    // ~4 chars per token; a tool's wire cost is its name + description +
+    // parameter schema. Leave the rest of the window for the system prompt,
+    // the conversation and the reply.
+    const budgetFraction = (() => {
+        const raw = process.env.MODELSERVER_TOOL_BUDGET;
+        if (raw === undefined || raw === "") return 0.18;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 && n < 1 ? n : 0.18;
+    })();
+    const schemaCharBudget = budgetFraction > 0 && Number.isFinite(smallestContextWindow)
+        ? Math.floor(smallestContextWindow * 4 * budgetFraction)
+        : Infinity;
+    let schemaCharsUsed = 0;
     let registered = 0;
     let skippedStub = 0;
     let skippedShadow = 0;
-    for (const skill of skills) {
+    let skippedBudget = 0;
+    const orderedSkills = schemaCharBudget === Infinity
+        ? skills
+        : [...skills].sort((a, b) => priorityRank(a?.name || "") - priorityRank(b?.name || ""));
+    for (const skill of orderedSkills) {
         if (!skill || !skill.name || skill.enabled === false) continue;
 
         const nativeRoute = NATIVE_TOOL_ROUTES[skill.name];
@@ -843,6 +905,16 @@ export default async function (pi: ExtensionAPI) {
         const takesPath = Object.keys(skill.parameters || {}).some((k) => PATHY_PARAM_RE.test(k));
         const description = baseDescription
             + (isRenamedShell ? SANDBOX_SHELL_MARKER : (takesPath ? SANDBOX_FS_MARKER : ""));
+
+        // What this tool will actually cost on the wire.
+        const schemaCost = toolName.length + description.length
+            + JSON.stringify(params || {}).length
+            + (promptSnippet ? promptSnippet.length : 0);
+        if (schemaCharsUsed + schemaCost > schemaCharBudget) {
+            skippedBudget++;
+            continue;
+        }
+        schemaCharsUsed += schemaCost;
 
         try {
             (pi as any).registerTool({
@@ -1072,6 +1144,14 @@ export default async function (pi: ExtensionAPI) {
 
     if (skippedStub > 0) {
         console.warn(`[modelserver] skipped ${skippedStub} stub skill(s) with no def execute and no native route`);
+    }
+    if (skippedBudget > 0) {
+        console.warn(
+            `[modelserver] registered ${registered} tool(s) (~${Math.round(schemaCharsUsed / 4)} tokens of schema); `
+            + `skipped ${skippedBudget} to fit the SMALLEST loaded model's context (${smallestContextWindow} tokens). `
+            + `Pi sends one catalog whichever model you pick, so the smallest one sets the budget: `
+            + `unload it, or set MODELSERVER_TOOL_BUDGET (fraction of the window, default 0.18; 0 disables the cap) to register more.`
+        );
     }
     if (skippedShadow > 0) {
         console.warn(`[modelserver] skipped ${skippedShadow} skill(s) that shadow Pi's local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);

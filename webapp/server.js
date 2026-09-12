@@ -21393,7 +21393,16 @@ const chatStreamHandlerInner = async (req, res) => {
         // the CHECKER reviews it. Request body wins (the chat UI sends it every
         // turn), then the account's saved chat prefs; a role naming a model
         // that is not loaded is dropped. A worker turn inherits its parent's.
-        let modelRoles = { primary: null, checker: null, checkWorkers: true, checkFinal: 'off', consult: true, source: 'none' };
+        // A delegated turn — a worker agent, a hand-off first pass, an
+        // ask_assistant job — runs ALONE on the model it was given. It must not
+        // inherit the account's pairing: passing `secondary: ''` did not say
+        // that, because an empty string means "not set HERE" and falls through
+        // to the server-wide default, so every worker turn resolved with the
+        // account's secondary attached and logged misleading roles.
+        let modelRoles = { primary: null, secondary: null, mode: 'off', firstPass: false, legwork: false, review: 'off', checkWorkers: false, source: 'none', sameModel: false };
+        if (req.delegate) {
+            modelRoles.primary = targetModel;
+        } else {
         try {
             const runningNames = [];
             for (const [k, inst] of modelInstances.entries()) { runningNames.push(k); if (inst && inst.modelName) runningNames.push(inst.modelName); }
@@ -21414,6 +21423,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} secondary=${modelRoles.secondary} mode=${modelRoles.mode} firstPass=${modelRoles.firstPass} legwork=${modelRoles.legwork} review=${modelRoles.review} checkWorkers=${modelRoles.checkWorkers}`);
             }
         } catch (e) { console.warn('[Chat Stream] model roles resolution failed:', e.message); }
+        }
         // True whenever two models are configured for this turn, engaged or not
         // — the transcript should name the model even on a turn the primary
         // answered alone, otherwise the user cannot tell which one replied.
@@ -26458,7 +26468,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
         // Explicit so the worker never re-reads prefs; a worker's report is
         // checked by the delegate tool, never inside its own turn.
         // A delegated turn is never itself paired: it runs alone on `model`.
-        modelRoles: { primary: model, helper: '', mode: 'off', checkWorkers: false, review: 'off' },
+        modelRoles: { primary: model, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
     };
     const req = {
         body,
@@ -28348,6 +28358,22 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 || i.modelName === requestedModel
                 || (i.modelName && requestedModel.startsWith(`/models/${i.modelName}/`)))
             : null;
+        // A `model` that matches NO rule is served by whatever is first in the
+        // Map, with HTTP 200 and no hint that the wrong model answered. That
+        // was survivable when every instance was a 131k llama.cpp model; it is
+        // not once a small-context model is loaded, because a near-miss id
+        // (`Qwen3.5-9B` for `Qwen3.5-9B-GGUF`) silently lands on a 16k window —
+        // and sglang echoes the bogus id straight back, so the client cannot
+        // tell. Returning 404 would break existing callers that rely on the
+        // fallback, so: still serve it, but say so loudly and name the
+        // alternatives.
+        if (requestedModel && !matched && instances.length > 0) {
+            console.warn(
+                `[Proxy] model "${requestedModel}" matched no running instance — falling back to `
+                + `"${instances[0].modelName || instances[0].containerName}". Known: `
+                + instances.map(i => i.config?.hfRepoId || i.modelName || i.containerName).join(', ')
+            );
+        }
         const firstInstance = matched || instances[0];
         // Use container name to reach sglang via Docker network
         // Fall back to host.docker.internal for backwards compatibility
