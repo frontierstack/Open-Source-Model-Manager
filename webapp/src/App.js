@@ -559,6 +559,9 @@ const App = () => {
     const [llamacppConfig, setLlamacppConfig] = useState({
         // Which GPU indices this instance may use; [] = every card (default).
         gpuDevices: [],
+        // Host-RAM prompt cache (--cache-ram, MiB). '' = auto (server sizes it
+        // from ~2 full-context KV states, capped by the host share); 0 = off.
+        cacheRam: '',
         nGpuLayers: -1,
         contextSize: 4096,
         contextShift: true,
@@ -14927,6 +14930,16 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                 <MenuItem value={4096}>4096</MenuItem>
                             </Select>
                         </FormControl>
+                        <TextField
+                            label="Host prompt cache (MiB)"
+                            type="number"
+                            value={llamacppConfig.cacheRam}
+                            onChange={e => setLlamacppConfig({ ...llamacppConfig, cacheRam: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                            inputProps={{ min: 0, step: 1024 }}
+                            size="small"
+                            placeholder="auto"
+                            helperText="System RAM llama.cpp may use to keep saved conversation states so switching chats skips the re-prefill. Blank = auto (about two full-context states, capped by this model's share of host RAM). 0 = off — lowest RAM use, every conversation switch re-reads its whole prompt."
+                        />
 
                         <FormControlLabel
                             control={<Switch checked={llamacppConfig.flashAttention} onChange={e => setLlamacppConfig({ ...llamacppConfig, flashAttention: e.target.checked })} />}

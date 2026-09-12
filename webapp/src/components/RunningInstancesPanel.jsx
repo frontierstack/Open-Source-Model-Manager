@@ -112,6 +112,9 @@ function LlamacppPills({ cfg }) {
             {cfg?.cacheTypeK && cfg.cacheTypeK !== 'f16' && (
                 <Pill tooltip="KV cache quantization" label={`Cache: ${cfg.cacheTypeK}`} tone="warning" />
             )}
+            {cfg?.cacheRam != null && cfg.cacheRam !== '' && (
+                <Pill tooltip="Host-RAM prompt cache (--cache-ram) — saved conversation states so a chat switch skips the re-prefill" label={Number(cfg.cacheRam) > 0 ? `Cache RAM: ${Math.round(Number(cfg.cacheRam) / 1024)}G` : 'Cache RAM: off'} />
+            )}
             {cfg?.flashAttention && <Pill tooltip="Flash attention enabled" label="Flash" tone="info" />}
             {cfg?.swaFull && <Pill tooltip="Full SWA cache — prompt cache reuses across turns" label="SWA-Full" tone="success" />}
             {/* Speculative decoding chip — shows the active --spec-type mode

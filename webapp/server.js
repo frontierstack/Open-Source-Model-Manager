@@ -46,25 +46,59 @@ const LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT = Math.max(1, Math.min(16, parseInt(proc
 // Host-RAM budget for llama.cpp's prompt cache (--cache-ram). This is what
 // lets one slot alternate between conversations (Pi <-> web chat) by restoring
 // a saved KV state instead of re-prefilling, and llama-server GROWS into it —
-// the process RSS climbs to the cap over a session.
+// a state is saved at the end of EVERY request, so the process RSS climbs to
+// the cap over a session (measured: +270 MB per distinct 7k-token prompt on a
+// 9B, flat while idle, full restore on a repeat).
 //
-// The tiers below size the budget for the WHOLE HOST, so it must be divided by
-// the number of llama.cpp instances that will be running: two instances each
-// given the 16 GiB tier on a 32 GB host will OOM the box (observed: RSS 8.2 GB
-// + 4.7 GB and still climbing with two models loaded).
-function defaultLlamaCacheRamMiB(instanceCount = 1) {
+// Two things bound it:
+//   1. What the instance can USE: ~2 full-context KV states. A 9B at 16k per
+//      slot never needs more than ~2 GiB; a 27B at 131k needs ~10 GiB to hold
+//      one long Pi session plus a web chat.
+//   2. Its share of the host: the tier below is a HOST total, divided by the
+//      number of llama.cpp instances — two instances each given the 16 GiB tier
+//      on a 32 GB host walk the box toward OOM (observed 8.2 + 4.7 GB and
+//      climbing).
+// The smaller of the two wins; an explicit cacheRam / LLAMACPP_CACHE_RAM_MIB
+// always overrides.
+const CACHE_RAM_FLOOR_MIB = 2048;   // below this the cache can't hold a useful entry
+
+function estimateKvStateMiB({ contextSize, parallelSlots, cacheTypeK, swaFull } = {}) {
+    const ctxPerSlot = Math.max(1, Math.trunc(Number(contextSize) || 4096) / Math.max(1, Math.trunc(Number(parallelSlots) || 1)));
+    // Same per-token estimates optimal-settings uses (60 layers × 8 KV heads × 128 dim × 2).
+    const kvPerTokKB = cacheTypeK === 'q4_0' ? 30 : cacheTypeK === 'q8_0' ? 60 : 120;
+    const swaMul = swaFull ? 1.7 : 1;
+    return Math.ceil(ctxPerSlot * kvPerTokKB * swaMul / 1024);
+}
+
+function defaultLlamaCacheRamMiB(committedMiB = 0, cfg = null) {
     const env = process.env.LLAMACPP_CACHE_RAM_MIB;
     if (env !== undefined && env !== '') { const n = parseInt(env, 10); return Number.isFinite(n) ? n : undefined; }
     const totalGiB = os.totalmem() / (1024 ** 3);
-    let budget;
-    if (totalGiB >= 120) budget = 32768;
-    else if (totalGiB >= 60) budget = 24576;
-    else if (totalGiB >= 28) budget = 16384;
+    let share;
+    if (totalGiB >= 120) share = 32768;
+    else if (totalGiB >= 60) share = 24576;
+    else if (totalGiB >= 28) share = 16384;
     else return undefined;   // let llama.cpp keep its own 8 GiB default
-    const n = Math.max(1, Math.trunc(instanceCount) || 1);
-    // Floor at 2 GiB — below that the cache stops holding a useful long-context
-    // entry and the re-prefill cost returns.
-    return n > 1 ? Math.max(2048, Math.floor(budget / n)) : budget;
+    // Other running instances already hold part of the host total; this one
+    // gets what is left (a small model takes only what it needs, so the big
+    // one loaded after it still gets most of the tier).
+    const committed = Math.max(0, Math.trunc(Number(committedMiB) || 0));
+    if (committed > 0) share = Math.max(CACHE_RAM_FLOOR_MIB, share - committed);
+    if (!cfg) return share;
+    const need = Math.max(CACHE_RAM_FLOOR_MIB, 2 * estimateKvStateMiB(cfg));
+    return Math.min(share, need);
+}
+
+// Sum of the prompt-cache budgets the OTHER running llama.cpp instances hold.
+function llamacppCacheRamCommittedMiB(excludingModel) {
+    let total = 0;
+    for (const [name, inst] of modelInstances.entries()) {
+        if (name === excludingModel || inst.backend !== 'llamacpp') continue;
+        if (inst.status !== 'running' && inst.status !== 'starting') continue;
+        const v = Number(inst.config?.cacheRam);
+        if (Number.isFinite(v) && v > 0) total += v;
+    }
+    return total;
 }
 
 // How many llama.cpp instances will share the host once this one starts.
@@ -5014,7 +5048,6 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 // Host-RAM prompt-cache budget (MiB) — lets the single slot
                 // switch between conversations (Pi ↔ web chat) by restoring a
                 // saved state instead of re-prefilling. Scaled to host RAM.
-                cacheRam: req.body.cacheRam ?? defaultLlamaCacheRamMiB(llamacppInstanceCountIncludingNew(modelName)),
                 _instanceCount: llamacppInstanceCountIncludingNew(modelName),
                 // Speculative decoding controls. specType ∈ {none, draft-mtp,
                 // draft-simple}; specDraftModel is a path inside the container
@@ -5025,20 +5058,23 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 specDraftModel: req.body.specDraftModel || ''
             };
 
-            // The prompt-cache budget is a HOST total split across instances, but
-            // an instance already running keeps the cap it was given. Say so
-            // rather than letting the host quietly drift toward OOM.
+            // Prompt-cache budget: explicit value wins ('' / null = auto); auto is
+            // the smaller of ~2 full-context states and this instance's share
+            // of the host tier (see defaultLlamaCacheRamMiB).
+            const cacheRamReq = (req.body.cacheRam === '' || req.body.cacheRam == null) ? undefined : Number(req.body.cacheRam);
+            const committedCacheMiB = llamacppCacheRamCommittedMiB(modelName);
+            config.cacheRam = Number.isFinite(cacheRamReq) && cacheRamReq >= 0
+                ? Math.trunc(cacheRamReq)
+                : defaultLlamaCacheRamMiB(committedCacheMiB, config);
+
+            // The prompt-cache budget is a HOST total; instances already running
+            // keep what they were given, so say when this one had to be floored.
             if (config._instanceCount > 1 && config.cacheRam) {
-                const over = [];
-                for (const [name, inst] of modelInstances.entries()) {
-                    if (name === modelName || inst.backend !== 'llamacpp') continue;
-                    if (inst.status !== 'running' && inst.status !== 'starting') continue;
-                    if (Number(inst.config?.cacheRam) > config.cacheRam) over.push(`${name} (${inst.config.cacheRam} MiB)`);
-                }
-                if (over.length) {
+                const tier = defaultLlamaCacheRamMiB(0) || 0;
+                if (tier && committedCacheMiB + config.cacheRam > tier) {
                     broadcast({ type: 'log', level: 'warn', message:
-                        `Prompt-cache budget is now ${config.cacheRam} MiB per instance (${config._instanceCount} llama.cpp instances share host RAM), ` +
-                        `but ${over.join(', ')} still hold their earlier larger budget — reload them to rebalance.` });
+                        `Prompt-cache budgets now total ${committedCacheMiB + config.cacheRam} MiB across ${config._instanceCount} llama.cpp instances ` +
+                        `(host tier ${tier} MiB) — set "Host prompt cache" explicitly in the load dialog, or reload the larger instance, to bring it back under.` });
                 }
             }
             delete config._instanceCount;
