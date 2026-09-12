@@ -2703,7 +2703,7 @@ async function loadSystemSettings() {
 // Server-wide model roles (set on the Models page): the PRIMARY does the work,
 // the CHECKER reviews/edits it and answers the primary's consult_expert calls.
 // Per-account chat prefs and a request body override these per field.
-let systemModelRoles = { primary: '', helper: '', mode: 'auto', firstPass: true, legwork: true, review: 'off', checkWorkers: false };
+let systemModelRoles = { primary: '', secondary: '', mode: 'auto', firstPass: true, legwork: true, review: 'off', checkWorkers: false };
 
 async function saveSystemSettings() {
     const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles };
@@ -3737,13 +3737,12 @@ const PREF_FIELDS = new Set([
     'density',       // comfortable | compact
     'fontFamily',    // any value from the chat font list
     'fontSize',      // small | medium | large
-    // Two-model roles (chat): the PRIMARY is the main model and writes every
-    // answer; the HELPER is a faster model that assists it. See
-    // services/modelRoles.js. The old roleCheckerModel / roleCheckFinal /
-    // roleConsult keys are still accepted so a saved pre-swap preference keeps
-    // working (resolveModelRoles migrates them).
-    'rolePrimaryModel', 'roleHelperModel', 'roleMode', 'roleFirstPass', 'roleLegwork', 'roleReview', 'roleCheckWorkers',
-    'roleCheckerModel', 'roleCheckFinal', 'roleConsult', 'roleHandoff',
+    // Two-model roles (chat): the PRIMARY is the everyday model and answers
+    // most turns; the SECONDARY is the stronger model that takes the lead on
+    // substantial work. See services/modelRoles.js. Keys from both earlier
+    // namings are still accepted — migrateLegacyPrefs maps them.
+    'rolePrimaryModel', 'roleSecondaryModel', 'roleMode', 'roleFirstPass', 'roleLegwork', 'roleReview', 'roleCheckWorkers',
+    'roleHelperModel', 'roleCheckerModel', 'roleCheckFinal', 'roleConsult', 'roleHandoff',
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
     'memoryDisabled', // boolean — chat: turn off account memory (inject + extract + record_learning)
@@ -19454,19 +19453,20 @@ const chatStreamHandlerInner = async (req, res) => {
                     hasAttachments: /===\s*FILE\s+\d+/i.test(askText),
                     attachmentKinds: leadHandoff.attachmentKindsFromText(askText),
                 });
-                // The PRIMARY is the main model: when one is configured it
-                // answers the turn even if the composer aimed at the helper.
+                // The PRIMARY answers by default; the SECONDARY takes the
+                // lead only when the ask is substantial (that gate is what
+                // keeps a quick question on the fast model).
                 if (handoff.switched && handoff.runOn && modelInstances.has(handoff.runOn)) {
-                    console.log(`[Chat Stream] Roles: turn moved from ${targetModel} to the primary ${handoff.runOn}`);
+                    console.log(`[Chat Stream] Roles: turn moved from ${targetModel} to ${handoff.runOn}`);
                     targetModel = handoff.runOn;
                     targetInstance = modelInstances.get(handoff.runOn);
                     retargetBusy(req, targetModel);
                 }
-                if (handoff.engaged && !modelInstances.has(handoff.helper)) {
-                    handoff = { ...handoff, engaged: false, firstPass: false, legwork: false, reason: 'helper model disappeared' };
+                if (handoff.engaged && !modelInstances.has(handoff.primary)) {
+                    handoff = { ...handoff, engaged: false, firstPass: false, legwork: false, reason: 'primary model disappeared' };
                 }
                 if (handoff.engaged) {
-                    console.log(`[Chat Stream] Helper engaged (${handoff.reason}): ${handoff.primary} does the work, ${handoff.helper} assists (` +
+                    console.log(`[Chat Stream] Secondary took the lead (${handoff.reason}): ${handoff.secondary} writes the answer, ${handoff.primary} assists (` +
                         [handoff.firstPass ? 'first pass' : null, handoff.legwork ? 'legwork' : null].filter(Boolean).join(' + ') + ')');
                 }
             } catch (e) {
@@ -19899,7 +19899,7 @@ const chatStreamHandlerInner = async (req, res) => {
             // Lead framing goes after the shared prelude for the same
             // prompt-cache reason the worker framing does.
             if (handoff.engaged && handoff.legwork) {
-                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.helper, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
+                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
             }
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
@@ -21221,10 +21221,15 @@ const chatStreamHandlerInner = async (req, res) => {
             if (modelRoles.sameModel && !req.delegate) {
                 console.log(`[Chat Stream] Model roles: checker is the same model as the primary (${targetModel}) — checker/consult ignored`);
             }
-            if (modelRoles.helper && modelRoles.source !== 'none') {
-                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} helper=${modelRoles.helper} mode=${modelRoles.mode} firstPass=${modelRoles.firstPass} legwork=${modelRoles.legwork} review=${modelRoles.review} checkWorkers=${modelRoles.checkWorkers}`);
+            if (modelRoles.secondary && modelRoles.source !== 'none') {
+                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} secondary=${modelRoles.secondary} mode=${modelRoles.mode} firstPass=${modelRoles.firstPass} legwork=${modelRoles.legwork} review=${modelRoles.review} checkWorkers=${modelRoles.checkWorkers}`);
             }
         } catch (e) { console.warn('[Chat Stream] model roles resolution failed:', e.message); }
+        // True whenever two models are configured for this turn, engaged or not
+        // — the transcript should name the model even on a turn the primary
+        // answered alone, otherwise the user cannot tell which one replied.
+        const pairedTurn = !!(handoff.engaged || (modelRoles.primary && modelRoles.secondary));
+
         const toolCtx = {
             userId: req.userId,
             apiKeyData: req.apiKeyData,
@@ -21255,11 +21260,12 @@ const chatStreamHandlerInner = async (req, res) => {
             model: targetModel,
             reasoningEffort: requestedEffort || null,
             modelRoles,
-            // Parallel worker agents prefer the HELPER (the faster model);
+            // Parallel worker agents prefer the PRIMARY (the faster model);
             // assignWorkerModels spreads them by measured speed from there.
-            workerModel: modelRoles.helper || targetModel,
-            checkerModel: modelRoles.helper || null,
-            checkWorkers: !!(modelRoles.helper && modelRoles.checkWorkers),
+            workerModel: modelRoles.primary || targetModel,
+            // Worker reports are reviewed by the stronger model.
+            checkerModel: modelRoles.secondary || null,
+            checkWorkers: !!(modelRoles.secondary && modelRoles.checkWorkers),
             // consult_expert is retired by the role swap: the primary IS the
             // stronger model now, so there is nobody above it to consult. The
             // tool stays registered but never builds (it null-gates on this),
@@ -21269,7 +21275,10 @@ const chatStreamHandlerInner = async (req, res) => {
             // On a handed-off turn THIS model is the lead and the faster one is
             // its assistant: ask_assistant dispatches legwork without blocking,
             // and finished jobs are delivered into the next round.
-            assistantModel: (handoff.engaged && handoff.legwork) ? handoff.helper : null,
+            // On a handed-up turn the stronger model is writing and the
+            // PRIMARY is its assistant: ask_assistant dispatches legwork to it
+            // without blocking, and finished jobs land in the next round.
+            assistantModel: (handoff.engaged && handoff.legwork) ? handoff.primary : null,
             _assistantJobs: (handoff.engaged && handoff.legwork) ? new Map() : null,
             workspaceBucket: (req.delegate && req.delegate.workspaceBucket)
                 || (req.sidecar && req.sidecar.workspaceBucket)
@@ -21690,6 +21699,20 @@ const chatStreamHandlerInner = async (req, res) => {
             console.warn('[Chat Stream] image pre-flight failed:', e.message);
         }
 
+        // A paired setup where the primary is answering ALONE still needs to say
+        // so — otherwise the user cannot tell which of the two replied.
+        if (pairedTurn && !handoff.engaged && clientConnected) {
+            try {
+                res.write(`data: ${JSON.stringify({
+                    type: 'handoff', phase: 'solo',
+                    lead: targetModel, primary: targetModel,
+                    assistant: null, helper: null,
+                    reason: handoff.reason || 'the secondary was not needed',
+                })}\n\n`);
+                if (res.flush) res.flush();
+            } catch (_) { clientConnected = false; }
+        }
+
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
         // the lead a short brief. The lead then writes the real answer. The
@@ -21701,24 +21724,23 @@ const chatStreamHandlerInner = async (req, res) => {
             try {
                 if (clientConnected) {
                     try {
-                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'first_pass', helper: handoff.helper, primary: handoff.primary, reason: handoff.reason })}\n\n`);
+                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'first_pass', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, reason: handoff.reason })}\n\n`);
                         if (res.flush) res.flush();
                     } catch (_) { clientConnected = false; }
                 }
-                logChatActivity(`Helper: ${handoff.helper} is sizing up the task, then ${handoff.primary} writes the answer (${handoff.reason})`);
+                logChatActivity(`Two models: ${handoff.primary} is sizing up the task, then ${handoff.secondary} writes the answer (${handoff.reason})`);
                 const fp = await runDelegatedTurn({
                     parentReq: req,
                     task: leadHandoff.buildFirstPassTask({
                         userText: latestUserText,
-                        leadModel: handoff.primary,
-                        helperModel: handoff.helper,
+                        leadModel: handoff.secondary,
                         toolBudget: HANDOFF_FIRST_PASS_TOOLS,
                     }),
                     label: 'first pass',
                     siblings: [],
-                    model: handoff.helper,
+                    model: handoff.primary,
                     reasoningEffort: 'off',
-                    modelRoles: { primary: handoff.helper, helper: '', mode: 'off', checkWorkers: false, review: 'off' },
+                    modelRoles: { primary: handoff.primary, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
                     workspaceBucket: conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null,
                     depth: 0,
                     maxRounds: HANDOFF_FIRST_PASS_ROUNDS,
@@ -21728,7 +21750,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 const note = (fp && fp.status === 'ok')
                     ? leadHandoff.renderBriefNote({
                         brief: fp.answer,
-                        assistantModel: handoff.helper,
+                        assistantModel: handoff.primary,
                         firstPassSeconds: fpSecs,
                         toolCalls: fp.toolCalls,
                         legworkAvailable: handoff.legwork,
@@ -21747,9 +21769,9 @@ const chatStreamHandlerInner = async (req, res) => {
                     handoff.brief = fp.answer;
                     handoff.firstPassSeconds = fpSecs;
                     handoff.firstPassCalls = fp.toolCalls || 0;
-                    logChatActivity(`Helper: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
+                    logChatActivity(`Two models: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
                         + (proposed.length ? ` — proposed ${proposed.length} background job(s): ${proposed.map(j => `"${j.name}"`).join(', ')}` : '')
-                        + ` — ${handoff.primary} is now writing`);
+                        + ` — ${handoff.secondary} is now writing`);
                     console.log(`[Chat Stream] Hand-off first pass: ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
                         + (proposed.length ? `legwork proposed: ${proposed.map(j => j.name).join(' | ')}` : 'no legwork proposed'));
                 } else {
@@ -21760,7 +21782,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 }
                 if (clientConnected) {
                     try {
-                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'lead', helper: handoff.helper, primary: handoff.primary, firstPassSeconds: fpSecs, briefChars: String(handoff.brief || '').length })}\n\n`);
+                        res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'lead', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, firstPassSeconds: fpSecs, briefChars: String(handoff.brief || '').length })}\n\n`);
                         if (res.flush) res.flush();
                     } catch (_) { clientConnected = false; }
                 }
@@ -23523,6 +23545,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     purpose: call.purpose || undefined,
                                     sandboxed: policy.sandboxed,
                                     source: policy.source,
+                                    // Which model made this call. Only sent when two
+                                    // models are in play, so a single-model chat is
+                                    // unchanged and the UI can stay quiet.
+                                    ...(handoff.engaged ? { model: targetModel } : {}),
                                     ...(policy.source === 'skill' ? { network: policy.network, workspace: policy.workspace } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
@@ -24680,13 +24706,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
                                 : null;
                             clearRunningToolCall(call.id);
-                            if (modelRoles.helper && modelRoles.review !== 'off' && toolEvidenceForChecker.length < 40) {
+                            if (modelRoles.secondary && modelRoles.review !== 'off' && toolEvidenceForChecker.length < 40) {
                                 toolEvidenceForChecker.push({ name: call.function.name || 'tool', purpose: call.purpose || '', failed: !!failedChip, content: String(resultMsg.content || '').slice(0, 6000) });
                             }
                             persistedToolChips.push({
                                 type: 'native_tool_call',
                                 label: call.function.name || 'tool',
                                 purpose: call.purpose || undefined,
+                                // Attribution for a two-model turn; absent otherwise.
+                                ...(handoff.engaged ? { model: targetModel, toolCallId: call.id } : {}),
                                 query: argPreview,
                                 args: parsedArgsForChip,
                                 status: failedChip ? 'failed' : 'success',
@@ -25620,15 +25648,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // is streamed as an addendum and persisted with the answer. Skipped
         // for worker turns (the delegate tool checks their REPORTS), trivial
         // chat, cancelled turns, and when no checker is configured.
-        if (!req.delegate && modelRoles.helper && modelRoles.review && modelRoles.review !== 'off'
-            && modelRoles.helper !== targetModel
+        if (!req.delegate && modelRoles.secondary && modelRoles.review && modelRoles.review !== 'off'
+            && modelRoles.secondary !== targetModel
             && !streamAbortController.signal.aborted && fullResponse
             && modelRolesSvc.shouldCheckFinal({ answer: fullResponse, toolCalls: persistedToolChips.length })) {
             const t0 = Date.now();
             updateJobPhase('checking');
-            logChatActivity(`Helper: ${modelRoles.helper} is reviewing the answer…`);
+            logChatActivity(`Review: ${modelRoles.secondary} is checking the answer…`);
             if (clientConnected && !res.writableEnded) {
-                try { res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'running', checker: modelRoles.helper, reviewer: modelRoles.helper })}\n\n`); } catch (_) { clientConnected = false; }
+                try { res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'running', checker: modelRoles.secondary, reviewer: modelRoles.secondary })}\n\n`); } catch (_) { clientConnected = false; }
             }
             let review = null;
             try {
@@ -25642,7 +25670,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     mode: modelRoles.review,
                 });
                 const r = await Promise.race([
-                    requestModelCompletion({ messages: msgs, model: modelRoles.helper, temperature: 0.2, maxTokens: modelRoles.review === 'edit' ? Math.max(1500, Math.ceil(fullResponse.length / 2.5) + 800) : 1500, disableThinking: true }),
+                    requestModelCompletion({ messages: msgs, model: modelRoles.secondary, temperature: 0.2, maxTokens: modelRoles.review === 'edit' ? Math.max(1500, Math.ceil(fullResponse.length / 2.5) + 800) : 1500, disableThinking: true }),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
                 ]);
                 review = modelRolesSvc.parseReview(r && r.content);
@@ -25657,22 +25685,22 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // rest) and persist the corrected version.
                 edited = true;
                 review.edited = true;
-                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.helper);
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.secondary);
                 fullResponse = review.revised + addendum;
                 if (clientConnected && !res.writableEnded) {
                     try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
                 }
             } else {
-                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.helper);
+                addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.secondary);
                 fullResponse += addendum;
             }
             const secs = Math.round((Date.now() - t0) / 100) / 10;
-            logChatActivity(`Helper review: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)${edited ? ', answer rewritten' : ''}` : 'review failed'} (${modelRoles.helper}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
-            console.log(`[Chat Stream] Helper review ${modelRoles.helper}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
+            logChatActivity(`Helper review: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)${edited ? ', answer rewritten' : ''}` : 'review failed'} (${modelRoles.secondary}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
+            console.log(`[Chat Stream] Helper review ${modelRoles.secondary}: ${review.verdict}${edited ? ' (edited)' : ''} (${review.issues.length} issues, ${secs}s)`);
             if (clientConnected && !res.writableEnded) {
                 try {
                     if (!edited) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
-                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.helper, reviewer: modelRoles.helper, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.secondary, reviewer: modelRoles.secondary, verdict: review.verdict, edited, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
                 } catch (_) { clientConnected = false; }
             }
         }
@@ -25709,6 +25737,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // parity for the server-side save.
                         toolCalls: persistedToolChips.length ? persistedToolChips : undefined,
                         reasoningEffort: effortActive ? effortDirectives.effort : undefined,
+                        // Which model actually wrote this, when two were in play.
+                        // Absent on a single-model chat so nothing changes there.
+                        answeredBy: pairedTurn ? targetModel : undefined,
+                        assistedBy: (handoff.engaged && handoff.primary) ? handoff.primary : undefined,
                         backgroundCompleted: !clientConnected,
                         // A turn the loop guard had to cut off is a failed attempt:
                         // memory extraction must not learn "limitations" from it.
@@ -25721,6 +25753,34 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             } catch (saveErr) {
                 console.error(`[Chat Stream] Failed to save response:`, saveErr);
             }
+        }
+
+        // Fold each background job onto the chip that dispatched it, so a
+        // reloaded conversation still shows what ran in parallel, on which
+        // model, and for how long.
+        if (toolCtx._assistantJobs && toolCtx._assistantJobs.size) {
+            try {
+                const byCall = new Map();
+                for (const j of toolCtx._assistantJobs.values()) {
+                    const key = j.dispatchCallId || '*';
+                    if (!byCall.has(key)) byCall.set(key, []);
+                    byCall.get(key).push({
+                        id: j.id,
+                        name: j.name,
+                        model: j.model,
+                        status: j.status,
+                        calls: j.calls || 0,
+                        seconds: typeof j.seconds === 'number' ? j.seconds : Math.round((Date.now() - j.startedAt) / 100) / 10,
+                        ...(j.error ? { error: String(j.error).slice(0, 300) } : {}),
+                        tools: (j.tools || []).slice(-12).map(x => ({ name: x.name, ...(x.purpose ? { purpose: x.purpose } : {}), status: x.status, ...(typeof x.ms === 'number' ? { ms: x.ms } : {}) })),
+                    });
+                }
+                for (const chip of persistedToolChips) {
+                    if (chip.label !== 'ask_assistant') continue;
+                    const list = byCall.get(chip.toolCallId) || byCall.get('*');
+                    if (list && list.length) chip.assistantJobs = list;
+                }
+            } catch (e) { console.warn('[Chat Stream] attaching assistant jobs to chips failed:', e.message); }
         }
 
         // Any assistant job the lead never waited for is abandoned here: the
@@ -26893,14 +26953,14 @@ app.get('/api/model-roles', requireAuth, (req, res) => {
 app.put('/api/model-roles', requireAdmin, async (req, res) => {
     try {
         const next = modelRolesSvc.sanitizeSystemRoles({ ...systemModelRoles, ...(req.body && typeof req.body === 'object' ? req.body : {}) });
-        if (next.primary && next.helper && next.primary === next.helper) {
-            // Stored as given, but ignored at resolution — a model does not
-            // assist itself. The card warns about it.
-            console.log('[model-roles] primary and helper name the same model — the helper will be ignored');
+        if (next.primary && next.secondary && next.primary === next.secondary) {
+            // Stored as given, but ignored at resolution — one model cannot
+            // hand work to itself. The card warns about it.
+            console.log('[model-roles] primary and secondary name the same model — the secondary will be ignored');
         }
         systemModelRoles = next;
         await saveSystemSettings();
-        console.log(`[model-roles] primary=${next.primary || '(composer)'} helper=${next.helper || '(none)'} mode=${next.mode} firstPass=${next.firstPass} legwork=${next.legwork} review=${next.review} checkWorkers=${next.checkWorkers} by ${req.user?.username || req.userId || 'admin'}`);
+        console.log(`[model-roles] primary=${next.primary || '(composer)'} secondary=${next.secondary || '(none)'} mode=${next.mode} firstPass=${next.firstPass} legwork=${next.legwork} review=${next.review} checkWorkers=${next.checkWorkers} by ${req.user?.username || req.userId || 'admin'}`);
         res.json({ roles: systemModelRoles });
     } catch (err) {
         console.error('[model-roles] update failed:', err);
@@ -32793,6 +32853,27 @@ app.use((req, res) => {
             const model = ctx && ctx.assistantModel;
             if (!model) return { error: 'No assistant model on this turn.' };
             const jobs = ctx._assistantJobs;
+            // One shape for every progress frame: the chat renders a row per
+            // job with the model that ran it and its own tool calls.
+            const assistantProgressFrame = (map, m) => ({
+                type: 'assistant_progress',
+                model: m,
+                jobs: [...map.values()].map(j => ({
+                    id: j.id,
+                    name: j.name,
+                    model: j.model || m,
+                    status: j.status,
+                    calls: j.calls || 0,
+                    current: j.current || '',
+                    ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                    tools: (j.tools || []).slice(-12).map(x => ({
+                        name: x.name,
+                        ...(x.purpose ? { purpose: x.purpose } : {}),
+                        status: x.status,
+                        ...(typeof x.ms === 'number' ? { ms: x.ms } : {}),
+                    })),
+                })),
+            });
             if (!jobs) return { error: 'The assistant queue is not available on this turn.' };
             let list = args && (args.requests || args.tasks || args.jobs || args.request);
             if (typeof list === 'string') { try { list = JSON.parse(list); } catch (_) { list = [{ task: list }]; } }
@@ -32860,7 +32941,7 @@ app.use((req, res) => {
                     if (ctx.abortSignal.aborted) ac.abort();
                     else ctx.abortSignal.addEventListener('abort', () => ac.abort(), { once: true });
                 }
-                const job = { id, name: t.name, task: t.task, status: 'running', startedAt: Date.now(), model, abort: () => ac.abort() };
+                const job = { id, name: t.name, task: t.task, status: 'running', startedAt: Date.now(), model, dispatchCallId: ctx._toolCallId || null, abort: () => ac.abort() };
                 jobs.set(id, job);
                 // Deliberately NOT awaited — that is the whole point.
                 job.promise = runDelegatedTurn({
@@ -32875,11 +32956,25 @@ app.use((req, res) => {
                     depth: (ctx.delegateDepth || 0),
                     signal: ac.signal,
                     onEvent: (ev) => {
-                        if (ev && ev.kind === 'tool_start') { job.calls = (job.calls || 0) + 1; job.current = ev.purpose || ev.name; }
-                        else if (ev && ev.kind === 'tool_end') { job.current = `${ev.name} done`; }
-                        if (typeof ctx.emitEvent === 'function') {
-                            ctx.emitEvent({ type: 'assistant_progress', jobs: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status, calls: j.calls || 0, current: j.current || '' })) });
+                        // Per-job tool trace, so the transcript can show WHICH
+                        // model made each call and what the background work was.
+                        if (ev && ev.kind === 'tool_start') {
+                            job.calls = (job.calls || 0) + 1;
+                            job.current = ev.purpose || ev.name;
+                            job.tools = job.tools || [];
+                            job.tools.push({ id: ev.id || null, name: ev.name, purpose: ev.purpose || undefined, status: 'running', startedAt: Date.now() });
+                            if (job.tools.length > 40) job.tools.splice(0, job.tools.length - 40);
+                        } else if (ev && ev.kind === 'tool_end') {
+                            job.current = `${ev.name} done`;
+                            const list = job.tools || [];
+                            let entry = ev.id ? list.find(x => x.id === ev.id && x.status === 'running') : null;
+                            if (!entry) for (let i = list.length - 1; i >= 0; i--) { if (list[i].status === 'running' && list[i].name === ev.name) { entry = list[i]; break; } }
+                            if (entry) {
+                                entry.status = ev.ok === false ? 'failed' : 'ok';
+                                entry.ms = typeof ev.ms === 'number' ? ev.ms : Date.now() - entry.startedAt;
+                            }
                         }
+                        if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
                     },
                 }).then((r) => {
                     job.status = r && r.status === 'ok' ? 'done' : 'failed';
@@ -32887,6 +32982,7 @@ app.use((req, res) => {
                     job.seconds = r && r.seconds;
                     job.finishedAt = Date.now();
                     logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${job.seconds}s on ${model} (${(r && r.toolCalls) || 0} tool calls)`);
+                    if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
                     return r;
                 }).catch((e) => {
                     job.status = 'failed';
@@ -32897,9 +32993,7 @@ app.use((req, res) => {
                 dispatched.push({ id, name: t.name });
             }
             logUserActivity(ctx.userId, `Assistant: ${ctx.model || 'the lead'} dispatched ${dispatched.length} job(s) to ${model} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
-            if (typeof ctx.emitEvent === 'function') {
-                ctx.emitEvent({ type: 'assistant_progress', jobs: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status, calls: j.calls || 0, current: j.current || '' })) });
-            }
+            if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
             return {
                 success: true,
                 dispatched,

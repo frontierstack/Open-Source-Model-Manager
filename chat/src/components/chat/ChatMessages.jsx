@@ -13,7 +13,7 @@ function StreamingMessage() {
     const streamingReasoning = useChatStore(state => state.streamingReasoning);
     const streamingToolCalls = useChatStore(state => state.streamingToolCalls);
     const streamingStatus = useChatStore(state => state.streamingStatus);
-    // Two-model pairing: who is working right now (primary, helper, or both)
+    // Two-model pairing: who is working right now (primary, secondary, or both)
     // and what each is doing. Live for this turn only; nothing persists.
     const streamingHandoff = useChatStore(state => state.streamingHandoff);
 
@@ -107,6 +107,9 @@ function StreamingMessage() {
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,
             sandboxNetwork: tc.sandboxNetwork,
+            // Which model made this call — paired turns only, so a
+            // single-model chat shows no attribution on the chip.
+            model: tc.model || undefined,
             // delegate: live worker-agent progress (delegate_progress frames)
             // and, once the result is in, each agent's compact outcome.
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
@@ -121,6 +124,19 @@ function StreamingMessage() {
         };
     });
 
+    // The background jobs the lead handed back ride on the ask_assistant chip
+    // that dispatched them — live, and then on the saved message. The frames
+    // are cumulative for the turn, so the newest such chip carries the list.
+    const liveJobs = (streamingHandoff && Array.isArray(streamingHandoff.jobs)) ? streamingHandoff.jobs : [];
+    if (liveJobs.length) {
+        for (let i = liveToolCalls.length - 1; i >= 0; i--) {
+            if (liveToolCalls[i] && liveToolCalls[i].label === 'ask_assistant') {
+                liveToolCalls[i] = { ...liveToolCalls[i], assistantJobs: liveJobs };
+                break;
+            }
+        }
+    }
+
     return (
         <ChatMessage
             key="streaming-message"
@@ -133,8 +149,29 @@ function StreamingMessage() {
             toolCalls={liveToolCalls.length ? liveToolCalls : undefined}
             streamingStatus={streamingStatus}
             handoff={streamingHandoff}
+            modelName={assistantLabel({
+                answeredBy: streamingHandoff && (streamingHandoff.lead || streamingHandoff.primary),
+            })}
+            modelTitle={(streamingHandoff && streamingHandoff.phase === 'solo' && streamingHandoff.reason)
+                ? `Answered without handing over — ${streamingHandoff.reason}`
+                : undefined}
+            assistedBy={(streamingHandoff && streamingHandoff.phase === 'lead')
+                ? (streamingHandoff.assistant || streamingHandoff.helper || undefined)
+                : undefined}
         />
     );
+}
+
+// The bubble's name in the meta row. With two models paired it names the one
+// that WROTE this answer, so the transcript is never anonymous about which
+// model did the work; with a single model it returns undefined and the bubble
+// reads "Assistant" exactly as before.
+function assistantLabel(message) {
+    if (!message) return undefined;
+    const parts = [];
+    if (message.parallel) parts.push('parallel');
+    if (message.answeredBy) parts.push(message.answeredBy);
+    return parts.length ? `Assistant · ${parts.join(' · ')}` : undefined;
 }
 
 /**
@@ -314,7 +351,8 @@ const ChatMessages = React.memo(function ChatMessages({
                     needsContinuation={message.needsContinuation}
                     isPartial={message.isPartial}
                     toolCalls={message.toolCalls}
-                    modelName={message.parallel ? 'Assistant · parallel' : undefined}
+                    modelName={assistantLabel(message)}
+                    assistedBy={message.assistedBy}
                     searchResults={message.searchResults}
                     onContinue={onContinue}
                     isLoading={isLoading}

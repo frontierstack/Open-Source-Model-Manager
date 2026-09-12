@@ -65,12 +65,33 @@ export default function ToolCallBlock({ tool }) {
         sandboxSource,
         agents,
         agentResults,
+        // Two-model attribution: which model made THIS call, and (ask_assistant
+        // only) the background jobs it dispatched to the other one. Both are
+        // sent by the server only when two models are paired on the turn, so a
+        // single-model chat renders exactly as before.
+        model,
+        assistantJobs,
     } = tool;
     // Per-agent view for a delegate chip: live progress frames while running,
     // else the compact results lifted off the tool result, else (a chip saved
     // server-side in the background) the raw delegate result if it is there.
     const agentRows = isDelegateChip ? mergeAgentRows(agents, agentResults, tool.result) : null;
     const hasAgents = Array.isArray(agentRows) && agentRows.length > 0;
+    // ask_assistant: the background jobs handed to the other model. Same row
+    // shape as a worker agent, so AgentsPanel renders them unchanged.
+    const jobRows = Array.isArray(assistantJobs) && assistantJobs.length
+        ? assistantJobs.map(j => ({
+            name: j && j.name,
+            model: j && j.model,
+            phase: (j && j.status === 'done') ? 'done' : (j && j.status === 'failed') ? 'failed' : ((j && j.status) || 'running'),
+            calls: j && typeof j.calls === 'number' ? j.calls : undefined,
+            seconds: j && typeof j.seconds === 'number' ? Math.round(j.seconds * 10) / 10 : undefined,
+            current: j && j.current,
+            error: j && j.error,
+            tools: Array.isArray(j && j.tools) ? j.tools : [],
+        }))
+        : null;
+    const hasJobs = Array.isArray(jobRows) && jobRows.length > 0;
 
     const isRunning = status === 'partial';
     const isFailed = status === 'failed';
@@ -130,13 +151,14 @@ export default function ToolCallBlock({ tool }) {
         const seconds = durationMs / 1000;
         captionParts.push(seconds >= 1 ? `${seconds.toFixed(1)}s` : `${Math.round(durationMs)}ms`);
     }
+    if (hasJobs) captionParts.unshift(`${jobRows.length} background job${jobRows.length === 1 ? '' : 's'}`);
     const caption = captionParts.join(' · ');
     const hasSources = Array.isArray(sourceList) && sourceList.length > 0;
     const hasArtifacts = Array.isArray(artifacts) && artifacts.length > 0;
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts || hasAgents;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts || hasAgents || hasJobs;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -163,6 +185,7 @@ export default function ToolCallBlock({ tool }) {
                 </span>
                 <IconComponent className="tool-chip-icon" strokeWidth={1.75} />
                 <code className="tool-chip-name">{toolName}</code>
+                {model && <ModelTag model={model} title={`Called by ${model}`} />}
                 {sandboxed === true && (
                     <span
                         title={
@@ -195,6 +218,7 @@ export default function ToolCallBlock({ tool }) {
             {open && hasDetail && (
                 <div className="tool-chip-body">
                     {hasAgents && <AgentsPanel rows={agentRows} running={isRunning} />}
+                    {hasJobs && <AgentsPanel rows={jobRows} running={isRunning} />}
                     {chartSpec && (
                         <ChartBlock spec={chartSpec} summary={chartSummary || ''} />
                     )}
@@ -345,6 +369,24 @@ function fmtSecs(ms) {
 // One block per worker agent: header (name · phase · calls · time), the
 // agent's tool calls in order with status dots, a muted draft preview, and
 // the checker verdict when there is one.
+// The model an agent / a background job / a tool call ran on. Quiet mono tag
+// — a fact about what is loaded, never a claim about the model itself.
+function ModelTag({ model, title }) {
+    if (!model) return null;
+    return (
+        <span
+            title={title || `Runs on ${model}`}
+            style={{
+                color: 'var(--ink-4)', fontSize: 10.5,
+                fontFamily: 'var(--font-mono, monospace)',
+                border: '1px solid var(--rule, rgba(128,128,128,.3))',
+                borderRadius: 4, padding: '0 4px', flexShrink: 0,
+                maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}
+        >{model}</span>
+    );
+}
+
 function AgentsPanel({ rows, running }) {
     return (
         <div className="tool-chip-agents" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
@@ -365,9 +407,7 @@ function AgentsPanel({ rows, running }) {
                                 {live && <Loader2 className="animate-spin" style={{ width: 9, height: 9 }} strokeWidth={2.5} />}
                                 {PHASE_LABEL[phase] || phase}
                             </span>
-                            {row.model && (
-                                <span title={`This worker runs on ${row.model}`} style={{ color: 'var(--ink-4)', fontSize: 10.5, fontFamily: 'var(--font-mono, monospace)', border: '1px solid var(--rule, rgba(128,128,128,.3))', borderRadius: 4, padding: '0 4px' }}>{row.model}</span>
-                            )}
+                            {row.model && <ModelTag model={row.model} title={`Ran on ${row.model}`} />}
                             {typeof row.calls === 'number' && (
                                 <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>{row.calls} call{row.calls === 1 ? '' : 's'}</span>
                             )}
@@ -399,6 +439,9 @@ function AgentsPanel({ rows, running }) {
                         )}
                         {live && !tools.length && row.current && (
                             <div style={{ fontSize: 11.5, color: 'var(--ink-4)', marginTop: 3 }}>{row.current}</div>
+                        )}
+                        {row.error && (
+                            <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 3, overflowWrap: 'anywhere' }}>{String(row.error).slice(0, 300)}</div>
                         )}
                         {row.preview && (
                             <div style={{ fontSize: 11.5, color: 'var(--ink-4)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontStyle: 'italic' }}>

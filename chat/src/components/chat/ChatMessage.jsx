@@ -115,8 +115,8 @@ function describeRunningTool(toolCalls, now = Date.now()) {
 // output, not just before the first content token.
 function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent, hasReasoning, now }) {
     // With two models paired, naming BOTH of them is the most informative
-    // one-liner there is — the user could otherwise not tell that the primary
-    // had handed work to the helper at all.
+    // one-liner there is — the user could otherwise not tell that the turn had
+    // been handed over to the secondary at all.
     const pairLabel = describeHandoff(handoff);
     if (pairLabel) return pairLabel;
     const toolLabel = describeRunningTool(toolCalls, now);
@@ -127,33 +127,53 @@ function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent,
     return 'Thinking';
 }
 
-// ── Two-model pairing: primary writes, helper assists ─────────────────────
-// The primary is the main model and writes every answer; the helper is a
-// faster second model that prepares a brief up front and then runs background
-// jobs CONCURRENTLY while the primary writes. Both of those are invisible
-// without the frames the server streams (`handoff`, `assistant_progress`).
+// ── Two-model pairing: primary answers, secondary takes over ──────────────
+// The primary is the everyday model and answers most turns alone. When the ask
+// is substantial the secondary TAKES THE LEAD and writes the answer, while the
+// primary prepares the brief up front and then runs background jobs
+// CONCURRENTLY for it. Both of those are invisible without the frames the
+// server streams (`handoff`, `assistant_progress`).
+//
+// In those frames `assistant` (legacy: `helper`) is the model doing the
+// legwork — the primary — and `lead` (legacy: `primary`) is the model writing
+// — the secondary, once it has taken over. That inversion is exactly why they
+// are NOT read as the `primary`/`secondary` role names.
 
 function runningJobsOf(handoff) {
     const jobs = (handoff && Array.isArray(handoff.jobs)) ? handoff.jobs : [];
     return jobs.filter(j => j && (j.status === 'running' || !j.status));
 }
 
+// Who is on each side of this turn, preferring the current field names.
+// Null = nothing worth saying — including the `solo` phase, where the primary
+// answered the turn by itself: naming it is the meta row's job, and a live row
+// saying "one model is writing" would only restate the ordinary indicator.
+function handoffActors(handoff) {
+    if (!handoff || handoff.phase === 'solo') return null;
+    const assistant = handoff.assistant || handoff.helper || '';
+    const lead = handoff.lead || handoff.primary || '';
+    const reviewer = handoff.reviewer || '';
+    if (!assistant && !lead && !(handoff.reviewing && reviewer)) return null;
+    return { assistant, lead, reviewer };
+}
+
 // One-line summary naming whichever models are busy.
 function describeHandoff(handoff) {
     // Unnamed = nothing worth saying; fall through to the ordinary tool label.
-    if (!handoff || (!handoff.primary && !handoff.helper)) return null;
+    const actors = handoffActors(handoff);
+    if (!actors) return null;
+    const { assistant, lead, reviewer } = actors;
     const phase = handoff.phase || 'lead';
-    const primary = handoff.primary || 'Primary';
-    const helper = handoff.helper || 'Helper';
-    if (phase === 'first_pass') return `${helper} is sizing up the task…`;
-    if (handoff.reviewing) return `${handoff.reviewer || helper} is reviewing the answer`;
+    if (phase === 'first_pass') return `${assistant || 'The primary'} is sizing up the task…`;
+    if (handoff.reviewing) return `${reviewer || assistant || lead} is reviewing the answer`;
+    if (!lead) return null;
     const running = runningJobsOf(handoff);
-    if (running.length) {
+    if (running.length && assistant) {
         const current = running[0].current || verbFor(running[0]);
         const count = running.length > 1 ? ` (${running.length} jobs)` : '';
-        return `${primary} writing · ${helper}: ${current}${count}`;
+        return `${lead} writing · ${assistant}: ${current}${count}`;
     }
-    return `${primary} is writing · ${helper} standing by`;
+    return assistant ? `${lead} is writing · ${assistant} standing by` : `${lead} is writing`;
 }
 
 // One row per model that is DOING something right now, so when both work at
@@ -161,7 +181,9 @@ function describeHandoff(handoff) {
 // `startsRef` remembers when each row's work began — the server frames carry
 // no start timestamps, and the clock must not restart on every re-render.
 function handoffRows({ handoff, toolCalls, now, startsRef }) {
-    if (!handoff || (!handoff.primary && !handoff.helper)) return [];
+    const actors = handoffActors(handoff);
+    if (!actors) return [];
+    const { assistant, lead, reviewer } = actors;
     const phase = handoff.phase || 'lead';
     const starts = startsRef.current || (startsRef.current = {});
     const since = (key) => {
@@ -170,8 +192,9 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
     };
     const rows = [];
 
-    // The primary — writing the answer, plus whatever tool it has in flight.
-    if (phase !== 'first_pass' && handoff.primary) {
+    // The model that took the lead — writing the answer, plus whatever tool it
+    // has in flight.
+    if (phase !== 'first_pass' && lead) {
         const running = runningToolsOf(toolCalls);
         const parts = [handoff.reviewing ? 'answer written' : 'writing the answer'];
         if (running.length) {
@@ -180,14 +203,15 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
             const extra = running.length > 1 ? ` (+${running.length - 1})` : '';
             parts.push(`${verbFor(oldest)}${oldest.purpose ? ` — ${oldest.purpose}` : ''}${extra}`);
         }
-        rows.push({ key: 'primary', model: handoff.primary, parts, seconds: since('lead') });
+        rows.push({ key: 'lead', model: lead, parts, seconds: since('lead') });
     }
 
-    // The helper — the first-pass brief, its background jobs, or the review.
-    if (handoff.helper) {
+    // The everyday model — its up-front brief, then the background jobs it
+    // runs for the lead.
+    if (assistant) {
         const running = runningJobsOf(handoff);
         if (phase === 'first_pass') {
-            rows.push({ key: 'helper', model: handoff.helper, parts: ['sizing up the task'], seconds: since('first_pass') });
+            rows.push({ key: 'assistant', model: assistant, parts: ['sizing up the task'], seconds: since('first_pass') });
         } else if (running.length) {
             const j = running[0];
             const label = verbFor(j);
@@ -199,10 +223,15 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
                 .map(x => `job:${x.id || x.name || 'job'}`)
                 .reduce((a, b) => ((starts[a] || now) <= (starts[b] || now) ? a : b));
             running.forEach(x => since(`job:${x.id || x.name || 'job'}`));
-            rows.push({ key: 'helper', model: handoff.helper, parts, seconds: since(oldestKey) });
-        } else if (handoff.reviewing) {
-            rows.push({ key: 'helper', model: handoff.helper, parts: ['reviewing the answer'], seconds: since('review') });
+            rows.push({ key: 'assistant', model: assistant, parts, seconds: since(oldestKey) });
         }
+    }
+
+    // Whoever is looking the finished answer over — the secondary, including
+    // on a turn the primary answered alone and never handed over.
+    if (handoff.reviewing) {
+        const who = reviewer || assistant || lead;
+        if (who) rows.push({ key: 'review', model: who, parts: ['reviewing the answer'], seconds: since('review') });
     }
     return rows;
 }
@@ -225,7 +254,7 @@ function HandoffRows({ rows }) {
                         lineHeight: 1.35,
                     }}
                 >
-                    <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'helper' ? '0.3s' : '0s' }} />
+                    <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'lead' ? '0s' : '0.3s' }} />
                     <span style={{
                         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
                         color: 'var(--ink-3)',
@@ -266,6 +295,11 @@ export default React.memo(function ChatMessage({
     toolCalls,
     searchResults,
     modelName,
+    // Tooltip for the name — e.g. why the secondary stayed out of this turn.
+    modelTitle,
+    // Two-model turns: the model that did the first pass + background legwork
+    // for whoever wrote the answer. Undefined on a single-model chat.
+    assistedBy,
     onOpenArtifacts,
     streamingStatus,
     handoff,
@@ -295,7 +329,7 @@ export default React.memo(function ChatMessage({
     // while the model waits on a tool).
     // ...and while a two-model hand-off is live, whose per-model rows carry
     // their own clocks even when no tool of the primary's is in flight.
-    const handoffActive = !!(isStreaming && handoff && (handoff.primary || handoff.helper));
+    const handoffActive = !!(isStreaming && handoffActors(handoff));
     const hasRunningTool = !!(isStreaming && runningToolsOf(toolCalls).length) || handoffActive;
     const [, setToolTick] = useState(0);
     const handoffStartsRef = useRef({});
@@ -473,7 +507,12 @@ export default React.memo(function ChatMessage({
                         <User strokeWidth={2.25} />
                     </div>
                 )}
-                <span className="msg-name">{isUser ? 'You' : (modelName || 'Assistant')}</span>
+                <span className="msg-name" title={!isUser && modelTitle ? modelTitle : undefined}>{isUser ? 'You' : (modelName || 'Assistant')}</span>
+                {!isUser && assistedBy && (
+                    <span className="msg-time" title={`${assistedBy} sized up the task and ran background jobs for this answer`}>
+                        with {assistedBy}
+                    </span>
+                )}
                 {timeStr && <span className="msg-time">{timeStr}</span>}
                 {!isUser && displayContent && !isStreaming && collapseKey && (
                     <button
@@ -544,8 +583,8 @@ export default React.memo(function ChatMessage({
                     )}
 
                     {/* Two-model pairing: one live row per model that is
-                        working right now, so "the primary is writing WHILE
-                        the helper runs two background jobs" is visible
+                        working right now, so "the secondary is writing WHILE
+                        the primary runs two background jobs" is visible
                         instead of reading as a single silent model. */}
                     {isStreaming && handoffActive && (
                         <HandoffRows rows={handoffRows({ handoff, toolCalls, now: Date.now(), startsRef: handoffStartsRef })} />

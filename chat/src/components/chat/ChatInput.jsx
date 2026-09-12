@@ -69,10 +69,11 @@ export default function ChatInput({
     models = [],
     selectedModel,
     onModelChange,
-    // The configured two-model pair ({primary, helper, mode}) or null. The
-    // server runs a turn on the PRIMARY whenever the request names either
-    // member, so the picker offers the pair as ONE entry and the composer's
-    // model for that entry is the primary.
+    // The configured two-model pair ({primary, secondary, mode}) or null. The
+    // PRIMARY is the everyday model the turn starts on; the SECONDARY takes
+    // over when the ask is substantial. The server resolves the pair whenever
+    // the request names either member, so the picker offers it as ONE entry
+    // whose composer model is the primary.
     modelPair = null,
     // name -> measured tokens/sec, for the picker rows.
     modelSpeeds = {},
@@ -233,13 +234,13 @@ export default function ChatInput({
     }, [promptDropdownOpen, modelDropdownOpen, effortDropdownOpen]);
 
     const runningModels = Array.isArray(models) ? models.filter(m => m.status === 'running') : [];
-    // A pair is "selected" when the composer is on its primary — that is the
-    // model the request carries and the model the server actually runs.
+    // A pair is "selected" when the composer is on its primary — the model the
+    // request carries and the one every turn starts on.
     const pairSelected = !!(modelPair && selectedModel === modelPair.primary);
     // The pair's two members are NOT offered individually: picking either one
     // would still run the pair, so listing them would be a lie.
     const soloModels = modelPair
-        ? runningModels.filter(m => m.name !== modelPair.primary && m.name !== modelPair.helper)
+        ? runningModels.filter(m => m.name !== modelPair.primary && m.name !== modelPair.secondary)
         : runningModels;
     const speedOf = (name) => {
         const v = modelSpeeds && modelSpeeds[name];
@@ -950,9 +951,9 @@ export default function ChatInput({
                                         disabled={disabled || isStreaming}
                                         className="composer-chip-model"
                                         style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220, minWidth: 0 }}
-                                        aria-label={pairSelected ? `Choose model — currently the pair ${modelPair.primary} plus ${modelPair.helper}` : 'Choose model'}
+                                        aria-label={pairSelected ? `Choose model — currently the pair ${modelPair.primary} plus ${modelPair.secondary}` : 'Choose model'}
                                         title={pairSelected
-                                            ? `Pair: ${modelPair.primary} + ${modelPair.helper}`
+                                            ? `Pair: ${modelPair.primary} + ${modelPair.secondary}`
                                             : (selectedModel ? `Model: ${selectedModel}` : 'Select model')}
                                     >
                                         <Circle
@@ -982,8 +983,9 @@ export default function ChatInput({
                                             <div style={popHeader}>Model</div>
                                             <div style={{ maxHeight: 280, overflowY: 'auto' }}>
                                                 {/* The configured pair, as ONE entry. Choosing it sets
-                                                    the composer to the primary — the model the server
-                                                    actually runs the turn on. */}
+                                                    the composer to the PRIMARY — the model every turn
+                                                    starts on, before the server decides whether to
+                                                    hand over to the secondary. */}
                                                 {modelPair && (
                                                     <button
                                                         key="__pair__"
@@ -1002,7 +1004,7 @@ export default function ChatInput({
                                                                 }}
                                                             />
                                                             <span style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                                                                {modelPair.primary} + {modelPair.helper}
+                                                                {modelPair.primary} + {modelPair.secondary}
                                                             </span>
                                                             <span style={{
                                                                 fontSize: 9, padding: '1px 5px', borderRadius: 3,
@@ -1012,11 +1014,11 @@ export default function ChatInput({
                                                             }}>pair</span>
                                                         </div>
                                                         <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
-                                                            primary + helper — the big model writes, the fast one assists
+                                                            primary + secondary — the primary answers, the secondary takes over on real work
                                                         </div>
-                                                        {(speedOf(modelPair.primary) || speedOf(modelPair.helper)) && (
+                                                        {(speedOf(modelPair.primary) || speedOf(modelPair.secondary)) && (
                                                             <div style={{ fontSize: 10.5, color: 'var(--ink-4)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                                {`${modelPair.primary}${speedOf(modelPair.primary) ? ` ${speedOf(modelPair.primary)}` : ''} · ${modelPair.helper}${speedOf(modelPair.helper) ? ` ${speedOf(modelPair.helper)}` : ''}`}
+                                                                {`${modelPair.primary}${speedOf(modelPair.primary) ? ` ${speedOf(modelPair.primary)}` : ''} · ${modelPair.secondary}${speedOf(modelPair.secondary) ? ` ${speedOf(modelPair.secondary)}` : ''}`}
                                                             </div>
                                                         )}
                                                     </button>

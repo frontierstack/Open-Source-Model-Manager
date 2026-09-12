@@ -1,30 +1,26 @@
 'use strict';
 // ───────────────────────────────────────────────────────────────────────────
-// Lead hand-off: two models working one task together.
-//
-// The shape the user asked for (2026-09-12):
+// Two models on one task.
 //
 //     user ask
 //        ↓
-//     PRIMARY (fast)   first pass — restate the task, gather what is cheap,
-//        ↓             hand over a brief
-//     LEAD (stronger)  writes the real answer
+//     PRIMARY (fast)   answers it outright — this is the default and it is why
+//        ↓             a quick question stays quick. When the ask is
+//        ↓             SUBSTANTIAL it instead does a short first pass and
+//        ↓             hands over a brief.
+//     SECONDARY (strong) takes the lead and writes the real answer
 //        ├─→ "find me the canvas API docs"  ─┐
-//        │                                   ├─ the primary runs these
+//        │                                   ├─ the PRIMARY runs these
 //        ├─→ "run the file and report back"  ─┘  CONCURRENTLY
-//        └─→ results arrive mid-turn, the lead keeps writing
+//        └─→ results arrive mid-turn, it keeps writing
 //        ↓
 //     final answer
 //
-// This is not the same thing as the checker: the checker reviews a finished
-// answer, the lead WRITES it. When a hand-off engages, the turn runs on the
-// lead model and the checker step is redundant (the strong model is already
-// the author), so it is skipped.
-//
-// It only engages on substantial work. A one-line factual question routed
-// through a model 2.8× slower per token is a worse experience, not a better
-// one, so `isSubstantialWork` is deliberately conservative: it wants evidence
-// that the turn involves building, analysing, or multi-step work.
+// The substantial-work gate is the whole point of `mode: 'auto'`: routing a
+// one-line factual question through a model 2.8× slower per token is a worse
+// experience, not a better one. `isSubstantialWork` is therefore conservative —
+// it wants evidence of building, analysing, or multi-step work before the
+// secondary is allowed to take over.
 // ───────────────────────────────────────────────────────────────────────────
 
 const MODES = ['off', 'auto', 'always'];
@@ -134,21 +130,21 @@ function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [],
 /**
  * Plan the two-model turn.
  *
- * The PRIMARY is the main model: when one is configured and loaded it answers
- * every turn, because that is what "primary" means to a reader. The HELPER
- * joins in — first pass and background legwork — according to `mode`:
+ * The PRIMARY answers by default — that is what keeps trivial turns fast. The
+ * SECONDARY takes over and writes the answer only when `mode` says so:
  * 'off' never, 'auto' only on substantial work, 'always' every turn.
  *
  * The pair only applies when the turn's model IS one of the two. A user who
- * deliberately picks some third model in the composer gets that model alone.
+ * deliberately picks some third model in the composer gets that model alone;
+ * one who deliberately picks the SECONDARY gets the secondary answering.
  *
  * @returns {{
  *   runOn: string,            the model this turn should actually run on
  *   switched: boolean,        true when that differs from the requested model
- *   engaged: boolean,         does the helper participate at all
- *   firstPass: boolean,       should the helper prepare a brief first
- *   legwork: boolean,         should the primary get ask_assistant
- *   primary: string|null, helper: string|null,
+ *   engaged: boolean,         is the secondary taking the lead
+ *   firstPass: boolean,       should the primary prepare a brief first
+ *   legwork: boolean,         may the secondary hand jobs back to the primary
+ *   primary: string|null, secondary: string|null,
  *   reason: string, substantial: boolean
  * }}
  */
@@ -159,39 +155,48 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     const isLoaded = (name) => !!name && (loaded.size === 0 || loaded.has(name));
 
     const primary = r.primary || null;
-    const helper = r.helper || null;
+    const secondary = r.secondary || null;
     const requested = targetModel || null;
     const verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds });
 
-    const alone = (reason, runOn) => ({
-        runOn: runOn || requested,
-        switched: !!(runOn && runOn !== requested),
-        engaged: false, firstPass: false, legwork: false,
-        primary, helper: null, reason, substantial: verdict.substantial,
-    });
+    // Picking the strong model in the composer is a deliberate choice — honour
+    // it even when the turn is trivial.
+    const wantsSecondary = !!(secondary && requested === secondary);
+    const alone = (reason, runOn) => {
+        const on = runOn || requested;
+        return {
+            runOn: on,
+            switched: !!(on && on !== requested),
+            engaged: false, firstPass: false, legwork: false,
+            primary, secondary: null, reason, substantial: verdict.substantial,
+        };
+    };
 
-    if (!primary || !isLoaded(primary)) return alone('no primary model configured');
+    if (!primary || !isLoaded(primary)) {
+        // No usable primary: nothing to route, leave the turn alone.
+        return alone('no primary model configured');
+    }
     // Only take over a turn that was aimed at this pair.
-    if (requested && requested !== primary && requested !== helper) {
+    if (requested && requested !== primary && requested !== secondary) {
         return alone(`the turn names a third model (${requested})`);
     }
-    // The primary is the main model — it answers, whatever the helper does.
-    const runOn = primary;
+    const soloOn = wantsSecondary ? secondary : primary;
 
-    if (!helper || helper === primary) return alone('no helper model configured', runOn);
-    if (!isLoaded(helper)) return alone('the helper model is not loaded', runOn);
-    if (m === 'off') return alone('the helper is switched off', runOn);
-    if (m === 'auto' && !verdict.substantial) return alone(verdict.reason, runOn);
+    if (!secondary || secondary === primary) return alone('no secondary model configured', soloOn);
+    if (!isLoaded(secondary)) return alone('the secondary model is not loaded', soloOn);
+    if (m === 'off') return alone('the secondary is switched off', soloOn);
+    // THE fast path: a quick question never reaches the slower model.
+    if (m === 'auto' && !verdict.substantial) return alone(verdict.reason, soloOn);
 
     return {
-        runOn,
-        switched: runOn !== requested,
+        runOn: secondary,
+        switched: secondary !== requested,
         engaged: true,
         firstPass: r.firstPass !== false,
         legwork: r.legwork !== false,
         primary,
-        helper,
-        reason: m === 'always' ? 'the helper joins every turn' : verdict.reason,
+        secondary,
+        reason: m === 'always' ? 'the secondary takes every turn' : verdict.reason,
         substantial: verdict.substantial,
     };
 }
@@ -206,7 +211,7 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
 // model's habit. Handing it a SHORT LIST OF CONCRETE JOBS, chosen by a model
 // that has just read the task, turns the decision into "dispatch these" rather
 // than "invent something to delegate".
-function buildFirstPassTask({ userText, leadModel, helperModel, toolBudget = 3 }) {
+function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
     return [
         'You are the FIRST PASS on a task that the main model is about to take over.',
         `Your job is NOT to answer it. Your job is to hand ${leadModel || 'the main model'} a short, useful brief so it can start immediately — and to line up work that YOU can do in parallel while it writes.`,
@@ -263,7 +268,7 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
         typeof firstPassSeconds === 'number' ? `${firstPassSeconds}s` : null,
         typeof toolCalls === 'number' ? `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` : null,
     ].filter(Boolean).join(', ');
-    const who = assistantModel || 'your helper model';
+    const who = assistantModel || 'the primary model';
     const jobs = legworkAvailable ? parseLegwork(body) : [];
     const tail = !legworkAvailable
         ? 'You are working alone on this one.'
@@ -281,10 +286,10 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
 
 // Framing for the lead turn itself, appended to the shared prelude.
 function buildLeadPrelude({ assistantModel, maxParallel }) {
-    const who = assistantModel ? `a faster assistant model (${assistantModel})` : 'a faster assistant model';
+    const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
     return [
         'YOU ARE THE LEAD ON THIS TASK.',
-        `${who.charAt(0).toUpperCase()}${who.slice(1)} has already done a first pass and is standing by. You write the final answer — the user sees your work, not the assistant's, so do the designing, the writing and the code yourself.`,
+        `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} has already done a first pass and is now standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
         `\`ask_assistant\` hands it a job and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands.`,
         'HAND OFF things that are independent of what you are writing and that you would otherwise stop to do: looking up an API, a version, a spec or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; running an existing script or test and reporting what it printed; checking an external claim.',
         'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet — it cannot read a file you have not written, and asking it to "verify /workspace/x" before you create x just wastes it; or a step so small you would finish it before the reply came back.',

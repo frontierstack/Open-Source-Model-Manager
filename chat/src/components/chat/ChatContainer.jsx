@@ -307,6 +307,11 @@ function buildNativeChipEntries(streamingToolCalls) {
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,
             sandboxNetwork: tc.sandboxNetwork,
+            // Which model made the call — set only on a paired turn.
+            model: tc.model || undefined,
+            // ask_assistant only: the background jobs this call dispatched,
+            // each with the model that ran it, its tool calls and duration.
+            assistantJobs: Array.isArray(tc.assistantJobs) && tc.assistantJobs.length ? tc.assistantJobs : undefined,
             // delegate: the worker agents' live progress (tool calls, draft
             // preview) and their compact final results, so the chip can show
             // what each agent did after the message commits.
@@ -344,25 +349,29 @@ function agentResultsOf(name, result) {
 
 // Turn a snake_case tool id into a friendly verb phrase for the status row.
 // Two-model pairing as the server expects it (services/modelRoles.js).
-// PRIMARY = the main model; it does the work and writes every answer.
-// HELPER  = a faster second model that assists and never writes the answer.
+// PRIMARY   = the everyday model. It answers most turns on its own.
+// SECONDARY = held in reserve. It stays out until the ask is substantial,
+//             then takes the lead and writes the answer itself while the
+//             primary runs background legwork for it.
+// Neither role implies anything about a model's size or speed — the user
+// pairs whichever two models they like.
 // An empty string means "not set here" — the server falls back to its own
 // default (Models page), so those fields are omitted rather than sent blank.
 function modelRolesFromSettings(settings) {
     if (!settings) return undefined;
     const primary = settings.rolePrimaryModel || '';
-    const helper = settings.roleHelperModel || '';
+    const secondary = settings.roleSecondaryModel || '';
     const mode = typeof settings.roleMode === 'string' ? settings.roleMode : '';
     const review = settings.roleReview === true
         ? 'note'
         : (typeof settings.roleReview === 'string' ? settings.roleReview : '');
     const roles = {};
     if (primary) roles.primary = primary;
-    if (helper) roles.helper = helper;
+    if (secondary) roles.secondary = secondary;
     if (mode) roles.mode = mode;
     if (review) roles.review = review;
-    if (helper) {
-        // Helper duties only mean anything once a helper is chosen.
+    if (secondary) {
+        // The pairing duties only mean anything once a secondary is chosen.
         roles.firstPass = settings.roleFirstPass !== false;
         roles.legwork = settings.roleLegwork !== false;
         roles.checkWorkers = settings.roleCheckWorkers === true;
@@ -1770,7 +1779,7 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
-                // Two-model pairing (primary writes / helper assists) — sent
+                // Two-model pairing (primary answers / secondary takes over) — sent
                 // every turn so the server never depends on the prefs sync.
                 modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
@@ -1987,6 +1996,10 @@ export default function ChatContainer({
                                     name: parsed.name,
                                     arguments: parsed.arguments,
                                     purpose: parsed.purpose,
+                                    // WHICH model made this call. The server
+                                    // sends it only on a paired turn, so a
+                                    // single-model chat shows no attribution.
+                                    model: parsed.model,
                                     sandboxed: parsed.sandboxed,
                                     source: parsed.source,
                                     network: parsed.network,
@@ -2006,15 +2019,19 @@ export default function ChatContainer({
                                 continue;
                             }
                             if (parsed.type === 'handoff') {
-                                // Two-model pairing. 'first_pass' = the helper is
-                                // preparing a brief right now; 'lead' = the primary
-                                // has taken over and is writing the answer. Merged
-                                // (not replaced) so the job list from
-                                // assistant_progress survives a phase change.
+                                // Two-model pairing. 'first_pass' = the PRIMARY (the
+                                // everyday model) is preparing a brief right now;
+                                // 'lead' = the SECONDARY has taken over and is writing
+                                // the answer. The frame carries both the new field
+                                // names and the old ones: `assistant`/`helper` is the
+                                // model doing the legwork (the primary) and
+                                // `lead`/`primary` the one writing. Merged (not replaced) so the
+                                // job list from assistant_progress survives a phase
+                                // change.
                                 patchStreamingHandoff({
                                     phase: parsed.phase || 'lead',
-                                    helper: parsed.helper || undefined,
-                                    primary: parsed.primary || undefined,
+                                    assistant: parsed.assistant || parsed.helper || undefined,
+                                    lead: parsed.lead || parsed.primary || undefined,
                                     reason: parsed.reason || undefined,
                                     firstPassSeconds: parsed.firstPassSeconds,
                                     briefChars: parsed.briefChars,
@@ -2022,16 +2039,19 @@ export default function ChatContainer({
                                 continue;
                             }
                             if (parsed.type === 'assistant_progress') {
-                                // Background jobs the primary handed the helper —
-                                // they run CONCURRENTLY with the primary's own
-                                // work, which is exactly what the live rows show.
+                                // Background jobs the secondary handed BACK to the
+                                // primary — they run CONCURRENTLY with the
+                                // secondary's own work, which is exactly what
+                                // the live rows show.
                                 patchStreamingHandoff({
                                     jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+                                    // Never clobber a known assistant with undefined.
+                                    ...(parsed.model ? { assistant: parsed.model } : {}),
                                 });
                                 continue;
                             }
                             if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
-                                // The helper's verdict on the finished answer. The
+                                // The secondary's verdict on the answer. The
                                 // addendum itself arrives as ordinary content
                                 // deltas (note mode) or a content_rewind (edit
                                 // mode); this frame only names the reviewer, so
@@ -2479,6 +2499,32 @@ export default function ChatContainer({
                 toolCalls.push(chip);
             }
 
+            // Two-model attribution for the SAVED message. The live frames are
+            // the only record the foreground path has (the server stamps the
+            // same fields on its own background save), so read them before the
+            // streaming state is cleared.
+            //   answeredBy — the model that wrote this answer
+            //   assistedBy — the model that did the first pass + legwork
+            // Both stay undefined on a single-model chat, and the message then
+            // renders exactly as it does today.
+            const turnHandoff = useChatStore.getState().streamingHandoff || null;
+            const answeredBy = turnHandoff ? (turnHandoff.lead || turnHandoff.primary || undefined) : undefined;
+            const assistedBy = (turnHandoff && turnHandoff.phase !== 'solo')
+                ? (turnHandoff.assistant || turnHandoff.helper || undefined)
+                : undefined;
+            // The `assistant_progress` frames are cumulative for the turn, so
+            // the record of the background work is folded onto the LAST
+            // ask_assistant chip — the same place the server's save puts it.
+            const turnJobs = (turnHandoff && Array.isArray(turnHandoff.jobs)) ? turnHandoff.jobs : [];
+            if (turnJobs.length) {
+                for (let i = toolCalls.length - 1; i >= 0; i--) {
+                    if (toolCalls[i] && toolCalls[i].label === 'ask_assistant') {
+                        if (!toolCalls[i].assistantJobs) toolCalls[i] = { ...toolCalls[i], assistantJobs: turnJobs };
+                        break;
+                    }
+                }
+            }
+
             // Use the messages we had at the start (updatedMessages) since the user may have switched
             // This ensures we save to the correct conversation
             let finalMessages = [...updatedMessages];
@@ -2506,6 +2552,8 @@ export default function ChatContainer({
                         responseTime,
                         tokenCount: tokenCount > 0 ? tokenCount : undefined,
                         isPartial: true,
+                        answeredBy,
+                        assistedBy,
                     }
                     : null;
                 const errorMessage = {
@@ -2547,6 +2595,9 @@ export default function ChatContainer({
                     tokenCount: tokenCount > 0 ? tokenCount : undefined,
                     needsContinuation, // Mark if response was cut off by length
                     isPartial: needsContinuation, // Only show continuation UI for length cutoffs
+                    // Who wrote it / who assisted — paired turns only.
+                    answeredBy,
+                    assistedBy,
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
@@ -2935,7 +2986,7 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
-                // Two-model pairing (primary writes / helper assists) — sent
+                // Two-model pairing (primary answers / secondary takes over) — sent
                 // every turn so the server never depends on the prefs sync.
                 modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
@@ -3035,15 +3086,19 @@ export default function ChatContainer({
                                     continue;
                                 }
                                 if (parsed.type === 'handoff') {
-                                    // Two-model pairing. 'first_pass' = the helper is
-                                    // preparing a brief right now; 'lead' = the primary
-                                    // has taken over and is writing the answer. Merged
-                                    // (not replaced) so the job list from
-                                    // assistant_progress survives a phase change.
+                                    // Two-model pairing. 'first_pass' = the PRIMARY (the
+                                    // everyday model) is preparing a brief right now;
+                                    // 'lead' = the SECONDARY has taken over and is writing
+                                    // the answer. The frame carries both the new field
+                                    // names and the old ones: `assistant`/`helper` is the
+                                    // model doing the legwork (the primary) and
+                                    // `lead`/`primary` the one writing. Merged (not replaced) so the
+                                    // job list from assistant_progress survives a phase
+                                    // change.
                                     patchStreamingHandoff({
                                         phase: parsed.phase || 'lead',
-                                        helper: parsed.helper || undefined,
-                                        primary: parsed.primary || undefined,
+                                        assistant: parsed.assistant || parsed.helper || undefined,
+                                        lead: parsed.lead || parsed.primary || undefined,
                                         reason: parsed.reason || undefined,
                                         firstPassSeconds: parsed.firstPassSeconds,
                                         briefChars: parsed.briefChars,
@@ -3051,16 +3106,19 @@ export default function ChatContainer({
                                     continue;
                                 }
                                 if (parsed.type === 'assistant_progress') {
-                                    // Background jobs the primary handed the helper —
-                                    // they run CONCURRENTLY with the primary's own
-                                    // work, which is exactly what the live rows show.
+                                    // Background jobs the secondary handed BACK to the
+                                    // primary — they run CONCURRENTLY with the
+                                    // secondary's own work, which is exactly
+                                    // what the live rows show.
                                     patchStreamingHandoff({
                                         jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+                                        // Never clobber a known assistant with undefined.
+                                        ...(parsed.model ? { assistant: parsed.model } : {}),
                                     });
                                     continue;
                                 }
                                 if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
-                                    // The helper's verdict on the finished answer. The
+                                    // The secondary's verdict on the answer. The
                                     // addendum itself arrives as ordinary content
                                     // deltas (note mode) or a content_rewind (edit
                                     // mode); this frame only names the reviewer, so
@@ -3279,10 +3337,11 @@ export default function ChatContainer({
 
     // ── Two-model pair for the composer's model picker ────────────────────
     // The server-wide roles (Models page) plus this account's overrides. The
-    // server moves a turn onto the PRIMARY whenever the request names either
-    // member of the pair (services/leadHandoff.js planHandoff), so the picker
-    // must offer the pair as ONE entry rather than two models that silently
-    // collapse into the same run.
+    // server resolves the pair whenever the request names either member
+    // (services/leadHandoff.js planHandoff), so the picker must offer the pair
+    // as ONE entry rather than two models that silently collapse into the same
+    // run. The entry's request model is the PRIMARY — the one the turn
+    // actually starts on.
     const [modelRoleInfo, setModelRoleInfo] = useState(null);
     useEffect(() => {
         let cancelled = false;
@@ -3295,8 +3354,8 @@ export default function ChatContainer({
         // once both of its models are actually running.
     }, [runningInstances.length]);
 
-    // Measured generation speed per model, for the picker rows (it is how a
-    // user tells the big model from the fast one).
+    // Measured generation speed per model, for the picker rows — a fact about
+    // what is loaded, shown beside each name so the user can pair on evidence.
     const modelSpeeds = React.useMemo(() => {
         const out = {};
         const running = (modelRoleInfo && Array.isArray(modelRoleInfo.running)) ? modelRoleInfo.running : [];
@@ -3305,28 +3364,29 @@ export default function ChatContainer({
     }, [modelRoleInfo]);
 
     // The effective pair, or null when there isn't one. Requires a primary AND
-    // a different helper, both LOADED, with pairing not switched off.
+    // a different secondary, both LOADED, with pairing not switched off.
     const modelPair = React.useMemo(() => {
         const sr = (modelRoleInfo && modelRoleInfo.roles) || {};
         const primary = settings.rolePrimaryModel || sr.primary || '';
-        const helper = settings.roleHelperModel || sr.helper || '';
+        const secondary = settings.roleSecondaryModel || sr.secondary || '';
         const mode = (typeof settings.roleMode === 'string' && settings.roleMode) ? settings.roleMode : (sr.mode || 'auto');
-        if (!primary || !helper || primary === helper || mode === 'off') return null;
+        if (!primary || !secondary || primary === secondary || mode === 'off') return null;
         const running = new Set(combinedModels.filter(m => m.status === 'running').map(m => m.name));
-        if (!running.has(primary) || !running.has(helper)) return null;
-        return { primary, helper, mode };
-    }, [modelRoleInfo, settings.rolePrimaryModel, settings.roleHelperModel, settings.roleMode, combinedModels]);
+        if (!running.has(primary) || !running.has(secondary)) return null;
+        return { primary, secondary, mode };
+    }, [modelRoleInfo, settings.rolePrimaryModel, settings.roleSecondaryModel, settings.roleMode, combinedModels]);
 
-    // The pair is the default pick. Naming the HELPER in the composer is a
-    // no-op (the server runs the turn on the primary anyway), and an unset or
-    // stale selection is not a deliberate third-model choice — both mean "the
-    // pair", whose request model is the primary. A genuinely chosen third
-    // model is left alone.
+    // The pair is the default pick, and its request model is the PRIMARY —
+    // the everyday model every turn starts on before the server decides
+    // whether to hand over. Naming the SECONDARY in the composer is a no-op
+    // (the server resolves the pair either way), and an unset or stale
+    // selection is not a deliberate third-model choice — both mean "the pair".
+    // A genuinely chosen third model is left alone.
     useEffect(() => {
         if (!modelPair) return;
         const cur = settings.model;
         const running = combinedModels.filter(m => m.status === 'running').map(m => m.name);
-        if ((!cur || cur === modelPair.helper || !running.includes(cur)) && cur !== modelPair.primary) {
+        if ((!cur || cur === modelPair.secondary || !running.includes(cur)) && cur !== modelPair.primary) {
             updateSettings({ model: modelPair.primary });
         }
     }, [modelPair, settings.model, combinedModels]);

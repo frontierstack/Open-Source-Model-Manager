@@ -57,14 +57,39 @@ const migrateSettings = () => {
                 console.log(`[Settings] Migrated chatStyle ${prev} -> default (${prev} removed)`);
             }
 
-            // Two-model roles were renamed: the "checker" became the HELPER
-            // (a faster second model that assists but never writes the answer),
-            // `roleCheckFinal` became `roleReview`, and `roleConsult` is gone.
-            if (settings.roleCheckerModel !== undefined) {
-                if (!settings.roleHelperModel) settings.roleHelperModel = settings.roleCheckerModel || '';
+            // Two-model roles, two older generations — and they migrate
+            // DIFFERENTLY, because the meaning of `rolePrimaryModel` flipped.
+            //
+            // Gen 2 (`roleHelperModel`): the primary wrote every answer and
+            // the helper only assisted. Today the primary is the everyday model
+            // and the secondary is the one that takes over on substantial work
+            // — so the two SWAP.
+            //
+            // Gen 1 (`roleCheckerModel`): the primary was already the everyday
+            // model doing the work and the checker was the one that looked the
+            // answer over, which is the direction we are back to — so the
+            // primary stays put and the checker simply becomes the secondary.
+            if (settings.roleHelperModel !== undefined) {
+                if (!settings.roleSecondaryModel) {
+                    settings.roleSecondaryModel = settings.rolePrimaryModel || '';
+                    settings.rolePrimaryModel = settings.roleHelperModel || '';
+                }
+                delete settings.roleHelperModel;
+                dirty = true;
+                console.log('[Settings] Migrated roleHelperModel -> swapped primary/secondary');
+            } else if (settings.roleCheckerModel !== undefined) {
+                if (!settings.roleSecondaryModel) settings.roleSecondaryModel = settings.roleCheckerModel || '';
                 delete settings.roleCheckerModel;
                 dirty = true;
-                console.log('[Settings] Migrated roleCheckerModel -> roleHelperModel');
+                console.log('[Settings] Migrated roleCheckerModel -> roleSecondaryModel');
+            }
+            if (settings.roleHandoff !== undefined) {
+                if (settings.roleMode === undefined && typeof settings.roleHandoff === 'string') {
+                    settings.roleMode = settings.roleHandoff;
+                }
+                delete settings.roleHandoff;
+                dirty = true;
+                console.log('[Settings] Migrated roleHandoff -> roleMode');
             }
             if (settings.roleCheckFinal !== undefined) {
                 if (settings.roleReview === undefined) {
@@ -77,9 +102,12 @@ const migrateSettings = () => {
                 console.log('[Settings] Migrated roleCheckFinal -> roleReview');
             }
             if (settings.roleConsult !== undefined) {
+                if (settings.roleLegwork === undefined && typeof settings.roleConsult === 'boolean') {
+                    settings.roleLegwork = settings.roleConsult;
+                }
                 delete settings.roleConsult;
                 dirty = true;
-                console.log('[Settings] Dropped roleConsult (removed)');
+                console.log('[Settings] Migrated roleConsult -> roleLegwork');
             }
 
             if (dirty) {
@@ -146,9 +174,13 @@ export const useChatStore = create(
         streamingToolCalls: [],
 
         // Two-model hand-off for the CURRENT turn only (never persisted):
-        //   { phase: 'first_pass' | 'lead', helper, primary, reason,
+        //   { phase: 'first_pass' | 'lead', assistant, lead, reason,
         //     firstPassSeconds, briefChars,
-        //     jobs: [{ id, name, status: 'running'|'done'|'failed', calls, current }] }
+        //     jobs: [{ id, name, status: 'running'|'done'|'failed', calls,
+        //             current, startedAt, seconds }] }
+        // `jobs` are the background jobs the lead handed BACK to the primary
+        // (ask_assistant); they are recorded on the committed message as
+        // `assistantJobs` so the transcript still shows the parallel work.
         // Drives the live "who is working right now" rows in the streaming
         // bubble. Cleared wherever streamingStatus is.
         streamingHandoff: null,
@@ -211,25 +243,30 @@ export const useChatStore = create(
             // Synced to the server (see serverPreferencesSync) so the backend
             // can honor it; managed in the webapp Memory tab.
             memoryDisabled: false,
-            // Two-model pairing. The PRIMARY is the main model: it does the
-            // work and writes every answer. The HELPER is a faster second
-            // model that assists it and never writes the answer. '' on a
-            // model/mode/review field = "use the server default" (set on the
-            // Models page). Synced to the server so API callers get the same
-            // roles; also sent on every request so the server never depends
-            // on the prefs sync having landed.
+            // Two-model pairing. The PRIMARY is the everyday model and answers
+            // most turns on its own, so a quick question starts and finishes
+            // there. The SECONDARY is held in reserve: it stays out until the
+            // ask is substantial, then takes the lead and writes the answer
+            // itself while the primary runs background legwork for it. Neither
+            // role implies anything about model size or speed. '' on a model/mode/review
+            // field = "use the server default" (set on the Models page). Synced
+            // to the server so API callers get the same roles; also sent on
+            // every request so the server never depends on the prefs sync
+            // having landed.
             rolePrimaryModel: '',
-            roleHelperModel: '',
+            roleSecondaryModel: '',
+            // When the SECONDARY takes over:
             // 'off' | 'auto' (only on substantial work) | 'always' | '' (server default)
             roleMode: 'auto',
-            // Helper prepares a short brief before the primary starts.
+            // The primary prepares a short brief before the secondary starts.
             roleFirstPass: true,
-            // Primary hands the helper background jobs that run concurrently.
+            // The secondary hands jobs BACK to the primary, run concurrently.
             roleLegwork: true,
-            // 'off' | 'note' (append the verdict) | 'edit' (helper hands back a
+            // On turns the PRIMARY answered alone, what the secondary does:
+            // 'off' | 'note' (append the verdict) | 'edit' (hands back a
             // corrected version) | '' (server default)
             roleReview: 'off',
-            // Helper reviews parallel worker-agent reports.
+            // The secondary reviews parallel worker-agent reports.
             roleCheckWorkers: false,
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
         },
@@ -538,6 +575,11 @@ export const useChatStore = create(
                     arguments: tc.arguments || '',
                     // The model's one-line reason for the call (live commentary).
                     purpose: tc.purpose || undefined,
+                    // WHICH model made this call. Only set when two models are
+                    // paired on the turn (the lead writing, or the primary
+                    // during its first pass) — a single-model chat leaves it
+                    // undefined and the chip shows no attribution.
+                    model: tc.model || undefined,
                     status: 'running',
                     startedAt: Date.now(),
                     // Sandbox policy, piped through from the server so the

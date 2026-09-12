@@ -18,7 +18,7 @@ import { useChatStore } from './stores/useChatStore';
 // watchAndSync still detects changes correctly.
 const SYNCED_TOP_LEVEL = ['theme', 'folders', 'conversationFolderMap'];
 const SYNCED_SETTINGS = ['fontFamily', 'fontSize', 'layout', 'memoryDisabled',
-    'rolePrimaryModel', 'roleHelperModel', 'roleMode', 'roleFirstPass',
+    'rolePrimaryModel', 'roleSecondaryModel', 'roleMode', 'roleFirstPass',
     'roleLegwork', 'roleReview', 'roleCheckWorkers']; // nested under settings
 const REMOTE_FIELDS = new Set([...SYNCED_TOP_LEVEL, ...SYNCED_SETTINGS]);
 
