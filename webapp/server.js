@@ -195,6 +195,7 @@ const experienceMemory = require('./services/experienceMemory');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
 const reasoningEffort = require('./services/reasoningEffort');
+const modelRolesSvc = require('./services/modelRoles');
 const v1ContextGuard = require('./services/v1ContextGuard');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -1342,6 +1343,7 @@ function buildChatRuntimePrelude() {
         `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query. BUT when a search comes back with the SAME pages you already saw (the result says noNewResults and lists the unread ones), the engine has nothing more on that subject: stop searching and READ one of those pages, or locate the entry on the index/directory page you already found with find:"<its name or number>" — never guess or re-type a URL from a name, and never announce the same plan twice.`,
         `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
         `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
+        `PARALLEL WORKER AGENTS: the \`delegate\` tool runs several worker agents AT THE SAME TIME, each with its own tools (web, files, sandbox) and its own context window, sharing this conversation's /workspace. Use it on your own initiative — the user does not need to ask for "agents" — whenever a request splits into 2 or more INDEPENDENT parts that each need tool work: research two or more topics/companies/products, read or audit several sites/files/repos, compare options, gather several kinds of evidence. Call it ONCE with every sub-task in \`tasks\` (each self-contained: what to find, where to look, what to return), then SYNTHESIZE the workers' reports into one answer, citing what they found. Do NOT delegate a single-step task, a question you can answer directly, or steps that depend on each other's results — do those yourself in order.`,
         `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
@@ -1349,6 +1351,19 @@ function buildChatRuntimePrelude() {
     ].join('\n');
     _preludeCache = { day, text };
     return text;
+}
+
+// System framing for a delegated WORKER turn (see runDelegatedTurn). The
+// worker's whole output is one tool result the parent reads, so it must come
+// back as a self-contained, evidence-dense report — not a chat reply.
+function buildDelegatePrelude(delegate) {
+    const label = String((delegate && delegate.label) || 'worker').slice(0, 80);
+    const siblings = Array.isArray(delegate && delegate.siblings) ? delegate.siblings.filter(Boolean) : [];
+    return [
+        `You are worker agent "${label}", one of ${Math.max(1, siblings.length)} agents running IN PARALLEL on behalf of a parent agent that is answering the user. You have been given ONE sub-task. Complete it fully and autonomously with your tools — do not ask questions, do not wait for input, do not address the user.`,
+        siblings.length > 1 ? `Other workers are handling in parallel: ${siblings.filter(x => x !== label).map(x => `"${x}"`).join(', ')} — stay on YOUR sub-task only; do not duplicate theirs.` : '',
+        `Your FINAL message is the only thing the parent will see (it never sees your tool results), so make it a complete report: the findings, every URL/path/identifier/number you relied on written out in full, and what you could NOT establish. Prefer facts over prose; keep it under ~600 words unless the task needs more. If you wrote files, list their exact /workspace paths. Do not use make_downloadable — the parent delivers files.`,
+    ].filter(Boolean).join('\n');
 }
 
 /**
@@ -3577,6 +3592,9 @@ const PREF_FIELDS = new Set([
     'density',       // comfortable | compact
     'fontFamily',    // any value from the chat font list
     'fontSize',      // small | medium | large
+    // Two-model roles (chat): primary does the work (worker agents run on it),
+    // the checker reviews it. See services/modelRoles.js.
+    'rolePrimaryModel', 'roleCheckerModel', 'roleCheckWorkers', 'roleCheckFinal',
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
     'memoryDisabled', // boolean — chat: turn off account memory (inject + extract + record_learning)
@@ -15849,6 +15867,19 @@ function messageText(msg) {
 // Account-scoped memory disable check (chat-app preference). Best-effort: a
 // failed lookup defaults to ENABLED so memory never silently turns off on a
 // transient read error. Honored at extraction, retrieval, and record_learning.
+// The account's chat-scoped preferences (the chat UI syncs a whitelisted
+// subset — memoryDisabled, model roles — to the server so the backend can
+// honor them for API callers too). {} when there are none.
+async function getChatPrefsForUser(userId) {
+    try {
+        if (!userId) return {};
+        const user = await getUserById(userId);
+        const prefs = user?.preferences;
+        if (!prefs) return {};
+        return (prefs.byApp && prefs.byApp.chat) ? prefs.byApp.chat : prefs;
+    } catch { return {}; }
+}
+
 async function isMemoryDisabledForUser(userId) {
     try {
         if (!userId) return false;
@@ -18960,7 +18991,51 @@ function parseProhibitedToolNames(text, knownNames) {
 }
 
 // Streaming chat endpoint - Server-Sent Events (SSE)
-app.post('/api/chat/stream', requireAuth, async (req, res) => {
+// The chat turn is a named handler so a worker agent (the `delegate` native
+// tool, see runDelegatedTurn) can run the SAME pipeline in-process — router,
+// guards, pre-flights, prelude — against a mock req/res instead of a second,
+// weaker copy of the tool loop.
+// ── Model capacity accounting ────────────────────────────────────────────────
+// How many requests each loaded model is serving right now (chat turns, worker
+// agents, sidecar turns, checker calls) versus how many it can serve at once
+// (llama.cpp --parallel slots / sglang max-running-requests). This is what lets
+// the chat start a second message immediately instead of queueing it.
+const modelBusy = new Map();
+function modelBusyInc(name) { if (!name) return; modelBusy.set(name, (modelBusy.get(name) || 0) + 1); }
+function modelBusyDec(name) { if (!name) return; const n = (modelBusy.get(name) || 0) - 1; if (n > 0) modelBusy.set(name, n); else modelBusy.delete(name); }
+function modelSlotCount(inst) {
+    const cfg = (inst && inst.config) || {};
+    if (inst && inst.backend === 'sglang') return Math.max(1, Math.min(parseInt(cfg.maxRunningRequests, 10) || 8, 16));
+    return Math.max(1, parseInt(cfg.parallelSlots, 10) || 1);
+}
+function chatCapacity() {
+    const models = [];
+    for (const [name, inst] of modelInstances.entries()) {
+        if (inst && inst.status && inst.status !== 'running') continue;
+        const slots = modelSlotCount(inst);
+        const busy = modelBusy.get(name) || 0;
+        models.push({ name, backend: inst && inst.backend, slots, busy, free: Math.max(0, slots - busy) });
+    }
+    return { models, totalFree: models.reduce((a, m) => a + m.free, 0), totalSlots: models.reduce((a, m) => a + m.slots, 0) };
+}
+function resolveBusyKey(model) {
+    if (model && modelInstances.has(model)) return model;
+    if (model) return null;   // unknown model → the handler 400s; count nothing
+    const first = Array.from(modelInstances.keys())[0];
+    return first || null;
+}
+
+const chatStreamHandler = async (req, res) => {
+    const busyKey = resolveBusyKey(req.body && req.body.model);
+    modelBusyInc(busyKey);
+    try {
+        return await chatStreamHandlerInner(req, res);
+    } finally {
+        modelBusyDec(busyKey);
+    }
+};
+
+const chatStreamHandlerInner = async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
     const { message, messages: inputMessages, model, temperature, top_p, topP, maxTokens, max_tokens, conversationId, continueProcessing, chunkingStrategy } = req.body;
     // Per-request reasoning effort: 'off'|'low'|'medium'|'high' (absent /
@@ -19031,6 +19106,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const streamingConversationId = conversationId || req.body.conversationId;
         const streamStartTime = Date.now();
         const streamAbortController = new AbortController();
+        // A delegated worker turn (see runDelegatedTurn) has no conversation
+        // job to abort through — the parent hands it a signal instead, so a
+        // user Stop on the parent (or the delegate timeout) ends the worker.
+        const inProcessReq = req.delegate || req.sidecar || null;
+        if (inProcessReq && inProcessReq.signal) {
+            const dsig = inProcessReq.signal;
+            if (dsig.aborted) streamAbortController.abort();
+            else dsig.addEventListener('abort', () => streamAbortController.abort(), { once: true });
+        }
         if (streamingConversationId) {
             // Seed with a "Processing request" entry so a reconnecting client
             // starts from a rolling-credits feed with at least one line, not
@@ -19096,7 +19180,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Modern arrow-style logs: `[Chat] <who> → <model> (N msgs)` mirrors
         // the Pi/API format so the Logs tab reads consistently across all
         // chat surfaces.
-        const chatWho = req.user?.username || req.apiKeyData?.name || 'user';
+        const chatWho = req.delegate ? `agent "${req.delegate.label}"` : req.sidecar ? `${req.user?.username || req.apiKeyData?.name || 'user'} (parallel)` : (req.user?.username || req.apiKeyData?.name || 'user');
         const logChatActivity = (message, level = 'info') => {
             try {
                 broadcast({ type: 'log', message: `[Chat] ${message}`, level, targetUserId: req.userId });
@@ -19413,9 +19497,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // and without this nudge they reach for find_patterns / get_timestamp
         // instead of web_search on "current news" style prompts.
         try {
-            const prelude = effortDirectives.systemHint
+            let prelude = effortDirectives.systemHint
                 ? `${buildChatRuntimePrelude()}\n${effortDirectives.systemHint}`
                 : buildChatRuntimePrelude();
+            if (req.delegate) prelude = `${buildDelegatePrelude(req.delegate)}\n\n${prelude}`;
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
                 if (typeof existing === 'string') {
@@ -20715,6 +20800,23 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // record_learning from the catalog so the model can't write either.
         const memUserId = chatMemId;
         const toolMemoryDisabled = await isMemoryDisabledForUser(memUserId);
+        // Two-model roles: PRIMARY does the work (worker agents run on it),
+        // the CHECKER reviews it. Request body wins (the chat UI sends it every
+        // turn), then the account's saved chat prefs; a role naming a model
+        // that is not loaded is dropped. A worker turn inherits its parent's.
+        let modelRoles = { primary: null, checker: null, checkWorkers: true, checkFinal: false, source: 'none' };
+        try {
+            const runningNames = [];
+            for (const [k, inst] of modelInstances.entries()) { runningNames.push(k); if (inst && inst.modelName) runningNames.push(inst.modelName); }
+            modelRoles = modelRolesSvc.resolveModelRoles({
+                body: req.body,
+                prefs: req.body && req.body.modelRoles ? null : await getChatPrefsForUser(req.user?.id || null),
+                running: runningNames,
+            });
+            if (modelRoles.checker && modelRoles.source !== 'none') {
+                console.log(`[Chat Stream] Model roles (${modelRoles.source}): primary=${modelRoles.primary || targetModel} checker=${modelRoles.checker} checkWorkers=${modelRoles.checkWorkers} checkFinal=${modelRoles.checkFinal}`);
+            }
+        } catch (e) { console.warn('[Chat Stream] model roles resolution failed:', e.message); }
         const toolCtx = {
             userId: req.userId,
             apiKeyData: req.apiKeyData,
@@ -20737,6 +20839,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // reported it to the user as a failure (2026-08-12). 15% headroom
             // for the metadata the skill wraps around its page.
             resultBudgetChars: Math.round(modelFacingResultCap(contextSize) * 0.85),
+            // ── delegation (parallel worker agents) ──────────────────────
+            // The model this turn runs on + effort, so a worker inherits them;
+            // the sandbox bucket workers share; the nesting depth (a worker
+            // never gets the delegate tool itself); the turn's abort signal so
+            // a user Stop cancels in-flight workers.
+            model: targetModel,
+            reasoningEffort: requestedEffort || null,
+            modelRoles,
+            workerModel: modelRoles.primary || targetModel,
+            checkerModel: modelRoles.checker || null,
+            checkWorkers: !!(modelRoles.checker && modelRoles.checkWorkers),
+            workspaceBucket: (req.delegate && req.delegate.workspaceBucket)
+                || (req.sidecar && req.sidecar.workspaceBucket)
+                || (conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null),
+            delegateDepth: (req.delegate && req.delegate.depth) || 0,
+            abortSignal: streamAbortController.signal,
+        };
+        // Lets a long-running tool (delegate) push live progress frames to the
+        // client mid-dispatch and mirror them onto the job's running-call entry
+        // so a refreshed client sees the same status.
+        // The request itself (identity for worker turns) — non-enumerable so a
+        // stringified/logged ctx never drags the whole request along.
+        Object.defineProperty(toolCtx, '_req', { value: req, enumerable: false });
+        toolCtx.emitEvent = (ev) => {
+            if (!ev || typeof ev !== 'object') return;
+            if (ev.type === 'delegate_progress' && streamingConversationId && ev.tool_call_id) {
+                try {
+                    const job = activeStreamingJobs.get(streamingConversationId);
+                    const entry = job && job.runningToolCalls && job.runningToolCalls.get(ev.tool_call_id);
+                    if (entry && ev.summary) {
+                        if (!entry.purposeOriginal) entry.purposeOriginal = entry.purpose || '';
+                        entry.purpose = ev.summary;
+                        job.toolRev = (job.toolRev || 0) + 1;
+                    }
+                } catch (_) { /* best-effort */ }
+            }
+            if (!clientConnected || res.writableEnded) return;
+            try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch (_) { clientConnected = false; }
         };
         let toolCatalog = [];
         try {
@@ -20841,6 +20981,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // tool chips on reload. The foreground path builds chips client-side
         // from the SSE stream; this is the parity copy for the background save.
         const persistedToolChips = [];
+        // Full (model-facing) tool results of this turn, kept only for the
+        // checker model's final review — chips carry a 240-char preview, which
+        // made the checker report "evidence truncated" on every delegate turn.
+        const toolEvidenceForChecker = [];
         // Mirror the chips onto the streaming job so the reconnect poll
         // (GET /streaming) can hand them to a refreshed client mid-turn.
         if (streamingConversationId) {
@@ -21019,10 +21163,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // conv-<id> bucket (read-only; same owner/bucket resolution skills
         // use) and prepend a note listing what's already there. Mirrors the
         // follow-up-document pre-flight above.
-        if (conversationId && latestUserMsgIdx >= 0) {
+        const inProcBucket = (req.delegate && req.delegate.workspaceBucket) || (req.sidecar && req.sidecar.workspaceBucket) || null;
+        if ((conversationId || inProcBucket) && latestUserMsgIdx >= 0) {
             try {
                 const sbRunner = require('./services/sandboxRunner');
-                const ws = await sbRunner.describeConversationWorkspace(req.userId, conversationId);
+                // A worker agent / parallel sidecar turn shares its PARENT
+                // conversation's bucket, so it sees (and can add to) the same
+                // files the conversation has.
+                const ws = inProcBucket
+                    ? await sbRunner.describeWorkspaceBucket(req.userId, inProcBucket)
+                    : await sbRunner.describeConversationWorkspace(req.userId, conversationId);
                 if (ws) {
                     const fmtSize = (n) => !Number.isFinite(n) ? ''
                         : n >= 1048576 ? ` (${(n / 1048576).toFixed(1)} MB)`
@@ -23530,7 +23680,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         try { toolRouter.recordConversationToolUse(streamingConversationId, webEffectiveName(call.function.name, call.function.arguments)); } catch (_) {}
                         let p = dispatchCache.get(k);
                         if (!p) {
-                            p = chatTools.executeToolCall(call, toolCtx);
+                            // delegate needs ITS call id to tag progress frames;
+                            // the ctx is shared across parallel calls, so hand it
+                            // a per-call view instead of mutating the shared one.
+                            p = chatTools.executeToolCall(call, call.function.name === 'delegate'
+                                ? Object.assign(Object.create(toolCtx), { _toolCallId: call.id })
+                                : toolCtx);
                             dispatchCache.set(k, p);
                             return p;
                         }
@@ -23989,6 +24144,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
                                 : null;
                             clearRunningToolCall(call.id);
+                            if (modelRoles.checker && modelRoles.checkFinal && toolEvidenceForChecker.length < 40) {
+                                toolEvidenceForChecker.push({ name: call.function.name || 'tool', purpose: call.purpose || '', failed: !!failedChip, content: String(resultMsg.content || '').slice(0, 6000) });
+                            }
                             persistedToolChips.push({
                                 type: 'native_tool_call',
                                 label: call.function.name || 'tool',
@@ -24916,6 +25074,51 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         //
         // Aborted streams still skip; the DELETE /streaming cancel
         // endpoint handles partial-response persistence for those.
+        // ── Checker pass on the final answer (two-model roles) ───────────
+        // The secondary model reviews what the primary just said; its verdict
+        // is streamed as an addendum and persisted with the answer. Skipped
+        // for worker turns (the delegate tool checks their REPORTS), trivial
+        // chat, cancelled turns, and when no checker is configured.
+        if (!req.delegate && modelRoles.checker && modelRoles.checkFinal
+            && !streamAbortController.signal.aborted && fullResponse
+            && modelRolesSvc.shouldCheckFinal({ answer: fullResponse, toolCalls: persistedToolChips.length })) {
+            const t0 = Date.now();
+            updateJobPhase('checking');
+            logChatActivity(`Checker: ${modelRoles.checker} reviewing the answer…`);
+            if (clientConnected && !res.writableEnded) {
+                try { res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'running', checker: modelRoles.checker })}\n\n`); } catch (_) { clientConnected = false; }
+            }
+            let review = null;
+            try {
+                const evidence = toolEvidenceForChecker.length
+                    ? toolEvidenceForChecker.map((e, i) => `--- [${i + 1}] ${e.name}${e.failed ? ' (FAILED)' : ''}${e.purpose ? ` — ${e.purpose}` : ''} ---\n${e.content}`).join('\n').slice(0, 40000)
+                    : modelRolesSvc.summarizeToolChips(persistedToolChips);
+                const msgs = modelRolesSvc.buildFinalReviewMessages({
+                    userAsk: latestUserText,
+                    answer: fullResponse,
+                    toolSummary: evidence,
+                });
+                const r = await Promise.race([
+                    requestModelCompletion({ messages: msgs, model: modelRoles.checker, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
+                ]);
+                review = modelRolesSvc.parseReview(r && r.content);
+            } catch (e) {
+                review = { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
+            }
+            const addendum = modelRolesSvc.formatReviewAddendum(review, modelRoles.checker);
+            fullResponse += addendum;
+            const secs = Math.round((Date.now() - t0) / 100) / 10;
+            logChatActivity(`Checker: ${review.verdict === 'pass' ? 'no issues' : review.verdict === 'issues' ? `${review.issues.length} issue(s)` : 'review failed'} (${modelRoles.checker}, ${secs}s)${review.summary ? ` — ${review.summary}` : ''}`);
+            console.log(`[Chat Stream] Checker ${modelRoles.checker}: ${review.verdict} (${review.issues.length} issues, ${secs}s)`);
+            if (clientConnected && !res.writableEnded) {
+                try {
+                    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: addendum }, index: 0 }] })}\n\n`);
+                    res.write(`data: ${JSON.stringify({ type: 'checker_review', status: 'done', checker: modelRoles.checker, verdict: review.verdict, summary: review.summary, issues: review.issues, seconds: secs })}\n\n`);
+                } catch (_) { clientConnected = false; }
+            }
+        }
+
         const wasAborted = streamAbortController.signal.aborted;
         // User-cancelled aborts skip this save — DELETE /streaming handles
         // persistence for those. A reasoning loop no longer aborts the
@@ -24969,7 +25172,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // Skipped on an exhausted reasoning loop OR an exhausted loop-nudge
         // budget — the tool path is degenerate (the model never converged) and
         // would poison the procedure store.
-        if (!streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
+        if (!req.delegate && !streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
             recordTurnActivity({
                 userId: chatMemId,
                 // No conversationId is fine — it is only a provenance tag and the
@@ -25214,6 +25417,389 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             activeStreamingJobs.delete(failedConvId);
         }
     }
+};
+app.post('/api/chat/stream', requireAuth, chatStreamHandler);
+
+// ─── Delegated worker turns ───────────────────────────────────────────────────
+// Runs ONE worker agent turn through chatStreamHandler in-process with a mock
+// req/res: same auth identity, same model, full tool pipeline. Resolves with
+// the worker's final text plus a compact trace of what it did. The parent is
+// the `delegate` native tool (registered in the native-tool IIFE below).
+const DELEGATE_MAX_PARALLEL = Math.max(1, parseInt(process.env.DELEGATE_MAX_PARALLEL || '4', 10) || 4);
+const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
+const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
+const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
+// Checker (secondary model) review of worker reports: how many revision rounds
+// the primary gets when the checker flags issues, and the review call's cap.
+const DELEGATE_FIX_ROUNDS = Math.max(0, parseInt(process.env.DELEGATE_FIX_ROUNDS || '1', 10) || 0);
+const CHECKER_TIMEOUT_MS = Math.max(15000, parseInt(process.env.CHECKER_TIMEOUT_MS || '180000', 10) || 180000);
+
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, signal, onEvent }) {
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort();
+    if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const timer = setTimeout(() => controller.abort(), DELEGATE_TIMEOUT_MS);
+    const startedAt = Date.now();
+
+    const body = {
+        messages: [{ role: 'user', content: task }],
+        model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        // Explicit so the worker never re-reads prefs; a worker's report is
+        // checked by the delegate tool, never inside its own turn.
+        modelRoles: { primary: model, checker: (modelRoles && modelRoles.checker) || '', checkWorkers: false, checkFinal: false },
+    };
+    const req = {
+        body,
+        user: parentReq.user,
+        userId: parentReq.userId,
+        apiKeyData: parentReq.apiKeyData,
+        headers: {},
+        socket: null,
+        setTimeout() {},
+        on() {},
+        once() {},
+        delegate: { label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, signal: controller.signal },
+    };
+
+    let content = '';
+    let error = null;
+    let httpError = null;
+    let finished = false;
+    const toolTrace = [];
+    const filesWritten = new Set();
+    const pending = new Map();
+    let buffer = '';
+    let resolveDone;
+    const done = new Promise((resolve) => { resolveDone = resolve; });
+    const finish = () => { if (!finished) { finished = true; resolveDone(); } };
+
+    const handleEvent = (ev) => {
+        if (!ev || typeof ev !== 'object') return;
+        if (ev.type === 'content_rewind' && typeof ev.content === 'string') { content = ev.content; return; }
+        if (ev.type === 'tool_executing') {
+            pending.set(ev.tool_call_id, { name: ev.name, purpose: ev.purpose, at: Date.now() });
+            try {
+                const a = typeof ev.arguments === 'string' ? JSON.parse(ev.arguments) : (ev.arguments || {});
+                for (const k of ['filePath', 'path', 'outputPath', 'outputName', 'filename']) {
+                    const v = a && a[k];
+                    if (typeof v === 'string' && /^\/?workspace\//.test(v)) filesWritten.add(v.startsWith('/') ? v : '/' + v);
+                }
+            } catch (_) { /* args may be partial */ }
+            if (onEvent) onEvent({ kind: 'tool_start', name: ev.name, purpose: ev.purpose || '' });
+            return;
+        }
+        if (ev.type === 'tool_result') {
+            const p = pending.get(ev.tool_call_id);
+            pending.delete(ev.tool_call_id);
+            const r = ev.result;
+            const failed = !!(r && typeof r === 'object' && (r.error || r.success === false));
+            toolTrace.push({ name: ev.name, purpose: (p && p.purpose) || undefined, ok: !failed, ms: p ? Date.now() - p.at : undefined });
+            if (onEvent) onEvent({ kind: 'tool_end', name: ev.name, ok: !failed });
+            return;
+        }
+        if (ev.error && ev.done) { error = String(ev.error); finish(); return; }
+        const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
+        if (delta && typeof delta.content === 'string') content += delta.content;
+        if (ev.done) finish();
+    };
+    const consume = (chunk) => {
+        buffer += typeof chunk === 'string' ? chunk : String(chunk || '');
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+            for (const line of frame.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                try { handleEvent(JSON.parse(line.slice(6))); } catch (_) { /* heartbeat / partial */ }
+            }
+        }
+    };
+    const res = {
+        writableEnded: false,
+        headersSent: false,
+        statusCode: 200,
+        setHeader() {},
+        flushHeaders() { this.headersSent = true; },
+        setTimeout() {},
+        on() {},
+        once() {},
+        status(code) { this.statusCode = code; return this; },
+        json(obj) { httpError = (obj && (obj.error || obj.message)) || `HTTP ${this.statusCode}`; this.writableEnded = true; finish(); return this; },
+        send(obj) { return this.json(typeof obj === 'string' ? { error: obj } : obj); },
+        write(chunk) { this.headersSent = true; consume(chunk); return true; },
+        end() { this.writableEnded = true; finish(); },
+    };
+
+    try {
+        await chatStreamHandler(req, res);
+    } catch (e) {
+        error = error || `worker crashed: ${e && e.message ? e.message : String(e)}`;
+        finish();
+    }
+    await done;
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', forwardAbort);
+
+    const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
+    const aborted = controller.signal.aborted;
+    const timedOut = aborted && !(signal && signal.aborted) && Date.now() - startedAt >= DELEGATE_TIMEOUT_MS - 1000;
+    let answer = String(content || '').trim();
+    let truncated = false;
+    if (answer.length > DELEGATE_ANSWER_CHARS) { answer = answer.slice(0, DELEGATE_ANSWER_CHARS); truncated = true; }
+    const status = httpError ? 'failed' : error ? 'failed' : timedOut ? 'timeout' : aborted ? 'cancelled' : answer ? 'ok' : 'empty';
+    return {
+        name: label,
+        status,
+        answer,
+        ...(truncated ? { answerTruncated: true } : {}),
+        ...(httpError || error ? { error: httpError || error } : {}),
+        toolCalls: toolTrace.length,
+        tools: toolTrace.map(t => `${t.name}${t.ok ? '' : ' (failed)'}${t.purpose ? ` — ${t.purpose}` : ''}`).slice(0, 40),
+        filesWritten: [...filesWritten].slice(0, 30),
+        seconds,
+    };
+}
+
+
+// ─── Parallel (sidecar) turns ────────────────────────────────────────────────
+// A message sent while a reply is still streaming used to wait in a client-side
+// queue. With a free slot (llama.cpp --parallel > 1, a second model, sglang) it
+// now starts IMMEDIATELY as a sidecar turn: the same pipeline, in-process,
+// against the conversation's history as the client had it, with no job
+// registration and no server-side save. The client polls the job, and when the
+// foreground reply has committed it appends user message + this reply in
+// order. Capacity is checked here so a sidecar never steals the slot a
+// foreground turn is about to need.
+const sidecarTurns = new Map();   // jobId -> job
+const SIDECAR_MAX_PER_CONV = Math.max(1, parseInt(process.env.SIDECAR_MAX_PER_CONV || '2', 10) || 2);
+const SIDECAR_RETAIN_MS = 30 * 60 * 1000;
+const SIDECAR_TIMEOUT_MS = Math.max(60000, parseInt(process.env.SIDECAR_TIMEOUT_MS || String(30 * 60 * 1000), 10) || 30 * 60 * 1000);
+const SIDECAR_RESULT_CHARS = 32000;
+const CONV_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
+
+function pruneSidecarTurns() {
+    const now = Date.now();
+    for (const [id, job] of sidecarTurns.entries()) {
+        if (job.finishedAt && now - job.finishedAt > SIDECAR_RETAIN_MS) sidecarTurns.delete(id);
+    }
+}
+setInterval(pruneSidecarTurns, 60 * 1000).unref();
+
+function publicSidecarJob(job, { full = false } = {}) {
+    return {
+        jobId: job.id,
+        conversationId: job.conversationId,
+        model: job.model,
+        status: job.status,
+        startedAt: job.startedAt,
+        finishedAt: job.finishedAt || null,
+        responseTime: job.finishedAt ? job.finishedAt - job.startedAt : Date.now() - job.startedAt,
+        toolCalls: job.toolChips.length,
+        runningToolCalls: Array.from(job.running.values()),
+        error: job.error || null,
+        contentChars: job.content.length,
+        ...(full ? { content: job.content, reasoning: job.reasoning || undefined, toolChips: job.toolChips, userMessage: job.userMessage } : {}),
+    };
+}
+
+async function runSidecarTurn(job, parentReq) {
+    const controller = job.abortController;
+    const timer = setTimeout(() => controller.abort(), SIDECAR_TIMEOUT_MS);
+    const { conversationId, ...bodyRest } = job.body;   // no conversationId: no job registration, no server save
+    // The history the client had when it sent this: the PREVIOUS user message
+    // is still being answered by the foreground turn, so the model sees two
+    // unanswered user messages in a row and — verified live — answers BOTH.
+    // Say in as many words which one is its (user-slot note: template-safe).
+    try {
+        const msgs = Array.isArray(bodyRest.messages) ? bodyRest.messages.map(m => ({ ...m })) : [];
+        const last = msgs.length - 1;
+        if (last >= 1 && msgs[last].role === 'user' && msgs[last - 1].role === 'user') {
+            const note = '[SYSTEM: The previous user message is being answered SEPARATELY by another reply that is still being written. Do NOT answer it, summarize it, or refer to it — answer ONLY the message below, on its own.]\n\n';
+            const um = msgs[last];
+            if (typeof um.content === 'string') um.content = note + um.content;
+            else if (Array.isArray(um.content)) {
+                const tIdx = um.content.findIndex(p => p && p.type === 'text' && typeof p.text === 'string');
+                if (tIdx >= 0) um.content = um.content.map((p, i) => (i === tIdx ? { ...p, text: note + p.text } : p));
+                else um.content = [{ type: 'text', text: note }, ...um.content];
+            }
+            bodyRest.messages = msgs;
+        }
+    } catch (_) { /* best-effort */ }
+    const req = {
+        body: bodyRest,
+        user: parentReq.user,
+        userId: parentReq.userId,
+        apiKeyData: parentReq.apiKeyData,
+        headers: {},
+        socket: null,
+        setTimeout() {},
+        on() {},
+        once() {},
+        sidecar: { workspaceBucket: 'conv-' + String(job.conversationId).replace(/[^A-Za-z0-9_-]/g, '_'), signal: controller.signal },
+    };
+    let buffer = '';
+    let finished = false;
+    let resolveDone;
+    const done = new Promise((resolve) => { resolveDone = resolve; });
+    const finish = () => { if (!finished) { finished = true; resolveDone(); } };
+    const handleEvent = (ev) => {
+        if (!ev || typeof ev !== 'object') return;
+        if (ev.type === 'content_rewind' && typeof ev.content === 'string') { job.content = ev.content; return; }
+        if (ev.type === 'tool_executing') {
+            let parsedArgs = null;
+            try { parsedArgs = typeof ev.arguments === 'string' ? JSON.parse(ev.arguments) : (ev.arguments || null); } catch (_) { parsedArgs = null; }
+            job.running.set(ev.tool_call_id, {
+                tool_call_id: ev.tool_call_id, name: ev.name, arguments: typeof ev.arguments === 'string' ? ev.arguments.slice(0, 4000) : '',
+                purpose: ev.purpose || undefined, startedAt: Date.now(), sandboxed: ev.sandboxed, source: ev.source,
+                _args: parsedArgs,
+            });
+            return;
+        }
+        if (ev.type === 'delegate_progress' && ev.tool_call_id) {
+            const r = job.running.get(ev.tool_call_id);
+            if (r && ev.summary) r.purpose = ev.summary;
+            return;
+        }
+        if (ev.type === 'tool_result') {
+            const r = job.running.get(ev.tool_call_id);
+            job.running.delete(ev.tool_call_id);
+            const result = ev.result;
+            const failed = !!(result && typeof result === 'object' && (result.error || result.success === false));
+            const args = (r && r._args) || null;
+            const argPreview = args && typeof args === 'object'
+                ? Object.entries(args).filter(([k]) => k !== 'purpose').map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 120) : JSON.stringify(v).slice(0, 120)}`).join(', ').slice(0, 240)
+                : '';
+            job.toolChips.push({
+                type: 'native_tool_call',
+                label: ev.name || 'tool',
+                purpose: (r && r.purpose) || undefined,
+                query: argPreview,
+                args: args || undefined,
+                status: failed ? 'failed' : 'success',
+                error: failed ? String((result && (result.error || result.stderr)) || 'failed').slice(0, 300) : undefined,
+                preview: String(ev.preview || '').slice(0, 240),
+                chartSpec: (result && result.chartSpec) || undefined,
+                chartSummary: (result && typeof result.summary === 'string') ? result.summary : undefined,
+                imageSpec: (result && result.imageSpec) || undefined,
+                videoSpec: (result && result.videoSpec) || undefined,
+                startedAt: r ? r.startedAt : undefined,
+                durationMs: r ? Date.now() - r.startedAt : undefined,
+            });
+            return;
+        }
+        if (ev.error && ev.done) { job.error = String(ev.error); finish(); return; }
+        const delta = ev.choices && ev.choices[0] && ev.choices[0].delta;
+        if (delta) {
+            if (typeof delta.content === 'string') job.content += delta.content;
+            if (typeof delta.reasoning === 'string') job.reasoning += delta.reasoning;
+        }
+        if (ev.done) finish();
+    };
+    const consume = (chunk) => {
+        buffer += typeof chunk === 'string' ? chunk : String(chunk || '');
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+            for (const line of frame.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                try { handleEvent(JSON.parse(line.slice(6))); } catch (_) { /* heartbeat / partial */ }
+            }
+        }
+    };
+    const res = {
+        writableEnded: false, headersSent: false, statusCode: 200,
+        setHeader() {}, flushHeaders() { this.headersSent = true; }, setTimeout() {}, on() {}, once() {},
+        status(code) { this.statusCode = code; return this; },
+        json(obj) { job.error = (obj && (obj.error || obj.message)) || `HTTP ${this.statusCode}`; this.writableEnded = true; finish(); return this; },
+        send(obj) { return this.json(typeof obj === 'string' ? { error: obj } : obj); },
+        write(chunk) { this.headersSent = true; consume(chunk); return true; },
+        end() { this.writableEnded = true; finish(); },
+    };
+    try {
+        await chatStreamHandler(req, res);
+    } catch (e) {
+        job.error = job.error || `turn crashed: ${e && e.message ? e.message : String(e)}`;
+        finish();
+    }
+    await done;
+    clearTimeout(timer);
+    job.finishedAt = Date.now();
+    job.running.clear();
+    if (job.content.length > SIDECAR_RESULT_CHARS) job.content = job.content.slice(0, SIDECAR_RESULT_CHARS) + '\n\n*(reply truncated)*';
+    job.status = job.error ? 'failed' : controller.signal.aborted ? 'cancelled' : job.content.trim() ? 'done' : 'failed';
+    if (job.status === 'failed' && !job.error) job.error = 'The model produced no reply.';
+    console.log(`[Chat Sidecar] ${job.id} ${job.status} in ${Math.round((job.finishedAt - job.startedAt) / 100) / 10}s (${job.toolChips.length} tool calls, ${job.content.length} chars)`);
+    try { broadcast({ type: 'log', message: `[Chat] Parallel reply ${job.status} for conversation ${String(job.conversationId).slice(0, 8)}… (${job.toolChips.length} tool calls)`, level: job.status === 'done' ? 'info' : 'warn', targetUserId: parentReq.userId }); } catch (_) {}
+}
+
+app.get('/api/chat/capacity', requireAuth, (req, res) => {
+    res.json({ ...chatCapacity(), sidecars: Array.from(sidecarTurns.values()).filter(j => j.status === 'running').length });
+});
+
+app.post('/api/conversations/:id/turns', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    if (!CONV_ID_RE.test(String(id || ''))) return res.status(400).json({ error: 'Invalid conversation id' });
+    if (!checkPermission(req.apiKeyData, 'query')) return res.status(403).json({ error: 'Query permission required' });
+    const body = req.body || {};
+    if (!Array.isArray(body.messages) || !body.messages.length) return res.status(400).json({ error: 'messages array is required' });
+    const model = body.model || Array.from(modelInstances.keys())[0];
+    if (!model || !modelInstances.has(model)) return res.status(400).json({ error: `Model ${model || '(none)'} is not running.` });
+    const cap = chatCapacity();
+    const m = cap.models.find(x => x.name === model);
+    if (!m || m.free <= 0) {
+        return res.status(409).json({ error: 'No free slot on this model — the message should be queued.', queued: true, capacity: cap });
+    }
+    const userId = req.user?.id || req.apiKeyData?.id || 'default';
+    const mine = Array.from(sidecarTurns.values()).filter(j => j.conversationId === id && j.userId === userId && j.status === 'running');
+    if (mine.length >= SIDECAR_MAX_PER_CONV) {
+        return res.status(409).json({ error: `Already ${mine.length} parallel replies running for this conversation — queue this one.`, queued: true });
+    }
+    const job = {
+        id: crypto.randomBytes(12).toString('hex'),
+        conversationId: id,
+        userId,
+        model,
+        status: 'running',
+        startedAt: Date.now(),
+        finishedAt: null,
+        content: '',
+        reasoning: '',
+        toolChips: [],
+        running: new Map(),
+        error: null,
+        userMessage: body.userMessage && typeof body.userMessage === 'object' ? body.userMessage : null,
+        body: { ...body, model, conversationId: id, stream: true },
+        abortController: new AbortController(),
+    };
+    delete job.body.userMessage;
+    sidecarTurns.set(job.id, job);
+    console.log(`[Chat Sidecar] ${job.id} started on ${model} for conversation ${String(id).slice(0, 8)}… (free slots before: ${m.free}/${m.slots})`);
+    try { broadcast({ type: 'log', message: `[Chat] Parallel reply started on ${model} (free slot) for conversation ${String(id).slice(0, 8)}…`, level: 'info', targetUserId: req.userId }); } catch (_) {}
+    runSidecarTurn(job, req).catch((e) => { job.status = 'failed'; job.error = e && e.message ? e.message : String(e); job.finishedAt = Date.now(); });
+    res.status(202).json({ jobId: job.id, model, capacity: cap });
+});
+
+app.get('/api/conversations/:id/turns', requireAuth, (req, res) => {
+    const { id } = req.params;
+    const userId = req.user?.id || req.apiKeyData?.id || 'default';
+    const full = String(req.query.full || '') === '1';
+    const jobs = Array.from(sidecarTurns.values())
+        .filter(j => j.conversationId === id && j.userId === userId)
+        .map(j => publicSidecarJob(j, { full: full || j.status !== 'running' }));
+    res.json({ jobs });
+});
+
+app.delete('/api/conversations/:id/turns/:jobId', requireAuth, (req, res) => {
+    const { id, jobId } = req.params;
+    const userId = req.user?.id || req.apiKeyData?.id || 'default';
+    const job = sidecarTurns.get(jobId);
+    if (!job || job.conversationId !== id || job.userId !== userId) return res.status(404).json({ error: 'No such parallel turn' });
+    if (job.status === 'running') { job.abortController.abort(); job.status = 'cancelled'; }
+    else sidecarTurns.delete(jobId);   // claimed by the client after committing
+    res.json({ success: true, status: job.status });
 });
 
 // Reusable, non-streaming chat-completion against a loaded model. Extracted
@@ -25322,14 +25908,20 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
 
     const post = (body) => axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, body, { timeout: 300000 });
     let response;
+    const busyName = targetInstance.modelName || targetModel;
+    modelBusyInc(busyName);
     try {
-        response = await post(requestBody);
-    } catch (err) {
-        // A backend that rejects the thinking-disable hint must not break the call.
-        if (disableThinking && err && err.response && err.response.status >= 400 && err.response.status < 500) {
-            const { chat_template_kwargs, ...rest } = requestBody;
-            response = await post(rest);
-        } else throw err;
+        try {
+            response = await post(requestBody);
+        } catch (err) {
+            // A backend that rejects the thinking-disable hint must not break the call.
+            if (disableThinking && err && err.response && err.response.status >= 400 && err.response.status < 500) {
+                const { chat_template_kwargs, ...rest } = requestBody;
+                response = await post(rest);
+            } else throw err;
+        }
+    } finally {
+        modelBusyDec(busyName);
     }
     const choice = response.data && response.data.choices && response.data.choices[0];
     const msg = choice && choice.message;
@@ -31427,6 +32019,190 @@ app.use((req, res) => {
             } catch (e) {
                 return { error: `build_automation failed: ${e.message || String(e)}` };
             }
+        },
+    });
+
+    // ── delegate ──────────────────────────────────────────────────────────────
+    // Parallel worker agents. Each task runs a full chat turn (tools, router,
+    // guards) through chatStreamHandler in-process on the same model, all at
+    // once — with `--parallel` slots > 1 on llama.cpp (or sglang) the workers
+    // truly generate concurrently. Core-advertised + prelude-taught so the model
+    // reaches for it on its own when a request has separable parts. A worker
+    // never gets the tool itself (DELEGATE_MAX_DEPTH).
+    tools.registerTool({
+        name: 'delegate',
+        build(ctx) {
+            if (ctx && (ctx.delegateDepth || 0) >= DELEGATE_MAX_DEPTH) return null;
+            if (!checkPermission(ctx && ctx.apiKeyData, 'query')) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'delegate',
+                    description:
+                        `Run 2–${DELEGATE_MAX_PARALLEL} INDEPENDENT sub-tasks IN PARALLEL with worker agents that each have their own tools (web, files, sandbox) — use for research on several topics/sites/files, comparisons, or any request with separable parts. ` +
+                        'Each worker gets one self-contained task and returns a report; you then synthesize. Workers share this conversation\'s /workspace, so they can read files here and write new ones. ' +
+                        'Do not use for a single task or for steps that depend on each other. Write each task as a complete brief: what to find or do, where to look (URLs/paths if known), and exactly what to return.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            tasks: {
+                                type: 'array',
+                                description: `The sub-tasks to run at the same time (2–${DELEGATE_MAX_PARALLEL}). Each is a full brief for one worker.`,
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        name: { type: 'string', description: 'Short label for this worker (e.g. "pricing research", "site A audit").' },
+                                        task: { type: 'string', description: 'The complete instructions for this worker: goal, where to look, what to return.' },
+                                    },
+                                    required: ['task'],
+                                },
+                            },
+                            context: { type: 'string', description: 'Optional background every worker should know (the user\'s overall goal, constraints, files already in /workspace).' },
+                        },
+                        required: ['tasks'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            if (!ctx || !ctx._req) return { error: 'delegate is only available inside a chat turn.' };
+            if ((ctx.delegateDepth || 0) >= DELEGATE_MAX_DEPTH) return { error: 'Worker agents cannot delegate further — do this task yourself with your tools.' };
+            let tasks = Array.isArray(args && args.tasks) ? args.tasks : [];
+            if (typeof (args && args.tasks) === 'string') {
+                try { const parsed = JSON.parse(args.tasks); tasks = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? parsed : [{ task: args.tasks }]); } catch (_) { tasks = [{ task: args.tasks }]; }
+            }
+            // {"nodejs": "find …", "python": "find …"} — a map of label → brief.
+            if (tasks && !Array.isArray(tasks) && typeof tasks === 'object') {
+                tasks = Object.entries(tasks).map(([name, t]) => (t && typeof t === 'object') ? { name, ...t } : { name, task: t });
+            }
+            // Models also send the briefs under other keys (subtasks / agents / workers).
+            if (!tasks.length && args && typeof args === 'object') {
+                for (const k of ['subtasks', 'sub_tasks', 'agents', 'workers', 'jobs']) {
+                    if (Array.isArray(args[k]) && args[k].length) { tasks = args[k]; break; }
+                }
+            }
+            tasks = tasks
+                .map((t, i) => {
+                    if (typeof t === 'string') return { name: `worker ${i + 1}`, task: t.trim() };
+                    if (!t || typeof t !== 'object') return null;
+                    const text = String(t.task || t.instructions || t.prompt || t.description || '').trim();
+                    return text ? { name: String(t.name || t.label || `worker ${i + 1}`).trim().slice(0, 60) || `worker ${i + 1}`, task: text } : null;
+                })
+                .filter(Boolean);
+            if (!tasks.length) {
+                console.warn(`[delegate] refused: no tasks parsed from args keys=${Object.keys(args || {}).join(',')} preview=${JSON.stringify(args || {}).slice(0, 300)}`);
+                return { error: 'tasks must be a non-empty array of {name, task} objects, e.g. {"tasks":[{"name":"topic A","task":"…full brief…"},{"name":"topic B","task":"…"}]}.' };
+            }
+            if (tasks.length > DELEGATE_MAX_PARALLEL) {
+                console.warn(`[delegate] refused: ${tasks.length} tasks > DELEGATE_MAX_PARALLEL=${DELEGATE_MAX_PARALLEL}`);
+                return { error: `At most ${DELEGATE_MAX_PARALLEL} workers can run at once — merge related sub-tasks or call delegate again for the rest.`, received: tasks.length };
+            }
+            if (ctx.abortSignal && ctx.abortSignal.aborted) return { error: 'Turn was cancelled.' };
+            // Disambiguate duplicate labels so the report and the sibling list read cleanly.
+            const seen = new Map();
+            for (const t of tasks) { const n = (seen.get(t.name) || 0) + 1; seen.set(t.name, n); if (n > 1) t.name = `${t.name} ${n}`; }
+            const labels = tasks.map(t => t.name);
+            const context = String((args && args.context) || '').trim();
+            const callId = ctx._toolCallId || null;
+            const started = Date.now();
+            const state = new Map(labels.map(l => [l, { phase: 'starting', calls: 0, current: '' }]));
+            const emit = () => {
+                if (typeof ctx.emitEvent !== 'function') return;
+                const agents = labels.map(l => ({ name: l, ...state.get(l) }));
+                const running = agents.filter(a => a.phase === 'running' || a.phase === 'starting');
+                const summary = running.length
+                    ? `${running.length}/${agents.length} agents working · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
+                    : `${agents.length} agents finished`;
+                ctx.emitEvent({ type: 'delegate_progress', tool_call_id: callId, agents, summary: summary.slice(0, 400), elapsedMs: Date.now() - started });
+            };
+            const workerModel = ctx.workerModel || ctx.model;
+            const checker = (ctx.checkWorkers && ctx.checkerModel) ? ctx.checkerModel : null;
+            logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} parallel worker agent(s) on ${workerModel}${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
+            emit();
+            // Checker pass on one worker report. Returns the parsed review
+            // (verdict 'unknown' on any failure — never blocks the worker).
+            const reviewReport = async (t, r) => {
+                try {
+                    const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name });
+                    const out = await Promise.race([
+                        requestModelCompletion({ messages: msgs, model: checker, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
+                    ]);
+                    return modelRolesSvc.parseReview(out && out.content);
+                } catch (e) {
+                    return { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
+                }
+            };
+            const results = await Promise.all(tasks.map(async (t) => {
+                const st = state.get(t.name);
+                st.phase = 'running';
+                const taskText = context ? `Background from the parent agent:\n${context}\n\nYOUR TASK:\n${t.task}` : t.task;
+                try {
+                    const runOnce = (text) => runDelegatedTurn({
+                        parentReq: ctx._req,
+                        task: text,
+                        label: t.name,
+                        siblings: labels,
+                        model: workerModel,
+                        reasoningEffort: ctx.reasoningEffort,
+                        modelRoles: ctx.modelRoles,
+                        workspaceBucket: ctx.workspaceBucket,
+                        depth: ctx.delegateDepth || 0,
+                        signal: ctx.abortSignal,
+                        onEvent: (ev) => {
+                            if (ev.kind === 'tool_start') { st.calls += 1; st.current = ev.purpose || ev.name; }
+                            else if (ev.kind === 'tool_end') { st.current = `${ev.name} done`; }
+                            emit();
+                        },
+                    });
+                    let r = await runOnce(taskText);
+                    // Secondary-model review of the report, with bounded revision
+                    // rounds on the primary when it flags real problems.
+                    if (checker && r.status === 'ok' && r.answer) {
+                        let rounds = 0;
+                        let review;
+                        for (;;) {
+                            st.phase = 'checking'; st.current = `report being checked by ${checker}`; emit();
+                            review = await reviewReport(t, r);
+                            if (review.verdict !== 'issues' || rounds >= DELEGATE_FIX_ROUNDS || (ctx.abortSignal && ctx.abortSignal.aborted)) break;
+                            rounds += 1;
+                            logUserActivity(ctx.userId, `Delegate: checker flagged ${review.issues.length} issue(s) in "${t.name}" — revision round ${rounds}`);
+                            st.phase = 'running'; st.current = `revising (${review.issues.length} issue(s) flagged)`; emit();
+                            const prev = r;
+                            const fixed = await runOnce(modelRolesSvc.buildFixRoundTask({ task: taskText, report: r.answer, review }));
+                            if (fixed.status === 'ok' && fixed.answer) {
+                                r = { ...fixed, toolCalls: (prev.toolCalls || 0) + (fixed.toolCalls || 0), tools: [...prev.tools, ...fixed.tools].slice(0, 40), filesWritten: [...new Set([...prev.filesWritten, ...fixed.filesWritten])], seconds: Math.round((prev.seconds + fixed.seconds) * 10) / 10, revised: rounds };
+                            } else break;
+                        }
+                        r.review = { checker, verdict: review.verdict, summary: review.summary, issues: review.issues, confidence: review.confidence, revisions: rounds };
+                    }
+                    st.phase = r.status === 'ok' ? 'done' : r.status;
+                    st.current = r.status === 'ok' ? `done in ${r.seconds}s${r.review ? ` · check: ${r.review.verdict}` : ''}` : (r.error || r.status);
+                    emit();
+                    return r;
+                } catch (e) {
+                    st.phase = 'failed'; st.current = e.message; emit();
+                    return { name: t.name, status: 'failed', error: e.message || String(e), answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: Math.round((Date.now() - started) / 100) / 10 };
+                }
+            }));
+            const okCount = results.filter(r => r.status === 'ok').length;
+            const totalCalls = results.reduce((a, r) => a + (r.toolCalls || 0), 0);
+            const wall = Math.round((Date.now() - started) / 100) / 10;
+            logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s${r.review ? ` ✓${r.review.verdict}` : ''}`).join(', ')})`);
+            const flagged = results.filter(r => r.review && r.review.verdict === 'issues');
+            return {
+                success: okCount > 0,
+                workers: results.length,
+                completed: okCount,
+                wallSeconds: wall,
+                workerModel,
+                ...(checker ? { checkedBy: checker, reportsWithOpenIssues: flagged.map(r => r.name) } : {}),
+                results,
+                note: (okCount === results.length
+                    ? 'All workers finished. Synthesize their reports into ONE answer for the user, citing the sources/paths they list. To deliver a file a worker wrote, call make_downloadable on its /workspace path.'
+                    : 'Some workers did not finish (see status/error). Use what came back; redo a failed sub-task yourself only if it is essential.')
+                    + (flagged.length ? ` The checker model still has OPEN issues on: ${flagged.map(r => `"${r.name}"`).join(', ')} (see results[].review) — treat those points as unverified and say so, or verify them yourself.` : ''),
+            };
         },
     });
 

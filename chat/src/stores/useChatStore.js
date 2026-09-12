@@ -178,6 +178,14 @@ export const useChatStore = create(
             // Synced to the server (see serverPreferencesSync) so the backend
             // can honor it; managed in the webapp Memory tab.
             memoryDisabled: false,
+            // Two-model roles: the PRIMARY does the work (worker agents from the
+            // delegate tool run on it), the CHECKER reviews it. '' = unset
+            // (primary falls back to the composer's model; no checker = no
+            // review). Synced to the server so API callers get the same roles.
+            rolePrimaryModel: '',
+            roleCheckerModel: '',
+            roleCheckWorkers: true,
+            roleCheckFinal: false,
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
         },
 
@@ -494,6 +502,13 @@ export const useChatStore = create(
                     sandboxWorkspace: tc.workspace,
                 },
             ],
+        })),
+
+        // Patch an in-flight tool call (live progress from a long-running tool,
+        // e.g. delegate's worker-agent status lines) without finishing it.
+        patchStreamingToolCall: (toolCallId, patch) => set(state => ({
+            streamingToolCalls: state.streamingToolCalls.map(existing =>
+                existing.tool_call_id === toolCallId ? { ...existing, ...patch } : existing),
         })),
 
         // Update an in-flight tool call with its result.

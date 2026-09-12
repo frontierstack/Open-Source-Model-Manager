@@ -313,6 +313,20 @@ function buildNativeChipEntries(streamingToolCalls) {
 }
 
 // Turn a snake_case tool id into a friendly verb phrase for the status row.
+// Two-model roles as the server expects them (services/modelRoles.js).
+function modelRolesFromSettings(settings) {
+    if (!settings) return undefined;
+    const primary = settings.rolePrimaryModel || '';
+    const checker = settings.roleCheckerModel || '';
+    if (!primary && !checker) return undefined;
+    return {
+        primary,
+        checker,
+        checkWorkers: settings.roleCheckWorkers !== false,
+        checkFinal: settings.roleCheckFinal === true,
+    };
+}
+
 function humanizeToolName(name) {
     if (!name) return 'tool';
     return String(name).replace(/_/g, ' ');
@@ -513,6 +527,7 @@ export default function ChatContainer({
         appendStreamingContent,
         appendStreamingReasoning,
         startStreamingToolCall,
+        patchStreamingToolCall,
         finishStreamingToolCall,
         setStreamingToolCalls,
         upsertStreamingToolDraft,
@@ -548,6 +563,7 @@ export default function ChatContainer({
         appendStreamingContent: state.appendStreamingContent,
         appendStreamingReasoning: state.appendStreamingReasoning,
         startStreamingToolCall: state.startStreamingToolCall,
+        patchStreamingToolCall: state.patchStreamingToolCall,
         finishStreamingToolCall: state.finishStreamingToolCall,
         setStreamingToolCalls: state.setStreamingToolCalls,
         upsertStreamingToolDraft: state.upsertStreamingToolDraft,
@@ -1408,7 +1424,12 @@ export default function ChatContainer({
         };
     };
 
-    const handleSendMessage = async (content, attachedFiles) => {
+    // opts.parallel: build the exact same payload but hand it to the server as a
+    // PARALLEL (sidecar) turn on a free slot instead of streaming it here —
+    // returns { jobId, userMessage } and touches no store/streaming state; the
+    // queue effect commits the reply in order once it lands.
+    const handleSendMessage = async (content, attachedFiles, opts = {}) => {
+        const parallel = !!(opts && opts.parallel);
         if (!settings.model) {
             showSnackbar('Please select a model first', 'warning');
             return;
@@ -1590,20 +1611,22 @@ export default function ChatContainer({
         const currentMessages = isNewConversation ? [] : useChatStore.getState().messages;
         const updatedMessages = [...currentMessages, userMessage];
 
-        // Update store with messages (including user message)
-        setMessages(updatedMessages);
-        clearAttachments();
+        if (!parallel) {
+            // Update store with messages (including user message)
+            setMessages(updatedMessages);
+            clearAttachments();
 
-        // Save user message immediately so it persists on refresh
-        saveMessages(conversationId, updatedMessages);
+            // Save user message immediately so it persists on refresh
+            saveMessages(conversationId, updatedMessages);
 
-        // Start streaming - track which conversation this stream belongs to
-        streamingConversationRef.current = conversationId;
-        abortControllerRef.current = new AbortController();
-        setStreaming(true);
-        setStreamingContent('');
-        setStreamingReasoning('');
-        setIsLoading(true);
+            // Start streaming - track which conversation this stream belongs to
+            streamingConversationRef.current = conversationId;
+            abortControllerRef.current = new AbortController();
+            setStreaming(true);
+            setStreamingContent('');
+            setStreamingReasoning('');
+            setIsLoading(true);
+        }
         // Prepare messages for API (use fullContent for the last message to include attachments)
         // Also include search context from previous messages if they had web search results
         // Only include context from last N messages to prevent context overflow
@@ -1698,6 +1721,9 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
+                // Two-model roles (primary worker / checker) — sent every turn so
+                // the server never depends on the prefs sync having landed.
+                modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
@@ -1722,6 +1748,22 @@ export default function ChatContainer({
                     })),
                 } : {}),
             };
+
+            if (parallel) {
+                try {
+                    const r = await fetch(`/api/conversations/${conversationId}/turns`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ ...requestBody, userMessage }),
+                    });
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok || !data.jobId) return { error: data.error || `HTTP ${r.status}`, queued: !!data.queued };
+                    return { jobId: data.jobId, userMessage, conversationId };
+                } catch (e) {
+                    return { error: e && e.message ? e.message : String(e) };
+                }
+            }
 
             const response = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -1911,6 +1953,19 @@ export default function ChatContainer({
                                     const text = argSummary
                                         ? `Calling ${human} — ${argSummary}`
                                         : `Calling ${human}`;
+                                }
+                                continue;
+                            }
+                            if (parsed.type === 'delegate_progress') {
+                                // Worker-agent status from the delegate tool:
+                                // the running chip's purpose line becomes the
+                                // live "N agents working · a: …" summary and
+                                // the per-agent list rides along for the chip.
+                                if (parsed.tool_call_id) {
+                                    patchStreamingToolCall(parsed.tool_call_id, {
+                                        purpose: parsed.summary || undefined,
+                                        agents: Array.isArray(parsed.agents) ? parsed.agents : undefined,
+                                    });
                                 }
                                 continue;
                             }
@@ -2552,27 +2607,121 @@ export default function ChatContainer({
     // the message instead of dropping it, and the queue auto-dispatches when
     // the current response finishes (complete, error, or stopped). In-memory
     // only — a refresh clears the queue (the input is free again anyway).
-    const handleQueueMessage = (content, attachedFiles) => {
+    // A message typed while a reply streams: queued by default, but when the
+    // selected model has a FREE slot (llama.cpp --parallel > 1, sglang, or a
+    // second loaded model) it starts right away as a parallel sidecar turn on
+    // the server. Its reply is committed in order once the current reply lands.
+    const handleQueueMessage = async (content, attachedFiles) => {
         const convId = streamingConversationRef.current || activeConversationId;
         if (!convId) return;
+        const qid = crypto.randomUUID();
         setQueuedMessages(prev => [...prev, {
-            id: crypto.randomUUID(),
+            id: qid,
             conversationId: convId,
             content,
             attachments: attachedFiles,
+            status: 'queued',
         }]);
         clearAttachments();
+        const patchQ = (patch) => setQueuedMessages(prev => prev.map(q => (q.id === qid ? { ...q, ...patch } : q)));
+        try {
+            const capRes = await fetch('/api/chat/capacity', { credentials: 'include' });
+            const cap = capRes.ok ? await capRes.json() : null;
+            const m = cap && Array.isArray(cap.models) ? cap.models.find(x => x.name === settings.model) : null;
+            if (!m || m.free <= 0) return;   // no free slot → stays queued
+            patchQ({ status: 'starting' });
+            const r = await handleSendMessage(content, attachedFiles, { parallel: true });
+            if (r && r.jobId) {
+                patchQ({ status: 'working', jobId: r.jobId, userMessage: r.userMessage, startedAt: Date.now(), progress: 'thinking…' });
+            } else {
+                patchQ({ status: 'queued' });
+            }
+        } catch {
+            patchQ({ status: 'queued' });
+        }
     };
-    const removeQueuedMessage = (id) => setQueuedMessages(prev => prev.filter(q => q.id !== id));
+    const removeQueuedMessage = (id) => {
+        const q = queuedMessages.find(x => x.id === id);
+        if (q && q.jobId) {
+            fetch(`/api/conversations/${q.conversationId}/turns/${q.jobId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+        }
+        setQueuedMessages(prev => prev.filter(x => x.id !== id));
+    };
+
+    // Poll the server for parallel (sidecar) turns in flight — status, the
+    // tool they are on, and the finished reply.
+    const workingJobsKey = queuedMessages.filter(q => q.jobId && q.status === 'working').map(q => `${q.conversationId}:${q.jobId}`).join('|');
+    useEffect(() => {
+        if (!workingJobsKey) return undefined;
+        let stopped = false;
+        const convIds = [...new Set(workingJobsKey.split('|').map(k => k.split(':')[0]))];
+        const tick = async () => {
+            for (const convId of convIds) {
+                try {
+                    const r = await fetch(`/api/conversations/${convId}/turns`, { credentials: 'include' });
+                    if (!r.ok || stopped) continue;
+                    const data = await r.json();
+                    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+                    setQueuedMessages(prev => prev.map(q => {
+                        if (q.conversationId !== convId || !q.jobId || q.status !== 'working') return q;
+                        const j = jobs.find(x => x.jobId === q.jobId);
+                        if (!j) return { ...q, status: 'failed', error: 'parallel reply was lost' };
+                        if (j.status === 'running') {
+                            const rt = Array.isArray(j.runningToolCalls) && j.runningToolCalls[0];
+                            const progress = rt ? (rt.purpose || String(rt.name || '').replace(/_/g, ' ')) : (j.contentChars > 0 ? 'writing…' : 'thinking…');
+                            return { ...q, progress, toolCalls: j.toolCalls };
+                        }
+                        if (j.status === 'done') {
+                            return { ...q, status: 'done', progress: undefined, result: { content: j.content, reasoning: j.reasoning, toolChips: j.toolChips, responseTime: j.responseTime } };
+                        }
+                        return { ...q, status: 'failed', error: j.error || j.status };
+                    }));
+                } catch { /* transient — next tick */ }
+            }
+        };
+        tick();
+        const t = setInterval(tick, 1500);
+        return () => { stopped = true; clearInterval(t); };
+    }, [workingJobsKey]);
 
     useEffect(() => {
         if (isStreaming || isLoading) return;
         if (queueDispatchRef.current) return;
         const next = queuedMessages.find(q => q.conversationId === activeConversationId);
         if (!next) return;
+        // Still running on a free slot — the poll flips it to done/failed.
+        if (next.status === 'working' || next.status === 'starting') return;
         queueDispatchRef.current = true;
         (async () => {
             try {
+                if (next.jobId && next.status === 'done' && next.result && next.userMessage) {
+                    // Commit the parallel reply IN ORDER after the current
+                    // reply: user message + assistant message, then save.
+                    const msgs = useChatStore.getState().messages;
+                    const assistantMessage = {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: next.result.content || '',
+                        reasoning: next.result.reasoning || undefined,
+                        timestamp: new Date().toISOString(),
+                        responseTime: next.result.responseTime,
+                        toolCalls: Array.isArray(next.result.toolChips) && next.result.toolChips.length ? next.result.toolChips : undefined,
+                        parallel: true,
+                    };
+                    const finalMessages = [...msgs, next.userMessage, assistantMessage];
+                    setMessages(finalMessages);
+                    saveMessages(next.conversationId, finalMessages);
+                    setQueuedMessages(prev => prev.filter(q => q.id !== next.id));
+                    fetch(`/api/conversations/${next.conversationId}/turns/${next.jobId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+                    return;
+                }
+                if (next.jobId && next.status === 'failed') {
+                    showSnackbar(`Parallel reply failed (${next.error || 'unknown error'}) — sending it normally`, 'warning');
+                    setQueuedMessages(prev => prev.filter(q => q.id !== next.id));
+                    fetch(`/api/conversations/${next.conversationId}/turns/${next.jobId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+                    await handleSendMessage(next.content, next.attachments);
+                    return;
+                }
                 // The global isStreaming flag can lag a background stream when
                 // switching back to this conversation (checkActiveStreaming is
                 // async) — the server job registry is authoritative. Still
@@ -2686,6 +2835,9 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 // Reasoning effort: 'off'|'low'|'medium'|'high'; omitted for 'default'
                 reasoningEffort: (settings.reasoningEffort && settings.reasoningEffort !== 'default') ? settings.reasoningEffort : undefined,
+                // Two-model roles (primary worker / checker) — sent every turn so
+                // the server never depends on the prefs sync having landed.
+                modelRoles: modelRolesFromSettings(settings),
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
             };
@@ -2779,6 +2931,15 @@ export default function ChatContainer({
                                     if (currentActiveId === conversationId) {
                                         setStreamingContent(joinContinuation(originalContent, assistantContent));
                                         setStreamingReasoning(originalReasoning || '');
+                                    }
+                                    continue;
+                                }
+                                if (parsed.type === 'delegate_progress') {
+                                    if (parsed.tool_call_id) {
+                                        patchStreamingToolCall(parsed.tool_call_id, {
+                                            purpose: parsed.summary || undefined,
+                                            agents: Array.isArray(parsed.agents) ? parsed.agents : undefined,
+                                        });
                                     }
                                     continue;
                                 }
@@ -3152,6 +3313,7 @@ export default function ChatContainer({
                 theme={theme}
                 onThemeChange={setTheme}
                 contextSize={selectedModelContextSize}
+                runningModels={combinedModels.filter(m => m.status === 'running').map(m => m.name)}
                 activeConversationId={activeConversationId}
                 activeConversationTitle={conversations.find(c => c.id === activeConversationId)?.title || ''}
             />

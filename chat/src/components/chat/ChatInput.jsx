@@ -640,17 +640,24 @@ export default function ChatInput({
                                     fontSize: 12.5, color: 'var(--ink-2)',
                                 }}
                             >
-                                <Clock className="w-3.5 h-3.5" style={{ flexShrink: 0, color: 'var(--ink-4)' }} />
+                                <Clock className={`w-3.5 h-3.5${q.status === 'working' || q.status === 'starting' ? ' animate-pulse' : ''}`} style={{ flexShrink: 0, color: q.status === 'working' || q.status === 'done' ? 'var(--accent)' : 'var(--ink-4)' }} />
                                 <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                     {q.content || '(attachments only)'}
+                                    {q.status === 'working' && q.progress ? (
+                                        <span style={{ color: 'var(--ink-4)' }}>{` · ${q.progress}`}</span>
+                                    ) : null}
                                     {q.attachments?.length ? (
                                         <span style={{ color: 'var(--ink-4)' }}>
                                             {` · ${q.attachments.length} file${q.attachments.length !== 1 ? 's' : ''}`}
                                         </span>
                                     ) : null}
                                 </span>
-                                <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 500, color: 'var(--ink-4)' }}>
-                                    queued
+                                <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 500, color: q.status === 'working' || q.status === 'done' ? 'var(--accent)' : 'var(--ink-4)' }}>
+                                    {q.status === 'working' ? 'working in parallel'
+                                        : q.status === 'starting' ? 'starting'
+                                        : q.status === 'done' ? 'ready · waiting for the current reply'
+                                        : q.status === 'failed' ? 'failed'
+                                        : 'queued'}
                                 </span>
                                 {onRemoveQueued && (
                                     <button
@@ -825,7 +832,7 @@ export default function ChatInput({
                         onChange={(e) => setMessage(e.target.value)}
                         onKeyDown={handleKeyDown}
                         onPaste={handlePaste}
-                        placeholder={isDragOver ? 'Drop files…' : (isStreaming && onQueueMessage) ? 'Type a follow-up — Enter queues it for when the response finishes…' : 'Ask anything, attach a file, or paste a paper…'}
+                        placeholder={isDragOver ? 'Drop files…' : (isStreaming && onQueueMessage) ? 'Type a follow-up — Enter starts it now if a slot is free, otherwise queues it…' : 'Ask anything, attach a file, or paste a paper…'}
                         disabled={disabled}
                         rows={1}
                         className="chat-composer-textarea"

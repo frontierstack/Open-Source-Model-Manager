@@ -54,6 +54,7 @@ const VERBS = {
     run_bash:          ['Running bash',            'Ran bash'],
     run_npm:           ['Running npm',             'Ran npm'],
     make_downloadable: ['Preparing download',      'Prepared download'],
+    delegate:          ['Running worker agents',   'Ran worker agents'],
 };
 
 function humanize(name) {

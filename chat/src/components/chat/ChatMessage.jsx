@@ -75,6 +75,7 @@ const TOOL_VERBS = {
     run_python: 'Running script',
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
+    delegate: 'Running worker agents',
 };
 function verbFor(t) {
     const name = (t && (t.label || t.name)) || '';

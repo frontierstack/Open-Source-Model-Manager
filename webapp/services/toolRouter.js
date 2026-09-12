@@ -71,6 +71,10 @@ const CORE = [
     // Measured cost: ~130 tok, 2.7% of the 4500-tok max catalog budget.
     'run_python',
     'run_node',
+    // Parallel worker agents. Load-bearing the same way the interpreters are:
+    // the model must be able to fan a multi-part request out on its own, and
+    // "research X and Y" embeds nowhere near a tool called delegate.
+    'delegate',
 ];
 // Diffusion runs on a tiny budget — a leaner core (drop record_learning/make_downloadable).
 const CORE_DIFFUSION = ['web', 'base64_decode', 'run_python', 'read_file', 'load_skill'];
@@ -84,6 +88,9 @@ const INTENT_RULES = [
     // Kept ahead of the web rule: "every morning fetch the latest news" matches
     // both, and the automation is the thing the user actually asked for.
     [/\b(automat\w*|schedule[ds]?|scheduling|recurring|cron|workflow|every (morning|day|night|hour|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+\s*(min|hour|day))|each (morning|day|week)|daily|hourly|weekly|notify me when|alert me when|let me know when|monitor (this|the|a) (page|site|url)|keep an eye on)\b/i, ['build_automation']],
+    // Multi-part / parallel work -> worker agents (delegate is core, but naming
+    // it here pins it through the per-conversation selection cache too).
+    [/\b(in parallel|simultaneously|concurrently|at the same time|side by side|(two|three|four|multiple|several|parallel|separate|different|\d+) (agents?|workers?|researchers?|assistants?|sub-?agents?|sub-?tasks?)|\bdelegate\b|\b(compare|comparison|contrast|versus|vs\.?)\b|\b(each|all|every one) of (these|those|the following|them)\b|\bboth\b[^.\n]{0,40}\b(sites?|urls?|pages?|files?|repos?|companies|products?|options?|topics?|papers?|articles?)\b)/i, ['delegate']],
     [/\b(search|google|look ?up|latest|current|news|headline|today'?s|recent)\b|https?:\/\/|www\./i, ['web']],
     [/\bdns\b|\b(a|mx|txt|ns|cname)\s+record|nslookup|resolve .*(domain|host)/i, ['dns_lookup']],
     [/\bvirus\s*total\b|malware|reputation|\b[a-f0-9]{32,64}\b/i, ['virustotal_lookup']],

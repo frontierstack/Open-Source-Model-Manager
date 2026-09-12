@@ -39,6 +39,7 @@ export default function ChatSettings({
     theme,
     onThemeChange,
     contextSize = 4096,
+    runningModels = [],
     activeConversationId = null,
     activeConversationTitle = '',
 }) {
@@ -586,6 +587,82 @@ export default function ChatSettings({
                                         aria-checked={!settings?.memoryDisabled}
                                         onClick={() => onUpdateSettings({ memoryDisabled: !settings?.memoryDisabled })}
                                         className={`set-toggle ${!settings?.memoryDisabled ? 'is-on' : ''}`}
+                                    >
+                                        <span className="set-toggle-knob" />
+                                    </button>
+                                </label>
+                            </div>
+
+                            {/* Two-model roles: primary does the work, checker reviews it. */}
+                            <div className="set-divider" style={{ paddingTop: 16 }}>
+                                <div className="set-row-title">Model roles</div>
+                                <div className="set-row-help" style={{ marginBottom: 10 }}>
+                                    With two models loaded, a fast <strong>primary</strong> does the work — the composer's model runs the chat and parallel worker agents (the <code>delegate</code> tool) run on the primary — and a stronger <strong>checker</strong> reviews what it produced. Leave the primary unset to use the composer's model for workers.
+                                </div>
+                                {(() => {
+                                    const opts = [...new Set([...(runningModels || []), settings?.rolePrimaryModel, settings?.roleCheckerModel].filter(Boolean))];
+                                    const stale = (v) => v && !(runningModels || []).includes(v);
+                                    const renderSelect = (key, placeholder) => (
+                                        <div className="relative">
+                                            <select
+                                                value={settings?.[key] || ''}
+                                                onChange={(e) => onUpdateSettings({ [key]: e.target.value })}
+                                                className="set-select"
+                                            >
+                                                <option value="">{placeholder}</option>
+                                                {opts.map((name) => (
+                                                    <option key={name} value={name}>{name}{stale(name) ? ' (not running)' : ''}</option>
+                                                ))}
+                                            </select>
+                                            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--ink-4)' }} />
+                                        </div>
+                                    );
+                                    return (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="set-label">Primary (does the work)</label>
+                                                {renderSelect('rolePrimaryModel', 'Composer\'s model')}
+                                            </div>
+                                            <div>
+                                                <label className="set-label">Checker (reviews it)</label>
+                                                {renderSelect('roleCheckerModel', 'None — no checking')}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                {settings?.roleCheckerModel && settings.roleCheckerModel === (settings.rolePrimaryModel || '') && (
+                                    <div className="set-row-help" style={{ marginTop: 6, color: 'var(--warning, #d29922)' }}>
+                                        The checker is the same model as the primary — it will still review, but a different, stronger model catches more.
+                                    </div>
+                                )}
+                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="set-row-title">Check worker reports</div>
+                                        <div className="set-row-help">Each parallel worker's report is reviewed by the checker; flagged problems get one revision round on the primary before the report is used.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={settings?.roleCheckWorkers !== false}
+                                        disabled={!settings?.roleCheckerModel}
+                                        onClick={() => onUpdateSettings({ roleCheckWorkers: settings?.roleCheckWorkers === false })}
+                                        className={`set-toggle ${settings?.roleCheckWorkers !== false ? 'is-on' : ''}`}
+                                    >
+                                        <span className="set-toggle-knob" />
+                                    </button>
+                                </label>
+                                <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="set-row-title">Check final answers</div>
+                                        <div className="set-row-help">After each substantial reply (tools were used, or it is longer than a few lines) the checker reviews it and a verdict is appended to the message. Adds the checker's generation time to every such turn.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={settings?.roleCheckFinal === true}
+                                        disabled={!settings?.roleCheckerModel}
+                                        onClick={() => onUpdateSettings({ roleCheckFinal: settings?.roleCheckFinal !== true })}
+                                        className={`set-toggle ${settings?.roleCheckFinal === true ? 'is-on' : ''}`}
                                     >
                                         <span className="set-toggle-knob" />
                                     </button>

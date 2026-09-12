@@ -17,7 +17,8 @@ import { useChatStore } from './stores/useChatStore';
 // fresh reference on every mutation, so the identity comparison in
 // watchAndSync still detects changes correctly.
 const SYNCED_TOP_LEVEL = ['theme', 'folders', 'conversationFolderMap'];
-const SYNCED_SETTINGS = ['fontFamily', 'fontSize', 'layout', 'memoryDisabled']; // nested under settings
+const SYNCED_SETTINGS = ['fontFamily', 'fontSize', 'layout', 'memoryDisabled',
+    'rolePrimaryModel', 'roleCheckerModel', 'roleCheckWorkers', 'roleCheckFinal']; // nested under settings
 const REMOTE_FIELDS = new Set([...SYNCED_TOP_LEVEL, ...SYNCED_SETTINGS]);
 
 let pushTimer = null;
