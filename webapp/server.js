@@ -19570,13 +19570,24 @@ const chatStreamHandlerInner = async (req, res) => {
         // the Pi/API format so the Logs tab reads consistently across all
         // chat surfaces.
         const chatWho = req.delegate ? `agent "${req.delegate.label}"` : req.sidecar ? `${req.user?.username || req.apiKeyData?.name || 'user'} (parallel)` : (req.user?.username || req.apiKeyData?.name || 'user');
+        // With two models, worker agents, background jobs and parallel turns all
+        // logging into ONE stream, a bare `[Chat]` prefix made the Process Logs
+        // tab unreadable — you could not tell which agent produced a line. Every
+        // line now carries the model it came from and, when it is not the main
+        // turn, which agent it is:
+        //     [Chat · Qwen3.8-27B-GGUF]                    the turn itself
+        //     [Chat · Qwen3.5-9B-GGUF · first pass]        the helper's first pass
+        //     [Chat · Qwen3.5-9B-GGUF · canvas docs]       a background job
+        //     [Chat · Qwen3.5-9B-GGUF · parallel]          a sidecar turn
+        const logAgentTag = req.delegate ? ` · ${req.delegate.label}` : req.sidecar ? ' · parallel' : '';
+        const logPrefix = `[Chat · ${targetModel}${logAgentTag}]`;
         const logChatActivity = (message, level = 'info') => {
             try {
-                broadcast({ type: 'log', message: `[Chat] ${message}`, level, targetUserId: req.userId });
+                broadcast({ type: 'log', message: `${logPrefix} ${message}`, level, targetUserId: req.userId });
             } catch (e) { /* broadcast is best-effort */ }
         };
         const msgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
-        logChatActivity(`${chatWho} → ${targetModel} (${msgCount} msgs)`);
+        logChatActivity(`${chatWho} → ${msgCount} msg${msgCount === 1 ? '' : 's'}${handoff.engaged ? ` · ${handoff.primary} assisting` : ''}`);
 
         // Materialize this turn's attachments to /workspace/uploads/ before
         // the model runs, so a tool call in the very first iteration can see
@@ -19900,6 +19911,15 @@ const chatStreamHandlerInner = async (req, res) => {
             // prompt-cache reason the worker framing does.
             if (handoff.engaged && handoff.legwork) {
                 prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
+            }
+            // With thinking ON the model does its "I found X, now checking Y"
+            // narration inside the reasoning trace — which the chat collapses
+            // behind a dropdown — and emits the tool_call with NO visible text,
+            // so the bubble sits empty between calls. The base prelude only
+            // says it MAY narrate; when the reasoning is hidden that is not
+            // enough, so require the visible one-liner explicitly.
+            if (!hideReasoning) {
+                prelude += `\nYOUR REASONING IS COLLAPSED behind a dropdown the user has to click, so anything you work out there is invisible to them. Before EVERY tool call, and again whenever a result changes your plan, write ONE short plain sentence in your VISIBLE reply — what you just learned and what you are doing next ("The manifest lists three workers; reading the second one now."). One line, no lists, no restating tool JSON, and never a substitute for the tool_call itself. That line is the only running commentary the user gets while you work.`;
             }
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
