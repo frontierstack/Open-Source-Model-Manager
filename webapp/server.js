@@ -23545,10 +23545,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     purpose: call.purpose || undefined,
                                     sandboxed: policy.sandboxed,
                                     source: policy.source,
-                                    // Which model made this call. Only sent when two
-                                    // models are in play, so a single-model chat is
-                                    // unchanged and the UI can stay quiet.
-                                    ...(handoff.engaged ? { model: targetModel } : {}),
+                                    // Which model made this call. Sent whenever two
+                                    // models are configured — including turns the
+                                    // primary handled alone, since "who ran this"
+                                    // is exactly what is unclear then. A
+                                    // single-model chat sends nothing and the UI
+                                    // stays quiet.
+                                    ...(pairedTurn ? { model: targetModel } : {}),
                                     ...(policy.source === 'skill' ? { network: policy.network, workspace: policy.workspace } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
@@ -24714,7 +24717,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 label: call.function.name || 'tool',
                                 purpose: call.purpose || undefined,
                                 // Attribution for a two-model turn; absent otherwise.
-                                ...(handoff.engaged ? { model: targetModel, toolCallId: call.id } : {}),
+                                ...(pairedTurn ? { model: targetModel, toolCallId: call.id } : {}),
                                 query: argPreview,
                                 args: parsedArgsForChip,
                                 status: failedChip ? 'failed' : 'success',
@@ -31619,7 +31622,7 @@ app.use((req, res) => {
                     name: 'search_string',
                     description:
                         'Search for a string or regex in text content or a file; return only matching lines with surrounding context. ' +
-                        'Provide exactly one of `text` (raw content) or `file` (path under /tmp, /models, or /app). ' +
+                        'Provide exactly one of `text` (raw content) or `file` (a /workspace path, or one under /tmp, /models, /app). ' +
                         'Use after fetch_url / web_search / playwright_fetch / crawl_pages whenever the user asked for specific data (price, date, name, number, error code, IP, hash, version) — searching the returned body is far cheaper than re-reading it. ' +
                         'mode="regex" for patterns; default mode is literal.',
                     parameters: {
@@ -31627,7 +31630,7 @@ app.use((req, res) => {
                         properties: {
                             query: { type: 'string', description: 'The string or regex pattern to search for.' },
                             text: { type: 'string', description: 'Raw text content to search within. Pass the body returned by a previous fetch_url / web_search call.' },
-                            file: { type: 'string', description: 'Absolute path to a text file to search within. Use only for paths under /tmp or /models.' },
+                            file: { type: 'string', description: 'Path to a file to search within — a /workspace path works, and so does one under /tmp or /models. Binary files are searched byte-wise, so this finds strings inside fonts, executables and archives too.' },
                             mode: { type: 'string', enum: ['literal', 'regex'], description: 'How to interpret query (default literal).' },
                             case_sensitive: { type: 'boolean', description: 'Match case (default false).' },
                             context_lines: { type: 'integer', minimum: 0, maximum: 10, description: 'Lines of surrounding context to include around each match (default 2).' },
@@ -31639,7 +31642,7 @@ app.use((req, res) => {
                 },
             };
         },
-        async execute(args) {
+        async execute(args, ctx) {
             const query = String(args?.query || '');
             if (!query) return { error: 'query is required' };
             const hasText = typeof args?.text === 'string' && args.text.length > 0;
@@ -31655,13 +31658,45 @@ app.use((req, res) => {
             let content;
             let sourceLabel;
             if (hasFile) {
-                const filePath = path.resolve(String(args.file));
-                // Confine file access to the same areas existing tools touch:
-                // /tmp (chat uploads, archive extracts) and /models (mounted
-                // models tree which holds .modelserver/conversations etc.).
-                const allowedRoots = ['/tmp/', '/models/', '/app/'];
-                if (!allowedRoots.some(r => filePath === r.slice(0, -1) || filePath.startsWith(r))) {
-                    return { error: `file path must be under one of: ${allowedRoots.join(', ')}` };
+                const raw = String(args.file);
+                let filePath = null;
+                let displayPath = null;
+                // /workspace is the SANDBOX's view. This tool runs in the webapp
+                // process, where that path does not exist — so a perfectly good
+                // `/workspace/archives/x/y.woff2` used to be rejected outright
+                // ("file path must be under one of: /tmp/, /models/, /app/").
+                // Resolve it to the caller's real bucket on disk, the same way
+                // preview_html does. Bare relative paths are treated as
+                // workspace-relative too, since that is what the model means.
+                const looksWorkspace = /^\/?workspace(\/|$)/i.test(raw) || !raw.startsWith('/');
+                if (looksWorkspace) {
+                    try {
+                        const sandbox = require('./services/sandboxRunner');
+                        const ws = await sandbox.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId ?? null, ctx?.workspaceBucket ?? null);
+                        const rel = raw.replace(/^\/?workspace\/?/i, '').replace(/^\/+/, '');
+                        const norm = path.normalize(rel);
+                        if (!norm || norm === '.' || norm.startsWith('..')) {
+                            return { error: 'file must be a path inside /workspace' };
+                        }
+                        const candidate = path.resolve(ws.localInContainer, norm);
+                        if (candidate !== ws.localInContainer && !candidate.startsWith(ws.localInContainer + path.sep)) {
+                            return { error: 'file must be a path inside /workspace' };
+                        }
+                        filePath = candidate;
+                        displayPath = '/workspace/' + norm.split(path.sep).join('/');
+                    } catch (e) {
+                        return { error: `could not resolve the workspace path: ${e.message}` };
+                    }
+                } else {
+                    filePath = path.resolve(raw);
+                    // Confine file access to the same areas existing tools touch:
+                    // /tmp (chat uploads, archive extracts) and /models (mounted
+                    // models tree which holds .modelserver/conversations etc.).
+                    const allowedRoots = ['/tmp/', '/models/', '/app/'];
+                    if (!allowedRoots.some(r => filePath === r.slice(0, -1) || filePath.startsWith(r))) {
+                        return { error: `file path must be under /workspace, /tmp, /models or /app — got ${filePath}` };
+                    }
+                    displayPath = filePath;
                 }
                 try {
                     const stat = await fs.stat(filePath);
@@ -31669,8 +31704,25 @@ app.use((req, res) => {
                     if (stat.size > 20 * 1024 * 1024) {
                         return { error: `file too large (${stat.size} bytes); cap is 20MB` };
                     }
-                    content = await fs.readFile(filePath, 'utf8');
-                    sourceLabel = filePath;
+                    // Binaries are a legitimate target — hunting a domain or URL
+                    // inside a font/executable is the classic use. utf8 decoding
+                    // mangles those bytes into replacement characters and the
+                    // match is lost, so decode binary content as latin1, which
+                    // maps every byte 1:1 and leaves ASCII runs searchable.
+                    const buf = await fs.readFile(filePath);
+                    const head = buf.subarray(0, Math.min(buf.length, 8192));
+                    // Printable-ratio test, not a NUL count: compressed formats
+                    // (woff2, zip, images) contain very few NULs but are still
+                    // binary, and utf8-decoding them collapses invalid sequences
+                    // into U+FFFD, which can split the very ASCII run being
+                    // searched for. latin1 maps every byte 1:1 and keeps it.
+                    let printable = 0;
+                    for (const b of head) {
+                        if (b === 0x09 || b === 0x0a || b === 0x0d || (b >= 0x20 && b <= 0x7e)) printable++;
+                    }
+                    const binary = head.length > 0 && printable / head.length < 0.9;
+                    content = buf.toString(binary ? 'latin1' : 'utf8');
+                    sourceLabel = displayPath + (binary ? ' (binary, decoded byte-wise)' : '');
                 } catch (e) {
                     return { error: `failed to read file: ${e.message}` };
                 }
