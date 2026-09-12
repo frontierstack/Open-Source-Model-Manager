@@ -5037,7 +5037,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 maxRunningRequests: req.body.maxRunningRequests || 256,
                 chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
                 schedulePolicy: req.body.schedulePolicy || 'lpm',
-                kvCacheDtype: req.body.kvCacheDtype || 'auto',
+                kvCacheDtype: normalizeSglangKvDtype(req.body.kvCacheDtype),
                 trustRemoteCode: req.body.trustRemoteCode ?? true,
                 contextShift: req.body.contextShift ?? true,
                 contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
@@ -5357,14 +5357,19 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
         maxRunningRequests: req.body.maxRunningRequests || 256,
         chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
         schedulePolicy: req.body.schedulePolicy || 'lpm',
-        kvCacheDtype: req.body.kvCacheDtype || 'auto',
+        kvCacheDtype: normalizeSglangKvDtype(req.body.kvCacheDtype),
         trustRemoteCode: req.body.trustRemoteCode ?? true,
         contextSize: req.body.maxModelLen || 4096,
         contextShift: req.body.contextShift ?? true,
         disableThinking: req.body.disableThinking ?? false,
         compressMemory: req.body.compressMemory ?? false,
         toolCallParser: req.body.toolCallParser ?? autoDetectSglangToolParser(repoId),
-        reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(repoId)
+        reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(repoId),
+        // Raw sglang flags for the knobs we do not model as first-class config
+        // (e.g. `--mamba-ssm-dtype bfloat16 --max-mamba-cache-size N`, which is
+        // what makes a long context fit on a hybrid model: the mamba state
+        // cache is sized per REQUEST and competes with the KV pool).
+        extraArgs: typeof req.body.extraArgs === 'string' ? req.body.extraArgs.trim() : ''
     };
     try {
         broadcast({ type: 'log', message: `Creating sglang HF instance for ${repoId} (${format || 'auto'})...` });
@@ -5410,6 +5415,7 @@ async function createSglangInstance(modelName, modelPath, config) {
             `SGLANG_CTX_SHIFT=${config.contextShift}`,
             `SGLANG_TOOL_CALL_PARSER=${config.toolCallParser || 'qwen'}`,
             `SGLANG_REASONING_PARSER=${config.reasoningParser || ''}`,
+            `SGLANG_EXTRA_ARGS=${config.extraArgs || ''}`,
         ];
 
         // Add tokenizer if specified (helps with GGUF models)
@@ -5528,6 +5534,7 @@ async function createSglangHfInstance(repoId, format, config) {
             `SGLANG_SERVED_MODEL_NAME=${repoId}`,
             `SGLANG_TOOL_CALL_PARSER=${config.toolCallParser || ''}`,
             `SGLANG_REASONING_PARSER=${config.reasoningParser || ''}`,
+            `SGLANG_EXTRA_ARGS=${config.extraArgs || ''}`,
         ];
 
         envVars.push(...gpuDevicesEnv(config.gpuDevices));
@@ -7869,7 +7876,19 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         }
 
         // ---- Per-GPU sizing ----------------------------------------------
-        const tp = gpuCount; // even split — assume all cards used
+        // Tensor parallelism SHARDS THE KV HEADS, so TP must divide the model's
+        // `num_key_value_heads` — sglang cannot split 4 KV heads across 3 ranks.
+        // Recommending `gpuCount` blindly proposed TP=3 for a GQA model with 4
+        // KV heads (Qwen3.8-27B), which cannot start. Fall back to the largest
+        // valid divisor at or below the card count.
+        const kvHeads = Number(req.body.numKeyValueHeads) > 0 ? Number(req.body.numKeyValueHeads) : 0;
+        let tp = gpuCount;
+        if (kvHeads > 0) {
+            while (tp > 1 && kvHeads % tp !== 0) tp -= 1;
+            if (tp !== gpuCount) {
+                notes.push(`tensor_parallel_size reduced ${gpuCount} → ${tp}: TP shards the KV heads and this model has ${kvHeads}, which ${gpuCount} does not divide.`);
+            }
+        }
         settings.tensorParallelSize = tp;
 
         const smallestTotalGB = gpuCount ? Math.min(...gpuDetails.map(g => g.totalGB)) : 0;
@@ -7923,16 +7942,16 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             settings.cpuOffloadGb = Math.ceil(overflowGB / tp);
             settings.maxModelLen = 4096;
             settings.maxRunningRequests = 64;
-            settings.kvCacheDtype = 'fp8';
+            settings.kvCacheDtype = 'fp8_e4m3';
             notes.push(`Model (${modelSizeGB.toFixed(1)} GB) exceeds per-card allocation (${perCardAllocatedGB.toFixed(1)} GB × ${tp} = ${effectiveAllocatedGB.toFixed(1)} GB).`);
             notes.push(`sglang has no CPU-offload knob — switch to the llama.cpp backend (which does support \`cpuOffloadGb=${settings.cpuOffloadGb}\` per GPU), or pick a smaller quantization (Q3_K_S / Q2_K) that fits on GPU.`);
         } else {
             // Step 2: pick KV dtype. Use fp8 only when budget is tight
             // (< 4 GB headroom for KV) — fp8 hurts long-context quality
             // slightly so prefer auto/f16 when there's room.
-            const kvDtype = usableForKvGB < 4.0 ? 'fp8' : 'auto';
+            const kvDtype = usableForKvGB < 4.0 ? 'fp8_e4m3' : 'auto';
             settings.kvCacheDtype = kvDtype;
-            const perTok = kvDtype === 'fp8' ? KV_PER_TOKEN_FP8 : KV_PER_TOKEN_F16;
+            const perTok = kvDtype.startsWith('fp8') ? KV_PER_TOKEN_FP8 : KV_PER_TOKEN_F16;
 
             // Step 3: pick max model len. sglang benefits from a power-of-two
             // boundary similar to llama.cpp.
@@ -7955,7 +7974,7 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             notes.push(`mem_fraction_static: ${settings.memFractionStatic} — in sglang 0.5.17+ this sets the RESERVE, so this leaves ~${RESERVE_GB} GB per card for CUDA graphs, activations and (on hybrid models) the mamba state cache`);
             notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · reserved: ${RESERVE_GB} GB/card`);
             notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${kvDtype} · max concurrent seqs: ${settings.maxRunningRequests}`);
-            if (kvDtype === 'fp8') {
+            if (kvDtype.startsWith('fp8')) {
                 notes.push('fp8 KV chosen to fit at this context — slight quality hit on long contexts');
             }
         }
@@ -19518,6 +19537,18 @@ function startModelSpeedSweep() {
 // to cover CUDA graphs, activations, the hybrid/mamba state cache and
 // allocator fragmentation — none of which come out of the KV pool. 3 GB/card
 // reproduces the 0.80 that measured good on this hardware at ~15.5 GB free.
+// sglang's `--kv-cache-dtype` takes a SPECIFIC fp8 flavour; a bare `fp8` is
+// rejected by argparse ("invalid choice: 'fp8' (choose from 'auto',
+// 'fp8_e5m2', 'fp8_e4m3', ...)") and the container exits 2 within seconds —
+// with the reason only in logs the health monitor then deletes. optimal-settings
+// emitted exactly that, so its own recommendation for a memory-tight model
+// could never start.
+const SGLANG_KV_DTYPE_ALIASES = { fp8: 'fp8_e4m3', fp8_e4m3fn: 'fp8_e4m3', float8: 'fp8_e4m3', f16: 'bfloat16', fp16: 'bfloat16' };
+function normalizeSglangKvDtype(v) {
+    const raw = String(v || 'auto').trim();
+    return SGLANG_KV_DTYPE_ALIASES[raw.toLowerCase()] || raw;
+}
+
 const SGLANG_RUNTIME_RESERVE_GB = Number(process.env.SGLANG_RUNTIME_RESERVE_GB || 3);
 // Never let a request reserve nothing: 1.0 is a guaranteed OOM at KV-pool
 // creation, and it only shows up after the full multi-minute weight load.
