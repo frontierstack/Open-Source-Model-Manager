@@ -289,7 +289,7 @@ function mergeAgentRows(agents, agentResults, rawResult) {
     let finals = Array.isArray(agentResults) ? agentResults : [];
     if (!finals.length && rawResult && typeof rawResult === 'object' && Array.isArray(rawResult.results)) {
         finals = rawResult.results.map(x => ({
-            name: x && x.name, status: x && x.status, calls: x && x.toolCalls, seconds: x && x.seconds,
+            name: x && x.name, status: x && x.status, calls: x && x.toolCalls, seconds: x && x.seconds, model: x && x.model,
             tools: Array.isArray(x && x.tools) ? x.tools : [],
             answerChars: x && typeof x.answer === 'string' ? x.answer.length : undefined,
             review: x && x.review ? { verdict: x.review.verdict, edited: !!x.review.edited, issues: Array.isArray(x.review.issues) ? x.review.issues.length : 0 } : undefined,
@@ -302,12 +302,14 @@ function mergeAgentRows(agents, agentResults, rawResult) {
         if (!a || typeof a !== 'object') continue;
         const row = add(a.name);
         row.phase = a.phase; row.calls = a.calls; row.current = a.current; row.chars = a.chars; row.preview = a.preview;
+        if (a.model) row.model = a.model;
         row.tools = Array.isArray(a.tools) ? a.tools : row.tools;
     }
     for (const f of finals) {
         if (!f || typeof f !== 'object') continue;
         const row = add(f.name);
         row.status = f.status; row.seconds = f.seconds; row.review = f.review;
+        if (f.model) row.model = f.model;
         if (typeof f.calls === 'number') row.calls = f.calls;
         if (typeof f.answerChars === 'number') row.chars = f.answerChars;
         // Final tool list is strings ("web — purpose"); keep the structured
@@ -363,6 +365,9 @@ function AgentsPanel({ rows, running }) {
                                 {live && <Loader2 className="animate-spin" style={{ width: 9, height: 9 }} strokeWidth={2.5} />}
                                 {PHASE_LABEL[phase] || phase}
                             </span>
+                            {row.model && (
+                                <span title={`This worker runs on ${row.model}`} style={{ color: 'var(--ink-4)', fontSize: 10.5, fontFamily: 'var(--font-mono, monospace)', border: '1px solid var(--rule, rgba(128,128,128,.3))', borderRadius: 4, padding: '0 4px' }}>{row.model}</span>
+                            )}
                             {typeof row.calls === 'number' && (
                                 <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>{row.calls} call{row.calls === 1 ? '' : 's'}</span>
                             )}

@@ -2583,6 +2583,16 @@ async function syncModelInstances() {
         }
 
         console.log(`Synced ${modelInstances.size} model instance(s)`);
+        // Learn each adopted instance's decode speed so the first delegate of
+        // the session already places workers on the faster model. Sequential
+        // and idle-gated so the probes never contend with each other.
+        setTimeout(async () => {
+            for (const [name, inst] of modelInstances.entries()) {
+                if (inst && inst.status === 'running' && !modelSpeed.has(name) && !(modelBusy.get(name) > 0)) {
+                    await probeModelSpeed(name).catch(() => {});
+                }
+            }
+        }, 5000);
         // Start monitoring unconditionally — the UI resource panel needs
         // CPU/GPU/RAM samples even when no model is loaded. nvidia-smi at a
         // 3s cadence is effectively free.
@@ -5915,6 +5925,13 @@ async function monitorContainerHealth(container, modelName, port) {
                     // for this load, so a future unrelated error doesn't get
                     // mis-attributed to this load attempt.
                     pendingSglangLoads.delete(modelName);
+
+                    // One tiny generation to learn this model's decode speed,
+                    // so worker placement knows which model is actually faster
+                    // (see modelSpeedFor / assignWorkerModels). Fire and forget.
+                    if ((wasUnhealthy || wasLoading) && !modelSpeed.has(modelName)) {
+                        setImmediate(() => { probeModelSpeed(modelName).catch(() => {}); });
+                    }
 
                     // Broadcast structured status update for frontend
                     broadcast({
@@ -19211,10 +19228,98 @@ function chatCapacity() {
         if (inst && inst.status && inst.status !== 'running') continue;
         const slots = modelSlotCount(inst);
         const busy = modelBusy.get(name) || 0;
-        models.push({ name, backend: inst && inst.backend, slots, busy, free: Math.max(0, slots - busy) });
+        const sp = modelSpeed.get(name);
+        models.push({
+            name, backend: inst && inst.backend, slots, busy, free: Math.max(0, slots - busy),
+            ...(sp ? { tokensPerSecond: Math.round(sp.decode * 10) / 10 } : {}),
+        });
     }
     return { models, totalFree: models.reduce((a, m) => a + m.free, 0), totalSlots: models.reduce((a, m) => a + m.slots, 0) };
 }
+// Per-slot context window of a loaded model — what a worker turn actually gets
+// to work with (llama.cpp splits n_ctx across --parallel slots).
+function modelContextFor(name) {
+    const inst = modelInstances.get(name);
+    if (!inst) return null;
+    try { return v1ContextGuard.effectiveContextSize(inst) || null; } catch (_) { return null; }
+}
+
+// ── Measured decode speed per model ─────────────────────────────────────────
+// Placing workers well needs to know which model is actually faster: on this
+// host a 9B runs 70 tok/s and a 27B 25 tok/s, so handing one worker to the 27B
+// "for parallelism" made the turn 85 s against 58 s with both on the 9B — the
+// slow model becomes the critical path. One tiny generation per instance is
+// enough to rank them; llama.cpp returns `timings.predicted_per_second`
+// directly, sglang gets tokens/elapsed.
+const modelSpeed = new Map();          // name -> { decode, at }
+const modelSpeedInFlight = new Set();
+const MODEL_SPEED_TTL_MS = 30 * 60 * 1000;
+
+async function probeModelSpeed(name) {
+    const inst = modelInstances.get(name);
+    if (!inst || (inst.status && inst.status !== 'running')) return null;
+    if (modelSpeedInFlight.has(name)) return null;
+    modelSpeedInFlight.add(name);
+    const t0 = Date.now();
+    try {
+        // Model containers are on the shared Docker network — reach them by
+        // container name, exactly like the health monitor does. 127.0.0.1 is
+        // the HOST's loopback and refuses from inside the webapp container.
+        const host = inst.containerName || 'host.docker.internal';
+        const port = inst.internalPort || inst.port;
+        const url = `http://${host}:${port}/v1/chat/completions`;
+        const { data } = await axios.post(url, {
+            messages: [{ role: 'user', content: 'Count to five.' }],
+            max_tokens: 32, temperature: 0, cache_prompt: false, stream: false,
+        }, { timeout: 60000 });
+        const t = data && data.timings;
+        let decode = t && Number(t.predicted_per_second);
+        if (!Number.isFinite(decode) || decode <= 0) {
+            const out = data && data.usage && Number(data.usage.completion_tokens);
+            const secs = (Date.now() - t0) / 1000;
+            decode = (Number.isFinite(out) && out > 0 && secs > 0) ? out / secs : null;
+        }
+        if (Number.isFinite(decode) && decode > 0) {
+            modelSpeed.set(name, { decode, at: Date.now() });
+            console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode`);
+            return decode;
+        }
+        return null;
+    } catch (e) {
+        console.warn(`[capacity] speed probe for ${name} failed: ${e.message}`);
+        return null;
+    } finally {
+        modelSpeedInFlight.delete(name);
+    }
+}
+
+// Known speed, kicking off a background probe when it is missing or stale. The
+// caller never waits — a first delegate on a cold fleet just uses the
+// no-speed-data ordering, and the next one has real numbers.
+function modelSpeedFor(name) {
+    const rec = modelSpeed.get(name);
+    if (!rec || Date.now() - rec.at > MODEL_SPEED_TTL_MS) {
+        // Only probe an idle instance: a probe against a busy model measures
+        // contention, not the model.
+        if (!(modelBusy.get(name) > 0)) setImmediate(() => { probeModelSpeed(name).catch(() => {}); });
+    }
+    return rec ? rec.decode : null;
+}
+
+// Which model each worker of a delegate call should run on. See
+// modelRoles.assignWorkerModels — the parent's own slot is already counted as
+// busy by chatCapacity(), so this only ever hands out real spare capacity.
+function planWorkerModels(count, preferred) {
+    return modelRolesSvc.assignWorkerModels({
+        count,
+        capacity: chatCapacity(),
+        preferred,
+        contextOf: modelContextFor,
+        speedOf: modelSpeedFor,
+        minContext: WORKER_MIN_CONTEXT,
+    });
+}
+
 function resolveBusyKey(model) {
     if (model && modelInstances.has(model)) return model;
     if (model) return null;   // unknown model → the handler 400s; count nothing
@@ -25658,6 +25763,10 @@ app.post('/api/chat/stream', requireAuth, chatStreamHandler);
 // the worker's final text plus a compact trace of what it did. The parent is
 // the `delegate` native tool (registered in the native-tool IIFE below).
 const DELEGATE_MAX_PARALLEL = Math.max(1, parseInt(process.env.DELEGATE_MAX_PARALLEL || '4', 10) || 4);
+// A worker turn carries the shared prelude + tool catalog (~7k tokens) before
+// its task, so a model with less per-slot context than this is not a usable
+// worker host and is skipped when fanning out.
+const WORKER_MIN_CONTEXT = Math.max(2048, parseInt(process.env.DELEGATE_WORKER_MIN_CONTEXT || '12288', 10) || 12288);
 const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
 const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
 const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
@@ -32405,12 +32514,25 @@ app.use((req, res) => {
                         `Run 2–${DELEGATE_MAX_PARALLEL} INDEPENDENT sub-tasks IN PARALLEL with worker agents that each have their own tools (web, files, sandbox) — use for research on several topics/sites/files, comparisons, or any request with separable parts that each need real work (several searches, pages or files). ` +
                         (() => {
                             try {
-                                const cap = chatCapacity();
-                                const m = cap.models.find(x => x.name === (ctx.workerModel || ctx.model)) || null;
-                                const free = m ? m.free : cap.totalFree;
+                                // Workers fan out across every loaded model with a
+                                // free slot, so the honest number is how many
+                                // SEPARATE models can take one — two workers on two
+                                // models run at full speed; two on one model's two
+                                // slots share a card and are slower than doing it
+                                // yourself.
+                                const preferred = ctx.workerModel || ctx.model;
+                                const usable = chatCapacity().models
+                                    .filter(m => m.free > 0)
+                                    .filter(m => { const c = modelContextFor(m.name); return c === null || c >= WORKER_MIN_CONTEXT; });
+                                const models = usable.length;
+                                const free = usable.reduce((a, m) => a + m.free, 0)
+                                    || (chatCapacity().models.find(m => m.name === preferred) || { free: 0 }).free;
+                                if (models >= 2) {
+                                    return `${models} separate models are loaded and free, so up to ${Math.min(models, DELEGATE_MAX_PARALLEL)} workers run at FULL speed side by side — this is when delegating actually wins. `;
+                                }
                                 return free <= 1
-                                    ? `NOTE: ${free <= 0 ? 'no' : 'only one'} model slot is free right now, so workers would run ONE AT A TIME — delegate only when the sub-tasks are large; a task of 2–3 tool calls is faster done yourself. `
-                                    : `${free} model slots are free, so up to ${Math.min(free, DELEGATE_MAX_PARALLEL)} workers truly run at once. Each worker costs a full model turn, so a task of 2–3 tool calls is still faster done yourself. `;
+                                    ? `NOTE: only one model with ${free <= 0 ? 'no' : 'one'} free slot right now, so workers run ONE AT A TIME — delegate only when the sub-tasks are large; a task of 2–3 tool calls is faster done yourself. `
+                                    : `One model with ${free} free slots — workers share its throughput, so they finish little sooner than doing the work yourself unless each sub-task is large. `;
                             } catch (_) { return ''; }
                         })() +
                         'Each worker gets one self-contained task and returns a compact report; you then answer from the reports without re-verifying them. Workers share this conversation\'s /workspace. ' +
@@ -32489,6 +32611,7 @@ app.use((req, res) => {
                     const st = state.get(l) || {};
                     return {
                         name: l,
+                        ...(st.model ? { model: st.model } : {}),
                         phase: st.phase,
                         calls: st.calls || 0,
                         current: st.current || '',
@@ -32503,23 +32626,33 @@ app.use((req, res) => {
                     };
                 });
                 const running = agents.filter(a => a.phase === 'running' || a.phase === 'starting');
+                const spread = [...new Set(agents.map(a => a.model).filter(Boolean))];
+                const on = spread.length > 1 ? ` on ${spread.length} models` : '';
                 const summary = running.length
-                    ? `${running.length}/${agents.length} agents working · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
+                    ? `${running.length}/${agents.length} agents working${on} · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
                     : `${agents.length} agents finished`;
                 ctx.emitEvent({ type: 'delegate_progress', tool_call_id: callId, agents, summary: summary.slice(0, 400), elapsedMs: Date.now() - started });
             };
             const workerModel = ctx.workerModel || ctx.model;
+            // Fan the workers out across EVERY loaded model with spare capacity
+            // instead of stacking them all on the primary — running two workers
+            // on one model's two slots measured SLOWER than doing the task
+            // single-agent (58 s vs 33 s), because they share one card's
+            // throughput. One worker per model is the whole point of delegation.
+            const workerModels = planWorkerModels(tasks.length, workerModel);
             const checker = (ctx.checkWorkers && ctx.checkerModel) ? ctx.checkerModel : null;
-            logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} parallel worker agent(s) on ${workerModel}${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
+            const fanout = [...new Set(workerModels)];
+            tasks.forEach((t, i) => { const st = state.get(t.name); if (st) st.model = workerModels[i] || workerModel; });
+            logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} parallel worker agent(s) across ${fanout.length} model(s) [${workerModels.join(', ')}]${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
             emit();
             // Checker pass on one worker report. Returns the parsed review
             // (verdict 'unknown' on any failure — never blocks the worker).
             const editMode = ctx.modelRoles && ctx.modelRoles.checkFinal === 'edit';
-            const reviewReport = async (t, r) => {
+            const reviewReport = async (t, r, reviewer) => {
                 try {
                     const msgs = modelRolesSvc.buildWorkerReviewMessages({ task: t.task, report: r.answer, label: t.name, mode: editMode ? 'edit' : 'note' });
                     const out = await Promise.race([
-                        requestModelCompletion({ messages: msgs, model: checker, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
+                        requestModelCompletion({ messages: msgs, model: reviewer, temperature: 0.2, maxTokens: 1500, disableThinking: true }),
                         new Promise((_, rej) => setTimeout(() => rej(new Error('checker timed out')), CHECKER_TIMEOUT_MS)),
                     ]);
                     return modelRolesSvc.parseReview(out && out.content);
@@ -32527,8 +32660,9 @@ app.use((req, res) => {
                     return { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
                 }
             };
-            const results = await Promise.all(tasks.map(async (t) => {
+            const results = await Promise.all(tasks.map(async (t, taskIndex) => {
                 const st = state.get(t.name);
+                const taskModel = workerModels[taskIndex] || workerModel;
                 st.phase = 'running';
                 const taskText = context ? `Background from the parent agent:\n${context}\n\nYOUR TASK:\n${t.task}` : t.task;
                 try {
@@ -32537,7 +32671,7 @@ app.use((req, res) => {
                         task: text,
                         label: t.name,
                         siblings: labels,
-                        model: workerModel,
+                        model: taskModel,
                         reasoningEffort: ctx.reasoningEffort,
                         modelRoles: ctx.modelRoles,
                         workspaceBucket: ctx.workspaceBucket,
@@ -32572,17 +32706,20 @@ app.use((req, res) => {
                     let r = await runOnce(taskText);
                     // Secondary-model review of the report, with bounded revision
                     // rounds on the primary when it flags real problems.
-                    if (checker && r.status === 'ok' && r.answer) {
+                    // A worker that ran ON the checker model would be reviewing
+                    // itself — pure latency, no independent signal.
+                    const reviewer = (checker && checker !== taskModel) ? checker : null;
+                    if (reviewer && r.status === 'ok' && r.answer) {
                         let rounds = 0;
                         let review;
                         for (;;) {
-                            st.phase = 'checking'; st.current = `report being checked by ${checker}`; emit();
-                            review = await reviewReport(t, r);
+                            st.phase = 'checking'; st.current = `report being checked by ${reviewer}`; emit();
+                            review = await reviewReport(t, r, reviewer);
                             if (review.verdict === 'issues' && editMode && review.revised) {
                                 // The checker rewrote the report itself — cheaper
                                 // than another primary round, and it is the
                                 // stronger model's text.
-                                r = { ...r, answer: review.revised, editedBy: checker };
+                                r = { ...r, answer: review.revised, editedBy: reviewer };
                                 review = { ...review, edited: true };
                                 break;
                             }
@@ -32596,21 +32733,22 @@ app.use((req, res) => {
                                 r = { ...fixed, toolCalls: (prev.toolCalls || 0) + (fixed.toolCalls || 0), tools: [...prev.tools, ...fixed.tools].slice(0, 40), filesWritten: [...new Set([...prev.filesWritten, ...fixed.filesWritten])], seconds: Math.round((prev.seconds + fixed.seconds) * 10) / 10, revised: rounds };
                             } else break;
                         }
-                        r.review = { checker, verdict: review.verdict, edited: !!review.edited, summary: review.summary, issues: review.issues, confidence: review.confidence, revisions: rounds };
+                        r.review = { checker: reviewer, verdict: review.verdict, edited: !!review.edited, summary: review.summary, issues: review.issues, confidence: review.confidence, revisions: rounds };
                     }
+                    r.model = taskModel;
                     st.phase = r.status === 'ok' ? 'done' : r.status;
                     st.current = r.status === 'ok' ? `done in ${r.seconds}s${r.review ? ` · check: ${r.review.verdict}` : ''}` : (r.error || r.status);
                     emit();
                     return r;
                 } catch (e) {
                     st.phase = 'failed'; st.current = e.message; emit();
-                    return { name: t.name, status: 'failed', error: e.message || String(e), answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: Math.round((Date.now() - started) / 100) / 10 };
+                    return { name: t.name, status: 'failed', model: taskModel, error: e.message || String(e), answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: Math.round((Date.now() - started) / 100) / 10 };
                 }
             }));
             const okCount = results.filter(r => r.status === 'ok').length;
             const totalCalls = results.reduce((a, r) => a + (r.toolCalls || 0), 0);
             const wall = Math.round((Date.now() - started) / 100) / 10;
-            logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s${r.review ? ` ✓${r.review.verdict}` : ''}`).join(', ')})`);
+            logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s on ${r.model || workerModel}${r.review ? ` ✓${r.review.verdict}` : ''}`).join(', ')})`);
             const flagged = results.filter(r => r.review && r.review.verdict === 'issues');
             return {
                 success: okCount > 0,
@@ -32618,6 +32756,8 @@ app.use((req, res) => {
                 completed: okCount,
                 wallSeconds: wall,
                 workerModel,
+                workerModels,
+                ...(fanout.length > 1 ? { ranInParallelOn: fanout } : {}),
                 ...(checker ? { checkedBy: checker, reportsWithOpenIssues: flagged.map(r => r.name) } : {}),
                 results,
                 note: (okCount === results.length

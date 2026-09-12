@@ -109,7 +109,7 @@ function StreamingMessage() {
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
             agentResults: (tc.name === 'delegate' && r && typeof r === 'object' && Array.isArray(r.results))
                 ? r.results.slice(0, 8).map(x => ({
-                    name: x && x.name, status: x && x.status, calls: x && x.toolCalls, seconds: x && x.seconds,
+                    name: x && x.name, status: x && x.status, model: x && x.model, calls: x && x.toolCalls, seconds: x && x.seconds,
                     tools: Array.isArray(x && x.tools) ? x.tools.slice(0, 12) : [],
                     answerChars: x && typeof x.answer === 'string' ? x.answer.length : undefined,
                     review: x && x.review ? { verdict: x.review.verdict, edited: !!x.review.edited, issues: Array.isArray(x.review.issues) ? x.review.issues.length : 0 } : undefined,

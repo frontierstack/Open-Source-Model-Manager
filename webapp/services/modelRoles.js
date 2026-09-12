@@ -200,6 +200,103 @@ function buildConsultMessages({ question, context, attempt, primaryModel }) {
     ];
 }
 
+// ── Spreading worker agents across loaded models ─────────────────────────────
+// `delegate` used to run EVERY worker on one model (the primary), so two
+// workers shared that model's slots and the second loaded model sat idle —
+// measured 58 s for a 2-worker turn against 33 s for the same task done by one
+// agent. Assignment now fans out across every loaded model that has capacity.
+//
+// Rules, in order:
+//   1. A model needs an effective context window big enough for a worker turn
+//      (prelude + tool catalog + the task). Below `minContext` it is skipped.
+//   2. Models with an IDLE slot come before models where every slot is busy;
+//      within each group, more free slots first, then more context, then name
+//      (stable, so the same fleet always assigns the same way).
+//   3. One worker per model first (true parallelism), then a second round over
+//      models that still have a free slot, then the preferred model absorbs the
+//      remainder (they queue at that backend, exactly as before).
+//
+// `capacity` is chatCapacity(): { models: [{ name, slots, busy, free }] }.
+// `contextOf` maps a model name to its per-slot context (null = unknown, which
+// is treated as acceptable). `preferred` is the primary/composer model, which
+// keeps its place at the head of the list so a single-model host is unchanged.
+// Cost model for placing workers. llama.cpp's continuous batching means two
+// concurrent decodes on one model do NOT cost 2× — measured on this host, a
+// second stream slows each by ~45% (one 9B worker turn 38 s, two together
+// ~55 s). So the k-th worker on a model costs (1 + 0.45·(k−1)) work units.
+const CONTENTION = 0.45;
+function slotCost(k) { return 1 + CONTENTION * Math.max(0, k - 1); }
+
+function assignWorkerModels({ count, capacity, preferred, contextOf, speedOf, minContext = 8192, exclude } = {}) {
+    const n = Math.max(0, Math.trunc(count) || 0);
+    if (n === 0) return [];
+    const fallback = preferred || null;
+    const all = (capacity && Array.isArray(capacity.models)) ? capacity.models : [];
+    const skip = new Set(Array.isArray(exclude) ? exclude : (exclude ? [exclude] : []));
+    const numOrNull = (fn, name) => {
+        if (typeof fn !== 'function') return null;
+        const v = Number(fn(name));
+        return Number.isFinite(v) && v > 0 ? v : null;
+    };
+    const usable = all
+        .filter(m => m && m.name && !skip.has(m.name))
+        .filter(m => { const c = numOrNull(contextOf, m.name); return c === null || c >= minContext; })
+        .map(m => ({
+            name: m.name,
+            free: Math.max(0, Math.trunc(Number(m.free)) || 0),
+            slots: Math.max(1, Math.trunc(Number(m.slots)) || 1),
+            ctx: numOrNull(contextOf, m.name) || 0,
+            speed: numOrNull(speedOf, m.name),
+        }));
+    if (usable.length === 0) return Array.from({ length: n }, () => fallback);
+
+    // Without measured speeds every model looks equally good, so fall back to a
+    // stable preference order (the turn's own model first, then most free slots
+    // / biggest context / name).
+    const anySpeed = usable.some(m => m.speed);
+    const median = (() => {
+        const v = usable.map(m => m.speed).filter(Boolean).sort((a, b) => a - b);
+        return v.length ? v[Math.floor(v.length / 2)] : 1;
+    })();
+    for (const m of usable) if (!m.speed) m.speed = median;
+
+    usable.sort((a, b) => {
+        if (a.name === preferred && b.name !== preferred) return -1;
+        if (b.name === preferred && a.name !== preferred) return 1;
+        if (anySpeed && a.speed !== b.speed) return b.speed - a.speed;
+        const aIdle = a.free > 0 ? 1 : 0, bIdle = b.free > 0 ? 1 : 0;
+        if (aIdle !== bIdle) return bIdle - aIdle;
+        if (a.free !== b.free) return b.free - a.free;
+        if (a.ctx !== b.ctx) return b.ctx - a.ctx;
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+
+    // Greedy makespan: give each task to whichever model would finish it
+    // soonest given what it already holds. A model 2.8× slower only earns a
+    // worker once piling another one on the fast model would cost more — which
+    // is why a fast 9B + a slow 27B keeps BOTH workers on the 9B (measured: the
+    // naive one-each split made the turn 85 s against 58 s stacked).
+    const held = new Map(usable.map(m => [m.name, 0]));
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        let best = null, bestCost = Infinity;
+        for (const m of usable) {
+            const k = held.get(m.name) + 1;
+            // Past its free slots the work queues at the backend: the new
+            // worker waits for a slot, so its finish time stacks.
+            const queued = Math.max(0, k - Math.max(1, m.free));
+            const cost = (slotCost(Math.min(k, Math.max(1, m.free))) + queued) / m.speed;
+            if (cost < bestCost - 1e-9) { best = m; bestCost = cost; }
+        }
+        if (!best) break;
+        held.set(best.name, held.get(best.name) + 1);
+        out.push(best.name);
+    }
+    const spill = usable.some(m => m.name === fallback) ? fallback : usable[0].name;
+    while (out.length < n) out.push(spill);
+    return out;
+}
+
 module.exports = {
     ROLE_KEYS,
     CHECK_MODES,
@@ -213,4 +310,5 @@ module.exports = {
     shouldCheckFinal,
     formatReviewAddendum,
     summarizeToolChips,
+    assignWorkerModels,
 };

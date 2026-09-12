@@ -636,7 +636,7 @@ export default function ChatSettings({
                                                 {renderSelect('rolePrimaryModel', serverRoles && serverRoles.primary ? `Server default (${serverRoles.primary})` : 'Composer\'s model')}
                                             </div>
                                             <div>
-                                                <label className="set-label">Checker (reviews it)</label>
+                                                <label className="set-label">Checker (refines it)</label>
                                                 {renderSelect('roleCheckerModel', serverRoles && serverRoles.checker ? `Server default (${serverRoles.checker})` : 'None — no checking')}
                                             </div>
                                         </div>
@@ -649,8 +649,8 @@ export default function ChatSettings({
                                 )}
                                 <label className="flex items-start justify-between gap-3 cursor-pointer" style={{ marginTop: 12, opacity: settings?.roleCheckerModel ? 1 : 0.55 }}>
                                     <div className="flex-1 min-w-0">
-                                        <div className="set-row-title">Check worker reports</div>
-                                        <div className="set-row-help">Each parallel worker's report is reviewed by the checker; flagged problems get one revision round on the primary before the report is used.</div>
+                                        <div className="set-row-title">Each worker agent's report</div>
+                                        <div className="set-row-help">A parallel worker's report is handed to the checker before the primary builds on it — refined in place when Refine is on, otherwise sent back for one revision round.</div>
                                     </div>
                                     <button
                                         type="button"
@@ -669,12 +669,12 @@ export default function ChatSettings({
                                     const effective = mode || (serverRoles && serverRoles.checkFinal) || 'off';
                                     return (
                                         <div style={{ marginTop: 12, opacity: hasChecker ? 1 : 0.55 }}>
-                                            <div className="set-row-title">After each answer, the checker…</div>
+                                            <div className="set-row-title">The finished answer, before you see it</div>
                                             <div className="set-row-help" style={{ marginBottom: 6 }}>
-                                                <strong>Notes issues</strong> appends a verdict; <strong>Edits the answer</strong> rewrites it when it finds problems and lists the changes. Only substantial replies are checked (tools used, or longer than a few lines). Adds the checker's generation time.{!mode && serverRoles && serverRoles.checkFinal ? ` Server default: ${effective}.` : ''}
+                                The primary's draft goes to the checker with the evidence behind it. <strong>Add a note</strong> leaves the answer alone and appends the verdict underneath; <strong>Refine it</strong> hands back the checker's corrected version in place with a list of what changed. Only substantial replies are checked (tools used, or longer than a few lines). Adds the checker's generation time.{!mode && serverRoles && serverRoles.checkFinal ? ` Server default: ${effective}.` : ''}
                                             </div>
                                             <div className="set-seg" role="radiogroup" aria-label="Checker action on final answers">
-                                                {[['', 'Server default'], ['off', 'Does nothing'], ['note', 'Notes issues'], ['edit', 'Edits the answer']].map(([v, label]) => (
+                                                {[['', 'Server default'], ['off', 'Send it as is'], ['note', 'Add a note'], ['edit', 'Refine it']].map(([v, label]) => (
                                                     <button
                                                         key={v || 'default'}
                                                         type="button"

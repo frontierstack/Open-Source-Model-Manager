@@ -134,7 +134,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
     const checkerActive = !!roles.checker && !same;
     const primaryLabel = roles.primary || 'the model picked in the chat';
     const checkerLabel = roles.checker || 'none';
-    const afterLabel = roles.checkFinal === 'edit' ? 'edits the answer' : roles.checkFinal === 'note' ? 'notes issues' : 'does nothing';
+    const afterLabel = roles.checkFinal === 'edit' ? 'refines it before you see it' : roles.checkFinal === 'note' ? 'adds a review note under it' : 'does nothing';
 
     return (
         <Card sx={{ mb: 2 }}>
@@ -150,7 +150,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                     </Button>
                 </Box>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5, mb: 2 }}>
-                    Pair a fast model that does the work with a stronger one that checks it. Needs two different models loaded — one slot each is enough.
+                    A fast model drafts the answer, then hands it to a stronger one that refines it. Needs two different models loaded — one slot each is enough.
                 </Typography>
 
                 <Collapse in={showHelp}>
@@ -159,7 +159,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                             <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
                                 <li><strong>Primary</strong> runs the chat and the parallel worker agents. Pick it as the chat's model too.</li>
                                 <li>When the primary is stuck, it can ask the <strong>checker</strong> one question (the <span style={{ fontFamily: 'monospace' }}>consult_expert</span> tool) and carry on with the answer.</li>
-                                <li>The checker reviews what the primary produced: worker reports, and — if you turn it on below — the final answer, which it can annotate or rewrite.</li>
+                                <li>Everything the primary produces can be passed on to the <strong>checker</strong>: each worker agent's report, and — if you turn it on below — the finished answer, which the checker either annotates or hands back rewritten.</li>
                                 <li>With a single model, even with several parallel slots, nothing here applies: a model does not check itself.</li>
                                 <li>{isAdmin ? 'Changes save immediately for everyone; each user can override them in the chat Settings.' : 'Only an administrator can change these; you can override them for yourself in the chat Settings.'}</li>
                             </ul>
@@ -191,7 +191,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                     <RoleTile
                         icon={<FactCheckIcon fontSize="small" sx={{ color: checkerActive ? 'var(--accent-primary)' : 'text.secondary' }} />}
                         title="Checker — reviews it"
-                        blurb="The larger, smarter model. Answers the primary's questions and checks its work."
+                        blurb="The larger, smarter model. Receives the primary's draft and hands back a refined version, and answers its questions."
                         value={roles.checker}
                         placeholder="None — no checking"
                         options={names}
@@ -216,11 +216,11 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                 {/* Checker options */}
                 <Box sx={{ mt: 2, pt: 1, borderTop: '1px solid var(--border-primary, rgba(255,255,255,0.1))' }}>
                     <Typography variant="overline" sx={{ color: 'text.secondary', letterSpacing: 0.6 }}>
-                        What the checker does{!checkerActive ? ' — select a checker to enable' : ''}
+                        What the checker does with the primary's work{!checkerActive ? ' — select a checker to enable' : ''}
                     </Typography>
                     <OptionRow
-                        title="After each chat answer"
-                        help="Note issues appends a verdict under the answer. Edit rewrites the answer when it finds problems and lists the changes."
+                        title="The finished answer, before you see it"
+                        help="The primary's draft goes to the checker with the evidence behind it. Add a note leaves the answer alone and appends the checker's verdict underneath. Refine it hands back the checker's corrected version in place, with a list of what it changed."
                         dim={!checkerActive}
                         control={(
                             <ToggleButtonGroup
@@ -231,21 +231,21 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                                 disabled={disabled || !checkerActive}
                                 sx={{ '& .MuiToggleButton-root': { textTransform: 'none', px: 1.5, fontSize: '0.8rem' } }}
                             >
-                                <ToggleButton value="off">Nothing</ToggleButton>
-                                <ToggleButton value="note">Note issues</ToggleButton>
-                                <ToggleButton value="edit">Edit the answer</ToggleButton>
+                                <ToggleButton value="off">Send it as is</ToggleButton>
+                                <ToggleButton value="note">Add a note</ToggleButton>
+                                <ToggleButton value="edit">Refine it</ToggleButton>
                             </ToggleButtonGroup>
                         )}
                     />
                     <OptionRow
-                        title="Check worker-agent reports"
-                        help="Each parallel worker's report is reviewed before the primary uses it; flagged problems get one revision."
+                        title="Each worker agent's report"
+                        help="A parallel worker's report goes to the checker before the primary builds on it — refined in place when Refine is on, otherwise sent back for one revision round."
                         dim={!checkerActive}
                         control={<Switch size="small" checked={roles.checkWorkers !== false} disabled={disabled || !checkerActive} onChange={(e) => save({ checkWorkers: e.target.checked })} />}
                     />
                     <OptionRow
-                        title="Let the primary consult the checker"
-                        help="Gives the primary the consult_expert tool for hard questions."
+                        title="Questions while the primary works"
+                        help="Lets the primary stop mid-task and ask the checker one question (the consult_expert tool), then carry on with the answer."
                         dim={!checkerActive}
                         control={<Switch size="small" checked={roles.consult !== false} disabled={disabled || !checkerActive} onChange={(e) => save({ consult: e.target.checked })} />}
                     />

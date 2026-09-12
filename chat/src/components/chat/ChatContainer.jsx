@@ -333,6 +333,7 @@ function agentResultsOf(name, result) {
     return result.results.slice(0, 8).map(r => ({
         name: r && r.name,
         status: r && r.status,
+        model: r && r.model,
         calls: r && r.toolCalls,
         seconds: r && r.seconds,
         tools: Array.isArray(r && r.tools) ? r.tools.slice(0, 12) : [],
