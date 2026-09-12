@@ -28251,7 +28251,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         const targetPort = firstInstance.internalPort || firstInstance.port;
         const targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
 
-        console.log(`[Proxy] Forwarding to ${targetUrl}`);
+        // NOTE: not logged yet. GET /v1/models does NOT forward — it aggregates
+        // across every running instance just below — so logging "Forwarding to
+        // <first instance>" here makes a multi-instance listing look like it
+        // was answered by one model, which misleads anyone debugging routing.
+        // The forwarding log lives after that branch.
 
         // Special handling for GET /v1/models — sglang and llama.cpp both
         // omit context_window from this response, so Pi (and any other
@@ -28303,6 +28307,8 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 // fall through to the generic non-streaming path below
             }
         }
+
+        console.log(`[Proxy] Forwarding to ${targetUrl}`);
 
         // Check if this is a streaming request (handle both boolean and string "true")
         const streamParam = req.body?.stream;
