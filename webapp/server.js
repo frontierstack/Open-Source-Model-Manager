@@ -4996,6 +4996,14 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             if (isNaN(memFrac) || memFrac < 0.1 || memFrac > 1.0) {
                 return res.status(400).json({ error: 'memFractionStatic must be between 0.1 and 1.0' });
             }
+            // In sglang >= 0.5.17 this sets the RESERVE, so a value at/near 1.0
+            // reserves nothing and the run dies allocating the KV pool — AFTER
+            // the full multi-minute weight load. Clamp rather than reject so an
+            // existing caller keeps working.
+            if (memFrac > SGLANG_MEM_FRACTION_MAX) {
+                console.warn(`[sglang] memFractionStatic ${memFrac} reserves too little VRAM (the flag sets the RESERVE since 0.5.17) — clamping to ${SGLANG_MEM_FRACTION_MAX}`);
+                req.body.memFractionStatic = SGLANG_MEM_FRACTION_MAX;
+            }
         }
 
         const fullPath = path.join(modelPath, ggufFile);
@@ -5324,6 +5332,11 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
         const memFrac = Number(req.body.memFractionStatic);
         if (isNaN(memFrac) || memFrac < 0.1 || memFrac > 1.0) {
             return res.status(400).json({ error: 'memFractionStatic must be between 0.1 and 1.0' });
+        }
+        // See the note in the GGUF load route: the flag is a RESERVE now.
+        if (memFrac > SGLANG_MEM_FRACTION_MAX) {
+            console.warn(`[sglang] memFractionStatic ${memFrac} reserves too little VRAM (the flag sets the RESERVE since 0.5.17) — clamping to ${SGLANG_MEM_FRACTION_MAX}`);
+            req.body.memFractionStatic = SGLANG_MEM_FRACTION_MAX;
         }
     }
     const detectedGpus = await getGpuCount();
@@ -7860,26 +7873,43 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         settings.tensorParallelSize = tp;
 
         const smallestTotalGB = gpuCount ? Math.min(...gpuDetails.map(g => g.totalGB)) : 0;
-        // gpu_memory_utilization is a fraction of TOTAL per-card. Cap it
-        // at what's actually free on the most-constrained card so sglang
-        // doesn't try to grab more than exists.
-        const liveUtilCap = smallestTotalGB > 0
-            ? Math.max(0.1, Math.min(0.95, (smallestGpuFreeGB / smallestTotalGB) - 0.02))
-            : 0.85;
-        settings.memFractionStatic = parseFloat(liveUtilCap.toFixed(2));
+        // `--mem-fraction-static` SETS THE RESERVE in sglang >= 0.5.17, it does
+        // not set the share to grab (the meaning inverted upstream:
+        // `slack = pre_model_load_free_vram * (1 - mem_fraction_static)`).
+        // This used to be computed the OLD way — "the fraction of the card
+        // that is free" — which on an EMPTY card yields ~0.95, i.e. a reserve
+        // of only 5%, and a hand-typed 1.0 reserves NOTHING. Live failure:
+        // Qwen3.8-27B-NVFP4 at TP=2 with mem=1 loaded its weights fine
+        // (11.48 GB/card, 3.67 GB left), allocated the hybrid model's mamba
+        // state cache (1.72 GB), then died allocating the KV pool —
+        // "CUDA out of memory. Tried to allocate 62.00 MiB ... 56.19 MiB is
+        // free" — after a 22-minute load. The reserve has to cover CUDA
+        // graphs, activations, the hybrid/mamba state cache and allocator
+        // fragmentation, none of which come out of the KV pool.
+        const RESERVE_GB = SGLANG_RUNTIME_RESERVE_GB;
+        const memFracFromReserve = smallestGpuFreeGB > RESERVE_GB
+            ? 1 - (RESERVE_GB / smallestGpuFreeGB)
+            : 0.5;
+        // Ceiling well under 1.0: a reserve near zero is the OOM above, and
+        // 0.80 is the value measured good on this hardware.
+        settings.memFractionStatic = parseFloat(
+            Math.max(0.5, Math.min(SGLANG_MEM_FRACTION_MAX, memFracFromReserve)).toFixed(2));
 
-        // Effective allocatable VRAM = per_card × util × count (matches what
-        // sglang will actually grab at init).
-        const perCardAllocatedGB = smallestTotalGB * settings.memFractionStatic;
+        // What sglang can actually put on a card = free VRAM minus the
+        // reserve. (Under the old reading this multiplied the card's TOTAL by
+        // the fraction, which over-counted on a card that was not empty.)
+        const perCardAllocatedGB = Math.max(0, smallestGpuFreeGB - RESERVE_GB);
         const effectiveAllocatedGB = perCardAllocatedGB * tp;
 
         // KV-cache estimate per token at f16. sglang uses an auto-paged KV
         // cache; per-token cost is roughly the same as llama.cpp dense path.
         const KV_PER_TOKEN_F16 = 120 * 1024;        // bytes/tok at f16
         const KV_PER_TOKEN_FP8 = KV_PER_TOKEN_F16 / 2;
-        const SGLANG_OVERHEAD_GB = 2.0;                // CUDA graphs, activations, profiler buffers
+        // The reserve already carves out CUDA graphs/activations/state cache,
+        // so the KV budget is what is left after the weights.
+        const SGLANG_OVERHEAD_GB = 0;
 
-        // Step 1: does the model + minimal overhead fit on GPU?
+        // Step 1: does the model fit on GPU alongside its reserve?
         const usableForKvGB = effectiveAllocatedGB - modelSizeGB - SGLANG_OVERHEAD_GB;
 
         if (usableForKvGB < 1.0) {
@@ -7922,8 +7952,8 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
 
             const predictedKvGB = (chosenCtx * perTok) / (1024 * 1024 * 1024);
             notes.push(`Effective allocation: ${perCardAllocatedGB.toFixed(1)} GB per card × ${tp} GPU(s) = ${effectiveAllocatedGB.toFixed(1)} GB`);
-            notes.push(`gpu_memory_utilization: ${settings.memFractionStatic} (capped to fit smallest card's free VRAM)`);
-            notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · sglang overhead: ${SGLANG_OVERHEAD_GB} GB`);
+            notes.push(`mem_fraction_static: ${settings.memFractionStatic} — in sglang 0.5.17+ this sets the RESERVE, so this leaves ~${RESERVE_GB} GB per card for CUDA graphs, activations and (on hybrid models) the mamba state cache`);
+            notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · reserved: ${RESERVE_GB} GB/card`);
             notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${kvDtype} · max concurrent seqs: ${settings.maxRunningRequests}`);
             if (kvDtype === 'fp8') {
                 notes.push('fp8 KV chosen to fit at this context — slight quality hit on long contexts');
@@ -19482,6 +19512,17 @@ function startModelSpeedSweep() {
 // Which model each worker of a delegate call should run on. See
 // modelRoles.assignWorkerModels — the parent's own slot is already counted as
 // busy by chatCapacity(), so this only ever hands out real spare capacity.
+// sglang >= 0.5.17: `--mem-fraction-static` sets the RESERVE, not the share to
+// take (`slack = pre_model_load_free_vram * (1 - mem_fraction_static)`), so a
+// HIGH value means LITTLE headroom and 1.0 means none at all. The reserve has
+// to cover CUDA graphs, activations, the hybrid/mamba state cache and
+// allocator fragmentation — none of which come out of the KV pool. 3 GB/card
+// reproduces the 0.80 that measured good on this hardware at ~15.5 GB free.
+const SGLANG_RUNTIME_RESERVE_GB = Number(process.env.SGLANG_RUNTIME_RESERVE_GB || 3);
+// Never let a request reserve nothing: 1.0 is a guaranteed OOM at KV-pool
+// creation, and it only shows up after the full multi-minute weight load.
+const SGLANG_MEM_FRACTION_MAX = Number(process.env.SGLANG_MEM_FRACTION_MAX || 0.9);
+
 function planWorkerModels(count, preferred, exclude) {
     return modelRolesSvc.assignWorkerModels({
         count,

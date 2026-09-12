@@ -935,6 +935,15 @@ const App = () => {
         usePreferencesStore.getState().hydrate();
     }, []);
 
+    // Re-read the HF cache whenever the user switches tabs. The WebSocket
+    // refresh above covers a download finishing while the page is open; this
+    // covers the case where the socket dropped, so simply visiting My Models
+    // shows what is actually on disk instead of a list frozen at page load.
+    useEffect(() => {
+        fetchHfCache();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
+
     // Initial data fetch and WebSocket setup
     useEffect(() => {
         fetchModels();
@@ -1002,6 +1011,14 @@ const App = () => {
                             timestamp: dockerTime ? dockerTime.getTime() : Date.now()
                         });
                     } else if (data.type === 'status') {
+                        // The HF cache list is otherwise fetched ONCE on mount,
+                        // so a repo downloaded while the page was open never
+                        // appeared — and since the card hides at zero entries,
+                        // a freshly downloaded sglang model was invisible in My
+                        // Models until a full reload. Every model status frame
+                        // (load finished, load failed, container gone) can have
+                        // changed what is on disk.
+                        fetchHfCache();
                         // load_failed carries `error` + remediation; surface it
                         // prominently and prefill the HF load dialog with the
                         // KV-cache-suggested max_model_len so retrying is one
