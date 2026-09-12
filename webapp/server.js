@@ -4842,7 +4842,14 @@ const autoDetectSglangToolParser = (name) => {
     // Qwen3.6-35B-A3B: the 'qwen' parser matches the <tool_call> wrapper, fails
     // on the body, and silently drops EVERY tool call (finish_reason
     // "tool_calls" with empty tool_calls[] → chat turns end with no content).
-    if (r.includes('qwen3.5') || r.includes('qwen3.6') || r.includes('qwen-3.5') || r.includes('qwen-3.6') || r.includes('qwen3_5') || r.includes('qwen3_6')) return 'qwen3_coder';
+    // Match the whole 3.5+ family by MINOR VERSION, not a hand-list: the list
+    // covered 3.5/3.6 and `Qwen3.8-27B` fell through to the classic `qwen`
+    // parser, which silently dropped every tool call (measured: an explicit
+    // "use the list_directory tool" request executed ZERO tools and the model
+    // answered in prose instead). sglang's own template auto-detect said
+    // `qwen3_coder` for that model while our env forced `qwen` over the top.
+    const qwenMinor = r.match(/qwen[-_]?3[._](\d+)/);
+    if (qwenMinor && Number(qwenMinor[1]) >= 5) return 'qwen3_coder';
     // Llama-4 emits the PYTHONIC tool format ([tool(arg=val), ...]), and
     // sglang's PythonicDetector is documented as "Detector for Llama-4 models".
     // There has never been a 'llama4' key in sglang's ToolCallParserEnum (not
