@@ -19552,7 +19552,13 @@ function normalizeSglangKvDtype(v) {
 const SGLANG_RUNTIME_RESERVE_GB = Number(process.env.SGLANG_RUNTIME_RESERVE_GB || 3);
 // Never let a request reserve nothing: 1.0 is a guaranteed OOM at KV-pool
 // creation, and it only shows up after the full multi-minute weight load.
-const SGLANG_MEM_FRACTION_MAX = Number(process.env.SGLANG_MEM_FRACTION_MAX || 0.9);
+// The safe ceiling is model-dependent (the reserve has to cover that model's
+// mamba/state cache and CUDA graphs), so this only fences off the band that
+// cannot work for anything; the usable value is found by reading the KV pool
+// sglang actually built (`max_total_num_tokens` in its startup line and in
+// `/get_server_info`) and adjusting. Measured on Qwen3.8-27B-NVFP4 at TP=2:
+// 0.88 → 65,207 tokens with 1.13 GB/card still idle; 0.93 → ~114k.
+const SGLANG_MEM_FRACTION_MAX = Number(process.env.SGLANG_MEM_FRACTION_MAX || 0.95);
 
 function planWorkerModels(count, preferred, exclude) {
     return modelRolesSvc.assignWorkerModels({
