@@ -15,7 +15,7 @@ import {
     Check,
     Globe,
     Link2,
-    Sparkles,
+    
     Circle,
     Eye,
     Clock,
@@ -899,7 +899,6 @@ export default function ChatInput({
                                         aria-label="Choose persona"
                                         title={selectedPrompt ? `Persona: ${selectedPrompt.name}` : 'Choose persona'}
                                     >
-                                        <Sparkles className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
                                         <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                             {selectedPrompt ? selectedPrompt.name : 'Persona'}
                                         </span>

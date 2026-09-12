@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, Sparkles, User, RefreshCw, Eye, Code as CodeIcon } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, User, RefreshCw, Eye, Code as CodeIcon } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
@@ -540,7 +540,6 @@ export default React.memo(function ChatMessage({
                                 className="msg-thinking-toggle"
                                 aria-expanded={reasoningExpanded}
                             >
-                                <Sparkles strokeWidth={1.75} style={{ opacity: 0.7 }} />
                                 <span>{isStreaming && !displayContent ? 'Thinking' : 'Thought process'}</span>
                                 <span className="msg-thinking-count">· {displayReasoning.length.toLocaleString()} chars</span>
                                 {reasoningExpanded

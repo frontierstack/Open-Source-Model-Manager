@@ -53,7 +53,6 @@ import {
     LayoutGrid as LucideGrid,
     Ban as LucideBan,
     Code2 as LucideCode,
-    Sparkles as LucideSparkles,
     Heart as LucideHeart,
     UserCircle as LucideUserCircle,
     Users as LucideUsers,
@@ -158,7 +157,6 @@ export const AppsIcon            = adapt(LucideGrid);
 export const CancelIcon          = adapt(LucideBan);
 export const RestartAltIcon      = adapt(LucideRefresh);
 export const CodeIcon            = adapt(LucideCode);
-export const AutoAwesomeIcon     = adapt(LucideSparkles);
 export const FavoriteIcon        = adapt(LucideHeart);
 export const AccountCircleIcon   = adapt(LucideUserCircle);
 export const PeopleIcon          = adapt(LucideUsers);

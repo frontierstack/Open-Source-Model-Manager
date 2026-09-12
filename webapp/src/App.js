@@ -58,7 +58,6 @@ import { AppsIcon } from './components/Icons';
 import { CancelIcon } from './components/Icons';
 import { RestartAltIcon } from './components/Icons';
 import { CodeIcon } from './components/Icons';
-import { AutoAwesomeIcon } from './components/Icons';
 import { FavoriteIcon } from './components/Icons';
 import Paper from '@mui/material/Paper';
 import Box from '@mui/material/Box';
@@ -11012,7 +11011,6 @@ console.log(chip);`
                                                                             {model.isThinkingModel && (
                                                                                 <Tooltip title="Extended reasoning model with chain-of-thought capabilities. May include thinking tokens in responses.">
                                                                                     <Chip
-                                                                                        icon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />}
                                                                                         label="Thinking"
                                                                                         size="small"
                                                                                         color="warning"
@@ -14776,14 +14774,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             const matchedModel = models.find(m => m.name === llamacppLoadDialog.modelName);
                             return matchedModel?.fileSize ? (
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                    <AutoAwesomeIcon sx={{ fontSize: 16, color: 'primary.main' }} />
                                     <Typography variant="caption" sx={{ flex: 1, color: 'text.secondary' }}>
                                         {(matchedModel.fileSize / 1024 / 1024 / 1024).toFixed(1)} GB on disk
                                     </Typography>
                                     <Button
                                         size="small"
                                         variant="outlined"
-                                        startIcon={loadingOptimalSettings ? <CircularProgress size={14} color="inherit" /> : <AutoAwesomeIcon sx={{ fontSize: 14 }} />}
+                                        startIcon={loadingOptimalSettings ? <CircularProgress size={14} color="inherit" /> : null}
                                         onClick={() => fetchOptimalSettings(matchedModel)}
                                         disabled={loadingOptimalSettings}
                                     >

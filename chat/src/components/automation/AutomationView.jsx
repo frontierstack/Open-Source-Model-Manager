@@ -9,7 +9,7 @@ import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
     Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
-    Sparkles, Wand2, FlaskConical, RotateCcw,
+     Wand2, FlaskConical, RotateCcw,
     LayoutGrid, Workflow, ListChecks, Boxes, Clock, Blocks,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
@@ -1383,7 +1383,7 @@ function FlowEditor({ showSnackbar, models }) {
                         <div className="auto-rail__aihint">Create with AI</div>
                         <div className="auto-rail__aibtns">
                             <button className="auto-btn auto-btn--grow" onClick={() => openAssistant('build')} title="Describe an automation and let the model build it for you">
-                                <Sparkles size={13} /> <span>Build</span>
+<span>Build</span>
                             </button>
                             <button className="auto-btn auto-btn--grow" onClick={() => openAssistant('edit')} disabled={!selected} title={selected ? 'Describe a change to the open automation' : 'Open an automation first to edit it with AI'}>
                                 <Wand2 size={13} /> <span>Edit</span>
@@ -1548,7 +1548,7 @@ function FlowEditor({ showSnackbar, models }) {
                                 <div className="ai-modal__tabs">
                                     <button className={`ai-tab ${mode === 'build' ? 'is-active' : ''}`} disabled={assistantBusy}
                                         onClick={() => { if (!assistantBusy) { setAssistantMode('build'); setBuildResult(null); setEditResult(null); } }}>
-                                        <Sparkles size={13} /> <span>Build new</span>
+<span>Build new</span>
                                     </button>
                                     <button className={`ai-tab ${mode === 'edit' ? 'is-active' : ''}`} disabled={assistantBusy || !selected}
                                         title={selected ? '' : 'Open an automation first'}
@@ -1589,7 +1589,7 @@ function FlowEditor({ showSnackbar, models }) {
                                         )}
                                         <div className="ai-modal__actions">
                                             <button className="auto-btn auto-btn--accent" onClick={submit} disabled={assistantBusy || !assistantPrompt.trim()}>
-                                                {mode === 'build' ? <><Sparkles size={14} /> <span>{assistantBusy ? 'Building…' : 'Build'}</span></> : <><Wand2 size={14} /> <span>{assistantBusy ? 'Thinking…' : 'Preview changes'}</span></>}
+                                                {mode === 'build' ? <span>{assistantBusy ? 'Building…' : 'Build'}</span> : <><Wand2 size={14} /> <span>{assistantBusy ? 'Thinking…' : 'Preview changes'}</span></>}
                                             </button>
                                             <button className="auto-btn auto-btn--ghost" onClick={closeAssistant} disabled={assistantBusy}>Cancel</button>
                                             <span className="ai-modal__hint">⌘ / Ctrl + Enter</span>
@@ -1597,7 +1597,7 @@ function FlowEditor({ showSnackbar, models }) {
                                     </>
                                 ) : mode === 'build' ? (
                                     <>
-                                        <div className="ai-summary"><Sparkles size={16} /><div>{result.summary || `A ${result.nodeCount}-step automation is ready.`}</div></div>
+                                        <div className="ai-summary"><div>{result.summary || `A ${result.nodeCount}-step automation is ready.`}</div></div>
                                         <div className="ai-sec__label">Steps</div>
                                         <div className="ai-chain">
                                             {stepChain.map((l, i) => <React.Fragment key={i}>{i > 0 && <span className="ai-chain__arrow">→</span>}<span className="ai-chain__step">{l}</span></React.Fragment>)}
@@ -3461,7 +3461,7 @@ function NodeBuilderModal({ base, onClose, onSaved, notify }) {
                         placeholder={isEdit ? 'e.g. also pre-fill the channel to #alerts and keep only the message field editable' : 'e.g. a connector that posts a message to my Slack #alerts channel'} />
                     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                         <button className="auto-btn auto-btn--accent" onClick={build} disabled={building || !prompt.trim()}>
-                            <Sparkles size={13} /> <span>{building ? 'Building…' : (preview && !isEdit ? 'Rebuild' : 'Build with AI')}</span>
+                            <span>{building ? 'Building…' : (preview && !isEdit ? 'Rebuild' : 'Build with AI')}</span>
                         </button>
                     </div>
                     {err && <div className="auto-deterr" style={{ marginTop: 10 }}>{err}</div>}
