@@ -23279,6 +23279,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // a system message in the same slot the loop guards use. This is
             // what makes ask_assistant non-blocking: the lead never waits, the
             // result simply appears in its context the moment it lands.
+            // How many times this turn has paused to wait for background work
+            // it dispatched but never collected.
+            let assistantDrains = 0;
             const deliverAssistantResults = () => {
                 const jobs = toolCtx._assistantJobs;
                 if (!jobs || !jobs.size) return null;
@@ -25387,6 +25390,56 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     }
                 }
 
+                // The lead is ready to stop, but work it handed to the primary
+                // may still be in flight. Results are normally folded in at the
+                // top of a ROUND, so a lead that is FASTER than its assistant
+                // finishes the whole turn first and the jobs get cancelled
+                // unfinished — measured with a 112 tok/s lead and a 66 tok/s
+                // assistant, and the answer then said "licensing details are
+                // not explicitly listed", which is exactly what the cancelled
+                // job had been sent to fetch. Waiting a bounded moment for work
+                // the turn itself asked for is strictly better than answering
+                // around it.
+                if (assistantDrains < ASSISTANT_DRAIN_MAX && toolCtx._assistantJobs) {
+                    const pending = [...toolCtx._assistantJobs.values()].filter(j => j.status === 'running');
+                    if (pending.length) {
+                        assistantDrains += 1;
+                        const names = pending.map(j => `"${j.name}"`).join(', ');
+                        console.log(`[Chat Stream] Hand-off: lead finished first — waiting up to ${Math.round(ASSISTANT_DRAIN_MS / 1000)}s for ${pending.length} background job(s): ${names}`);
+                        logChatActivity(`Two models: waiting for ${pending.length} background job(s) still running on ${handoff.primary || 'the assistant'} — ${names}`);
+                        updateJobPhase('waiting');
+                        const waited = await Promise.race([
+                            Promise.all(pending.map(j => j.promise).filter(Boolean)).then(() => true),
+                            new Promise(resolve => setTimeout(() => resolve(false), ASSISTANT_DRAIN_MS)),
+                        ]);
+                        if (!waited) console.warn('[Chat Stream] Hand-off: drain timed out — answering with what landed');
+                        const drained = deliverAssistantResults();
+                        if (drained) {
+                            // Keep what the lead already wrote as its own turn,
+                            // then let it revise with the results in hand.
+                            // This round's own text (turnContent is scoped to
+                            // the tool-dispatch branch and does not exist here).
+                            const draft = fullResponse.slice(roundStart);
+                            currentMessages = [
+                                ...currentMessages,
+                                ...(draft.trim() ? [{ role: 'assistant', content: draft }] : []),
+                                drained,
+                                {
+                                    role: 'system',
+                                    content: 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. Reply with the COMPLETE final answer, not a diff or a comment on the change.',
+                                },
+                            ];
+                            // The draft is replaced by the revision, so rewind
+                            // the visible text the same way a continuation does.
+                            fullResponse = fullResponse.slice(0, roundStart);
+                            if (clientConnected && !res.writableEnded) {
+                                try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason: 'assistant_results', content: fullResponse })}\n\n`); } catch (_) { clientConnected = false; }
+                            }
+                            continue; // re-stream with the results in context
+                        }
+                    }
+                }
+
                 // Normal end — no tool calls. Exit outer loop.
                 break;
             } // end tool-call outer loop
@@ -26350,6 +26403,11 @@ const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PA
 // How many of the jobs the first pass proposes the server starts on its own.
 // 0 disables the auto-dispatch and leaves it entirely to the lead.
 const HANDOFF_AUTO_JOBS = Math.max(0, parseInt(process.env.HANDOFF_AUTO_JOBS || '2', 10) || 0);
+// How long the turn will wait for background work it dispatched but never
+// collected, and how many times it will do so. Bounded: a job that never
+// returns must not hold the answer hostage.
+const ASSISTANT_DRAIN_MS = Math.max(0, parseInt(process.env.ASSISTANT_DRAIN_MS || '90000', 10) || 0);
+const ASSISTANT_DRAIN_MAX = Math.max(0, parseInt(process.env.ASSISTANT_DRAIN_MAX || '1', 10) || 0);
 const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
 const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
 const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
