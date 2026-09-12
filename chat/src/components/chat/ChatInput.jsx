@@ -657,7 +657,7 @@ export default function ChatInput({
                                         : q.status === 'starting' ? 'starting'
                                         : q.status === 'done' ? 'ready · waiting for the current reply'
                                         : q.status === 'failed' ? 'failed'
-                                        : 'queued'}
+                                        : (q.note ? `queued · ${q.note}` : 'queued')}
                                 </span>
                                 {onRemoveQueued && (
                                     <button

@@ -196,6 +196,7 @@ const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
 const reasoningEffort = require('./services/reasoningEffort');
 const modelRolesSvc = require('./services/modelRoles');
+const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -25617,8 +25618,19 @@ async function runSidecarTurn(job, parentReq) {
         const msgs = Array.isArray(bodyRest.messages) ? bodyRest.messages.map(m => ({ ...m })) : [];
         const last = msgs.length - 1;
         if (last >= 1 && msgs[last].role === 'user' && msgs[last - 1].role === 'user') {
-            const note = '[SYSTEM: The previous user message is being answered SEPARATELY by another reply that is still being written. Do NOT answer it, summarize it, or refer to it — answer ONLY the message below, on its own.]\n\n';
-            const um = msgs[last];
+            // Fresh snapshot at launch time (the route's copy may be seconds old).
+            let snapshot = job.foregroundSnapshot || '';
+            try { const fg = activeStreamingJobs.get(job.conversationId); if (fg && fg.userId === job.userId && typeof fg.content === 'string' && fg.content.length > snapshot.length) snapshot = fg.content; } catch (_) {}
+            const snap = snapshot.trim().slice(0, 6000);
+            if (snap) {
+                // Roles alternate (user / assistant / user) — the other agent's
+                // partial reply sits where its answer will end up.
+                msgs.splice(last, 0, { role: 'assistant', content: `[Reply in progress by another agent — partial so far, may be cut off:]\n${snap}` });
+            }
+            const note = snap
+                ? '[SYSTEM: The previous user message is being answered by ANOTHER agent right now; its partial reply is shown above. Do NOT answer that message, repeat it, or continue it — answer ONLY the message below, on its own. You may refer to the other reply only if this message asks about it.]\n\n'
+                : '[SYSTEM: The previous user message is being answered SEPARATELY by another reply that is still being written. Do NOT answer it, summarize it, or refer to it — answer ONLY the message below, on its own.]\n\n';
+            const um = msgs[msgs.length - 1];
             if (typeof um.content === 'string') um.content = note + um.content;
             else if (Array.isArray(um.content)) {
                 const tIdx = um.content.findIndex(p => p && p.type === 'text' && typeof p.text === 'string');
@@ -25747,12 +25759,30 @@ app.post('/api/conversations/:id/turns', requireAuth, async (req, res) => {
     if (!Array.isArray(body.messages) || !body.messages.length) return res.status(400).json({ error: 'messages array is required' });
     const model = body.model || Array.from(modelInstances.keys())[0];
     if (!model || !modelInstances.has(model)) return res.status(400).json({ error: `Model ${model || '(none)'} is not running.` });
+    const userId = req.user?.id || req.apiKeyData?.id || 'default';
+    // Same topic as the reply in progress → one window: a follow-up cannot be
+    // answered in parallel (the reply it refers to does not exist yet), so
+    // tell the client to queue it. A different topic gets its own window.
+    const textOf = (m) => (typeof m?.content === 'string' ? m.content : Array.isArray(m?.content) ? m.content.filter(p => p && p.type === 'text').map(p => p.text).join('\n') : '');
+    const userMsgs = body.messages.filter(m => m && m.role === 'user');
+    const fgJob = activeStreamingJobs.get(id);
+    const foregroundSnapshot = fgJob && fgJob.userId === userId ? String(fgJob.content || '') : '';
+    if (userMsgs.length >= 2 && body.messages[body.messages.length - 1]?.role === 'user') {
+        const verdict = turnRouting.classifyFollowUp({
+            message: textOf(userMsgs[userMsgs.length - 1]),
+            previousMessage: textOf(userMsgs[userMsgs.length - 2]),
+            partialReply: foregroundSnapshot,
+        });
+        if (verdict.followUp) {
+            console.log(`[Chat Sidecar] follow-up detected (${verdict.reason}, ${verdict.score.toFixed(2)}) — queued in the same window for conversation ${String(id).slice(0, 8)}…`);
+            return res.status(409).json({ error: 'This message follows up on the reply in progress — it will run right after it, in the same window.', queued: true, reason: 'follow_up', detail: verdict.reason });
+        }
+    }
     const cap = chatCapacity();
     const m = cap.models.find(x => x.name === model);
     if (!m || m.free <= 0) {
-        return res.status(409).json({ error: 'No free slot on this model — the message should be queued.', queued: true, capacity: cap });
+        return res.status(409).json({ error: 'No free slot on this model — the message should be queued.', queued: true, reason: 'no_slot', capacity: cap });
     }
-    const userId = req.user?.id || req.apiKeyData?.id || 'default';
     const mine = Array.from(sidecarTurns.values()).filter(j => j.conversationId === id && j.userId === userId && j.status === 'running');
     if (mine.length >= SIDECAR_MAX_PER_CONV) {
         return res.status(409).json({ error: `Already ${mine.length} parallel replies running for this conversation — queue this one.`, queued: true });
@@ -25771,6 +25801,10 @@ app.post('/api/conversations/:id/turns', requireAuth, async (req, res) => {
         running: new Map(),
         error: null,
         userMessage: body.userMessage && typeof body.userMessage === 'object' ? body.userMessage : null,
+        // What the other reply had said when this one started — handed to the
+        // worker as context so the two "talk": it can build on / avoid
+        // repeating the reply in progress instead of answering blind.
+        foregroundSnapshot,
         body: { ...body, model, conversationId: id, stream: true },
         abortController: new AbortController(),
     };
@@ -25786,9 +25820,12 @@ app.get('/api/conversations/:id/turns', requireAuth, (req, res) => {
     const { id } = req.params;
     const userId = req.user?.id || req.apiKeyData?.id || 'default';
     const full = String(req.query.full || '') === '1';
+    // live=1: the chat renders a running parallel reply as its own bubble, so
+    // it needs the partial text on every poll (not only when finished).
+    const live = String(req.query.live || '') === '1';
     const jobs = Array.from(sidecarTurns.values())
         .filter(j => j.conversationId === id && j.userId === userId)
-        .map(j => publicSidecarJob(j, { full: full || j.status !== 'running' }));
+        .map(j => ({ ...publicSidecarJob(j, { full: full || j.status !== 'running' }), ...(live && j.status === 'running' ? { content: j.content, toolChips: j.toolChips } : {}) }));
     res.json({ jobs });
 });
 

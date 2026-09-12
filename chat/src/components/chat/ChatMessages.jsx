@@ -118,9 +118,62 @@ function StreamingMessage() {
  * layout props change. Streaming content updates bypass this component
  * entirely (StreamingMessage reads from the store directly).
  */
+// A parallel (sidecar) reply in flight: the user's message plus a live
+// assistant bubble fed by the poll — its own response window, so a second
+// question on a free slot streams next to the first instead of hiding in a
+// composer pill. Committed into `messages` in order once the first reply lands.
+function ParallelTurn({ turn }) {
+    const running = Array.isArray(turn.runningToolCalls) ? turn.runningToolCalls : [];
+    const done = Array.isArray(turn.toolChips) ? turn.toolChips : [];
+    const liveToolCalls = [
+        ...done.map(c => ({ ...c })),
+        ...running.map(rc => ({
+            type: 'native_tool_call',
+            label: rc.name || 'tool',
+            purpose: rc.purpose || undefined,
+            query: typeof rc.arguments === 'string' ? rc.arguments.slice(0, 80) : '',
+            startedAt: rc.startedAt,
+            status: 'partial',
+        })),
+    ];
+    const content = (turn.status === 'done' && turn.result) ? (turn.result.content || '') : (turn.partial || '');
+    const isLive = turn.status !== 'done';
+    const statusText = turn.status === 'done'
+        ? 'Finished — will be placed after the current reply'
+        : (turn.progress ? `In parallel — ${turn.progress}` : 'In parallel — starting');
+    return (
+        <div className="parallel-turn" style={{ borderLeft: '2px solid var(--accent)', paddingLeft: 10, marginTop: 6, opacity: 0.97 }}>
+            <ChatMessage
+                key={`${turn.id}-user`}
+                id={`${turn.id}-user`}
+                role="user"
+                content={turn.content}
+                attachments={turn.userMessage && turn.userMessage.attachments}
+                timestamp={turn.userMessage && turn.userMessage.timestamp}
+                isStreaming={false}
+            />
+            <ChatMessage
+                key={`${turn.id}-assistant`}
+                role="assistant"
+                modelName="Assistant · parallel"
+                content={content}
+                isStreaming={isLive}
+                streamingContent={content}
+                toolCalls={liveToolCalls.length ? liveToolCalls : undefined}
+                streamingStatus={{ text: statusText }}
+                responseTime={turn.status === 'done' && turn.result ? turn.result.responseTime : undefined}
+            />
+            {!isLive && (
+                <div style={{ fontSize: 11.5, color: 'var(--ink-4)', margin: '2px 0 8px' }}>{statusText}</div>
+            )}
+        </div>
+    );
+}
+
 const ChatMessages = React.memo(function ChatMessages({
     messages,
     isStreaming,
+    parallelTurns = [],
     onContinue,
     isLoading,
     chatStyle = 'default',
@@ -158,7 +211,7 @@ const ChatMessages = React.memo(function ChatMessages({
 
         prevMessagesLengthRef.current = messages.length;
         prevStreamingRef.current = isStreaming;
-    }, [messages.length, isStreaming, userHasScrolled]);
+    }, [messages.length, isStreaming, userHasScrolled, parallelTurns.length]);
 
     // Reset scroll tracking when streaming ends
     useEffect(() => {
@@ -205,6 +258,7 @@ const ChatMessages = React.memo(function ChatMessages({
                     needsContinuation={message.needsContinuation}
                     isPartial={message.isPartial}
                     toolCalls={message.toolCalls}
+                    modelName={message.parallel ? 'Assistant · parallel' : undefined}
                     searchResults={message.searchResults}
                     onContinue={onContinue}
                     isLoading={isLoading}
@@ -214,6 +268,9 @@ const ChatMessages = React.memo(function ChatMessages({
 
             {/* Streaming message — reads content from store directly */}
             {isStreaming && <StreamingMessage />}
+
+            {/* Parallel replies in flight — each gets its own live window */}
+            {parallelTurns.map(turn => <ParallelTurn key={turn.id} turn={turn} />)}
 
             <div ref={messagesEndRef} />
             </div>

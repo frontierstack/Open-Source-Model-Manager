@@ -1758,7 +1758,7 @@ export default function ChatContainer({
                         body: JSON.stringify({ ...requestBody, userMessage }),
                     });
                     const data = await r.json().catch(() => ({}));
-                    if (!r.ok || !data.jobId) return { error: data.error || `HTTP ${r.status}`, queued: !!data.queued };
+                    if (!r.ok || !data.jobId) return { error: data.error || `HTTP ${r.status}`, queued: !!data.queued, reason: data.reason || null };
                     return { jobId: data.jobId, userMessage, conversationId };
                 } catch (e) {
                     return { error: e && e.message ? e.message : String(e) };
@@ -2533,6 +2533,11 @@ export default function ChatContainer({
                 }
             }
         } finally {
+          // A PARALLEL send returned before any streaming state was touched —
+          // this cleanup belongs to the foreground stream that is still
+          // running. Running it here committed that stream as "cut off"
+          // (rescue path) and the server's own save then added a second copy.
+          if (!parallel) {
             // Safety net: stop the smooth-reveal pump on every exit path.
             streamActiveRef.current = false;
             if (throttleTimerRef.current) {
@@ -2599,6 +2604,7 @@ export default function ChatContainer({
                 abortControllerRef.current = null;
                 switchingConversationRef.current = false;
             }
+          }
         }
     };
 
@@ -2634,7 +2640,9 @@ export default function ChatContainer({
             if (r && r.jobId) {
                 patchQ({ status: 'working', jobId: r.jobId, userMessage: r.userMessage, startedAt: Date.now(), progress: 'thinking…' });
             } else {
-                patchQ({ status: 'queued' });
+                // follow_up: same topic as the reply in progress → one window,
+                // runs right after it. no_slot: every slot is busy.
+                patchQ({ status: 'queued', note: r && r.reason === 'follow_up' ? 'follows up on the current reply · runs right after it' : (r && r.reason === 'no_slot' ? 'no free slot · runs after the current reply' : undefined) });
             }
         } catch {
             patchQ({ status: 'queued' });
@@ -2658,7 +2666,7 @@ export default function ChatContainer({
         const tick = async () => {
             for (const convId of convIds) {
                 try {
-                    const r = await fetch(`/api/conversations/${convId}/turns`, { credentials: 'include' });
+                    const r = await fetch(`/api/conversations/${convId}/turns?live=1`, { credentials: 'include' });
                     if (!r.ok || stopped) continue;
                     const data = await r.json();
                     const jobs = Array.isArray(data.jobs) ? data.jobs : [];
@@ -2669,7 +2677,12 @@ export default function ChatContainer({
                         if (j.status === 'running') {
                             const rt = Array.isArray(j.runningToolCalls) && j.runningToolCalls[0];
                             const progress = rt ? (rt.purpose || String(rt.name || '').replace(/_/g, ' ')) : (j.contentChars > 0 ? 'writing…' : 'thinking…');
-                            return { ...q, progress, toolCalls: j.toolCalls };
+                            return {
+                                ...q, progress, toolCalls: j.toolCalls,
+                                partial: typeof j.content === 'string' ? j.content : (q.partial || ''),
+                                runningToolCalls: Array.isArray(j.runningToolCalls) ? j.runningToolCalls : [],
+                                toolChips: Array.isArray(j.toolChips) ? j.toolChips : (q.toolChips || []),
+                            };
                         }
                         if (j.status === 'done') {
                             return { ...q, status: 'done', progress: undefined, result: { content: j.content, reasoning: j.reasoning, toolChips: j.toolChips, responseTime: j.responseTime } };
@@ -3226,7 +3239,7 @@ export default function ChatContainer({
                                 onModelChange={handleModelChange}
                                 reasoningEffort={settings.reasoningEffort || 'default'}
                                 onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
-                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
+                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId && q.status !== 'starting' && q.status !== 'working' && q.status !== 'done')}
                                 onQueueMessage={handleQueueMessage}
                                 onRemoveQueued={removeQueuedMessage}
                             />
@@ -3238,6 +3251,7 @@ export default function ChatContainer({
                         <div className={`flex-1 min-h-0 overflow-hidden flex flex-col${slideDown ? ' animate-messages-enter' : ''}`}>
                             <ChatMessages
                                 messages={messages}
+                                parallelTurns={queuedMessages.filter(q => q.conversationId === activeConversationId && (q.status === 'starting' || q.status === 'working' || q.status === 'done'))}
                                 isStreaming={isStreaming}
                                 onContinue={stableHandleContinue}
                                 isLoading={isLoading}
@@ -3282,7 +3296,7 @@ export default function ChatContainer({
                                 onModelChange={handleModelChange}
                                 reasoningEffort={settings.reasoningEffort || 'default'}
                                 onReasoningEffortChange={(v) => updateSettings({ reasoningEffort: v })}
-                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId)}
+                                queuedMessages={queuedMessages.filter(q => q.conversationId === activeConversationId && q.status !== 'starting' && q.status !== 'working' && q.status !== 'done')}
                                 onQueueMessage={handleQueueMessage}
                                 onRemoveQueued={removeQueuedMessage}
                             />
