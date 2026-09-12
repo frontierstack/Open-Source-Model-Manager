@@ -2595,8 +2595,9 @@ async function syncModelInstances() {
         // and idle-gated so the probes never contend with each other.
         setTimeout(async () => {
             for (const [name, inst] of modelInstances.entries()) {
-                if (inst && inst.status === 'running' && !modelSpeed.has(name) && !(modelBusy.get(name) > 0)) {
-                    await probeModelSpeed(name).catch(() => {});
+                if (inst && inst.status === 'running') {
+                    await probeSglangCapacity(name).catch(() => {});
+                    if (!modelSpeed.has(name) && !(modelBusy.get(name) > 0)) await probeModelSpeed(name).catch(() => {});
                 }
             }
             // …and keep them fresh: the one-shot pass above cannot cover a model
@@ -5947,8 +5948,9 @@ async function monitorContainerHealth(container, modelName, port) {
                     // One tiny generation to learn this model's decode speed,
                     // so worker placement knows which model is actually faster
                     // (see modelSpeedFor / assignWorkerModels). Fire and forget.
-                    if ((wasUnhealthy || wasLoading) && !modelSpeed.has(modelName)) {
-                        setImmediate(() => { probeModelSpeed(modelName).catch(() => {}); });
+                    if (wasUnhealthy || wasLoading) {
+                        setImmediate(() => { probeSglangCapacity(modelName).catch(() => {}); });
+                        if (!modelSpeed.has(modelName)) setImmediate(() => { probeModelSpeed(modelName).catch(() => {}); });
                     }
 
                     // Broadcast structured status update for frontend
@@ -19235,10 +19237,66 @@ function parseProhibitedToolNames(text, knownNames) {
 const modelBusy = new Map();
 function modelBusyInc(name) { if (!name) return; modelBusy.set(name, (modelBusy.get(name) || 0) + 1); }
 function modelBusyDec(name) { if (!name) return; const n = (modelBusy.get(name) || 0) - 1; if (n > 0) modelBusy.set(name, n); else modelBusy.delete(name); }
+// How many turns a model can serve AT ONCE without them fighting for context.
+//
+// The two backends mean different things by "slot" and taking each at face
+// value made them incomparable:
+//   • llama.cpp `--parallel N` splits n_ctx into N slots of n_ctx/N. Each slot
+//     OWNS its context; N is a guarantee.
+//   • sglang `--max-running-requests` is only a scheduler concurrency limit
+//     over ONE shared paged KV pool. Measured here: 8 "slots" over a 44,705-
+//     token pool with a 16,384-token context — eight full turns would want
+//     131k tokens, so sglang preempts and re-prefills rather than erroring.
+//     The symptom is a latency cliff, and capacity-driven features (the
+//     sidecar starting a second message, delegate fanning workers out) were
+//     being told there was 4x more room than there is.
+//
+// So sglang's count is derived the same way llama.cpp's is defined: how many
+// full-context turns the pool actually holds. `maxTotalTokens` comes from the
+// instance's own /get_server_info (see probeSglangCapacity); without it we
+// cannot know, so fall back to the old optimistic number rather than guess.
 function modelSlotCount(inst) {
     const cfg = (inst && inst.config) || {};
-    if (inst && inst.backend === 'sglang') return Math.max(1, Math.min(parseInt(cfg.maxRunningRequests, 10) || 8, 16));
+    if (inst && inst.backend === 'sglang') {
+        const cap = Math.max(1, Math.min(parseInt(cfg.maxRunningRequests, 10) || 8, 16));
+        const pool = parseInt(cfg.maxTotalTokens, 10);
+        const ctx = parseInt(cfg.maxModelLen ?? cfg.contextSize, 10);
+        if (Number.isFinite(pool) && pool > 0 && Number.isFinite(ctx) && ctx > 0) {
+            return Math.max(1, Math.min(cap, Math.floor(pool / ctx)));
+        }
+        return cap;
+    }
     return Math.max(1, parseInt(cfg.parallelSlots, 10) || 1);
+}
+
+// Ask a running sglang instance how big its KV pool actually is. One call,
+// cached on the instance config; llama.cpp needs nothing (its slots are
+// declared up front by --parallel).
+const sglangCapacityInFlight = new Set();
+async function probeSglangCapacity(name) {
+    const inst = modelInstances.get(name);
+    if (!inst || inst.backend !== 'sglang' || (inst.status && inst.status !== 'running')) return null;
+    if (inst.config && Number.isFinite(parseInt(inst.config.maxTotalTokens, 10))) return inst.config.maxTotalTokens;
+    if (sglangCapacityInFlight.has(name)) return null;
+    sglangCapacityInFlight.add(name);
+    try {
+        const host = inst.containerName || 'host.docker.internal';
+        const port = inst.internalPort || inst.port;
+        const { data } = await axios.get(`http://${host}:${port}/get_server_info`, { timeout: 15000 });
+        const pool = parseInt(data && data.max_total_num_tokens, 10);
+        if (!Number.isFinite(pool) || pool <= 0) return null;
+        inst.config = { ...(inst.config || {}), maxTotalTokens: pool };
+        modelInstances.set(name, inst);
+        const ctx = parseInt(inst.config.maxModelLen ?? inst.config.contextSize, 10) || 0;
+        console.log(`[capacity] ${name}: KV pool ${pool} tokens / ${ctx} ctx → ${modelSlotCount(inst)} honest slot(s)` +
+            ` (max_running_requests advertises ${inst.config.maxRunningRequests})`);
+        return pool;
+    } catch (e) {
+        console.warn(`[capacity] sglang capacity probe for ${name} failed: ${e.message}`);
+        return null;
+    } finally {
+        sglangCapacityInFlight.delete(name);
+    }
 }
 function chatCapacity() {
     const models = [];
@@ -19400,6 +19458,12 @@ function startModelSpeedSweep() {
             for (const [name, inst] of modelInstances.entries()) {
                 if (!inst || inst.status !== 'running') continue;
                 if (inst.backend !== 'llamacpp' && inst.backend !== 'sglang') continue;
+                // The KV-pool size is cheap, never changes for a running
+                // instance, and is needed for an honest slot count — so it is
+                // NOT gated on the speed figure being stale.
+                const needsCapacity = inst.backend === 'sglang'
+                    && !Number.isFinite(parseInt(inst.config && inst.config.maxTotalTokens, 10));
+                if (needsCapacity) { await probeSglangCapacity(name).catch(() => {}); return; }
                 const rec = modelSpeed.get(name);
                 const ttl = (rec && rec.derived) ? MODEL_SPEED_DERIVED_TTL_MS : MODEL_SPEED_TTL_MS;
                 const stale = !rec || !rec.trusted || (Date.now() - rec.at > ttl);
