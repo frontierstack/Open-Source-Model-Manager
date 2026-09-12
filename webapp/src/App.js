@@ -246,6 +246,84 @@ const SectionHeader = ({ icon, title, subtitle, action }) => (
 );
 
 
+// ---------------------------------------------------------------------------
+// GPU picker for the model load dialogs.
+//
+// Every model container used to take ALL GPUs, and llama.cpp layer-splits one
+// model across them — which runs the cards in SEQUENCE, so extra cards buy
+// VRAM, not speed. Pinning a model to a subset lets a second model run at full
+// speed on the others (the primary/checker pairing). Empty selection = all
+// cards, i.e. the historical behaviour.
+//
+// Module scope on purpose: a component defined inside the dialog body remounts
+// on every render and loses focus/checkbox state.
+// ---------------------------------------------------------------------------
+const GpuSelector = ({ gpus, value, onChange, disabled }) => {
+    const list = Array.isArray(gpus) ? gpus : [];
+    if (list.length < 2) return null;   // nothing to choose on a single-GPU host
+    const selected = Array.isArray(value) ? value : [];
+    const allSelected = selected.length === 0 || selected.length === list.length;
+    const gb = (bytes) => (bytes / 1024 / 1024 / 1024).toFixed(1);
+    const toggle = (index) => {
+        const current = selected.length === 0 ? list.map(g => g.index) : selected;
+        const next = current.includes(index)
+            ? current.filter(i => i !== index)
+            : [...current, index].sort((a, b) => a - b);
+        // Deselecting everything is meaningless — treat it as "all".
+        onChange(next.length === 0 || next.length === list.length ? [] : next);
+    };
+    return (
+        <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.25 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75, gap: 1 }}>
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                    GPUs for this model
+                </Typography>
+                <Button
+                    size="small"
+                    onClick={() => onChange([])}
+                    disabled={disabled || allSelected}
+                    sx={{ minWidth: 0, fontSize: '0.7rem', py: 0 }}
+                >
+                    Use all
+                </Button>
+            </Box>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                {list.map(g => {
+                    const on = allSelected || selected.includes(g.index);
+                    const busy = (g.instances || []).filter(i => i.pinned);
+                    return (
+                        <Tooltip
+                            key={g.index}
+                            title={
+                                `${g.name || 'GPU'} — ${gb(g.freeMemory)} GB free of ${gb(g.totalMemory)} GB` +
+                                (busy.length ? ` · running ${busy.map(i => i.modelName).join(', ')}` : '')
+                            }
+                        >
+                            <Chip
+                                label={`GPU ${g.index} · ${gb(g.freeMemory)}G free`}
+                                size="small"
+                                color={on ? 'primary' : 'default'}
+                                variant={on ? 'filled' : 'outlined'}
+                                onClick={disabled ? undefined : () => toggle(g.index)}
+                                disabled={disabled}
+                                // The theme's filled-primary is only 20% alpha,
+                                // so dim the unselected chips for real contrast.
+                                sx={{ fontSize: '0.7rem', opacity: on ? 1 : 0.5 }}
+                            />
+                        </Tooltip>
+                    );
+                })}
+            </Box>
+            <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'text.secondary', fontSize: '0.68rem' }}>
+                {allSelected
+                    ? `All ${list.length} GPUs — one model split across every card (more VRAM, not more speed).`
+                    : `Pinned to GPU ${selected.join(', ')} — ${gb(list.filter(g => selected.includes(g.index)).reduce((sum, g) => sum + g.freeMemory, 0))} GB free there. Other cards stay free for a second model.`}
+            </Typography>
+        </Box>
+    );
+};
+
+
 // Docs sections — left-rail navigation pattern. The previous accordion
 // design had been polished repeatedly without losing its accordion-y
 // feel; this commit drops MUI Accordion entirely and shows one section
@@ -415,7 +493,11 @@ const App = () => {
     const [searchFormat, setSearchFormat] = useState('gguf'); // 'gguf', 'safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'any'
     // HuggingFace direct-load dialog (sglang loads non-GGUF formats from a repo id)
     const [hfLoadDialog, setHfLoadDialog] = useState({ open: false, repoId: '', format: '' });
+    // Per-GPU inventory for the load dialogs' GPU picker (refreshed when a
+    // dialog opens so free-VRAM figures are live).
+    const [gpuInventory, setGpuInventory] = useState([]);
     const [hfLoadConfig, setHfLoadConfig] = useState({
+        gpuDevices: [],
         // 16K default: the chat stream attaches the full skill catalog
         // (~7k tokens) plus a runtime-context system prompt, so an 8K
         // context leaves no room for the user message. 16K is the safe
@@ -475,6 +557,8 @@ const App = () => {
 
     // Model configuration state for llama.cpp
     const [llamacppConfig, setLlamacppConfig] = useState({
+        // Which GPU indices this instance may use; [] = every card (default).
+        gpuDevices: [],
         nGpuLayers: -1,
         contextSize: 4096,
         contextShift: true,
@@ -8399,7 +8483,8 @@ console.log(chip);`
             // dialog already had if /api/system/resources is unreachable.
             fetch('/api/system/resources').then(r => r.json()).then(d => {
                 const gpus = d?.gpu?.count || d?.gpus?.length || 1;
-                setHfLoadConfig(c => ({ ...c, tensorParallelSize: gpus }));
+                setGpuInventory(Array.isArray(d?.gpu?.gpus) ? d.gpu.gpus : []);
+                setHfLoadConfig(c => ({ ...c, tensorParallelSize: gpus, gpuDevices: [] }));
             }).catch(() => {});
             setHfLoadDialog({ open: true, repoId: modelId, format: modelFormat });
             return;
@@ -8440,7 +8525,8 @@ console.log(chip);`
                 contextShift: !!hfLoadConfig.contextShift,
                 disableThinking: !!hfLoadConfig.disableThinking,
                 compressMemory: !!hfLoadConfig.compressMemory,
-                toolCallParser: hfLoadConfig.toolCallParser || undefined
+                toolCallParser: hfLoadConfig.toolCallParser || undefined,
+                gpuDevices: hfLoadConfig.gpuDevices || []
             })
         })
         .then(async res => {
@@ -8586,11 +8672,20 @@ console.log(chip);`
     };
 
     // Model instance handlers
+    // Live per-GPU free VRAM + which instance already occupies each card.
+    const refreshGpuInventory = () => {
+        fetch('/api/system/resources')
+            .then(r => r.json())
+            .then(d => setGpuInventory(Array.isArray(d?.gpu?.gpus) ? d.gpu.gpus : []))
+            .catch(() => {});
+    };
+
     const handleLoadModel = (modelName) => {
         // Local /models/<name> directories are always GGUF (the only path
         // that produces them is the HF GGUF pull flow), so they always go
         // to llama.cpp. Non-GGUF models use the Load-via-sglang dialog from
         // the search results — this opens the matching llama.cpp dialog.
+        refreshGpuInventory();
         setLlamacppLoadDialog({ open: true, modelName });
     };
 
@@ -8639,7 +8734,8 @@ console.log(chip);`
                 body: JSON.stringify({
                     modelFileSize: model.fileSize,
                     modelName: model.name,
-                    backend: 'llamacpp'
+                    backend: 'llamacpp',
+                    gpuDevices: llamacppConfig.gpuDevices || []
                 }),
             });
 
@@ -14532,6 +14628,19 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             size="small"
                             InputProps={{ sx: { fontFamily: 'monospace' } }}
                         />
+                        <GpuSelector
+                            gpus={gpuInventory}
+                            value={hfLoadConfig.gpuDevices}
+                            onChange={next => setHfLoadConfig(c => ({
+                                ...c,
+                                gpuDevices: next,
+                                // sglang shards across every VISIBLE card, so the
+                                // tensor-parallel size follows the pin.
+                                tensorParallelSize: next.length ? next.length : (gpuInventory.length || c.tensorParallelSize)
+                            }))}
+                            disabled={hfLoading}
+                        />
+
                         <TextField
                             label="Max model length (context window)"
                             type="number"
@@ -14689,6 +14798,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                 ))}
                             </Box>
                         )}
+
+                        <GpuSelector
+                            gpus={gpuInventory}
+                            value={llamacppConfig.gpuDevices}
+                            onChange={next => setLlamacppConfig(c => ({ ...c, gpuDevices: next }))}
+                            disabled={llamacppLoading}
+                        />
 
                         <FormControl size="small">
                             <InputLabel>GPU Layers</InputLabel>

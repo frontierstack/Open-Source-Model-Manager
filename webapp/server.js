@@ -2228,6 +2228,71 @@ function getNvidiaDeviceCgroupRules() {
     return cachedNvidiaCgroupRules;
 }
 
+// ---------------------------------------------------------------------------
+// Per-instance GPU selection.
+//
+// Every model container used to be created with ALL GPUs (`Count: -1`), and
+// llama.cpp then layer-splits one model across every card. A layer split runs
+// the cards IN SEQUENCE, so extra cards buy VRAM, not throughput — which is
+// why two parallel agents on one 3-GPU box measured SLOWER than one. Pinning a
+// model to a subset of cards lets a second model run at full speed on the
+// others (the primary/checker design), at the cost of that model's VRAM
+// ceiling.
+//
+// `config.gpuDevices` is a sorted array of device indices, or null/absent for
+// "all GPUs" (the historical default — nothing regresses when it is unset).
+// ---------------------------------------------------------------------------
+function normalizeGpuDevices(value, gpuCount) {
+    if (value === undefined || value === null || value === '') return null;
+    const list = Array.isArray(value) ? value : String(value).split(',');
+    const ids = [...new Set(
+        list.map(v => parseInt(String(v).trim(), 10)).filter(n => Number.isInteger(n) && n >= 0)
+    )].sort((a, b) => a - b);
+    if (ids.length === 0) return null;
+    if (gpuCount > 0) {
+        const bad = ids.filter(i => i >= gpuCount);
+        if (bad.length) {
+            const err = new Error(
+                `Invalid GPU index ${bad.join(', ')} — this host has ${gpuCount} GPU(s) (valid: 0-${gpuCount - 1})`
+            );
+            err.statusCode = 400;
+            throw err;
+        }
+        // Selecting every card is the same as the default; store null so the
+        // container keeps the plain `Count: -1` request.
+        if (ids.length >= gpuCount) return null;
+    }
+    return ids;
+}
+
+// Translate a gpuDevices selection into a dockerode DeviceRequests entry.
+// DeviceIDs is the nvidia runtime's own per-device selector — preferred over
+// CUDA_VISIBLE_DEVICES because the container then genuinely cannot see the
+// other cards (nvidia-smi inside it lists only the selected ones).
+function gpuDeviceRequests(gpuDevices) {
+    if (Array.isArray(gpuDevices) && gpuDevices.length > 0) {
+        return [{
+            Driver: 'nvidia',
+            DeviceIDs: gpuDevices.map(String),
+            Capabilities: [['gpu']]
+        }];
+    }
+    return [{
+        Driver: 'nvidia',
+        Count: -1,
+        Capabilities: [['gpu']]
+    }];
+}
+
+// Round-trip marker so an instance adopted at webapp boot still reports which
+// GPUs it occupies (the nvidia runtime does not expose DeviceIDs on inspect in
+// a way that survives a plain Count request).
+function gpuDevicesEnv(gpuDevices) {
+    return Array.isArray(gpuDevices) && gpuDevices.length
+        ? [`MODELSERVER_GPU_DEVICES=${gpuDevices.join(',')}`]
+        : [];
+}
+
 // Detected NVIDIA GPU count, cached for the lifetime of the process.
 // Used as the default tensor_parallel_size when a sglang instance is loaded
 // without an explicit value — sglang should fan out across every GPU
@@ -2382,7 +2447,8 @@ async function syncModelInstances() {
                     maxRunningRequests: parseInt(getEnvValue('SGLANG_MAX_RUNNING_REQUESTS') || '256'),
                     kvCacheDtype: getEnvValue('SGLANG_KV_CACHE_DTYPE') || 'auto',
                     trustRemoteCode: getEnvValue('SGLANG_TRUST_REMOTE_CODE') !== 'false',
-                    toolCallParser: getEnvValue('SGLANG_TOOL_CALL_PARSER') || ''
+                    toolCallParser: getEnvValue('SGLANG_TOOL_CALL_PARSER') || '',
+                    gpuDevices: normalizeGpuDevices(getEnvValue('MODELSERVER_GPU_DEVICES'), 0)
                 };
                 // HF-repo instances: container is `sglang-hf-<owner>--<name>` and
                 // the modelInstances key needs to be the actual repo id (with /)
@@ -2434,7 +2500,9 @@ async function syncModelInstances() {
                     // a webapp recreate.
                     specType: getEnvValue('LLAMA_SPEC_TYPE') || 'none',
                     specDraftNMax: parseInt(getEnvValue('LLAMA_SPEC_DRAFT_N_MAX') || '3'),
-                    specDraftModel: getEnvValue('LLAMA_SPEC_DRAFT_MODEL') || ''
+                    specDraftModel: getEnvValue('LLAMA_SPEC_DRAFT_MODEL') || '',
+                    // Which GPUs this container was pinned to, if any (null = all).
+                    gpuDevices: normalizeGpuDevices(getEnvValue('MODELSERVER_GPU_DEVICES'), 0)
                 };
             }
 
@@ -4864,11 +4932,17 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             }
 
             const detectedGpus = await getGpuCount();
+            const gpuDevices = normalizeGpuDevices(req.body.gpuDevices, detectedGpus);
+            // sglang shards across every VISIBLE card, so a pinned subset caps
+            // --tp at the number of cards the container can actually see.
+            const visibleGpus = gpuDevices ? gpuDevices.length : detectedGpus;
+            const requestedTp = Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : visibleGpus;
             const config = {
+                gpuDevices,
                 maxModelLen: req.body.maxModelLen || 4096,
                 cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
                 memFractionStatic: req.body.memFractionStatic ?? 0.88,
-                tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
+                tensorParallelSize: Math.min(requestedTp, visibleGpus),
                 maxRunningRequests: req.body.maxRunningRequests || 256,
                 chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
                 schedulePolicy: req.body.schedulePolicy || 'lpm',
@@ -4888,6 +4962,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             result = await createSglangInstance(modelName, fullPath, config);
         } else if (backend === 'llamacpp') {
             const config = {
+                gpuDevices: normalizeGpuDevices(req.body.gpuDevices, await getGpuCount()),
                 nGpuLayers: req.body.nGpuLayers ?? -1,
                 contextSize: req.body.contextSize || 4096,
                 contextShift: req.body.contextShift ?? true,
@@ -4935,7 +5010,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     } catch (error) {
         console.error(`Error loading model ${modelName}:`, error.message);
         broadcast({ type: 'log', message: `Error: ${error.message}` });
-        res.status(500).json({ error: error.message });
+        res.status(error.statusCode || 500).json({ error: error.message });
     }
 });
 
@@ -5143,11 +5218,20 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
         }
     }
     const detectedGpus = await getGpuCount();
+    let gpuDevices;
+    try {
+        gpuDevices = normalizeGpuDevices(req.body.gpuDevices, detectedGpus);
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
+    const visibleGpus = gpuDevices ? gpuDevices.length : detectedGpus;
+    const requestedTp = Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : visibleGpus;
     const config = {
+        gpuDevices,
         maxModelLen: req.body.maxModelLen || 4096,
         cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
         memFractionStatic: req.body.memFractionStatic ?? 0.88,
-        tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
+        tensorParallelSize: Math.min(requestedTp, visibleGpus),
         maxRunningRequests: req.body.maxRunningRequests || 256,
         chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
         schedulePolicy: req.body.schedulePolicy || 'lpm',
@@ -5219,6 +5303,8 @@ async function createSglangInstance(modelName, modelPath, config) {
         // Set served model name so sglang accepts it in the `model` request field
         envVars.push(`SGLANG_SERVED_MODEL_NAME=${modelName}`);
 
+        envVars.push(...gpuDevicesEnv(config.gpuDevices));
+
         await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
@@ -5232,11 +5318,7 @@ async function createSglangInstance(modelName, modelPath, config) {
                     // Bind to localhost only - containers communicate via Docker network, not exposed externally
                     [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
                 },
-                DeviceRequests: [{
-                    Driver: 'nvidia',
-                    Count: -1,
-                    Capabilities: [['gpu']]
-                }],
+                DeviceRequests: gpuDeviceRequests(config.gpuDevices),
                 // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
                 DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 // Connect to the same network as webapp for internal communication
@@ -5326,6 +5408,8 @@ async function createSglangHfInstance(repoId, format, config) {
             `SGLANG_REASONING_PARSER=${config.reasoningParser || ''}`,
         ];
 
+        envVars.push(...gpuDevicesEnv(config.gpuDevices));
+
         const hfToken = process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_TOKEN || '';
         if (hfToken) {
             envVars.push(`HUGGING_FACE_HUB_TOKEN=${hfToken}`);
@@ -5347,11 +5431,7 @@ async function createSglangHfInstance(repoId, format, config) {
                 PortBindings: {
                     [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
                 },
-                DeviceRequests: [{
-                    Driver: 'nvidia',
-                    Count: -1,
-                    Capabilities: [['gpu']]
-                }],
+                DeviceRequests: gpuDeviceRequests(config.gpuDevices),
                 // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
                 DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 NetworkMode: 'modelserver_default',
@@ -5479,6 +5559,8 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             envVars.push(`LLAMA_THREADS=${config.threads}`);
         }
 
+        envVars.push(...gpuDevicesEnv(config.gpuDevices));
+
         await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
@@ -5492,11 +5574,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
                     // Bind to localhost only - containers communicate via Docker network, not exposed externally
                     [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
                 },
-                DeviceRequests: [{
-                    Driver: 'nvidia',
-                    Count: -1,
-                    Capabilities: [['gpu']]
-                }],
+                DeviceRequests: gpuDeviceRequests(config.gpuDevices),
                 // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
                 DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 NetworkMode: 'modelserver_default',
@@ -7233,6 +7311,21 @@ app.get('/api/system/resources', requireAuth, async (req, res) => {
                 totalGpuMemory += memTotal;
                 totalGpuFree += memFree;
             }
+            // Which running instance sits on which card, so the load form's
+            // GPU picker can show what a card is already busy with. An
+            // instance with no pin (gpuDevices null) spans every card.
+            for (const g of gpus) {
+                g.instances = [];
+                for (const [name, inst] of modelInstances.entries()) {
+                    if (inst.status !== 'running' && inst.status !== 'starting') continue;
+                    const pinned = inst.config && Array.isArray(inst.config.gpuDevices) && inst.config.gpuDevices.length
+                        ? inst.config.gpuDevices
+                        : null;
+                    if (pinned === null || pinned.includes(g.index)) {
+                        g.instances.push({ modelName: name, pinned: pinned !== null });
+                    }
+                }
+            }
             if (gpus.length > 0) {
                 gpuInfo = {
                     count: gpus.length,
@@ -7282,6 +7375,12 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
 
     try {
         const { modelFileSize, modelName, backend } = req.body;
+        // A pinned subset of GPUs is the only VRAM this instance will get, so
+        // every recommendation below must be computed from those cards alone.
+        let selectedGpus = null;
+        try {
+            selectedGpus = normalizeGpuDevices(req.body.gpuDevices, 0);
+        } catch (_) { selectedGpus = null; }
 
         if (!modelFileSize) {
             return res.status(400).json({ error: 'modelFileSize is required' });
@@ -7325,6 +7424,14 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             // No GPU available
         }
 
+        if (selectedGpus && selectedGpus.length && gpuDetails.length) {
+            const filtered = gpuDetails.filter(g => selectedGpus.includes(g.index));
+            if (filtered.length) {
+                gpuDetails.length = 0;
+                gpuDetails.push(...filtered);
+            }
+        }
+
         const gpuCount = gpuDetails.length;
         const totalGpuMemoryGB = gpuDetails.reduce((s, g) => s + g.totalGB, 0);
         const totalGpuFreeGB = gpuDetails.reduce((s, g) => s + g.freeGB, 0);
@@ -7346,6 +7453,9 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         const gpuFreeGB = totalGpuFreeGB;
 
         let notes = [];
+        if (selectedGpus && selectedGpus.length) {
+            notes.push(`Pinned to GPU ${selectedGpus.join(', ')} — sizing against those cards only`);
+        }
 
         // ========================================================================
         // LLAMA.CPP OPTIMAL SETTINGS
