@@ -76,6 +76,9 @@ const TOOL_VERBS = {
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
     delegate: 'Running worker agents',
+    first_pass: 'Sizing up the task',
+    ask_assistant: 'Handing work to the other model',
+    await_assistant: 'Waiting on the other model',
 };
 function verbFor(t) {
     const name = (t && (t.label || t.name)) || '';
@@ -206,24 +209,46 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
         rows.push({ key: 'lead', model: lead, parts, seconds: since('lead') });
     }
 
-    // The everyday model — its up-front brief, then the background jobs it
-    // runs for the lead.
+    // The everyday model — its up-front brief, then the QUEUE of background
+    // jobs the lead handed it. Every job gets its own row: an aggregate
+    // "(3 jobs)" line hid exactly what the user asked to see — which jobs the
+    // two models passed each other and where each one is. Finished jobs stay
+    // on screen so the exchange accumulates instead of flickering past.
+    const allJobs = (handoff && Array.isArray(handoff.jobs)) ? handoff.jobs : [];
     if (assistant) {
         const running = runningJobsOf(handoff);
         if (phase === 'first_pass') {
             rows.push({ key: 'assistant', model: assistant, parts: ['sizing up the task'], seconds: since('first_pass') });
-        } else if (running.length) {
-            const j = running[0];
-            const label = verbFor(j);
-            const parts = [];
-            if (j.current) parts.push(j.current);
-            parts.push(running.length > 1 ? `${label} (${running.length} jobs)` : label);
-            // Clock from the oldest job still running, not from this frame.
-            const oldestKey = running
-                .map(x => `job:${x.id || x.name || 'job'}`)
-                .reduce((a, b) => ((starts[a] || now) <= (starts[b] || now) ? a : b));
-            running.forEach(x => since(`job:${x.id || x.name || 'job'}`));
-            rows.push({ key: 'assistant', model: assistant, parts, seconds: since(oldestKey) });
+        } else if (allJobs.length) {
+            const done = allJobs.filter(j => j && j.status !== 'running' && j.status).length;
+            rows.push({
+                key: 'assistant',
+                model: assistant,
+                parts: [`${allJobs.length} job${allJobs.length === 1 ? '' : 's'} from ${lead || 'the lead'}`
+                    + (done ? ` · ${done} done` : '')],
+                seconds: running.length ? since('queue') : 0,
+            });
+            for (const j of allJobs) {
+                const jobKey = `job:${j.id || j.name || 'job'}`;
+                const isRunning = j.status === 'running' || !j.status;
+                const parts = [j.name || 'job'];
+                if (isRunning) {
+                    parts.push(j.current || verbFor(j));
+                } else if (j.status === 'failed') {
+                    parts.push('failed');
+                } else {
+                    parts.push(`done${j.calls ? ` · ${j.calls} tool call${j.calls === 1 ? '' : 's'}` : ''}`);
+                }
+                rows.push({
+                    key: jobKey,
+                    indent: true,
+                    done: !isRunning,
+                    failed: j.status === 'failed',
+                    model: j.model || assistant,
+                    parts,
+                    seconds: isRunning ? since(jobKey) : (typeof j.seconds === 'number' ? Math.round(j.seconds) : 0),
+                });
+            }
         }
     }
 
@@ -236,7 +261,10 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
     return rows;
 }
 
-// Compact, quiet live block — one line per busy model. Disappears with the turn.
+// Compact, quiet live block — one line per busy model, plus an indented line
+// per background job so the queue the two models pass back and forth is
+// visible while it happens. It disappears with the turn; the durable record
+// lives on the `first_pass` / `ask_assistant` chips in the finished message.
 function HandoffRows({ rows }) {
     if (!rows.length) return null;
     return (
@@ -249,12 +277,17 @@ function HandoffRows({ rows }) {
                         alignItems: 'center',
                         gap: 7,
                         minWidth: 0,
+                        ...(r.indent ? { paddingLeft: 12 } : null),
+                        ...(r.done ? { opacity: 0.72 } : null),
                         '--fs': '11.5px',
                         color: 'var(--ink-4)',
                         lineHeight: 1.35,
                     }}
                 >
-                    <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'lead' ? '0s' : '0.3s' }} />
+                    {r.indent && <span style={{ flexShrink: 0, width: 10, textAlign: 'center', opacity: 0.5 }}>↳</span>}
+                    {r.done
+                        ? <span style={{ flexShrink: 0, width: 7, textAlign: 'center', opacity: 0.8, color: r.failed ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)' }}>{r.failed ? '×' : '✓'}</span>
+                        : <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'lead' ? '0s' : '0.3s' }} />}
                     <span style={{
                         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
                         color: 'var(--ink-3)',
@@ -271,6 +304,98 @@ function HandoffRows({ rows }) {
                         <span style={{ flexShrink: 0, opacity: 0.75 }}>{r.seconds}s</span>
                     )}
                 </div>
+            ))}
+        </div>
+    );
+}
+
+// The durable record of a two-model turn, built from the hand-off chips the
+// server emits (`first_pass`, `ask_assistant`, `await_assistant`). It renders
+// ALWAYS-VISIBLE above the collapsed "N tool calls" strip: folding the
+// exchange in with ordinary tool calls is what made the pairing invisible —
+// the user had to know to expand a generic strip to find out the two models
+// had talked at all.
+function exchangeSteps(toolCalls) {
+    if (!Array.isArray(toolCalls)) return [];
+    const steps = [];
+    for (const tc of toolCalls) {
+        const label = tc && (tc.label || tc.name);
+        if (label === 'first_pass') {
+            const r = tc.result || {};
+            steps.push({
+                key: `fp${steps.length}`,
+                dir: 'out',
+                from: tc.model || r.model,
+                text: r.handedTo ? `briefed ${r.handedTo}` : 'sized up the task and handed over a brief',
+                seconds: typeof r.seconds === 'number' ? r.seconds : undefined,
+                failed: tc.status === 'failed',
+            });
+        } else if (label === 'ask_assistant') {
+            const jobs = Array.isArray(tc.assistantJobs) ? tc.assistantJobs : [];
+            steps.push({
+                key: `aa${steps.length}`,
+                dir: 'back',
+                from: tc.model,
+                text: jobs.length
+                    ? `handed back ${jobs.length} job${jobs.length === 1 ? '' : 's'}`
+                    : 'handed work back',
+                jobs,
+            });
+        } else if (label === 'await_assistant') {
+            steps.push({ key: `aw${steps.length}`, dir: 'wait', from: tc.model, text: 'waited for the results' });
+        }
+    }
+    return steps;
+}
+
+function ExchangePanel({ steps }) {
+    if (!steps.length) return null;
+    const arrow = { out: '\u2192', back: '\u2190', wait: '\u22ef' };
+    return (
+        <div
+            className="msg-exchange"
+            style={{
+                margin: '8px 0 2px', padding: '7px 10px',
+                border: '1px solid var(--rule, var(--border-primary))',
+                borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 4,
+                fontSize: '11.5px', lineHeight: 1.4, color: 'var(--ink-3, var(--text-secondary))',
+            }}
+        >
+            <div style={{ color: 'var(--ink-4, var(--text-tertiary))', letterSpacing: '.04em', textTransform: 'uppercase', fontSize: '10px' }}>
+                Two models on this turn
+            </div>
+            {steps.map(st => (
+                <React.Fragment key={st.key}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                        <span style={{ flexShrink: 0, width: 11, opacity: 0.7 }}>{arrow[st.dir]}</span>
+                        <span style={{
+                            fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                            color: 'var(--ink-2, var(--text-primary))', flexShrink: 0,
+                            maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>{st.from || 'model'}</span>
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                            {st.text}
+                        </span>
+                        {st.seconds >= 0.1 && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(st.seconds)}s</span>}
+                    </div>
+                    {(st.jobs || []).map((j, i) => (
+                        <div key={`${st.key}j${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 18, minWidth: 0, opacity: 0.9 }}>
+                            <span style={{
+                                flexShrink: 0, width: 8, textAlign: 'center',
+                                color: j.status === 'failed' ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)',
+                            }}>{j.status === 'failed' ? '\u00d7' : '\u2713'}</span>
+                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                {j.name || `job ${i + 1}`}
+                            </span>
+                            {!!j.calls && <span style={{ flexShrink: 0, opacity: 0.7 }}>{j.calls} tool call{j.calls === 1 ? '' : 's'}</span>}
+                            {typeof j.seconds === 'number' && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(j.seconds)}s</span>}
+                            <span style={{
+                                fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0, opacity: 0.65,
+                                maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>{j.model || ''}</span>
+                        </div>
+                    ))}
+                </React.Fragment>
             ))}
         </div>
     );
@@ -786,6 +911,10 @@ export default React.memo(function ChatMessage({
                         users see live progress. Charts also surface in the
                         main body above (see ChartBlock pass) — this strip
                         is the transparency footer. */}
+                    {!isUser && !bodyCollapsed && !isStreaming && (
+                        <ExchangePanel steps={exchangeSteps(toolCalls)} />
+                    )}
+
                     {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {
                         // Group header summary: count unique tool names so the user
                         // sees "web_search, fetch_url (x5)" rather than a raw count.

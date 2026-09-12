@@ -21920,6 +21920,59 @@ const chatStreamHandlerInner = async (req, res) => {
             } catch (_) { clientConnected = false; }
         }
 
+        // --- Make the two models' exchange VISIBLE in the transcript --------
+        // The hand-off used to record its steps by pushing onto
+        // `persistedToolChips` ONLY — a list the live client never receives,
+        // and which the client's own save then overwrites — so a finished turn
+        // carried no trace of the pair talking. Measured on the saved
+        // conversations: 0 `first_pass` chips, 0 `ask_assistant` chips and 0
+        // `assistantJobs` across turns whose `assistedBy` proves the pairing
+        // engaged. Emitting the SAME tool_executing/tool_result frames a real
+        // tool call emits gives the client an ordinary chip: it renders live
+        // with a running clock and it survives the commit.
+        let handoffChipSeq = 0;
+        const openHandoffChip = (chip) => {
+            const id = `handoff_${Date.now().toString(36)}_${++handoffChipSeq}`;
+            chip.toolCallId = id;
+            chip.status = 'running';
+            persistedToolChips.push(chip);
+            if (clientConnected) {
+                try {
+                    res.write(`data: ${JSON.stringify({
+                        type: 'tool_executing',
+                        tool_call_id: id,
+                        name: chip.label,
+                        arguments: JSON.stringify(chip.args || {}),
+                        purpose: chip.purpose,
+                        model: chip.model,
+                    })}\n\n`);
+                    if (res.flush) res.flush();
+                } catch (_) { clientConnected = false; }
+            }
+            return chip;
+        };
+        const closeHandoffChip = (chip, { result, purpose, query, failed } = {}) => {
+            if (!chip) return;
+            chip.status = failed ? 'failed' : 'success';
+            if (result) chip.result = result;
+            if (purpose) chip.purpose = purpose;
+            if (query) chip.query = query;
+            chip.durationMs = Date.now() - (chip._startedAt || Date.now());
+            if (!clientConnected) return;
+            try {
+                res.write(`data: ${JSON.stringify({
+                    type: 'tool_result',
+                    tool_call_id: chip.toolCallId,
+                    // The finished wording — "handing 2 jobs over" must not be
+                    // what the transcript still says an hour later.
+                    purpose: chip.purpose,
+                    preview: JSON.stringify(chip.result || {}).slice(0, 800),
+                    result: chip.result || {},
+                })}\n\n`);
+                if (res.flush) res.flush();
+            } catch (_) { clientConnected = false; }
+        };
+
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
         // the lead a short brief. The lead then writes the real answer. The
@@ -21936,6 +21989,17 @@ const chatStreamHandlerInner = async (req, res) => {
                     } catch (_) { clientConnected = false; }
                 }
                 logChatActivity(`Two models: ${handoff.primary} is sizing up the task, then ${handoff.secondary} writes the answer (${handoff.reason})`);
+                // Live chip: the user sees the primary working on the brief
+                // WHILE it happens, and the finished chip stays in the
+                // transcript with the brief it handed over.
+                const fpChip = openHandoffChip({
+                    type: 'native_tool_call',
+                    label: 'first_pass',
+                    model: handoff.primary,
+                    purpose: `Sizing up the task for ${handoff.secondary}`,
+                    args: { task: latestUserText.slice(0, 200), brief_for: handoff.secondary },
+                    _startedAt: fpStart,
+                });
                 const fp = await runDelegatedTurn({
                     parentReq: req,
                     task: leadHandoff.buildFirstPassTask({
@@ -21975,18 +22039,51 @@ const chatStreamHandlerInner = async (req, res) => {
                     if (handoff.legwork && proposed.length && toolCtx._assistantJobs) {
                         const items = proposed.slice(0, HANDOFF_AUTO_JOBS);
                         try {
+                            // Open the queue chip FIRST so the jobs' own
+                            // `assistant_progress` frames can patch it live —
+                            // this chip is what shows the user which jobs went
+                            // to the other model and how each one ended.
+                            const qStart = Date.now();
+                            const queueChip = openHandoffChip({
+                                type: 'native_tool_call',
+                                label: 'ask_assistant',
+                                model: handoff.secondary,
+                                purpose: `Handing ${items.length} background job${items.length === 1 ? '' : 's'} to ${handoff.primary}`,
+                                query: items.map(i => i.name).join(', ').slice(0, 60),
+                                args: { requests: items.map(i => ({ name: i.name, task: i.task })) },
+                                _startedAt: qStart,
+                            });
+                            toolCtx._assistantChipId = queueChip.toolCallId;
                             const started = startAssistantJobs(toolCtx, items, handoff.primary);
                             handoff.autoJobs = started.map(d => d.name);
                             logChatActivity(`Two models: started ${started.length} background job(s) on ${handoff.primary} — ${started.map(d => `"${d.name}"`).join(', ')}`);
                             console.log(`[Chat Stream] Hand-off: auto-started ${started.length} background job(s) on ${handoff.primary}`);
-                            persistedToolChips.push({
-                                type: 'native_tool_call',
-                                label: 'ask_assistant',
-                                model: handoff.secondary,
-                                purpose: `Handed ${started.length} background job${started.length === 1 ? '' : 's'} to ${handoff.primary}`,
-                                query: items.map(i => i.name).join(', ').slice(0, 60),
-                                args: { requests: items.map(i => ({ name: i.name, task: i.task })) },
-                                status: 'success',
+                            // Close the chip once every job it dispatched has
+                            // settled, and stamp the final queue onto it so the
+                            // SERVER's save carries the same record the live
+                            // client built (a background save must not lose it).
+                            const promises = started
+                                .map(d => (toolCtx._assistantJobs.get(d.id) || {}).promise)
+                                .filter(Boolean);
+                            Promise.allSettled(promises).then(() => {
+                                const rows = started
+                                    .map(d => toolCtx._assistantJobs.get(d.id))
+                                    .filter(Boolean)
+                                    .map(j => ({
+                                        id: j.id,
+                                        name: j.name,
+                                        model: j.model || handoff.primary,
+                                        status: j.status,
+                                        calls: j.calls || 0,
+                                        ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                                        ...(j.error ? { error: j.error } : {}),
+                                    }));
+                                queueChip.assistantJobs = rows;
+                                const okCount = rows.filter(r => r.status === 'done').length;
+                                closeHandoffChip(queueChip, {
+                                    purpose: `${handoff.primary} ran ${okCount}/${rows.length} background job${rows.length === 1 ? '' : 's'} for ${handoff.secondary}`,
+                                    result: { model: handoff.primary, requestedBy: handoff.secondary, jobs: rows },
+                                });
                             });
                         } catch (e) {
                             console.warn('[Chat Stream] Hand-off: auto-dispatch failed:', e.message);
@@ -22022,17 +22119,12 @@ const chatStreamHandlerInner = async (req, res) => {
                     // after the turn there is no sign the other model did
                     // anything — the user's report was exactly "I'm not seeing
                     // any queue jobs ... it should be a back and forth thing".
-                    persistedToolChips.push({
-                        type: 'native_tool_call',
-                        label: 'first_pass',
-                        model: handoff.primary,
+                    closeHandoffChip(fpChip, {
                         purpose: `Sized up the task and handed ${handoff.secondary} a brief`,
                         query: (fp.answer || '').slice(0, 60),
-                        args: { task: latestUserText.slice(0, 200) },
-                        status: 'success',
-                        durationMs: Date.now() - fpStart,
                         result: {
                             model: handoff.primary,
+                            handedTo: handoff.secondary,
                             seconds: fpSecs,
                             toolCalls: fp.toolCalls || 0,
                             brief: String(fp.answer || '').slice(0, 4000),
@@ -22057,6 +22149,11 @@ const chatStreamHandlerInner = async (req, res) => {
                     // the lead can do the whole job itself.
                     console.warn(`[Chat Stream] Hand-off first pass produced nothing (${fp && fp.status}); the lead continues without a brief`);
                     logChatActivity('Hand-off: first pass produced nothing — the lead is working without a brief');
+                    closeHandoffChip(fpChip, {
+                        failed: true,
+                        purpose: `No brief — ${handoff.secondary} is working without one`,
+                        result: { model: handoff.primary, error: 'the first pass produced nothing' },
+                    });
                 }
                 if (clientConnected) {
                     try {
@@ -26056,6 +26153,29 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     typeof last.content === 'string' &&
                     last.content.length >= fullResponse.length - 2 &&
                     last.content.slice(0, 200) === fullResponse.slice(0, 200);
+                // Fold the finished background queue onto the LAST ask_assistant
+                // chip that does not already carry one (the auto-dispatched chip
+                // stamps its own). Without this a queue the MODEL dispatched has
+                // no record of what each job did once the turn is saved.
+                try {
+                    if (toolCtx._assistantJobs && toolCtx._assistantJobs.size) {
+                        for (let i = persistedToolChips.length - 1; i >= 0; i--) {
+                            const c = persistedToolChips[i];
+                            if (c && c.label === 'ask_assistant' && !c.assistantJobs) {
+                                c.assistantJobs = [...toolCtx._assistantJobs.values()].map(j => ({
+                                    id: j.id,
+                                    name: j.name,
+                                    model: j.model,
+                                    status: j.status,
+                                    calls: j.calls || 0,
+                                    ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                                    ...(j.error ? { error: j.error } : {}),
+                                }));
+                                break;
+                            }
+                        }
+                    }
+                } catch (_) { /* never fail a save over a chip decoration */ }
                 if (!alreadyPresent) {
                     const assistantMessage = {
                         id: crypto.randomUUID(),
@@ -26420,10 +26540,15 @@ const CHECKER_TIMEOUT_MS = Math.max(15000, parseInt(process.env.CHECKER_TIMEOUT_
 // Shared by the `ask_assistant` tool and by the server's own auto-dispatch of
 // the jobs the first pass proposed. Never awaited: the caller keeps working and
 // `deliverAssistantResults` folds each result into a later round.
-function assistantProgressFrame(jobs, model) {
+function assistantProgressFrame(jobs, model, toolCallId) {
     return {
         type: 'assistant_progress',
         model,
+        // The chip this queue belongs to, so the client can patch the LIVE
+        // ask_assistant chip in place (the queue then renders inside the chip
+        // and survives the commit, instead of living only in the ephemeral
+        // status rows that vanish when the turn ends).
+        ...(toolCallId ? { toolCallId } : {}),
         jobs: [...jobs.values()].map(j => ({
             id: j.id,
             name: j.name,
@@ -26487,7 +26612,7 @@ function startAssistantJobs(ctx, items, model) {
                         entry.ms = typeof ev.ms === 'number' ? ev.ms : Date.now() - entry.startedAt;
                     }
                 }
-                if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+                if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId));
             },
         }).then((r) => {
             job.status = r && r.status === 'ok' ? 'done' : 'failed';
@@ -26495,7 +26620,7 @@ function startAssistantJobs(ctx, items, model) {
             job.seconds = r && r.seconds;
             job.finishedAt = Date.now();
             logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${job.seconds}s on ${model} (${(r && r.toolCalls) || 0} tool calls)`);
-            if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+            if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId));
             return r;
         }).catch((e) => {
             job.status = 'failed';
@@ -26505,7 +26630,7 @@ function startAssistantJobs(ctx, items, model) {
         });
         dispatched.push({ id, name: t.name });
     }
-    if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model));
+    if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId));
     return dispatched;
 }
 
@@ -33383,7 +33508,14 @@ app.use((req, res) => {
                 const o = (r && typeof r === 'object') ? r : { task: String(r) };
                 const task = String(o.task || o.brief || o.request || o.objective || o.purpose || '').trim();
                 // Models label these variously; `id` is common (observed live).
-                const name = String(o.name || o.label || o.id || o.job || o.title || `job ${jobs.size + i + 1}`)
+                // With NO label at all, derive one from the task rather than
+                // falling straight to "job 2" — this name is what the user
+                // reads in the live queue and in the saved transcript, and
+                // "job 2" tells them nothing about what the pair traded.
+                const fallback = task
+                    ? task.replace(/^(please\s+|go\s+|now\s+)/i, '').split(/(?<=[.;:])\s|\n/)[0].trim().replace(/[.;:,]$/, '').slice(0, 48)
+                    : `job ${jobs.size + i + 1}`;
+                const name = String(o.name || o.label || o.id || o.job || o.title || fallback || `job ${jobs.size + i + 1}`)
                     .trim().replace(/_/g, ' ').slice(0, 60);
                 return { name, task };
             }).filter(x => x.task);
@@ -33418,6 +33550,8 @@ app.use((req, res) => {
                 }
             } catch (_) { /* the guard is advisory — never block a dispatch on it */ }
 
+            // Bind the queue to THIS chip so `assistant_progress` patches it.
+            if (ctx._toolCallId) ctx._assistantChipId = ctx._toolCallId;
             const dispatched = startAssistantJobs(ctx, taken, model);
             logUserActivity(ctx.userId, `Assistant: ${ctx.model || 'the lead'} dispatched ${dispatched.length} job(s) to ${model} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
             return {

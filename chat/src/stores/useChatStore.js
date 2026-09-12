@@ -627,6 +627,9 @@ export const useChatStore = create(
                 return {
                     ...existing,
                     status: tc.error ? 'failed' : 'success',
+                    // A tool may restate its purpose in the past tense when it
+                    // finishes (the two-model hand-off chips do).
+                    ...(tc.purpose ? { purpose: tc.purpose } : {}),
                     preview: tc.preview,
                     // Full parsed tool result — lets the UI render search
                     // sources / URL snippets / anything structured without

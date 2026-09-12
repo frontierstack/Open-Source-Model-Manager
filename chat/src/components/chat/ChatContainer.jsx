@@ -2039,6 +2039,14 @@ export default function ChatContainer({
                                 continue;
                             }
                             if (parsed.type === 'assistant_progress') {
+                                // Patch the queue onto the dispatch CHIP so it renders
+                                // inside the chip (AgentsPanel) and SURVIVES the commit —
+                                // the status rows below are live-only and vanish with the
+                                // turn, which is why a finished transcript showed no sign
+                                // the two models had passed work to each other.
+                                if (parsed.toolCallId && Array.isArray(parsed.jobs)) {
+                                    patchStreamingToolCall(parsed.toolCallId, { assistantJobs: parsed.jobs });
+                                }
                                 // Background jobs the secondary handed BACK to the
                                 // primary — they run CONCURRENTLY with the
                                 // secondary's own work, which is exactly what
@@ -2094,6 +2102,7 @@ export default function ChatContainer({
                                 finishStreamingToolCall({
                                     tool_call_id: parsed.tool_call_id,
                                     preview: parsed.preview,
+                                    purpose: parsed.purpose,
                                     result,
                                     error,
                                 });
@@ -3106,6 +3115,14 @@ export default function ChatContainer({
                                     continue;
                                 }
                                 if (parsed.type === 'assistant_progress') {
+                                    // Patch the queue onto the dispatch CHIP so it renders
+                                    // inside the chip (AgentsPanel) and SURVIVES the commit —
+                                    // the status rows below are live-only and vanish with the
+                                    // turn, which is why a finished transcript showed no sign
+                                    // the two models had passed work to each other.
+                                    if (parsed.toolCallId && Array.isArray(parsed.jobs)) {
+                                        patchStreamingToolCall(parsed.toolCallId, { assistantJobs: parsed.jobs });
+                                    }
                                     // Background jobs the secondary handed BACK to the
                                     // primary — they run CONCURRENTLY with the
                                     // secondary's own work, which is exactly

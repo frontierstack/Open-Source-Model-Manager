@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText, ArrowLeftRight } from 'lucide-react';
 import SearchSources from './SearchSources';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
@@ -111,7 +111,12 @@ export default function ToolCallBlock({ tool }) {
     // find_video returns a videoSpec the UI renders inline as click-to-play
     // players, same lift-onto-the-chip pattern as imageSpec.
     const isVideo = !!videoSpec || (type === 'native_tool_call' && label === 'find_video');
+    // The two-model hand-off chips — the brief the primary hands over and the
+    // queue of jobs handed back. Their own icon so the exchange between the
+    // two models is picked out of a long tool list at a glance.
+    const isHandoff = type === 'native_tool_call' && (label === 'first_pass' || label === 'ask_assistant' || label === 'await_assistant');
     const IconComponent =
+        isHandoff ? ArrowLeftRight :
         (type === 'native_tool_call' && label === 'web') ? Globe :
         type === 'web_search' ? Globe :
         type === 'url_fetch' ? LinkIcon :
