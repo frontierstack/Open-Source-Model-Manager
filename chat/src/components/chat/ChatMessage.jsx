@@ -144,7 +144,8 @@ function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent,
 
 function runningJobsOf(handoff) {
     const jobs = (handoff && Array.isArray(handoff.jobs)) ? handoff.jobs : [];
-    return jobs.filter(j => j && (j.status === 'running' || !j.status));
+    // Queued jobs (past the parallel limit, waiting for a slot) are pending too.
+    return jobs.filter(j => j && (j.status === 'running' || j.status === 'queued' || !j.status));
 }
 
 // Who is on each side of this turn, preferring the current field names.
@@ -220,7 +221,7 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
         if (phase === 'first_pass') {
             rows.push({ key: 'assistant', model: assistant, parts: ['sizing up the task'], seconds: since('first_pass') });
         } else if (allJobs.length) {
-            const done = allJobs.filter(j => j && j.status !== 'running' && j.status).length;
+            const done = allJobs.filter(j => j && j.status && j.status !== 'running' && j.status !== 'queued').length;
             rows.push({
                 key: 'assistant',
                 model: assistant,
@@ -230,12 +231,15 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
             });
             for (const j of allJobs) {
                 const jobKey = `job:${j.id || j.name || 'job'}`;
-                const isRunning = j.status === 'running' || !j.status;
+                const isQueued = j.status === 'queued';
+                const isRunning = j.status === 'running' || isQueued || !j.status;
                 const parts = [j.name || 'job'];
-                if (isRunning) {
+                if (isQueued) {
+                    parts.push('queued · waiting for a free slot');
+                } else if (isRunning) {
                     parts.push(j.current || verbFor(j));
-                } else if (j.status === 'failed') {
-                    parts.push('failed');
+                } else if (j.status === 'failed' || j.status === 'cancelled') {
+                    parts.push(j.status);
                 } else {
                     parts.push(`done${j.calls ? ` · ${j.calls} tool call${j.calls === 1 ? '' : 's'}` : ''}`);
                 }
@@ -243,7 +247,7 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
                     key: jobKey,
                     indent: true,
                     done: !isRunning,
-                    failed: j.status === 'failed',
+                    failed: j.status === 'failed' || j.status === 'cancelled',
                     model: j.model || assistant,
                     parts,
                     seconds: isRunning ? since(jobKey) : (typeof j.seconds === 'number' ? Math.round(j.seconds) : 0),
@@ -458,8 +462,8 @@ function ExchangePanel({ steps }) {
                         <div key={`${st.key}j${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 18, minWidth: 0, opacity: 0.9 }}>
                             <span style={{
                                 flexShrink: 0, width: 8, textAlign: 'center',
-                                color: j.status === 'failed' ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)',
-                            }}>{j.status === 'failed' ? '\u00d7' : '\u2713'}</span>
+                                color: (j.status === 'failed' || j.status === 'cancelled') ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)',
+                            }}>{(j.status === 'failed' || j.status === 'cancelled') ? '\u00d7' : '\u2713'}</span>
                             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
                                 <span style={{ color: 'var(--ink-2, var(--text-primary))' }}>{j.name || `job ${i + 1}`}</span>
                                 {j.task ? <span style={{ opacity: 0.75 }}>{` \u2014 ${clipSentence(j.task, 90)}`}</span> : null}

@@ -397,7 +397,7 @@ function AgentsPanel({ rows, running }) {
         <div className="tool-chip-agents" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
             {rows.map((row, i) => {
                 const phase = row.phase || (running ? 'running' : 'done');
-                const live = phase === 'starting' || phase === 'running' || phase === 'checking';
+                const live = phase === 'starting' || phase === 'running' || phase === 'checking' || phase === 'queued';
                 const color = phaseColor(phase);
                 const tools = Array.isArray(row.tools) ? row.tools : [];
                 const rev = row.review;

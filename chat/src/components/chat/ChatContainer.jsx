@@ -2055,6 +2055,7 @@ export default function ChatContainer({
                                     jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
                                     // Never clobber a known assistant with undefined.
                                     ...(parsed.model ? { assistant: parsed.model } : {}),
+                                    ...(parsed.from ? { lead: parsed.from } : {}),
                                 });
                                 continue;
                             }
@@ -3146,6 +3147,7 @@ export default function ChatContainer({
                                         jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
                                         // Never clobber a known assistant with undefined.
                                         ...(parsed.model ? { assistant: parsed.model } : {}),
+                                        ...(parsed.from ? { lead: parsed.from } : {}),
                                     });
                                     continue;
                                 }

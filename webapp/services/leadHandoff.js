@@ -188,13 +188,26 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     // Picking the strong model in the composer is a deliberate choice — honour
     // it even when the turn is trivial.
     const wantsSecondary = !!(secondary && requested === secondary);
+    // The OTHER loaded model of the pair when a turn runs alone: the primary
+    // answering by itself may still hand the stronger model the hard parts
+    // (primary → secondary), and a turn deliberately aimed at the secondary
+    // may hand legwork down (secondary → primary). Null when the pair is
+    // off, not loaded, or the same model.
+    const partnerOf = (on) => {
+        if (!on || !primary || !secondary || secondary === primary) return null;
+        if (m === 'off' || !isLoaded(primary) || !isLoaded(secondary)) return null;
+        return on === primary ? secondary : on === secondary ? primary : null;
+    };
     const alone = (reason, runOn) => {
         const on = runOn || requested;
+        const partner = partnerOf(on);
         return {
             runOn: on,
             switched: !!(on && on !== requested),
             engaged: false, firstPass: false, legwork: false,
             primary, secondary: null, reason, substantial: verdict.substantial,
+            partner, partnerLegwork: !!partner && r.legwork !== false,
+            secondaryLoaded: (secondary && secondary !== primary && isLoaded(secondary)) ? secondary : null,
         };
     };
 
@@ -224,6 +237,7 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
         secondary,
         reason: m === 'always' ? 'the secondary takes every turn' : verdict.reason,
         substantial: verdict.substantial,
+        partner: primary, partnerLegwork: r.legwork !== false, secondaryLoaded: secondary,
     };
 }
 
@@ -279,6 +293,26 @@ function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
     ].join('\n');
 }
 
+// A second, cheaper ask when the brief came back with NO legwork: the small
+// first-pass model sometimes answers the WHAT I FOUND section ("workspace is
+// empty") and stops, leaving the lead to run every lookup itself (measured:
+// a 37-char brief, then ten retrieval calls on the lead, zero hand-offs).
+// One focused question, no tools, a few seconds.
+function buildLegworkOnlyTask({ userText, leadModel }) {
+    return [
+        `${leadModel || 'The main model'} is about to work on the request below and you will run background jobs for it while it writes.`,
+        '',
+        'THE USER ASKED:',
+        askForFirstPass(userText, 3000),
+        '',
+        'List 1 to 3 background jobs you can do IN PARALLEL that would genuinely help — each independent of anything the main model has not written yet: a lookup of current facts, a spec, a version or an API; gathering reference material or examples; reading or summarising a file the user supplied; running an existing script.',
+        'Reply with ONLY this section, nothing else:',
+        'LEGWORK',
+        '- <short name>: <one-line brief saying exactly what to find or do and what to report back>',
+        'If nothing would help, reply exactly: LEGWORK\n- none',
+    ].join('\n');
+}
+
 // Pull the LEGWORK lines back out of the brief so the note can tell the primary
 // to dispatch exactly those. Tolerant of the shapes a small model produces
 // (numbered or bare heading, "- name: brief" or "name — brief").
@@ -328,7 +362,7 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
     const tail = !legworkAvailable
         ? 'You are working alone on this one.'
         : started.length
-            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now (${started.map(n => `"${n}"`).join(', ')}) — do NOT redo that work yourself. Start on the parts only you can do; each result is delivered to you as it lands, and you can hand over more with \`ask_assistant\` at any time.`
+            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now (${started.map(n => `"${n}"`).join(', ')}) — do NOT redo that work yourself. Start on the parts only you can do; each result is delivered to you as it lands. As your work reveals further independent legwork, hand it over with \`ask_assistant\` right away (it queues past the parallel limit) — and if nothing more is needed, just carry on.`
             : jobs.length
             ? `${who} is idle and waiting for work. Your FIRST action should be a single \`ask_assistant\` call dispatching the LEGWORK jobs above (${jobs.map(j => `"${j.name}"`).join(', ')}) — it returns immediately and they run on ${who}'s own GPU while you write. Then start writing without waiting; each result is delivered to you as it lands.`
             : `${who} is standing by — hand it any lookup, file read or script run you would otherwise stop to do yourself with \`ask_assistant\`, and keep working while it runs.`;
@@ -351,11 +385,39 @@ function buildLeadPrelude({ assistantModel, maxParallel }) {
         'HAND OFF things that are independent of what you are writing and that you would otherwise stop to do: looking up an API, a version, a spec or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; running an existing script or test and reporting what it printed; checking an external claim.',
         'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet — it cannot read a file you have not written, and asking it to "verify /workspace/x" before you create x just wastes it; or a step so small you would finish it before the reply came back.',
         'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write, and then keep going without waiting. `await_assistant` blocks and is only for when you genuinely cannot continue.',
+        'DELEGATION IS CONTINUOUS, not a one-off: whenever your own progress or a delivered result reveals another independent lookup, read, run or check, hand it over right then and carry on — jobs past the parallel limit queue and start on their own. When a batch lands and nothing more is needed, simply carry on; never invent work to keep the assistant busy.',
     ].join(' ');
+}
+
+// Framing for a turn the PRIMARY answers alone while the stronger model is
+// loaded and idle: primary → secondary. (Or the mirror image when the user
+// aimed a small turn at the secondary on purpose.)
+function buildPartnerPrelude({ partnerModel, partnerIsStronger, maxParallel }) {
+    const who = partnerModel || 'the other model';
+    return [
+        partnerIsStronger
+            ? `You are answering this turn yourself; the STRONGER model of the pair (${who}) is loaded and idle as your assistant.`
+            : `You are answering this turn yourself; the FASTER model of the pair (${who}) is loaded and idle as your assistant.`,
+        `\`ask_assistant\` hands it a job and returns IMMEDIATELY — it works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once, more queue)` : ''} while you carry on, and each result is delivered into your context the moment it lands.`,
+        partnerIsStronger
+            ? 'HAND OFF the parts that need more capability than you have — a hard design decision, tricky reasoning or a proof to check, a difficult piece of code or analysis, a review of a draft section — plus any independent legwork (a lookup, a file to read, a script to run). Give it the context it needs in the brief; it cannot see your conversation.'
+            : 'HAND OFF independent legwork — a lookup, a file to read or summarise, a script to run and report on, a claim to check — and keep the thinking, design and writing for yourself.',
+        'DO NOT hand off the whole task, and never something that depends on output you have not written yet. Delegation is CONTINUOUS: hand over more whenever your work reveals it, and when nothing more is needed simply carry on — never invent work for it.',
+    ].join(' ');
+}
+
+// One line for a JOB that may hand the other model of the pair a little work
+// back (the "primary <-> secondary" half). Deliberately tight.
+function buildJobPartnerLine({ partnerModel, maxJobs }) {
+    const who = partnerModel || 'the other model';
+    return `The other model of the pair (${who}) is available through \`ask_assistant\` for at most ${Math.max(1, maxJobs || 1)} thing${(maxJobs || 1) === 1 ? '' : 's'} you genuinely cannot do well yourself (a hard judgment, a check of tricky reasoning) — it runs in the background and the result is delivered to you; do the rest of your task yourself and never hand it the whole task.`;
 }
 
 module.exports = {
     MODES,
+    buildLegworkOnlyTask,
+    buildPartnerPrelude,
+    buildJobPartnerLine,
     cleanAsk,
     askForFirstPass,
     parseLegwork,
