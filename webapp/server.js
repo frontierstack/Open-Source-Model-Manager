@@ -24171,8 +24171,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 }
                             }
                         }
-                        const argRepeat = !targetKey && priorHits.length >= 2 &&
-                            priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
+                        // Two identical-outcome priors, OR two priors that both came
+                        // back empty/failed: a byte-identical re-issue whose last two
+                        // runs produced nothing is a repeat even when the bodies
+                        // differ by a counter or a timestamp (a refused stale web
+                        // search carried "stale search #N" in its hint, so 14 identical
+                        // calls never hashed equal and this guard never fired).
+                        const argRepeat = !targetKey && priorHits.length >= 2 && (
+                            priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash ||
+                            priorHits.slice(-2).every(h => h.outcomeEmpty || h.failed));
 
                         // ---- Args-agnostic loop detection (the "20+ loops before
                         // detection" fix). The fp-keyed guards above miss a loop
@@ -24948,7 +24955,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     const VOLATILE = new Set(['directory', 'dirPath', 'path', 'filePath',
                                         'requestedPath', 'resolvedFrom', 'resolvedPath', 'note', 'pattern',
                                         'query', 'url', 'outputPath', 'dest', 'destPath', 'source',
-                                        'message', 'size']);
+                                        'message', 'size',
+                                        // per-call counters/prose the web tool stamps on
+                                        // a stale search — they vary on every repeat
+                                        'hint', 'sameSubjectSearches', 'alreadySeen', 'today']);
                                     const sig = {};
                                     for (const k of Object.keys(parsedRes).sort()) {
                                         if (VOLATILE.has(k)) continue;
@@ -30086,9 +30096,29 @@ app.use((req, res) => {
                     // even when the engine mixed in fresh off-topic pages.
                     if (!Array.isArray(ctx._webQueryTokens)) ctx._webQueryTokens = [];
                     const qTok = loopGuard.queryTokens(a.query);
-                    const subjectRepeats = ctx._webQueryTokens.filter(t => loopGuard.querySubjectSimilarity(qTok, t) >= loopGuard.WEB_SEARCH_SUBJECT_SIM).length + 1;
+                    // Compare SUBJECTS, not the task's boilerplate. In an
+                    // enumeration task ("find MoE models with 7-13B total
+                    // parameters") every query repeats the ask's own words —
+                    // "MoE total parameters active" — around a DIFFERENT model
+                    // name, so whole-query Jaccard called "Gemma 4 12B MoE …"
+                    // a repeat of "Huihui-MoE-12B-A4B …" and refused searches
+                    // that returned 0/5 already-seen pages. Drop the tokens the
+                    // user's own ask contains before comparing; when nothing is
+                    // left on either side (the query IS the ask's subject, the
+                    // policy-524.0G incident) fall back to the full comparison.
+                    if (!ctx._webAskTokens) { try { ctx._webAskTokens = loopGuard.queryTokens(ctx.latestUserText || ''); } catch (_) { ctx._webAskTokens = new Set(); } }
+                    const stripAsk = (t) => new Set([...t].filter(x => !ctx._webAskTokens.has(x)));
+                    const subjectSim = (x, y) => {
+                        const xs = stripAsk(x), ys = stripAsk(y);
+                        return (xs.size && ys.size) ? loopGuard.querySubjectSimilarity(xs, ys) : loopGuard.querySubjectSimilarity(x, y);
+                    };
+                    const subjectRepeats = ctx._webQueryTokens.filter(t => subjectSim(qTok, t) >= loopGuard.WEB_SEARCH_SUBJECT_SIM).length + 1;
                     ctx._webQueryTokens.push(qTok);
-                    const subjectStale = subjectRepeats >= loopGuard.WEB_SEARCH_SUBJECT_REPEATS;
+                    // A re-phrasing whose results are ALL new is not stale
+                    // whatever the wording looks like — the engine plainly had
+                    // more. Require at least one already-seen page (or none).
+                    const subjectStale = subjectRepeats >= loopGuard.WEB_SEARCH_SUBJECT_REPEATS &&
+                        (nov.total === 0 || nov.already > 0);
                     if (nov.stale || subjectStale) {
                         ctx._webStaleSearches++;
                         const refused = ctx._webStaleSearches > loopGuard.WEB_SEARCH_STALE_MAX;
@@ -30138,6 +30168,26 @@ app.use((req, res) => {
                     if (staleExtra) staleExtra = { ...staleExtra, hint: `${staleExtra.hint} ${idHint}` };
                     else staleExtra = { hint: (sr && sr.hint) ? `${sr.hint} ${idHint}` : idHint };
                 }
+                // A REFUSED stale search must cost nothing more: it used to
+                // fall through to the `read:N` block below and re-fetch the
+                // same top-3 pages on every refusal (live: 14 refused repeats
+                // of one query, 3 fetches each, ~10 s a round, until the user
+                // hit Stop). Return a body that is byte-identical from one
+                // refusal to the next (no counters, no page text) so the
+                // arg-repeat guard sees the identical-outcome repeat it keys on.
+                if (staleExtra && staleExtra.success === false) {
+                    const rs = (sr && Array.isArray(sr.results)) ? sr.results : [];
+                    rs.forEach(r => noteSeen(r && r.url));
+                    const { hint: _h, sameSubjectSearches: _s, alreadySeen: _a, ...rest } = staleExtra;
+                    return {
+                        mode: 'search', ...rest,
+                        results: rs.map(r => ({ title: r && r.title, url: r && r.url })),
+                        hint: 'REFUSED: this subject has been searched repeatedly this turn and every result was already returned before. No further searches on it will run. ' +
+                            (rest.unread && rest.unread.length
+                                ? `Read one of the UNREAD pages instead (pass the url exactly): ${rest.unread.join(' , ')}`
+                                : 'You have already read every result — answer the user now with what you have, saying plainly what could not be found.'),
+                    };
+                }
                 // Optionally read the top N result URLs in the same call.
                 const readN = Math.min(3, Math.max(0, parseInt(a.read || 0, 10)));
                 if (readN && sr && Array.isArray(sr.results) && sr.results.length) {
@@ -30149,7 +30199,12 @@ app.use((req, res) => {
                     // search of that query, INCLUDING a plain one with no `read`, then
                     // carried the stale bodies back to the model.
                     const copied = sr.results.map(r => ({ ...r }));
-                    const top = copied.slice(0, readN);
+                    // Pages already read this turn are in the model's context;
+                    // spend the inline reads on ones it has NOT seen yet (a
+                    // stale search's whole value is the unread remainder).
+                    const isRead = (u) => { try { return ctx._webReadUrls.has(loopGuard.normalizeSearchUrl(u)); } catch (_) { return false; } };
+                    const fresh = copied.filter(r => r && r.url && !isRead(r.url));
+                    const top = fresh.slice(0, readN);   // every result already read → nothing to fetch
                     const reads = await Promise.all(top.map(r =>
                         run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
                     top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
