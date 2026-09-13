@@ -55,6 +55,9 @@ const VERBS = {
     run_npm:           ['Running npm',             'Ran npm'],
     make_downloadable: ['Preparing download',      'Prepared download'],
     delegate:          ['Running worker agents',   'Ran worker agents'],
+    first_pass:        ['Sizing up the task',      'Sized up the task'],
+    ask_assistant:     ['Handing work to the other model', 'Handed work to the other model'],
+    await_assistant:   ['Waiting on the other model', 'Waited on the other model'],
 };
 
 function humanize(name) {

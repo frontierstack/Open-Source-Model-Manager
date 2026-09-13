@@ -5243,3 +5243,41 @@ body:not(.theme-light):not(.theme-research) {
     --surface-secondary: rgba(37, 37, 41, 0.8);
     --surface-glass:     rgba(17, 17, 19, 0.9);
 }
+
+/* ── Working notes / answer split + in-place revision flash (2026-09-13) ──
+   The model's narration before each tool round renders muted above a
+   labelled "Answer" divider; a draft the server swapped in place (held
+   revision / checker edit) briefly tints the bubble so the change reads as a
+   polish, not a glitch. Theme tokens only; page canvas untouched. */
+@keyframes bubble-revised {
+    from { background-color: color-mix(in oklab, var(--accent) 16%, var(--bubble-ai-bg, transparent)); }
+    to   { background-color: var(--bubble-ai-bg, transparent); }
+}
+.message-assistant.bubble-revised { animation: bubble-revised .9s ease-out; }
+.msg-notes { display: flex; flex-direction: column; min-width: 0; max-width: 100%; margin: 2px 0 6px; }
+.msg-notes-toggle {
+    display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; max-width: 100%; min-width: 0;
+    padding: 2px 6px 2px 2px; margin-left: -2px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-3); font-size: 11px; --fs: 11px; letter-spacing: .04em; text-transform: uppercase; cursor: pointer;
+    transition: background .12s;
+}
+.msg-notes-toggle:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.msg-notes-toggle svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--ink-4); transform: rotate(-90deg); transition: transform .15s; }
+.msg-notes-toggle[aria-expanded="true"] svg { transform: none; }
+.msg-notes-toggle .msg-notes-label { font-weight: 600; white-space: nowrap; }
+.msg-notes-toggle .msg-notes-meta { color: var(--ink-4); text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msg-notes-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; min-width: 0; }
+.msg-notes-seg { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.msg-notes-seg .tool-milestones { margin-bottom: 0; }
+.msg-notes-seg .msg-tools-list { margin-top: 0; }
+.msg-notes-text { border-left: 2px solid var(--rule); padding-left: 10px; color: var(--ink-3); min-width: 0; }
+body .msg-notes-text .markdown-content { color: inherit; font-size: .92em !important; }
+body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.code-content *), div:not(.code-content)) { font-size: inherit !important; }
+.msg-notes-text .markdown-content > * { margin-top: .35em; margin-bottom: .35em; }
+.msg-notes-text .markdown-content > :first-child { margin-top: 0; }
+.msg-notes-text .markdown-content > :last-child { margin-bottom: 0; }
+.msg-answer-divider {
+    display: flex; align-items: center; gap: 8px; margin: 8px 0 10px; min-width: 0;
+    color: var(--ink-4); font-size: 10.5px; --fs: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+}
+.msg-answer-divider::before, .msg-answer-divider::after { content: ''; flex: 1; height: 1px; background: var(--rule-2); }

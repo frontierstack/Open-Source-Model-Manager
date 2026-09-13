@@ -199,6 +199,11 @@ export const useChatStore = create(
         // bubble. Cleared wherever streamingStatus is.
         streamingHandoff: null,
 
+        // When the server swapped the draft in place (a held revision or a
+        // checker edit) — the bubble flashes so the change reads as a polish,
+        // not a glitch. Timestamp; stale once the next stream starts.
+        streamingRevisedAt: 0,
+
         // Optional server-driven status for the streaming bubble (chunking,
         // synthesizing, etc.). Cleared when streaming ends or when token
         // content arrives. Shape: { kind, text } or null.
@@ -599,6 +604,9 @@ export const useChatStore = create(
                     // during its first pass) — a single-model chat leaves it
                     // undefined and the chip shows no attribution.
                     model: tc.model || undefined,
+                    // Assistant content length when this call was dispatched —
+                    // the narration before it ends there (see splitNarration).
+                    contentOffset: Number.isFinite(tc.contentOffset) ? tc.contentOffset : undefined,
                     status: 'running',
                     startedAt: Date.now(),
                     // Sandbox policy, piped through from the server so the
@@ -653,6 +661,7 @@ export const useChatStore = create(
         // arrive independently and each must keep the other's fields, so the
         // patch merges rather than replaces. Pass null to clear.
         setStreamingHandoff: (streamingHandoff) => set({ streamingHandoff }),
+        markStreamingRevised: () => set({ streamingRevisedAt: Date.now() }),
         patchStreamingHandoff: (patch) => set(state => (
             patch ? { streamingHandoff: { ...(state.streamingHandoff || {}), ...patch } } : {}
         )),
@@ -676,6 +685,7 @@ export const useChatStore = create(
                 streamingReasoning: '',
                 streamingStatus: null,
                 streamingHandoff: null,
+                streamingRevisedAt: 0,
                 streamingToolCalls: [],
                 isStreaming: false,
                 collapsedMessageIds: (() => {
@@ -692,6 +702,7 @@ export const useChatStore = create(
             streamingReasoning: '',
             streamingStatus: null,
             streamingHandoff: null,
+            streamingRevisedAt: 0,
             streamingToolCalls: [],
             isStreaming: false,
             // Clear the streaming message collapse entry when streaming ends

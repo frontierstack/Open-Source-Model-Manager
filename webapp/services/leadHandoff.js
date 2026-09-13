@@ -27,7 +27,30 @@ const MODES = ['off', 'auto', 'always'];
 
 // Strip the runtime's own injected notes before classifying — they are the
 // same on every turn and would make everything look substantial.
-const SYSTEM_NOTE_RE = /\[SYSTEM:[\s\S]*?\]/g;
+// A runtime note closes with the `]` that ENDS A LINE (notes are joined with
+// '\n\n'), not the first `]` in it — the account-memory note carries `[#id6]`
+// handles mid-line, and a lazy match stopped at the first of those, leaving the
+// rest of the memory block in the "user's ask" (it reached the quick brief as
+// the task and fed the substantial-work check). A note with no line-ending `]`
+// falls back to the first one.
+function stripSystemNotes(text) {
+    let t = String(text || '');
+    let out = '';
+    let i = 0;
+    for (;;) {
+        const start = t.indexOf('[SYSTEM:', i);
+        if (start < 0) { out += t.slice(i); break; }
+        out += t.slice(i, start);
+        const rest = t.slice(start);
+        const eol = rest.match(/\][ \t]*(?=\r?\n|$)/);
+        const first = rest.indexOf(']');
+        const end = eol ? eol.index + eol[0].length : (first >= 0 ? first + 1 : rest.length);
+        out += ' ';
+        i = start + end;
+    }
+    return out;
+}
+const SYSTEM_NOTE_RE = { [Symbol.replace]: (str) => stripSystemNotes(str) };
 // The chat wraps an upload as "=== FILE n: name ===\n<content>\n=== END FILE n ===".
 // Strip the WHOLE block: its contents are the user's data, not their request,
 // and a pasted source file is full of build verbs and artifact nouns.
@@ -293,6 +316,38 @@ function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
     ].join('\n');
 }
 
+// The QUICK brief — the default first pass since 2026-09-13. The old first
+// pass was a full delegated turn (prelude + tool catalog + router + up to
+// HANDOFF_FIRST_PASS_ROUNDS rounds of tool calls) on the primary, and the lead
+// sat idle until it finished; the user watched "Running first pass" for the
+// whole of it. Everything the tool-using pass GATHERED can just as well be a
+// background job that runs WHILE the lead writes, so the brief itself only
+// needs the primary's read of the task: one no-tools completion, thinking off,
+// a few hundred tokens. The workspace inventory the pre-flight already
+// computed is handed in as text so the brief can point legwork at real files.
+function buildQuickBriefTask({ userText, leadModel, workspaceLines = null }) {
+    const ws = Array.isArray(workspaceLines) && workspaceLines.length
+        ? ['', 'FILES ALREADY IN /workspace FROM EARLIER TURNS (you may name them in a legwork job):', ...workspaceLines.slice(0, 20)]
+        : [];
+    return [
+        `${leadModel || 'The main model'} is about to work on the request below. You are the faster model of the pair: give it a brief so it can start immediately, and line up work that YOU will run in the background while it writes.`,
+        'You have NO tools in this step and must not answer the request itself.',
+        '',
+        'THE USER ASKED:',
+        askForFirstPass(userText, 4000),
+        ...ws,
+        '',
+        'Your brief must be under 200 words (that limit is on YOUR reply, not on the answer). Use exactly these sections and nothing else:',
+        'TASK — one or two sentences restating exactly what is wanted, with every constraint the USER gave (language, framework, file, format, length).',
+        'PLAN — the 3-5 steps the main model should take, in order.',
+        'LEGWORK — 0 to 3 jobs to hand to you to run in the background, each on its own line as `- <short name>: <one-line brief saying exactly what to find or do and what to report back>`. Every lookup, benchmark, version check or file read that your PLAN needs belongs here — you will run it while the main model writes.',
+        '   Good: looking up an API, a spec, a version or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; listing what is in the workspace; running an EXISTING script or test.',
+        '   Bad: anything that depends on output the main model has not written yet, or the task itself. If nothing would help, write `- none`.',
+        'OPEN QUESTIONS — anything genuinely ambiguous, or `none`.',
+        'Never invent a fact — the sections describe the task, not its answer.',
+    ].join('\n');
+}
+
 // A second, cheaper ask when the brief came back with NO legwork: the small
 // first-pass model sometimes answers the WHAT I FOUND section ("workspace is
 // empty") and stops, leaving the lead to run every lookup itself (measured:
@@ -328,10 +383,16 @@ function parseLegwork(brief) {
         .replace(/^\s{0,3}#{1,6}\s*/gm, '');
     // NOTE: the trailing alternative must be (?![\s\S]), not $ — the /m flag
     // makes $ mean end-of-LINE, which cut the section off after its first job.
-    const m = text.match(/^\s*(?:\d+[.)]\s*)?LEGWORK\b[^\n]*\n([\s\S]*?)(?=\n\s*(?:\d+[.)]\s*)?[A-Z][A-Z ]{3,}\b|(?![\s\S]))/mi);
+    // The heading may carry the first job on ITS OWN line ("LEGWORK — - name:
+    // brief"), and a one-line brief may run every section together; split on
+    // the next ALL-CAPS heading wherever it sits, then on " - " job starts.
+    const m = text.match(/^\s*(?:\d+[.)]\s*)?LEGWORK\b[ \t]*[—–:-]*[ \t]*([^\n]*)\n?([\s\S]*?)(?=\n\s*(?:\d+[.)]\s*)?[A-Z][A-Z ]{3,}\b|(?![\s\S]))/mi);
     if (!m) return [];
+    const body = [m[1], m[2]].filter(Boolean).join('\n')
+        .replace(/\s+(?:OPEN QUESTIONS?|PLAN|TASK|WHAT I FOUND)\b[\s\S]*$/, '')
+        .replace(/\s+-\s+(?=[^\n]{1,60}?\s*[:—–-]\s+)/g, '\n- ');
     const jobs = [];
-    for (const raw of m[1].split('\n')) {
+    for (const raw of body.split('\n')) {
         const line = raw.replace(/^\s*[-*•]\s*/, '').trim();
         if (!line) continue;
         if (/^none\b/i.test(line) || /^n\/a\b/i.test(line)) continue;
@@ -348,13 +409,13 @@ function parseLegwork(brief) {
 // The note the primary sees. Goes in the LATEST USER MESSAGE (never a trailing
 // system message — templates that require alternating roles 500 on those, and
 // the user slot is prefix-cache friendly).
-function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null }) {
+function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null, quick = false }) {
     const body = String(brief || '').trim();
     if (!body) return '';
     const meta = [
         assistantModel ? `by ${assistantModel}` : null,
         typeof firstPassSeconds === 'number' ? `${firstPassSeconds}s` : null,
-        typeof toolCalls === 'number' ? `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` : null,
+        quick ? 'quick brief, no tools' : (typeof toolCalls === 'number' ? `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` : null),
     ].filter(Boolean).join(', ');
     const who = assistantModel || 'the primary model';
     const jobs = legworkAvailable ? parseLegwork(body) : [];
@@ -426,6 +487,7 @@ module.exports = {
     isSubstantialWork,
     planHandoff,
     buildFirstPassTask,
+    buildQuickBriefTask,
     renderBriefNote,
     buildLeadPrelude,
 };

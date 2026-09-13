@@ -11,6 +11,7 @@ import ImageBlock from './ImageBlock';
 import VideoBlock from './VideoBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
+import { splitNarration, totalToolMs } from '../../utils/narrationSegments';
 
 // Break a reasoning blob into discrete thought-steps so long chains of
 // "Let me also check…" / "Now I'll…" don't render as one giant wall.
@@ -116,11 +117,11 @@ function describeRunningTool(toolCalls, now = Date.now()) {
 // reasoning-only > content streaming > fallback. This keeps the
 // indicator visible AT ALL TIMES while the assistant is producing
 // output, not just before the first content token.
-function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent, hasReasoning, now }) {
+function deriveStreamingLabel({ toolCalls, streamingStatus, handoff, hasContent, hasReasoning, now, startsRef }) {
     // With two models paired, naming BOTH of them is the most informative
     // one-liner there is — the user could otherwise not tell that the turn had
     // been handed over to the secondary at all.
-    const pairLabel = describeHandoff(handoff);
+    const pairLabel = describeHandoff(handoff, now, startsRef);
     if (pairLabel) return pairLabel;
     const toolLabel = describeRunningTool(toolCalls, now);
     if (toolLabel) return toolLabel;
@@ -162,14 +163,29 @@ function handoffActors(handoff) {
 }
 
 // One-line summary naming whichever models are busy.
-function describeHandoff(handoff) {
+function describeHandoff(handoff, now = Date.now(), startsRef = null) {
     // Unnamed = nothing worth saying; fall through to the ordinary tool label.
     const actors = handoffActors(handoff);
     if (!actors) return null;
     const { assistant, lead, reviewer } = actors;
     const phase = handoff.phase || 'lead';
-    if (phase === 'first_pass') return `${assistant || 'The primary'} is sizing up the task…`;
+    if (phase === 'first_pass') {
+        // Same elapsed clock as a running tool label — the first pass is one
+        // call the user is waiting on, and the clock makes the wait legible.
+        let clock = '';
+        if (startsRef) {
+            const starts = startsRef.current || (startsRef.current = {});
+            if (!starts.first_pass) starts.first_pass = now;
+            const secs = Math.max(0, Math.round((now - starts.first_pass) / 1000));
+            if (secs >= 4) clock = ` (${secs}s)`;
+        }
+        return `${assistant || 'The primary'} is sizing up the task…${clock}`;
+    }
     if (handoff.reviewing) return `${reviewer || assistant || lead} is reviewing the answer`;
+    if (phase === 'revising') {
+        const who = lead || assistant || 'The lead';
+        return assistant && lead ? `${lead} is revising the answer with ${assistant}'s results` : `${who} is revising the answer with background results`;
+    }
     if (!lead) return null;
     const running = runningJobsOf(handoff);
     if (running.length && assistant) {
@@ -200,7 +216,7 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
     // has in flight.
     if (phase !== 'first_pass' && lead) {
         const running = runningToolsOf(toolCalls);
-        const parts = [handoff.reviewing ? 'answer written' : 'writing the answer'];
+        const parts = [handoff.reviewing ? 'answer written' : phase === 'revising' ? 'revising with background results' : 'writing the answer'];
         if (running.length) {
             const elapsedOf = (t) => (t.startedAt ? now - t.startedAt : 0);
             const oldest = running.reduce((a, b) => (elapsedOf(b) > elapsedOf(a) ? b : a), running[0]);
@@ -482,6 +498,54 @@ function ExchangePanel({ steps }) {
     );
 }
 
+// The model's working narration and the tool calls it made, in order, above
+// the answer. Reuses the live milestone lines while streaming and the chip
+// blocks once committed — the chips are the same objects the bubble's
+// charts/images/artifacts passes read.
+function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
+    const calls = Array.isArray(toolCalls) ? toolCalls.length : 0;
+    const ms = totalToolMs(toolCalls);
+    const dur = ms > 0 ? (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`) : '';
+    const meta = [`${segments.length} step${segments.length === 1 ? '' : 's'}`];
+    if (calls !== segments.length) meta.push(`${calls} tool call${calls === 1 ? '' : 's'}`);
+    if (dur) meta.push(dur);
+    return (
+        <div className="msg-notes">
+            <button
+                type="button"
+                className="msg-notes-toggle"
+                onClick={onToggle}
+                aria-expanded={open}
+                aria-label={open ? 'Collapse working notes' : 'Expand working notes'}
+            >
+                <ChevronDown strokeWidth={2} />
+                <span className="msg-notes-label">Working notes</span>
+                <span className="msg-notes-meta">{meta.join(' · ')}</span>
+            </button>
+            {open && (
+                <div className="msg-notes-body">
+                    {segments.map((seg, i) => (
+                        <div key={i} className="msg-notes-seg">
+                            {seg.text.trim() ? (
+                                <div className="msg-notes-text">
+                                    <MessageContent content={seg.text} isStreaming={isStreaming} />
+                                </div>
+                            ) : null}
+                            {isStreaming ? (
+                                <ToolMilestones toolCalls={seg.calls} />
+                            ) : (
+                                <div className="msg-tools-list">
+                                    {seg.calls.map((tc, j) => <ToolCallBlock key={j} tool={tc} />)}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 export default React.memo(function ChatMessage({
     id,
     role,
@@ -542,6 +606,18 @@ export default React.memo(function ChatMessage({
     const hasRunningTool = !!(isStreaming && runningToolsOf(toolCalls).length) || handoffActive;
     const [, setToolTick] = useState(0);
     const handoffStartsRef = useRef({});
+    // The server swapped the draft in place (held revision / checker edit):
+    // flash the bubble for ~a second so the change reads as a polish.
+    const revisedAt = useChatStore(state => state.streamingRevisedAt);
+    const revised = !!(isStreaming && revisedAt && Date.now() - revisedAt < 1000);
+    React.useEffect(() => {
+        if (!revised) return undefined;
+        const t = setTimeout(() => setToolTick(x => x + 1), 1000);
+        return () => clearTimeout(t);
+    }, [revisedAt]);
+    // Working notes (narration + chips before the answer): open while the
+    // turn streams, folded to the header once it commits.
+    const [notesOpen, setNotesOpen] = useState(!!isStreaming);
     React.useEffect(() => {
         if (!hasRunningTool) return undefined;
         const id = setInterval(() => setToolTick(t => t + 1), 1000);
@@ -551,6 +627,7 @@ export default React.memo(function ChatMessage({
     React.useEffect(() => {
         if (prevStreamingRef.current && !isStreaming) {
             setToolsExpanded(false);
+            setNotesOpen(false);
         }
         prevStreamingRef.current = isStreaming;
     }, [isStreaming]);
@@ -565,6 +642,14 @@ export default React.memo(function ChatMessage({
     const isUser = role === 'user';
     const displayContent = isStreaming ? streamingContent : content;
     const displayReasoning = isStreaming ? streamingReasoning : reasoning;
+
+    // Narration/answer split, keyed on each chip's contentOffset. Legacy
+    // messages (chips without an offset) and a turn that never reached an
+    // answer keep the old layout.
+    const split = React.useMemo(() => splitNarration(displayContent, toolCalls), [displayContent, toolCalls]);
+    const notesLayout = !isUser && !split.legacy && Array.isArray(toolCalls) && toolCalls.length > 0
+        && (isStreaming || !!split.answer.trim());
+    const answerText = notesLayout ? split.answer : displayContent;
 
     // Deduped image grids for the bubble. The server now dedups find_image
     // results across calls within one reply, but this stays as the display
@@ -740,7 +825,7 @@ export default React.memo(function ChatMessage({
 
             {/* Skip bubble entirely for user message with no content (paste-as-file case) */}
             {isUser && !displayContent ? null : (
-                <div style={isUser ? userBubble : aiBubble} className={isUser ? 'message-user' : 'message-assistant'}>
+                <div style={isUser ? userBubble : aiBubble} className={isUser ? 'message-user' : `message-assistant${revised ? ' bubble-revised' : ''}`}>
                     {/* Reasoning / thinking dropdown */}
                     {displayReasoning && (
                         <div ref={reasoningRef} style={{ marginBottom: 10, marginLeft: -6 }}>
@@ -786,7 +871,7 @@ export default React.memo(function ChatMessage({
                         (separate from the bottom dot-chip). Only during
                         streaming; the collapsed chip strip below takes
                         over once the message is committed. */}
-                    {isStreaming && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                    {isStreaming && !notesLayout && Array.isArray(toolCalls) && toolCalls.length > 0 && (
                         <ToolMilestones toolCalls={toolCalls} />
                     )}
 
@@ -798,6 +883,25 @@ export default React.memo(function ChatMessage({
                         <HandoffRows rows={handoffRows({ handoff, toolCalls, now: Date.now(), startsRef: handoffStartsRef })} />
                     )}
 
+                    {/* Working notes → divider → answer. The two-model exchange
+                        record sits above the notes so the order reads exchange,
+                        notes, answer. */}
+                    {notesLayout && !isStreaming && !bodyCollapsed && (
+                        <ExchangePanel steps={exchangeSteps(toolCalls, review)} />
+                    )}
+                    {notesLayout && !bodyCollapsed && (
+                        <WorkingNotes
+                            segments={split.segments}
+                            toolCalls={toolCalls}
+                            open={notesOpen}
+                            onToggle={() => setNotesOpen(v => !v)}
+                            isStreaming={isStreaming}
+                        />
+                    )}
+                    {notesLayout && !bodyCollapsed && !!split.answer.trim() && (
+                        <div className="msg-answer-divider" aria-hidden="true"><span>Answer</span></div>
+                    )}
+
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
                         <ThinkingIndicator label={deriveStreamingLabel({
@@ -806,6 +910,8 @@ export default React.memo(function ChatMessage({
                             handoff,
                             hasContent: false,
                             hasReasoning: !!displayReasoning,
+                            now: Date.now(),
+                            startsRef: handoffStartsRef,
                         })} />
                     ) : bodyCollapsed ? (
                         (() => {
@@ -838,7 +944,7 @@ export default React.memo(function ChatMessage({
                             );
                         })()
                     ) : (
-                        <MessageContent content={displayContent} isStreaming={isStreaming} />
+                        <MessageContent content={answerText} isStreaming={isStreaming} />
                     )}
 
                     {/* Live status footer — keeps the activity indicator
@@ -852,6 +958,8 @@ export default React.memo(function ChatMessage({
                             handoff,
                             hasContent: true,
                             hasReasoning: !!displayReasoning,
+                            now: Date.now(),
+                            startsRef: handoffStartsRef,
                         });
                         return (
                             <div
@@ -995,11 +1103,11 @@ export default React.memo(function ChatMessage({
                         users see live progress. Charts also surface in the
                         main body above (see ChartBlock pass) — this strip
                         is the transparency footer. */}
-                    {!isUser && !bodyCollapsed && !isStreaming && (
+                    {!isUser && !bodyCollapsed && !isStreaming && !notesLayout && (
                         <ExchangePanel steps={exchangeSteps(toolCalls, review)} />
                     )}
 
-                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {
+                    {!isUser && !bodyCollapsed && !notesLayout && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {
                         // Group header summary: count unique tool names so the user
                         // sees "web_search, fetch_url (x5)" rather than a raw count.
                         const counts = {};

@@ -110,6 +110,8 @@ function StreamingMessage() {
             // Which model made this call — paired turns only, so a
             // single-model chat shows no attribution on the chip.
             model: tc.model || undefined,
+            // Narration/answer split key (see splitNarration).
+            contentOffset: Number.isFinite(tc.contentOffset) ? tc.contentOffset : undefined,
             // delegate: live worker-agent progress (delegate_progress frames)
             // and, once the result is in, each agent's compact outcome.
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,

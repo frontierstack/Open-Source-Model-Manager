@@ -21432,6 +21432,28 @@ const chatStreamHandlerInner = async (req, res) => {
         let completionTokens = 0;
         let clientConnected = true;
         let continuationCount = 0;
+        // Where the ANSWER starts: the content offset of the most recent tool
+        // dispatch. Everything before it is the model's working narration
+        // ("Let me read the file…"), everything after it is what the user
+        // asked for. Each chip carries its own `contentOffset` so the client
+        // can interleave narration with the calls it announced and draw the
+        // answer below a clear division; the checker polishes only the
+        // answer segment (it used to rewrite the narration too).
+        let lastToolContentOffset = 0;
+        // Hold visible content back from the client. Set while the lead
+        // REVISES a draft with background results in hand: the draft stays on
+        // screen, the revision is generated silently, and one content_rewind
+        // swaps it in when it is complete — instead of wiping the bubble and
+        // re-typing the whole answer (user: "still doing a response
+        // refresh/rewrite at the end"). Reasoning deltas keep flowing.
+        let holdClientContent = false;
+        const releaseHeldContent = (reason = 'assistant_results') => {
+            if (!holdClientContent) return;
+            holdClientContent = false;
+            if (clientConnected && !res.writableEnded) {
+                try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason, content: fullResponse, held: true })}\n\n`); } catch (_) { clientConnected = false; }
+            }
+        };
 
         // --- Native tool calling -------------------------------------------
         // Build the tool catalog once per user turn. Subsequent tool-call
@@ -21936,6 +21958,9 @@ const chatStreamHandlerInner = async (req, res) => {
         // use) and prepend a note listing what's already there. Mirrors the
         // follow-up-document pre-flight above.
         const inProcBucket = (req.delegate && req.delegate.workspaceBucket) || (req.sidecar && req.sidecar.workspaceBucket) || null;
+        // The inventory lines, kept for the hand-off's quick brief (which has
+        // no tools and would otherwise not know what is already on disk).
+        let handoffWorkspaceLines = null;
         if ((conversationId || inProcBucket) && latestUserMsgIdx >= 0) {
             try {
                 const sbRunner = require('./services/sandboxRunner');
@@ -21963,6 +21988,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     if (ws.truncated) {
                         lines.push('  • …more not listed — call list_directory(dirPath="/workspace", recursive=True) for the full inventory');
                     }
+                    handoffWorkspaceLines = lines.map(l => l.replace(/ — do NOT git_clone_shallow.*$/, '').replace(/ \(list_directory to browse\)/, ''));
                     const wsNote =
                         '[SYSTEM: This conversation\'s sandbox workspace (/workspace) still contains the files below, created in EARLIER turns. They persist across turns — reuse them directly with read_file / grep_code / list_directory' +
                         (ws.repos.length || ws.dirs.length ? ' / scan_source_files' : '') +
@@ -22072,6 +22098,7 @@ const chatStreamHandlerInner = async (req, res) => {
             const id = `handoff_${Date.now().toString(36)}_${++handoffChipSeq}`;
             chip.toolCallId = id;
             chip.status = 'running';
+            chip.contentOffset = fullResponse.length;
             persistedToolChips.push(chip);
             if (clientConnected) {
                 try {
@@ -22080,6 +22107,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         tool_call_id: id,
                         name: chip.label,
                         arguments: JSON.stringify(chip.args || {}),
+                        contentOffset: chip.contentOffset,
                         purpose: chip.purpose,
                         model: chip.model,
                     })}\n\n`);
@@ -22134,26 +22162,58 @@ const chatStreamHandlerInner = async (req, res) => {
                     label: 'first_pass',
                     model: handoff.primary,
                     purpose: `Sizing up the task for ${handoff.secondary}`,
-                    args: { task: latestUserText.slice(0, 200), brief_for: handoff.secondary },
+                    args: { task: leadHandoff.askForFirstPass(latestUserText, 400).slice(0, 200), brief_for: handoff.secondary },
                     _startedAt: fpStart,
                 });
-                const fp = await runDelegatedTurn({
-                    parentReq: req,
-                    task: leadHandoff.buildFirstPassTask({
-                        userText: latestUserText,
-                        leadModel: handoff.secondary,
-                        toolBudget: HANDOFF_FIRST_PASS_TOOLS,
-                    }),
-                    label: 'first pass',
-                    siblings: [],
-                    model: handoff.primary,
-                    reasoningEffort: 'off',
-                    modelRoles: { primary: handoff.primary, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
-                    workspaceBucket: conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null,
-                    depth: 0,
-                    maxRounds: HANDOFF_FIRST_PASS_ROUNDS,
-                    signal: streamAbortController.signal,
-                });
+                // QUICK mode (default): one no-tools completion on the primary,
+                // thinking off, a few hundred tokens. The old FULL mode ran the
+                // first pass as a whole delegated turn — prelude + catalog +
+                // router + up to HANDOFF_FIRST_PASS_ROUNDS rounds of tool
+                // calls — with the lead idle for all of it; that was the
+                // "Running first pass" wait the user reported. Anything the
+                // full pass would have gathered becomes LEGWORK that runs in
+                // the background while the lead writes, so nothing is lost —
+                // it just no longer blocks the answer. Bounded by
+                // HANDOFF_QUICK_BRIEF_MS; a miss means the lead starts
+                // without a brief, which it can do.
+                const quickBrief = HANDOFF_FIRST_PASS_MODE !== 'full';
+                let fp;
+                if (quickBrief) {
+                    try {
+                        const r = await Promise.race([
+                            requestModelCompletion({
+                                messages: [{ role: 'user', content: leadHandoff.buildQuickBriefTask({ userText: latestUserText, leadModel: handoff.secondary, workspaceLines: handoffWorkspaceLines }) }],
+                                model: handoff.primary, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
+                            }),
+                            new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
+                            new Promise(resolve => streamAbortController.signal.addEventListener('abort', () => resolve(null), { once: true })),
+                        ]);
+                        const text = r && typeof r.content === 'string' ? r.content.trim() : '';
+                        fp = text ? { status: 'ok', answer: text, toolCalls: 0 } : { status: r ? 'empty' : 'timeout', answer: '', toolCalls: 0 };
+                        if (!text) console.warn(`[Chat Stream] Hand-off quick brief ${r ? 'came back empty' : `timed out after ${HANDOFF_QUICK_BRIEF_MS}ms`}`);
+                    } catch (e) {
+                        fp = { status: 'error', answer: '', toolCalls: 0 };
+                        console.warn('[Chat Stream] Hand-off quick brief failed:', e.message);
+                    }
+                } else {
+                    fp = await runDelegatedTurn({
+                        parentReq: req,
+                        task: leadHandoff.buildFirstPassTask({
+                            userText: latestUserText,
+                            leadModel: handoff.secondary,
+                            toolBudget: HANDOFF_FIRST_PASS_TOOLS,
+                        }),
+                        label: 'first pass',
+                        siblings: [],
+                        model: handoff.primary,
+                        reasoningEffort: 'off',
+                        modelRoles: { primary: handoff.primary, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
+                        workspaceBucket: conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null,
+                        depth: 0,
+                        maxRounds: HANDOFF_FIRST_PASS_ROUNDS,
+                        signal: streamAbortController.signal,
+                    });
+                }
                 const fpSecs = Math.round((Date.now() - fpStart) / 100) / 10;
                 const note = (fp && fp.status === 'ok')
                     ? leadHandoff.renderBriefNote({
@@ -22162,6 +22222,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         firstPassSeconds: fpSecs,
                         toolCalls: fp.toolCalls,
                         legworkAvailable: handoff.legwork,
+                        quick: quickBrief,
                     })
                     : '';
                 let proposed = (note && handoff.legwork) ? leadHandoff.parseLegwork(fp.answer) : [];
@@ -22169,7 +22230,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 // few seconds) before the lead is left to do every lookup
                 // itself. Bounded by HANDOFF_LEGWORK_RETRY_MS; a miss costs
                 // nothing but that wait.
-                if (handoff.legwork && !proposed.length && toolCtx._assistantJobs && fp && fp.status === 'ok') {
+                if (!quickBrief && handoff.legwork && !proposed.length && toolCtx._assistantJobs && fp && fp.status === 'ok') {
                     try {
                         const r = await Promise.race([
                             requestModelCompletion({
@@ -22261,6 +22322,7 @@ const chatStreamHandlerInner = async (req, res) => {
                             toolCalls: fp.toolCalls,
                             legworkAvailable: handoff.legwork,
                             startedJobs: handoff.autoJobs,
+                            quick: quickBrief,
                         })
                         : note;
                     const block = finalNote + '\n\n';
@@ -22308,7 +22370,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     logChatActivity(`Two models: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
                         + (proposed.length ? ` — proposed ${proposed.length} background job(s): ${proposed.map(j => `"${j.name}"`).join(', ')}` : '')
                         + ` — ${handoff.secondary} is now writing`);
-                    console.log(`[Chat Stream] Hand-off first pass: ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
+                    console.log(`[Chat Stream] Hand-off first pass (${quickBrief ? 'quick brief' : 'full'}): ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
                         + (proposed.length ? `legwork proposed: ${proposed.map(j => j.name).join(' | ')}` : 'no legwork proposed'));
                     // When the brief names no background jobs the secondary has
                     // nothing to hand back, which looks to the user like the two
@@ -23124,12 +23186,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                                     }
                                                 }
 
-                                                if (clientConnected) {
+                                                if (clientConnected && (reasoning || !holdClientContent)) {
+                                                    const shownContent = holdClientContent ? undefined : (content || undefined);
                                                     const event = {
-                                                        token: content || undefined,
+                                                        token: shownContent,
                                                         choices: [{
                                                             delta: {
-                                                                content: content || undefined,
+                                                                content: shownContent,
                                                                 reasoning: reasoning || undefined
                                                             },
                                                             index: 0
@@ -23280,13 +23343,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                         }
                                         if (content) fullResponse += content;
                                         if (reasoning) fullReasoning += reasoning;
-                                        if ((content || reasoning) && clientConnected) {
+                                        if ((reasoning || (content && !holdClientContent)) && clientConnected) {
                                             try {
                                                 res.write(`data: ${JSON.stringify({
-                                                    token: content || undefined,
+                                                    token: holdClientContent ? undefined : (content || undefined),
                                                     choices: [{
                                                         delta: {
-                                                            content: content || undefined,
+                                                            content: holdClientContent ? undefined : (content || undefined),
                                                             reasoning: reasoning || undefined
                                                         },
                                                         index: 0
@@ -23304,7 +23367,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         const drained = textualToolCallExtractor.flush();
                         if (drained.passthrough) {
                             fullResponse += drained.passthrough;
-                            if (clientConnected) {
+                            if (clientConnected && !holdClientContent) {
                                 try {
                                     res.write(`data: ${JSON.stringify({
                                         token: drained.passthrough,
@@ -24121,6 +24184,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             } catch (_) { /* malformed args are handled downstream */ }
                         }
                         const policy = toolPolicy(call.function.name);
+                        // Position of this call in the visible content: the
+                        // narration written before it ends here, and the
+                        // answer (if this is the last round) begins here.
+                        call.contentOffset = fullResponse.length;
+                        lastToolContentOffset = fullResponse.length;
                         if (clientConnected) {
                             try {
                                 res.write(`data: ${JSON.stringify({
@@ -24128,6 +24196,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     tool_call_id: call.id,
                                     name: call.function.name,
                                     arguments: call.function.arguments,
+                                    contentOffset: call.contentOffset,
                                     purpose: call.purpose || undefined,
                                     sandboxed: policy.sandboxed,
                                     source: policy.source,
@@ -25312,6 +25381,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 type: 'native_tool_call',
                                 label: call.function.name || 'tool',
                                 purpose: call.purpose || undefined,
+                                contentOffset: typeof call.contentOffset === 'number' ? call.contentOffset : undefined,
                                 // Attribution for a two-model turn; absent otherwise.
                                 ...(pairedTurn ? { model: targetModel, toolCallId: call.id } : {}),
                                 query: argPreview,
@@ -25755,14 +25825,28 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 drained,
                                 {
                                     role: 'system',
-                                    content: 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. If they reveal one more piece of legwork you genuinely need, you may dispatch it with ask_assistant first; otherwise reply with the COMPLETE final answer, not a diff or a comment on the change.',
+                                    content: 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. If they reveal one more piece of legwork you genuinely need, you may dispatch it with ask_assistant first; otherwise reply with the COMPLETE final answer as if writing it for the first time — not a diff, not a comment on the change, and never a mention of the brief, the background results, the assistant or the revision itself. The user sees only this text, in place of the draft.',
                                 },
                             ];
-                            // The draft is replaced by the revision, so rewind
-                            // the visible text the same way a continuation does.
+                            // The draft is replaced by the revision — but NOT
+                            // on screen yet. Wiping the bubble and re-typing
+                            // the whole answer read as "a rewrite at the end";
+                            // the draft stays visible while the revision is
+                            // generated, and releaseHeldContent() swaps the
+                            // finished text in with one content_rewind.
                             fullResponse = fullResponse.slice(0, roundStart);
+                            holdClientContent = true;
+                            updateJobPhase('revising');
                             if (clientConnected && !res.writableEnded) {
-                                try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason: 'assistant_results', content: fullResponse })}\n\n`); } catch (_) { clientConnected = false; }
+                                try {
+                                    res.write(`data: ${JSON.stringify({
+                                        type: 'handoff', phase: 'revising',
+                                        lead: targetModel, primary: targetModel,
+                                        assistant: toolCtx.assistantModel || handoff.primary || null,
+                                        helper: toolCtx.assistantModel || handoff.primary || null,
+                                        jobs: [...toolCtx._assistantJobs.values()].filter(j => j.delivered).length,
+                                    })}\n\n`);
+                                } catch (_) { clientConnected = false; }
                             }
                             continue; // re-stream with the results in context
                         }
@@ -26311,10 +26395,17 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // is streamed as an addendum and persisted with the answer. Skipped
         // for worker turns (the delegate tool checks their REPORTS), trivial
         // chat, cancelled turns, and when no checker is configured.
+        // A revision generated behind the held draft is complete now (or the
+        // turn ended some other way): show it before anything reads it.
+        releaseHeldContent();
+        // Only the ANSWER is reviewed and polished — the narration before the
+        // last tool call is the model's own working notes, and rewriting them
+        // changed text the user had already read past.
+        const answerStart = Math.max(0, Math.min(lastToolContentOffset, fullResponse.length));
         if (!req.delegate && modelRoles.secondary && modelRoles.review && modelRoles.review !== 'off'
             && modelRoles.secondary !== targetModel
             && !streamAbortController.signal.aborted && fullResponse
-            && modelRolesSvc.shouldCheckFinal({ answer: fullResponse, toolCalls: persistedToolChips.length })) {
+            && modelRolesSvc.shouldCheckFinal({ answer: fullResponse.slice(answerStart), toolCalls: persistedToolChips.length })) {
             const t0 = Date.now();
             updateJobPhase('checking');
             logChatActivity(`Review: ${modelRoles.secondary} is checking the answer…`);
@@ -26328,7 +26419,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     : modelRolesSvc.summarizeToolChips(persistedToolChips);
                 const msgs = modelRolesSvc.buildFinalReviewMessages({
                     userAsk: latestUserText,
-                    answer: fullResponse,
+                    answer: fullResponse.slice(answerStart),
                     toolSummary: evidence,
                     mode: modelRoles.review,
                 });
@@ -26356,9 +26447,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 if (review.verdict === 'issues' && review.revised) {
                     edited = true;
                     review.edited = true;
-                    fullResponse = review.revised;
+                    fullResponse = fullResponse.slice(0, answerStart) + review.revised;
                     if (clientConnected && !res.writableEnded) {
-                        try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit' })}\n\n`); } catch (_) { clientConnected = false; }
+                        try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'checker_edit', answerStart })}\n\n`); } catch (_) { clientConnected = false; }
                     }
                 }
                 // verdict pass / issues-without-a-rewrite / unknown: the answer
@@ -26761,6 +26852,14 @@ const WORKER_MIN_CONTEXT = Math.max(2048, parseInt(process.env.DELEGATE_WORKER_M
 // tight — a brief, not an attempt at the job.
 const HANDOFF_FIRST_PASS_TOOLS = Math.max(0, parseInt(process.env.HANDOFF_FIRST_PASS_TOOLS || '3', 10) || 0);
 const HANDOFF_FIRST_PASS_ROUNDS = Math.max(1, parseInt(process.env.HANDOFF_FIRST_PASS_ROUNDS || '4', 10) || 4);
+// 'quick' (default): the first pass is ONE no-tools completion on the primary
+// (TASK / PLAN / LEGWORK / OPEN QUESTIONS), and the lead starts as soon as it
+// lands — anything worth gathering runs as legwork in the background.
+// 'full': the pre-2026-09-13 tool-using delegated turn (HANDOFF_FIRST_PASS_TOOLS
+// / _ROUNDS apply), which blocked the lead for every tool call it made.
+const HANDOFF_FIRST_PASS_MODE = /^full$/i.test(String(process.env.HANDOFF_FIRST_PASS_MODE || '')) ? 'full' : 'quick';
+const HANDOFF_QUICK_BRIEF_MS = Math.max(3000, parseInt(process.env.HANDOFF_QUICK_BRIEF_MS || '30000', 10) || 30000);
+const HANDOFF_QUICK_BRIEF_TOKENS = Math.max(200, parseInt(process.env.HANDOFF_QUICK_BRIEF_TOKENS || '600', 10) || 600);
 // Background legwork the lead can have running at once (ask_assistant).
 const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
 // How many of the jobs the first pass proposes the server starts on its own.

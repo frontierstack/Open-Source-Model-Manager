@@ -309,6 +309,9 @@ function buildNativeChipEntries(streamingToolCalls) {
             sandboxNetwork: tc.sandboxNetwork,
             // Which model made the call — set only on a paired turn.
             model: tc.model || undefined,
+            // Where in the assistant content this call was dispatched — the
+            // narration/answer split (splitNarration) is keyed on it.
+            contentOffset: Number.isFinite(tc.contentOffset) ? tc.contentOffset : undefined,
             // ask_assistant only: the background jobs this call dispatched,
             // each with the model that ran it, its tool calls and duration.
             assistantJobs: Array.isArray(tc.assistantJobs) && tc.assistantJobs.length ? tc.assistantJobs : undefined,
@@ -320,6 +323,23 @@ function buildNativeChipEntries(streamingToolCalls) {
         });
     }
     return out;
+}
+
+// Store patch for a `handoff` frame. Only the fields the frame actually
+// carries: a phase change ('revising', 'lead', …) must not blank the
+// assistant/lead/jobs recorded by earlier frames (the merge spreads
+// undefined over them otherwise).
+function handoffPatchFromFrame(parsed) {
+    const patch = { phase: parsed.phase || 'lead' };
+    const assistant = parsed.assistant || parsed.helper;
+    const lead = parsed.lead || parsed.primary;
+    if (assistant) patch.assistant = assistant;
+    if (lead) patch.lead = lead;
+    if (parsed.reason) patch.reason = parsed.reason;
+    if (parsed.firstPassSeconds != null) patch.firstPassSeconds = parsed.firstPassSeconds;
+    if (parsed.briefChars != null) patch.briefChars = parsed.briefChars;
+    if (Array.isArray(parsed.jobs)) patch.jobs = parsed.jobs;
+    return patch;
 }
 
 // One-line text for an argument value — objects/arrays as JSON, never
@@ -589,6 +609,7 @@ export default function ChatContainer({
         setStreamingStatus,
         setStreamingHandoff,
         patchStreamingHandoff,
+        markStreamingRevised,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -627,6 +648,7 @@ export default function ChatContainer({
         setStreamingStatus: state.setStreamingStatus,
         setStreamingHandoff: state.setStreamingHandoff,
         patchStreamingHandoff: state.patchStreamingHandoff,
+        markStreamingRevised: state.markStreamingRevised,
         addAttachment: state.addAttachment,
         removeAttachment: state.removeAttachment,
         clearAttachments: state.clearAttachments,
@@ -872,6 +894,7 @@ export default function ChatContainer({
                 name: rc.name || 'tool',
                 arguments: rc.arguments || '',
                 purpose: rc.purpose || undefined,
+                contentOffset: Number.isFinite(rc.contentOffset) ? rc.contentOffset : undefined,
                 status: 'running',
                 startedAt: rc.startedAt || Date.now(),
                 sandboxed: rc.sandboxed,
@@ -908,7 +931,14 @@ export default function ChatContainer({
             ensureSmoothPump(conversationId);
             return;
         }
-        if (content.length < (pendingContentRef.current || '').length) displayedContentLenRef.current = 0; // buffer replaced
+        if (content.length < (pendingContentRef.current || '').length) {
+            // Buffer replaced (the server rewound / revised the draft). Swap it
+            // in place — resetting the cursor re-typed the whole reply.
+            pendingContentRef.current = content;
+            displayedContentLenRef.current = content.length;
+            setStreamingContent(content);
+            markStreamingRevised();
+        }
         pendingContentRef.current = content;
         pendingReasoningRef.current = reasoning;
         ensureSmoothPump(conversationId);
@@ -976,6 +1006,10 @@ export default function ChatContainer({
                             }
                             case 'synthesizing':
                                 return { kind: 'synthesizing', text: 'Synthesizing chunks into final response...' };
+                            case 'revising':
+                                return { kind: 'generating', text: `${modelLabel} is revising the answer with background results` };
+                            case 'checking':
+                                return { kind: 'generating', text: `${modelLabel}'s answer is being checked` };
                             case 'generating':
                                 return {
                                     kind: 'generating',
@@ -1039,6 +1073,10 @@ export default function ChatContainer({
                                         } else if (poll.phase === 'synthesizing') {
                                             pkind = 'synthesizing';
                                             ptext = 'Synthesizing chunks into final response...';
+                                        } else if (poll.phase === 'revising') {
+                                            ptext = `${poll.model || 'model'} is revising the answer with background results`;
+                                        } else if (poll.phase === 'checking') {
+                                            ptext = `${poll.model || 'model'}'s answer is being checked`;
                                         }
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
@@ -2000,6 +2038,7 @@ export default function ChatContainer({
                                     // sends it only on a paired turn, so a
                                     // single-model chat shows no attribution.
                                     model: parsed.model,
+                                    contentOffset: parsed.contentOffset,
                                     sandboxed: parsed.sandboxed,
                                     source: parsed.source,
                                     network: parsed.network,
@@ -2028,14 +2067,7 @@ export default function ChatContainer({
                                 // `lead`/`primary` the one writing. Merged (not replaced) so the
                                 // job list from assistant_progress survives a phase
                                 // change.
-                                patchStreamingHandoff({
-                                    phase: parsed.phase || 'lead',
-                                    assistant: parsed.assistant || parsed.helper || undefined,
-                                    lead: parsed.lead || parsed.primary || undefined,
-                                    reason: parsed.reason || undefined,
-                                    firstPassSeconds: parsed.firstPassSeconds,
-                                    briefChars: parsed.briefChars,
-                                });
+                                patchStreamingHandoff(handoffPatchFromFrame(parsed));
                                 continue;
                             }
                             if (parsed.type === 'assistant_progress') {
@@ -2210,6 +2242,17 @@ export default function ChatContainer({
                                 pendingContentRef.current = reasoningDisabled
                                     ? (rewound.content || '').replace(REASONING_TAG_RE, '')
                                     : (rewound.content || '');
+                                if (parsed.held || parsed.reason === 'checker_edit') {
+                                    // A revision the server produced silently while the
+                                    // old draft stayed on screen, or the checker's edited
+                                    // answer: this frame IS the final text. Swap it in
+                                    // place — no pump reveal, no re-type — and flash the
+                                    // bubble so the change reads as a polish.
+                                    displayedContentLenRef.current = pendingContentRef.current.length;
+                                    setStreamingContent(pendingContentRef.current);
+                                    markStreamingRevised();
+                                    continue;
+                                }
                                 if (displayedContentLenRef.current > pendingContentRef.current.length) {
                                     displayedContentLenRef.current = pendingContentRef.current.length;
                                 }
@@ -3120,14 +3163,7 @@ export default function ChatContainer({
                                     // `lead`/`primary` the one writing. Merged (not replaced) so the
                                     // job list from assistant_progress survives a phase
                                     // change.
-                                    patchStreamingHandoff({
-                                        phase: parsed.phase || 'lead',
-                                        assistant: parsed.assistant || parsed.helper || undefined,
-                                        lead: parsed.lead || parsed.primary || undefined,
-                                        reason: parsed.reason || undefined,
-                                        firstPassSeconds: parsed.firstPassSeconds,
-                                        briefChars: parsed.briefChars,
-                                    });
+                                    patchStreamingHandoff(handoffPatchFromFrame(parsed));
                                     continue;
                                 }
                                 if (parsed.type === 'assistant_progress') {
@@ -3191,7 +3227,11 @@ export default function ChatContainer({
                                     assistantContent = parsed.content || '';
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {
+                                        // Already an instant swap here (no pump on this
+                                        // path); a held revision / checker edit also
+                                        // flashes the bubble.
                                         setStreamingContent(joinContinuation(originalContent, parseThinkTags(assistantContent, true).content || ''));
+                                        if (parsed.held || parsed.reason === 'checker_edit') markStreamingRevised();
                                     }
                                     continue;
                                 }

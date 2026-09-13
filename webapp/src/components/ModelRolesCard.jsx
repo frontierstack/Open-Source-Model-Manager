@@ -55,7 +55,7 @@ function describeReview(review, primaryName, secondaryName) {
     const p = primaryName || 'the primary';
     const sec = secondaryName || 'the secondary';
     if (review === 'note') return `${sec} reads the answer and appends its verdict underneath as a second block. The answer itself is left alone.`;
-    if (review === 'edit') return `${p} does the work, ${sec} checks it and corrects it behind the scenes — you get one polished answer, with nothing appended to it. What it changed is recorded beside the message, not inside it.`;
+    if (review === 'edit') return `${p} does the work, ${sec} checks it and corrects it behind the scenes — you get one polished answer, with nothing appended to it. What it changed is recorded beside the message, not inside it. Only answers ${p} wrote alone are polished: on a turn ${sec} leads itself ("always", or a substantial ask in "auto") there is nothing for it to check.`;
     return `Answers ${p} wrote alone are sent straight through, unread by ${sec}.`;
 }
 
