@@ -11899,6 +11899,104 @@ app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
 // list_directory is deliberately shadowed so it can't mask Pi's local tools).
 // Never creates the bucket: an agent that hasn't uploaded anything reports
 // empty rather than materializing a directory.
+// ── Pi two-model endpoints (used by the Pi extension's ask_assistant /
+// await_assistant tools and its status widget; see planPiPair).
+app.get('/api/pi/pair', requireAuth, async (req, res) => {
+    try {
+        const { roles, enabled } = await resolvePiPairRoles(req);
+        const entry = req.apiKeyData?.id ? piAssistantByKey.get(req.apiKeyData.id) : null;
+        res.json({
+            enabled, mode: roles.mode, primary: roles.primary || null, secondary: roles.secondary || null,
+            legwork: roles.legwork !== false,
+            task: entry ? { lead: entry.lead, assistant: entry.assistant } : null,
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+function piJobRow(j) {
+    return {
+        id: j.id, name: j.name, model: j.model || null, status: j.status, calls: j.calls || 0,
+        current: j.current || '', ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+        ...(j.error ? { error: String(j.error).slice(0, 300) } : {}),
+    };
+}
+
+app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
+    try {
+        const keyId = req.apiKeyData?.id;
+        if (!keyId) return res.status(400).json({ error: 'An API key is required' });
+        let entry = piAssistantByKey.get(keyId);
+        if (!entry) {
+            const { roles, enabled } = await resolvePiPairRoles(req);
+            if (!enabled) return res.status(409).json({ error: 'pair_not_active', note: 'Two models are not configured and loaded, so there is no assistant. Do the work yourself.' });
+            entry = piAssistantEntry(req, `adhoc|${keyId}|${Date.now()}`, roles.secondary, roles.primary);
+        }
+        const b = req.body || {};
+        let raw = Array.isArray(b.requests) ? b.requests : Array.isArray(b.tasks) ? b.tasks : (b.task ? [b] : []);
+        if (typeof b.requests === 'string') { try { raw = JSON.parse(b.requests); } catch (_) { raw = [{ task: b.requests }]; } }
+        const items = raw.map((r, i) => (typeof r === 'string' ? { name: `task ${i + 1}`, task: r } : r))
+            .filter(r => r && typeof r.task === 'string' && r.task.trim().length >= 8)
+            .map((r, i) => ({ name: String(r.name || r.id || r.task.split(/\s+/).slice(0, 4).join(' ') || `task ${i + 1}`).slice(0, 60), task: r.task.trim() }));
+        if (!items.length) return res.status(400).json({ error: 'requests must be a list of { name, task } with a task of at least a few words' });
+        const dispatched = startAssistantJobs(entry.ctx, items, entry.assistant);
+        const jobs = [...entry.ctx._assistantJobs.values()];
+        logUserActivity(req.userId || keyId, `Pi assistant: ${entry.lead} handed ${dispatched.length} job(s) to ${entry.assistant} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
+        res.json({
+            success: dispatched.length > 0,
+            assistant: entry.assistant,
+            dispatched,
+            ...(dispatched.rejected && dispatched.rejected.length ? { rejected: dispatched.rejected } : {}),
+            running: jobs.filter(j => j.status === 'running').length,
+            queued: jobs.filter(j => j.status === 'queued').length,
+            jobsUsed: `${jobs.length}/${ASSISTANT_MAX_JOBS} this task`,
+            note: 'Running in the background now. Keep working; finished results are appended to your next tool result. Call await_assistant before your final answer if any job is still running.',
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
+    try {
+        const keyId = req.apiKeyData?.id;
+        const entry = keyId ? piAssistantByKey.get(keyId) : null;
+        if (!entry) return res.json({ active: false, jobs: [], results: [], pending: 0 });
+        const all = () => [...entry.ctx._assistantJobs.values()];
+        const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean);
+        const scope = () => (ids.length ? all().filter(j => ids.includes(j.id) || ids.includes(j.name)) : all());
+        const waitMs = Math.min(300000, Math.max(0, parseInt(req.query.wait || '0', 10) || 0));
+        if (waitMs > 0) {
+            const pending = scope().filter(assistantQueue.isPending).map(j => j.promise).filter(Boolean);
+            if (pending.length) {
+                let closed = false;
+                req.on('close', () => { closed = true; });
+                await Promise.race([Promise.allSettled(pending), new Promise(r => setTimeout(r, waitMs))]);
+                if (closed) return;
+            }
+        }
+        const deliver = req.query.peek !== '1';
+        const results = [];
+        if (deliver) {
+            for (const j of scope()) {
+                if (!assistantQueue.isSettled(j) || j.delivered || j.status === 'cancelled') continue;
+                j.delivered = true;
+                results.push({
+                    ...piJobRow(j),
+                    answer: j.status === 'done' ? String((j.result && j.result.answer) || '').slice(0, DELEGATE_ANSWER_CHARS) : '',
+                    filesWritten: (j.result && j.result.filesWritten) || [],
+                });
+            }
+            if (results.length) logUserActivity(req.userId || keyId, `Pi assistant: delivered ${results.length} result(s) to ${entry.lead} — ${results.map(r => `"${r.name}" (${r.status})`).join(', ')}`);
+        }
+        const list = all();
+        res.json({
+            active: true, lead: entry.lead, assistant: entry.assistant,
+            jobs: list.map(piJobRow),
+            pending: list.filter(assistantQueue.isPending).length,
+            undelivered: list.filter(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled').length,
+            results,
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/agent-workspaces/inventory', requireAuth, async (req, res) => {
     try {
         if (!req.apiKeyData || !req.apiKeyData.id) {
@@ -16990,10 +17088,11 @@ const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorde
 // dilutes the embedding.
 const PI_SANDBOX_INVENTORY_MARKER = '[MODEL SERVER SANDBOX';
 const PI_PERSONA_MARKER = '[MODEL SERVER MEMORY';
+const PI_PAIR_MARKER = '[MODEL SERVER PAIR';
 function stripPiRuntimeContext(text) {
     if (typeof text !== 'string') return '';
     let t = text;
-    for (const mk of [PI_SANDBOX_INVENTORY_MARKER, PI_PERSONA_MARKER]) {
+    for (const mk of [PI_SANDBOX_INVENTORY_MARKER, PI_PERSONA_MARKER, PI_PAIR_MARKER]) {
         const i = t.indexOf('\n' + mk);
         if (i >= 0) t = t.slice(0, i);
         else if (t.startsWith(mk)) { const j = t.indexOf(']\n'); t = j >= 0 ? t.slice(j + 2) : ''; }
@@ -17036,6 +17135,188 @@ function v1PersonaCacheSet(key, result) {
         if (oldest !== undefined) v1PersonaCache.delete(oldest);
     }
     v1PersonaCache.set(key, { at: Date.now(), result });
+}
+
+// ── Two models for Pi (/v1) ──────────────────────────────────────────────
+// The chat surface runs the pair inside its own tool loop; Pi runs its tool
+// loop on the user's machine and talks to the server through the /v1 proxy,
+// which used to forward every request to the one model Pi named — no brief,
+// no lead, no background jobs, so Pi never saw the pair at all. Here the
+// proxy plans the pairing ONCE PER TASK (a task = one Pi user message, which
+// spans many requests), routes the task's requests to the lead, appends a
+// byte-stable note to the latest user message (the prefix-cache-friendly
+// slot), and auto-starts the brief's legwork on the other model. The Pi
+// extension provides ask_assistant / await_assistant (→ /api/pi/assistant/jobs)
+// and folds finished results into its next tool result.
+const PI_PAIR_TASK_TTL_MS = 2 * 60 * 60 * 1000;
+const piPairTasks = new Map();        // taskKey -> { at, plan } | { at, pending: Promise }
+const piAssistantByKey = new Map();   // apiKeyId -> { taskKey, lead, assistant, ctx }
+
+function piRunningModelNames() {
+    const names = [];
+    for (const [k, inst] of modelInstances.entries()) {
+        if (!inst || inst.status !== 'running') continue;
+        names.push(k);
+        if (inst.modelName && inst.modelName !== k) names.push(inst.modelName);
+    }
+    return names;
+}
+
+function piInstanceName(instance) {
+    for (const [k, inst] of modelInstances.entries()) if (inst === instance) return k;
+    return instance?.modelName || null;
+}
+
+async function resolvePiPairRoles(req) {
+    const running = piRunningModelNames();
+    const roles = modelRolesSvc.resolveModelRoles({
+        body: {},
+        prefs: await getChatPrefsForUser(req.user?.id || req.userId || null),
+        system: systemModelRoles,
+        running,
+    });
+    const enabled = !!(roles && roles.primary && roles.secondary && roles.primary !== roles.secondary && roles.mode !== 'off');
+    return { roles, running, enabled };
+}
+
+function piOfferedToolNames(body) {
+    const out = new Set();
+    for (const t of (Array.isArray(body?.tools) ? body.tools : [])) {
+        const n = t?.function?.name || t?.name;
+        if (n) out.add(n);
+    }
+    return out;
+}
+
+function newPiAssistantCtx(req, keyId, lead) {
+    const ac = new AbortController();
+    const ctx = {
+        _assistantJobs: new Map(),
+        model: lead,
+        userId: req.userId || keyId,
+        workspaceBucket: `agent-${keyId}`,
+        reasoningEffort: 'off',
+        delegateDepth: 0,
+        assistantMaxParallel: ASSISTANT_MAX_PARALLEL,
+        assistantMaxJobs: ASSISTANT_MAX_JOBS,
+        abortSignal: ac.signal,
+    };
+    Object.defineProperty(ctx, '_req', { value: { user: req.user, userId: req.userId, apiKeyData: req.apiKeyData }, enumerable: false });
+    Object.defineProperty(ctx, '_abort', { value: () => { try { ac.abort(); } catch (_) {} }, enumerable: false });
+    return ctx;
+}
+
+// The per-key assistant context for the task in flight; a NEW task cancels
+// whatever the previous one left running (nobody will read those results).
+function piAssistantEntry(req, taskKey, lead, assistant) {
+    const keyId = req.apiKeyData?.id;
+    let entry = piAssistantByKey.get(keyId);
+    if (entry && entry.taskKey !== taskKey) {
+        const pending = [...entry.ctx._assistantJobs.values()].filter(assistantQueue.isPending);
+        if (pending.length) {
+            try { entry.ctx._assistantJobs._queue && entry.ctx._assistantJobs._queue.cancelPending('a new Pi task started'); } catch (_) {}
+            entry.ctx._abort();
+        }
+        entry = null;
+    }
+    if (!entry) {
+        entry = { taskKey, lead, assistant, ctx: newPiAssistantCtx(req, keyId, lead) };
+        piAssistantByKey.set(keyId, entry);
+    }
+    return entry;
+}
+
+async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair }) {
+    const { roles, running } = pair;
+    const targetModel = piInstanceName(requestedInstance);
+    const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running });
+    const offered = piOfferedToolNames(req.body);
+    const toolsOffered = offered.has('ask_assistant');
+    const out = { taskKey, runOn: plan.runOn || targetModel, engaged: !!plan.engaged, lead: null, assistant: null, note: null, reason: plan.reason, jobs: [] };
+    const userId = req.userId || req.apiKeyData?.id;
+    if (plan.engaged) {
+        out.lead = plan.secondary;
+        out.assistant = plan.primary;
+        const t0 = Date.now();
+        let brief = '';
+        if (plan.firstPass) {
+            try {
+                const r = await Promise.race([
+                    requestModelCompletion({
+                        messages: [{ role: 'user', content: leadHandoff.buildQuickBriefTask({ userText: latestUserText, leadModel: out.lead }) }],
+                        model: out.assistant, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
+                    }),
+                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
+                ]);
+                brief = r && typeof r.content === 'string' ? r.content.trim() : '';
+            } catch (e) { console.warn('[Pi/Pair] brief failed:', e.message); }
+        }
+        const secs = Math.round((Date.now() - t0) / 100) / 10;
+        let proposed = (brief && plan.legwork && toolsOffered) ? leadHandoff.parseLegwork(brief) : [];
+        if (!proposed.length && plan.legwork && toolsOffered) {
+            try {
+                const r = await Promise.race([
+                    requestModelCompletion({
+                        messages: [{ role: 'user', content: leadHandoff.buildLegworkOnlyTask({ userText: latestUserText, leadModel: out.lead }) }],
+                        model: out.assistant, temperature: 0.2, maxTokens: 400, disableThinking: true,
+                    }),
+                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
+                ]);
+                proposed = leadHandoff.parseLegwork(r && r.content);
+            } catch (_) { /* the lead can still dispatch its own */ }
+        }
+        let started = [];
+        if (proposed.length) {
+            const entry = piAssistantEntry(req, taskKey, out.lead, out.assistant);
+            started = startAssistantJobs(entry.ctx, proposed.slice(0, HANDOFF_AUTO_JOBS), out.assistant);
+            out.jobs = started.map(d => d.name);
+        } else if (toolsOffered) {
+            piAssistantEntry(req, taskKey, out.lead, out.assistant);
+        }
+        const briefNote = brief ? leadHandoff.renderBriefNote({
+            brief, assistantModel: out.assistant, firstPassSeconds: secs, toolCalls: 0,
+            legworkAvailable: toolsOffered && plan.legwork, startedJobs: out.jobs, quick: true,
+        }) : '';
+        const toolsLine = (toolsOffered && plan.legwork)
+            ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it independent legwork (a lookup, reading a server-side file, running a script and reporting) and returns immediately; finished results are appended to your next tool result. Hand over more whenever your work reveals it. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
+            : `You lead this task on ${out.lead}${brief ? `; ${out.assistant} prepared the brief above` : ''}.`;
+        out.note = `${PI_PAIR_MARKER} — two models on this task; runtime context, not part of the user's message]\n${briefNote ? briefNote + '\n\n' : ''}${toolsLine}`;
+        logUserActivity(userId, `Pi two models: ${out.lead} leads, ${out.assistant} prepared a brief in ${secs}s` + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
+        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${brief.length}ch ${secs}s jobs=${out.jobs.length} tools=${toolsOffered}`);
+    } else if (plan.partner && plan.partnerLegwork && toolsOffered) {
+        out.lead = targetModel;
+        out.assistant = plan.partner;
+        piAssistantEntry(req, taskKey, out.lead, out.assistant);
+        out.note = `${PI_PAIR_MARKER} — two models loaded; runtime context, not part of the user's message]\n`
+            + leadHandoff.buildPartnerPrelude({ partnerModel: out.assistant, partnerIsStronger: out.assistant === roles.secondary, maxParallel: ASSISTANT_MAX_PARALLEL })
+            + ' Results of ask_assistant are appended to your next tool result; call await_assistant before your final answer if a job is still running.';
+        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: solo on ${out.lead}, partner ${out.assistant} (${plan.reason})`);
+    }
+    return out;
+}
+
+async function planPiPair(req, requestedInstance) {
+    const keyId = req.apiKeyData?.id;
+    const messages = req.body?.messages;
+    if (!keyId || !Array.isArray(messages) || !messages.length) return null;
+    const sys0 = messages[0]?.role === 'system' ? messages[0].content : '';
+    const sysText = typeof sys0 === 'string' ? sys0 : (Array.isArray(sys0) ? sys0.map(p => p?.text || '').join('\n') : '');
+    if (/^You are a (?:context )?summarization assistant/i.test(sysText.trim())) return null;
+    const latestUserText = v1LatestUserText(messages);
+    if (!latestUserText.trim()) return null;
+    const pair = await resolvePiPairRoles(req);
+    if (!pair.enabled) return null;
+    const userMsgCount = messages.filter(m => m?.role === 'user').length;
+    const taskKey = `${keyId}|${userMsgCount}|${crypto.createHash('sha1').update(latestUserText).digest('hex')}`;
+    const now = Date.now();
+    for (const [k, v] of piPairTasks) if (now - v.at > PI_PAIR_TASK_TTL_MS) piPairTasks.delete(k);
+    const hit = piPairTasks.get(taskKey);
+    if (hit) return hit.plan || (hit.pending ? hit.pending : null);
+    const pending = buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair })
+        .then((plan) => { piPairTasks.set(taskKey, { at: Date.now(), plan }); return plan; })
+        .catch((e) => { piPairTasks.delete(taskKey); console.warn('[Pi/Pair] planning failed:', e.message); return null; });
+    piPairTasks.set(taskKey, { at: now, pending });
+    return pending;
 }
 
 // Inject the persona/experience block into req.body.messages (mutates in place;
@@ -22153,7 +22434,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         if (res.flush) res.flush();
                     } catch (_) { clientConnected = false; }
                 }
-                logChatActivity(`Two models: ${handoff.primary} is sizing up the task, then ${handoff.secondary} writes the answer (${handoff.reason})`);
+                logChatActivity(`Two models: ${handoff.primary} is preparing a brief, then ${handoff.secondary} writes the answer (${handoff.reason})`);
                 // Live chip: the user sees the primary working on the brief
                 // WHILE it happens, and the finished chip stays in the
                 // transcript with the brief it handed over.
@@ -22161,7 +22442,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     type: 'native_tool_call',
                     label: 'first_pass',
                     model: handoff.primary,
-                    purpose: `Sizing up the task for ${handoff.secondary}`,
+                    purpose: `Preparing a brief for ${handoff.secondary}`,
                     args: { task: leadHandoff.askForFirstPass(latestUserText, 400).slice(0, 200), brief_for: handoff.secondary },
                     _startedAt: fpStart,
                 });
@@ -22230,7 +22511,10 @@ const chatStreamHandlerInner = async (req, res) => {
                 // few seconds) before the lead is left to do every lookup
                 // itself. Bounded by HANDOFF_LEGWORK_RETRY_MS; a miss costs
                 // nothing but that wait.
-                if (!quickBrief && handoff.legwork && !proposed.length && toolCtx._assistantJobs && fp && fp.status === 'ok') {
+                // Quick mode too: measured, the small primary writes "LEGWORK — none"
+                // under a PLAN that lists several fetches, and then the lead does
+                // every lookup itself. One focused no-tools ask costs 1-2 s.
+                if (handoff.legwork && !proposed.length && toolCtx._assistantJobs && fp && fp.status === 'ok') {
                     try {
                         const r = await Promise.race([
                             requestModelCompletion({
@@ -22355,8 +22639,8 @@ const chatStreamHandlerInner = async (req, res) => {
                     })();
                     closeHandoffChip(fpChip, {
                         purpose: briefSubject
-                            ? `Briefed ${handoff.secondary} on ${briefSubject}`
-                            : `Sized up the task and handed ${handoff.secondary} a brief`,
+                            ? `Prepared a brief for ${handoff.secondary}: ${briefSubject}`
+                            : `Prepared a brief for ${handoff.secondary}`,
                         query: (fp.answer || '').slice(0, 60),
                         result: {
                             model: handoff.primary,
@@ -24910,7 +25194,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // delegate needs ITS call id to tag progress frames;
                             // the ctx is shared across parallel calls, so hand it
                             // a per-call view instead of mutating the shared one.
-                            p = chatTools.executeToolCall(call, call.function.name === 'delegate'
+                            // ask_assistant/await_assistant too: the chip id is
+                            // what lets each batch of jobs be shown under the
+                            // call that dispatched it (on the shared ctx the id
+                            // was never set, so every batch was filed under the
+                            // auto-dispatched chip — "just 3 tasks").
+                            p = chatTools.executeToolCall(call, /^(delegate|ask_assistant|await_assistant)$/.test(call.function.name)
                                 ? Object.assign(Object.create(toolCtx), { _toolCallId: call.id })
                                 : toolCtx);
                             dispatchCache.set(k, p);
@@ -26492,21 +26781,27 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // no record of what each job did once the turn is saved.
                 try {
                     if (toolCtx._assistantJobs && toolCtx._assistantJobs.size) {
-                        for (let i = persistedToolChips.length - 1; i >= 0; i--) {
-                            const c = persistedToolChips[i];
-                            if (c && c.label === 'ask_assistant' && !c.assistantJobs) {
-                                c.assistantJobs = [...toolCtx._assistantJobs.values()].map(j => ({
-                                    id: j.id,
-                                    name: j.name,
-                                    model: j.model,
-                                    status: j.status,
-                                    calls: j.calls || 0,
-                                    ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
-                                    ...(j.error ? { error: j.error } : {}),
-                                }));
-                                break;
-                            }
+                        const rowOf = (j) => ({
+                            id: j.id,
+                            name: j.name,
+                            model: j.model,
+                            status: j.status,
+                            calls: j.calls || 0,
+                            ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                            ...(j.error ? { error: j.error } : {}),
+                        });
+                        const all = [...toolCtx._assistantJobs.values()];
+                        // Each chip gets the jobs IT dispatched (by chipId); jobs
+                        // with no chip land on the last chip still without a list.
+                        const orphans = all.filter(j => !j.chipId);
+                        let lastBare = null;
+                        for (const c of persistedToolChips) {
+                            if (!c || c.label !== 'ask_assistant' || c.assistantJobs) continue;
+                            const mine = all.filter(j => j.chipId && j.chipId === c.toolCallId);
+                            if (mine.length) c.assistantJobs = mine.map(rowOf);
+                            else lastBare = c;
                         }
+                        if (lastBare && orphans.length) lastBare.assistantJobs = orphans.map(rowOf);
                     }
                 } catch (_) { /* never fail a save over a chip decoration */ }
                 if (!alreadyPresent) {
@@ -26577,7 +26872,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             if (orphans.length) {
                 console.log(`[Chat Stream] Hand-off: cancelling ${orphans.length} assistant job(s) the lead finished without — ${orphans.map(j => `"${j.name}"`).join(', ')}`);
                 logChatActivity(`Assistant: cancelled ${orphans.length} unfinished job(s) — the answer was already written`);
-                if (toolCtx._assistantQueue) toolCtx._assistantQueue.cancelPending('the answer was already written');
+                if (toolCtx._assistantJobs && toolCtx._assistantJobs._queue) toolCtx._assistantJobs._queue.cancelPending('the answer was already written');
                 else for (const j of orphans) { try { j.abort && j.abort(); } catch (_) {} }
             }
         }
@@ -26911,6 +27206,7 @@ function assistantProgressFrame(jobs, model, toolCallId) {
             id: j.id,
             name: j.name,
             model: j.model || model,
+            chipId: j.chipId || null,
             status: j.status,
             calls: j.calls || 0,
             current: j.current || '',
@@ -26933,8 +27229,10 @@ function startAssistantJobs(ctx, items, model) {
     // frame) keeps reading `ctx._assistantJobs` unchanged. Jobs past the
     // parallel limit wait as `queued` and start when a slot frees — nothing
     // the lead hands over is dropped any more.
-    if (!ctx._assistantQueue) {
-        ctx._assistantQueue = assistantQueue.createAssistantQueue({
+    // The queue hangs off the turn's job Map, not the ctx: a per-call ctx view
+    // (Object.create) would otherwise get its own queue on the first dispatch.
+    if (!jobs._queue) {
+        jobs._queue = assistantQueue.createAssistantQueue({
             maxParallel: ctx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL,
             maxJobs: ctx.assistantMaxJobs || ASSISTANT_MAX_JOBS,
             jobs,
@@ -26994,8 +27292,13 @@ function startAssistantJobs(ctx, items, model) {
             },
         });
     }
-    const q = ctx._assistantQueue;
-    const { accepted, rejected } = q.add(items, { model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null });
+    const q = jobs._queue;
+    // chipId = the ask_assistant chip that dispatched this job (the auto
+    // queue chip has no tool call, so _assistantChipId comes first). The
+    // progress frame carries every job of the turn; the client groups them by
+    // chipId so each chip shows ITS batch — patching the whole list onto
+    // whichever chip was current showed only the first batch ("just 3 tasks").
+    const { accepted, rejected } = q.add(items, { model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null, chipId: ctx._assistantChipId || ctx._toolCallId || null });
     if (rejected.length) console.warn(`[Chat Stream] Hand-off: ${rejected.length} job(s) refused — per-turn budget of ${ASSISTANT_MAX_JOBS} reached`);
     const dispatched = accepted.map(a => ({ id: a.id, name: a.name, status: a.status }));
     dispatched.rejected = rejected;
@@ -28931,12 +29234,12 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 + instances.map(i => i.config?.hfRepoId || i.modelName || i.containerName).join(', ')
             );
         }
-        const firstInstance = matched || instances[0];
+        let firstInstance = matched || instances[0];
         // Use container name to reach sglang via Docker network
         // Fall back to host.docker.internal for backwards compatibility
-        const targetHost = firstInstance.containerName || `host.docker.internal`;
-        const targetPort = firstInstance.internalPort || firstInstance.port;
-        const targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
+        let targetHost = firstInstance.containerName || `host.docker.internal`;
+        let targetPort = firstInstance.internalPort || firstInstance.port;
+        let targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
 
         // NOTE: not logged yet. GET /v1/models does NOT forward — it aggregates
         // across every running instance just below — so logging "Forwarding to
@@ -29018,6 +29321,36 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     targetUserId: req.userId
                 });
             } catch (_) { /* ignore */ }
+        }
+
+        // ── Two models for Pi (see planPiPair) ─────────────────────────────
+        // Before memory and the context guard: the pair decides which model
+        // this request actually runs on, and both of those size against it.
+        if (req.method === 'POST' && req.path === '/v1/chat/completions'
+            && req.apiKeyData?.bearerOnly === true && Array.isArray(req.body?.messages) && req.body.messages.length) {
+            try {
+                const pairPlan = await Promise.race([
+                    planPiPair(req, firstInstance),
+                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS + HANDOFF_LEGWORK_RETRY_MS + 3000)),
+                ]);
+                if (pairPlan) {
+                    const leadInst = pairPlan.runOn ? modelInstances.get(pairPlan.runOn) : null;
+                    if (leadInst && leadInst.status === 'running' && leadInst !== firstInstance) {
+                        console.log(`[Pi/Pair] routing ${authName}'s request from ${piInstanceName(firstInstance)} to ${pairPlan.runOn}`);
+                        firstInstance = leadInst;
+                        targetHost = firstInstance.containerName || 'host.docker.internal';
+                        targetPort = firstInstance.internalPort || firstInstance.port;
+                        targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
+                        if (firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId) req.body.model = firstInstance.config.hfRepoId;
+                    }
+                    const li = v1LatestUserIndex(req.body.messages);
+                    if (pairPlan.note && li >= 0) {
+                        const um = req.body.messages[li];
+                        if (typeof um.content === 'string') req.body.messages[li] = { ...um, content: `${um.content}\n\n${pairPlan.note}` };
+                        else if (Array.isArray(um.content)) req.body.messages[li] = { ...um, content: [...um.content, { type: 'text', text: `\n\n${pairPlan.note}` }] };
+                    }
+                }
+            } catch (e) { console.warn('[Pi/Pair] skipped:', e.message); }
         }
 
         // ── Pi memory bridge ────────────────────────────────────────────────

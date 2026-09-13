@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { modelDisplayName } from '../../utils/modelDisplayName';
 import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText, ArrowLeftRight } from 'lucide-react';
 import SearchSources from './SearchSources';
 import ChartBlock from './ChartBlock';
@@ -388,7 +389,7 @@ function ModelTag({ model, title }) {
                 borderRadius: 4, padding: '0 4px', flexShrink: 0,
                 maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}
-        >{model}</span>
+        >{modelDisplayName(model) || model}</span>
     );
 }
 

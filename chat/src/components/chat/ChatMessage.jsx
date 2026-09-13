@@ -12,6 +12,10 @@ import VideoBlock from './VideoBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 import { splitNarration, totalToolMs } from '../../utils/narrationSegments';
+import { modelDisplayName } from '../../utils/modelDisplayName';
+
+// Short model names in the pairing UI; the full id always rides in title=.
+const shortModel = (name) => modelDisplayName(name) || String(name || '');
 
 // Break a reasoning blob into discrete thought-steps so long chains of
 // "Let me also check…" / "Now I'll…" don't render as one giant wall.
@@ -77,7 +81,7 @@ const TOOL_VERBS = {
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
     delegate: 'Running worker agents',
-    first_pass: 'Sizing up the task',
+    first_pass: 'Preparing a brief',
     ask_assistant: 'Handing work to the other model',
     await_assistant: 'Waiting on the other model',
 };
@@ -179,7 +183,7 @@ function describeHandoff(handoff, now = Date.now(), startsRef = null) {
             const secs = Math.max(0, Math.round((now - starts.first_pass) / 1000));
             if (secs >= 4) clock = ` (${secs}s)`;
         }
-        return `${assistant || 'The primary'} is sizing up the task…${clock}`;
+        return `${assistant || 'The primary'} is preparing a brief…${clock}`;
     }
     if (handoff.reviewing) return `${reviewer || assistant || lead} is reviewing the answer`;
     if (phase === 'revising') {
@@ -235,7 +239,7 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
     if (assistant) {
         const running = runningJobsOf(handoff);
         if (phase === 'first_pass') {
-            rows.push({ key: 'assistant', model: assistant, parts: ['sizing up the task'], seconds: since('first_pass') });
+            rows.push({ key: 'assistant', model: assistant, parts: ['preparing a brief'], seconds: since('first_pass') });
         } else if (allJobs.length) {
             const done = allJobs.filter(j => j && j.status && j.status !== 'running' && j.status !== 'queued').length;
             rows.push({
@@ -288,43 +292,29 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
 function HandoffRows({ rows }) {
     if (!rows.length) return null;
     return (
-        <div className="handoff-rows" aria-live="polite" style={{ margin: '6px 0 2px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-            {rows.map(r => (
-                <div
-                    key={r.key}
-                    style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 7,
-                        minWidth: 0,
-                        ...(r.indent ? { paddingLeft: 12 } : null),
-                        ...(r.done ? { opacity: 0.72 } : null),
-                        '--fs': '11.5px',
-                        color: 'var(--ink-4)',
-                        lineHeight: 1.35,
-                    }}
-                >
-                    {r.indent && <span style={{ flexShrink: 0, width: 10, textAlign: 'center', opacity: 0.5 }}>↳</span>}
-                    {r.done
-                        ? <span style={{ flexShrink: 0, width: 7, textAlign: 'center', opacity: 0.8, color: r.failed ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)' }}>{r.failed ? '×' : '✓'}</span>
-                        : <span className="thinking-dot" style={{ flexShrink: 0, animationDelay: r.key === 'lead' ? '0s' : '0.3s' }} />}
-                    <span style={{
-                        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                        color: 'var(--ink-3)',
-                        flexShrink: 0,
-                        maxWidth: 190,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                    }}>{r.model}</span>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
-                        {r.parts.join(' · ')}
-                    </span>
-                    {r.seconds >= 1 && (
-                        <span style={{ flexShrink: 0, opacity: 0.75 }}>{r.seconds}s</span>
-                    )}
-                </div>
-            ))}
+        <div className="msg-turn msg-turn--live" aria-live="polite">
+            <div className="msg-turn-head">
+                <span className="msg-turn-label">Two models working</span>
+            </div>
+            <ol className="msg-turn-timeline">
+                {rows.map(r => {
+                    const state = r.done ? (r.failed ? 'failed' : 'done') : 'running';
+                    return (
+                        <li key={r.key} className={`msg-turn-event${r.indent ? ' msg-turn-event--job' : ''}`} data-state={state}>
+                            <span className="msg-turn-dot" aria-hidden="true" />
+                            <div className="msg-turn-line">
+                                {!r.indent && <span className="msg-turn-pill" title={r.model}>{shortModel(r.model)}</span>}
+                                <span className="msg-turn-text">
+                                    {r.indent
+                                        ? <><span className="msg-turn-job-name">{r.parts[0]}</span>{r.parts.slice(1).length ? <span className="msg-turn-muted">{' \u00b7 ' + r.parts.slice(1).join(' \u00b7 ')}</span> : null}</>
+                                        : r.parts.join(' \u00b7 ')}
+                                </span>
+                                {r.seconds >= 1 && <span className="msg-turn-meta">{r.seconds}s</span>}
+                            </div>
+                        </li>
+                    );
+                })}
+            </ol>
         </div>
     );
 }
@@ -365,26 +355,23 @@ function exchangeSteps(toolCalls, review) {
         if (label === 'first_pass') {
             const r = tc.result || {};
             const to = r.handedTo;
-            const subject = briefSubject(r.brief);
+            // A committed message keeps the chip's `purpose` but not its full
+            // `result`, so the brief's subject is recovered from the purpose
+            // sentence ("Prepared a brief for X: <subject>") after a reload.
+            const fromPurpose = String(tc.purpose || '').match(/^(?:Prepared a brief for|Briefed)\s+\S+?(?::|\son)\s+(.+)$/i);
+            const subject = r.brief ? briefSubject(r.brief) : (fromPurpose ? clipSentence(fromPurpose[1]) : '');
             const extras = [];
-            if (r.toolCalls) extras.push(`gathered with ${r.toolCalls} tool call${r.toolCalls === 1 ? '' : 's'}`);
-            if (Array.isArray(r.proposedJobs) && r.proposedJobs.length) extras.push(`proposed: ${r.proposedJobs.join(', ')}`);
-            // A COMMITTED message keeps the chip's `purpose` but not its full
-            // `result` (the client drops tool results to keep messages small),
-            // so the server writes the brief's subject into `purpose` and that
-            // is what survives a reload. Prefer the structured fields while
-            // they exist (live), fall back to the purpose sentence after.
-            const purposeText = String(tc.purpose || '').replace(/^Briefed /, 'briefed ').replace(/^Sized /, 'sized ');
+            if (r.toolCalls) extras.push(`${r.toolCalls} tool call${r.toolCalls === 1 ? '' : 's'}`);
+            if (Array.isArray(r.proposedJobs) && r.proposedJobs.length) extras.push(`proposed ${r.proposedJobs.length} task${r.proposedJobs.length === 1 ? '' : 's'}`);
             steps.push({
                 key: `fp${steps.length}`,
-                dir: 'out',
+                kind: 'brief',
                 from: tc.model || r.model,
                 to,
-                text: subject
-                    ? `briefed ${to || 'the other model'} on ${subject}`
-                    : (purposeText || `handed ${to || 'the other model'} a brief`),
-                detail: extras.join(' \u00b7 '),
-                seconds: typeof r.seconds === 'number' ? r.seconds : undefined,
+                text: tc.status === 'failed' ? 'could not prepare a brief' : `prepared a brief${to ? ` for ${shortModel(to)}` : ''}`,
+                detail: subject,
+                meta: extras.join(' \u00b7 '),
+                seconds: typeof r.seconds === 'number' ? r.seconds : (typeof tc.durationMs === 'number' ? tc.durationMs / 1000 : undefined),
                 failed: tc.status === 'failed',
             });
         } else if (label === 'ask_assistant') {
@@ -398,17 +385,16 @@ function exchangeSteps(toolCalls, review) {
             const n = jobs.length || (Array.isArray(reqs) ? reqs.length : 0);
             steps.push({
                 key: `aa${steps.length}`,
-                dir: 'back',
+                kind: 'delegate',
                 from: tc.model,
                 to,
                 text: n
-                    ? `delegated ${n} task${n === 1 ? '' : 's'} to ${to || 'the other model'}`
-                    : (String(tc.purpose || '').replace(/^Handed /, 'handed ').replace(/^Handing /, 'handed ')
-                       || 'handed work to the other model'),
+                    ? `delegated ${n} task${n === 1 ? '' : 's'}${to ? ` to ${shortModel(to)}` : ''}`
+                    : 'handed work to the other model',
                 jobs: jobs.map(j => ({ ...j, task: asked[j.name] })),
             });
         } else if (label === 'await_assistant') {
-            steps.push({ key: `aw${steps.length}`, dir: 'wait', from: tc.model, text: 'waited for those results before answering' });
+            steps.push({ key: `aw${steps.length}`, kind: 'wait', from: tc.model, text: 'waited for the delegated results' });
         }
     }
     // The secondary's pass over the finished answer. In EDIT mode it rewrites
@@ -425,7 +411,7 @@ function exchangeSteps(toolCalls, review) {
                     : 'review did not complete';
         steps.push({
             key: 'review',
-            dir: 'review',
+            kind: 'review',
             from: review.reviewer,
             text,
             detail: review.edited && review.summary ? clipSentence(review.summary, 140) : '',
@@ -436,65 +422,92 @@ function exchangeSteps(toolCalls, review) {
     return steps;
 }
 
+function fmtSecs(sec) {
+    if (!(sec >= 0.1)) return '';
+    if (sec < 60) return `${Math.round(sec)}s`;
+    return `${Math.floor(sec / 60)}m ${String(Math.round(sec % 60)).padStart(2, '0')}s`;
+}
+
+function ExchangeJob({ job }) {
+    const [open, setOpen] = useState(false);
+    const failed = job.status === 'failed' || job.status === 'cancelled';
+    const pending = job.status === 'running' || job.status === 'queued';
+    const state = failed ? 'failed' : pending ? 'running' : 'done';
+    const meta = [];
+    if (job.calls) meta.push(`${job.calls} call${job.calls === 1 ? '' : 's'}`);
+    if (typeof job.seconds === 'number') meta.push(fmtSecs(job.seconds));
+    if (failed) meta.push(job.status);
+    return (
+        <li className="msg-turn-job" data-state={state}>
+            <button
+                type="button"
+                className="msg-turn-job-row"
+                onClick={() => job.task && setOpen(v => !v)}
+                aria-expanded={job.task ? open : undefined}
+                title={job.model ? `Ran on ${job.model}` : undefined}
+            >
+                <span className="msg-turn-glyph" aria-hidden="true">{failed ? '\u00d7' : pending ? '\u25cc' : '\u2713'}</span>
+                <span className="msg-turn-job-name">{job.name || 'task'}</span>
+                {job.task && <span className={`msg-turn-job-task${open ? ' is-open' : ''}`}>{job.task}</span>}
+                {meta.length > 0 && <span className="msg-turn-meta">{meta.join(' \u00b7 ')}</span>}
+            </button>
+        </li>
+    );
+}
+
 function ExchangePanel({ steps }) {
     if (!steps.length) return null;
-    const arrow = { out: '\u2192', back: '\u2190', wait: '\u22ef', review: '\u270e' };
+    // The pair: the brief's author is the assistant and its recipient the lead;
+    // a delegation runs the other way.
+    const brief = steps.find(s => s.kind === 'brief');
+    const deleg = steps.find(s => s.kind === 'delegate');
+    const lead = (brief && brief.to) || (deleg && deleg.from) || '';
+    const assistant = (brief && brief.from) || (deleg && deleg.to) || '';
+    const jobs = steps.flatMap(s => s.jobs || []);
+    const batches = steps.filter(s => s.kind === 'delegate' && (s.jobs || []).length).length;
+    const calls = jobs.reduce((n, j) => n + (Number(j.calls) || 0), 0);
+    const jobSecs = jobs.reduce((n, j) => n + (typeof j.seconds === 'number' ? j.seconds : 0), 0);
+    const totals = [];
+    if (jobs.length) totals.push(`${jobs.length} task${jobs.length === 1 ? '' : 's'} delegated${batches > 1 ? ` in ${batches} batches` : ''}`);
+    if (calls) totals.push(`${calls} call${calls === 1 ? '' : 's'}`);
+    if (jobSecs >= 1) totals.push(fmtSecs(jobSecs));
+    const pill = (name) => {
+        if (!name) return null;
+        const role = name === lead ? 'lead' : name === assistant ? 'assist' : 'other';
+        return <span className={`msg-turn-pill msg-turn-pill--${role}`} title={name}>{shortModel(name)}</span>;
+    };
     return (
-        <div
-            className="msg-exchange"
-            style={{
-                margin: '8px 0 2px', padding: '7px 10px',
-                border: '1px solid var(--rule, var(--border-primary))',
-                borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 4,
-                fontSize: '11.5px', lineHeight: 1.4, color: 'var(--ink-3, var(--text-secondary))',
-            }}
-        >
-            <div style={{ color: 'var(--ink-4, var(--text-tertiary))', letterSpacing: '.04em', textTransform: 'uppercase', fontSize: '10px' }}>
-                Two models on this turn
-            </div>
-            {steps.map(st => (
-                <React.Fragment key={st.key}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                        <span style={{ flexShrink: 0, width: 11, opacity: 0.7 }}>{arrow[st.dir]}</span>
-                        <span style={{
-                            fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                            color: 'var(--ink-2, var(--text-primary))', flexShrink: 0,
-                            maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>{st.from || 'model'}</span>
-                        <span style={{
-                            minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1,
-                            ...(st.warn ? { color: 'var(--warn, #d1a35c)' } : null),
-                        }}>
-                            {st.text}
-                        </span>
-                        {st.seconds >= 0.1 && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(st.seconds)}s</span>}
-                    </div>
-                    {st.detail && (
-                        <div style={{ paddingLeft: 18, opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {st.detail}
+        <section className="msg-turn" aria-label="Two models on this turn">
+            <header className="msg-turn-head">
+                <span className="msg-turn-label">Two models on this turn</span>
+                <span className="msg-turn-pair">
+                    {pill(lead)}
+                    {lead && assistant && <span className="msg-turn-muted" aria-hidden="true">+</span>}
+                    {pill(assistant)}
+                </span>
+                {totals.length > 0 && <span className="msg-turn-totals">{totals.join(' \u00b7 ')}</span>}
+            </header>
+            <ol className="msg-turn-timeline">
+                {steps.map(st => (
+                    <li key={st.key} className="msg-turn-event" data-state={st.failed ? 'failed' : st.warn ? 'warn' : 'done'} data-kind={st.kind}>
+                        <span className="msg-turn-dot" aria-hidden="true" />
+                        <div className="msg-turn-line">
+                            {pill(st.from || '')}
+                            <span className="msg-turn-text">{st.text}</span>
+                            {(st.meta || st.seconds >= 0.1) && (
+                                <span className="msg-turn-meta">{[st.meta, fmtSecs(st.seconds)].filter(Boolean).join(' \u00b7 ')}</span>
+                            )}
                         </div>
-                    )}
-                    {(st.jobs || []).map((j, i) => (
-                        <div key={`${st.key}j${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 18, minWidth: 0, opacity: 0.9 }}>
-                            <span style={{
-                                flexShrink: 0, width: 8, textAlign: 'center',
-                                color: (j.status === 'failed' || j.status === 'cancelled') ? 'var(--danger, #e06c75)' : 'var(--ok, #7bbf7b)',
-                            }}>{(j.status === 'failed' || j.status === 'cancelled') ? '\u00d7' : '\u2713'}</span>
-                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
-                                <span style={{ color: 'var(--ink-2, var(--text-primary))' }}>{j.name || `job ${i + 1}`}</span>
-                                {j.task ? <span style={{ opacity: 0.75 }}>{` \u2014 ${clipSentence(j.task, 90)}`}</span> : null}
-                            </span>
-                            {!!j.calls && <span style={{ flexShrink: 0, opacity: 0.7 }}>{j.calls} tool call{j.calls === 1 ? '' : 's'}</span>}
-                            {typeof j.seconds === 'number' && <span style={{ flexShrink: 0, opacity: 0.7 }}>{Math.round(j.seconds)}s</span>}
-                            <span style={{
-                                fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0, opacity: 0.65,
-                                maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>{j.model || ''}</span>
-                        </div>
-                    ))}
-                </React.Fragment>
-            ))}
-        </div>
+                        {st.detail && <div className="msg-turn-detail" title={st.detail}>{st.detail}</div>}
+                        {(st.jobs || []).length > 0 && (
+                            <ul className="msg-turn-jobs">
+                                {st.jobs.map((j, i) => <ExchangeJob key={`${st.key}j${i}`} job={j} />)}
+                            </ul>
+                        )}
+                    </li>
+                ))}
+            </ol>
+        </section>
     );
 }
 
@@ -519,8 +532,8 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
                 aria-label={open ? 'Collapse working notes' : 'Expand working notes'}
             >
                 <ChevronDown strokeWidth={2} />
-                <span className="msg-notes-label">Working notes</span>
-                <span className="msg-notes-meta">{meta.join(' · ')}</span>
+                <span className="msg-turn-label">Working notes</span>
+                <span className="msg-turn-totals">{meta.join(' · ')}</span>
             </button>
             {open && (
                 <div className="msg-notes-body">
@@ -802,10 +815,10 @@ export default React.memo(function ChatMessage({
                         <User strokeWidth={2.25} />
                     </div>
                 )}
-                <span className="msg-name" title={!isUser && modelTitle ? modelTitle : undefined}>{isUser ? 'You' : (modelName || 'Assistant')}</span>
+                <span className="msg-name" title={!isUser ? (modelTitle || modelName || undefined) : undefined}>{isUser ? 'You' : (modelName ? modelName.replace(/[^·\s][^·]*$/, (m) => shortModel(m.trim())) : 'Assistant')}</span>
                 {!isUser && assistedBy && (
-                    <span className="msg-time" title={`${assistedBy} sized up the task and ran background jobs for this answer`}>
-                        with {assistedBy}
+                    <span className="msg-time" title={`${assistedBy} prepared the brief and ran background jobs for this answer`}>
+                        with {shortModel(assistedBy)}
                     </span>
                 )}
                 {timeStr && <span className="msg-time">{timeStr}</span>}

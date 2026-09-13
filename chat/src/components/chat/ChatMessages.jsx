@@ -112,6 +112,8 @@ function StreamingMessage() {
             model: tc.model || undefined,
             // Narration/answer split key (see splitNarration).
             contentOffset: Number.isFinite(tc.contentOffset) ? tc.contentOffset : undefined,
+            // ask_assistant: the jobs THIS chip dispatched (patched per chipId).
+            assistantJobs: Array.isArray(tc.assistantJobs) && tc.assistantJobs.length ? tc.assistantJobs : undefined,
             // delegate: live worker-agent progress (delegate_progress frames)
             // and, once the result is in, each agent's compact outcome.
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
@@ -130,7 +132,8 @@ function StreamingMessage() {
     // that dispatched them — live, and then on the saved message. The frames
     // are cumulative for the turn, so the newest such chip carries the list.
     const liveJobs = (streamingHandoff && Array.isArray(streamingHandoff.jobs)) ? streamingHandoff.jobs : [];
-    if (liveJobs.length) {
+    const anyChipHasJobs = liveToolCalls.some(c => c && c.label === 'ask_assistant' && c.assistantJobs);
+    if (liveJobs.length && !anyChipHasJobs) {
         for (let i = liveToolCalls.length - 1; i >= 0; i--) {
             if (liveToolCalls[i] && liveToolCalls[i].label === 'ask_assistant') {
                 liveToolCalls[i] = { ...liveToolCalls[i], assistantJobs: liveJobs };

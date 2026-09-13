@@ -1142,6 +1142,189 @@ export default async function (pi: ExtensionAPI) {
         console.error("[modelserver] failed to register workspace bridge tools:", e);
     }
 
+    // ---- two models (primary + secondary) ------------------------------------
+    // The server plans the pairing per task inside the /v1 proxy (routes the
+    // task to the lead, appends the brief, starts legwork on the other model).
+    // What only the extension can do: give the lead tools to hand work over,
+    // fold finished results back into the conversation, start a follow-up turn
+    // when results land after the lead already answered, and SHOW the user
+    // both models working (status line + widget).
+    try {
+        const pr = await authedFetch("/api/pi/pair");
+        const pair: any = pr.ok ? await pr.json() : null;
+        if (pair && pair.enabled && pair.legwork !== false) {
+            const short = (name: string) => {
+                const base = String(name || "").split("/").pop() || "";
+                const segs = base.split(/[-_]/).filter(Boolean);
+                let last = -1;
+                segs.forEach((seg, i) => { if (/^(?:\d+(?:\.\d+)?x\d+(?:\.\d+)?B|A\d+(?:\.\d+)?B|\d+(?:\.\d+)?B)$/i.test(seg)) last = i; });
+                return last >= 0 ? segs.slice(0, last + 1).join("-") : (base.length > 24 ? base.slice(0, 23) + "…" : base);
+            };
+            let uiCtx: any = null;
+            let lastPoll = 0;
+            let outstanding = 0;
+            let pollTimer: ReturnType<typeof setInterval> | null = null;
+            let ownCallsThisRun = 0;
+            let dispatchedThisRun = false;
+            let nudgedThisRun = false;
+
+            const renderResults = (results: any[]): string => {
+                const parts = results.map((j) => j.status === "done"
+                    ? `• "${j.name}" (${j.id}, ${Math.round(j.seconds || 0)}s on ${short(j.model)})${(j.filesWritten || []).length ? ` — wrote ${j.filesWritten.join(", ")} in the SERVER sandbox` : ""}:\n${j.answer || "(no report)"}`
+                    : `• "${j.name}" (${j.id}) ${String(j.status).toUpperCase()}${j.error ? `: ${j.error}` : ""} — do it yourself or work around it.`);
+                return `[ASSISTANT RESULTS — your assistant finished ${results.length} job${results.length === 1 ? "" : "s"}. Use them; do not redo that work.]\n${parts.join("\n\n")}`;
+            };
+
+            const updateStatus = (data: any) => {
+                if (!uiCtx || !uiCtx.hasUI || !data) return;
+                try {
+                    const jobs: any[] = Array.isArray(data.jobs) ? data.jobs : [];
+                    if (!data.active || (!jobs.length && !data.lead)) {
+                        uiCtx.ui.setStatus("modelserver-pair", undefined);
+                        uiCtx.ui.setWidget("modelserver-pair", undefined);
+                        return;
+                    }
+                    const running = jobs.filter((j) => j.status === "running" || j.status === "queued");
+                    const done = jobs.filter((j) => j.status === "done").length;
+                    uiCtx.ui.setStatus("modelserver-pair",
+                        `${short(data.lead)} leads · ${short(data.assistant)}: ` +
+                        (running.length ? `${running.length} job${running.length === 1 ? "" : "s"} running` : jobs.length ? `${done}/${jobs.length} jobs done` : "standing by"));
+                    if (jobs.length) {
+                        const lines = [`Two models — ${short(data.lead)} leads, ${short(data.assistant)} assists (${jobs.length} job${jobs.length === 1 ? "" : "s"})`];
+                        for (const j of jobs.slice(-8)) {
+                            const glyph = j.status === "done" ? "✓" : (j.status === "failed" || j.status === "cancelled") ? "×" : j.status === "queued" ? "…" : "◌";
+                            const tail = j.status === "running" ? (j.current || "working") : j.status === "queued" ? "queued" : `${j.calls || 0} calls · ${Math.round(j.seconds || 0)}s`;
+                            lines.push(`  ${glyph} ${j.name} — ${tail}`);
+                        }
+                        uiCtx.ui.setWidget("modelserver-pair", lines);
+                    } else {
+                        uiCtx.ui.setWidget("modelserver-pair", undefined);
+                    }
+                } catch { /* never break a turn over the status line */ }
+            };
+
+            const poll = async (deliver: boolean, waitMs = 0, ids?: string[]): Promise<any> => {
+                const q = new URLSearchParams();
+                if (!deliver) q.set("peek", "1");
+                if (waitMs) q.set("wait", String(waitMs));
+                if (ids && ids.length) q.set("ids", ids.join(","));
+                const r = await authedFetch(`/api/pi/assistant/jobs?${q.toString()}`, { signal: AbortSignal.timeout(waitMs ? waitMs + 10000 : 4000) });
+                if (!r.ok) return null;
+                const data: any = await r.json();
+                lastPoll = Date.now();
+                outstanding = (data.pending || 0) + (data.undelivered || 0);
+                updateStatus(data);
+                return data;
+            };
+
+            (pi as any).registerTool({
+                name: "ask_assistant",
+                label: "ask_assistant",
+                description: "Hand independent legwork to the other loaded model; it runs in the background and results come back on your next tool result. "
+                    + "Good jobs: look up an API, version, spec or current facts; read or summarise a file in the SERVER sandbox; run an existing script there and report. "
+                    + "Never hand over the whole task or anything that depends on output you have not written yet. Delegation is continuous: hand over more whenever your work reveals it.",
+                parameters: Type.Object({
+                    requests: Type.Array(Type.Object({
+                        name: Type.String({ description: "Short label for the job" }),
+                        task: Type.String({ description: "Exactly what to find or do and what to report back" }),
+                    }), { description: "One entry per job; they run in parallel and queue past the limit" }),
+                }),
+                async execute(_id: string, args: any, signal: AbortSignal | undefined, _u: any, ctx: any) {
+                    if (ctx) uiCtx = ctx;
+                    const r = await authedFetch("/api/pi/assistant/jobs", { method: "POST", body: JSON.stringify(args || {}), signal });
+                    const data: any = await r.json().catch(() => ({}));
+                    if (!r.ok) throw new Error(`[ask_assistant] ${data.note || data.error || `HTTP ${r.status}`}`);
+                    outstanding += (data.dispatched || []).length;
+                    void poll(false).catch(() => {});
+                    const names = (data.dispatched || []).map((d: any) => `"${d.name}" (${d.id}, ${d.status})`).join(", ");
+                    return {
+                        content: [{ type: "text", text: `Handed to ${short(data.assistant)}: ${names}. ${data.running} running, ${data.queued} queued (${data.jobsUsed}). ${data.note}` }],
+                        details: data,
+                    };
+                },
+            });
+            (pi as any).registerTool({
+                name: "await_assistant",
+                label: "await_assistant",
+                description: "Wait for the jobs you handed to the other model and get their results; call it before your final answer while any job is still running.",
+                parameters: Type.Object({
+                    ids: Type.Optional(Type.Array(Type.String(), { description: "Job ids or names to wait for; omit for all" })),
+                    timeoutSeconds: Type.Optional(Type.Number({ description: "Maximum wait, default 120, at most 300" })),
+                }),
+                async execute(_id: string, args: any, _signal: AbortSignal | undefined, _u: any, ctx: any) {
+                    if (ctx) uiCtx = ctx;
+                    const waitMs = Math.min(300, Math.max(5, Number(args?.timeoutSeconds) || 120)) * 1000;
+                    const data = await poll(true, waitMs, Array.isArray(args?.ids) ? args.ids : undefined);
+                    if (!data || !data.active) return { content: [{ type: "text", text: "No assistant jobs for this task." }], details: data };
+                    const results = data.results || [];
+                    const still = (data.jobs || []).filter((j: any) => j.status === "running" || j.status === "queued");
+                    const text = (results.length ? renderResults(results) : "No new results.")
+                        + (still.length ? `\n\nStill running after the wait: ${still.map((j: any) => `"${j.name}"`).join(", ")}.` : "");
+                    return { content: [{ type: "text", text }], details: data };
+                },
+            });
+
+            // Deliver finished results on whatever tool result comes next —
+            // the newest message, so the prompt prefix before it stays cached,
+            // and Pi keeps the appended text in its history for later rounds.
+            pi.on("tool_result", async (event: any, ctx: any) => {
+                try {
+                    if (ctx) uiCtx = ctx;
+                    if (event.toolName === "ask_assistant" || event.toolName === "await_assistant") { dispatchedThisRun = true; return; }
+                    ownCallsThisRun++;
+                    let extra = "";
+                    if (outstanding > 0 || Date.now() - lastPoll >= 5000) {
+                        const data = await poll(true);
+                        const results = data && data.results;
+                        if (results && results.length) extra = `\n\n${renderResults(results)}`;
+                        if (data && Array.isArray(data.jobs) && data.jobs.length) dispatchedThisRun = true;
+                    }
+                    // Same one-shot nudge the chat uses: the lead doing every
+                    // lookup itself while the other model sits idle is exactly
+                    // what "I don't see the two models working" looks like.
+                    if (!extra && !nudgedThisRun && !dispatchedThisRun && ownCallsThisRun >= 3) {
+                        nudgedThisRun = true;
+                        extra = `\n\n[TWO MODELS — ${short(pair.primary)} is idle while you have made ${ownCallsThisRun} calls yourself. Hand the remaining independent lookups, reads or checks to it with ONE ask_assistant call (they run in parallel) and keep working on what only you can do. If nothing independent is left, carry on.]`;
+                    }
+                    if (!extra) return;
+                    return { content: [...(event.content || []), { type: "text", text: extra }] };
+                } catch { return; }
+            });
+
+            // Keep the status line moving while the agent works, even between tool calls.
+            pi.on("agent_start", (_e: any, ctx: any) => {
+                if (ctx) uiCtx = ctx;
+                ownCallsThisRun = 0; dispatchedThisRun = false; nudgedThisRun = false;
+                if (pollTimer) clearInterval(pollTimer);
+                pollTimer = setInterval(() => { void poll(false).catch(() => {}); }, 3000);
+                (pollTimer as any).unref?.();
+            });
+            // Results that land after the lead has already answered would be
+            // lost — start one follow-up turn carrying them so the answer is
+            // revised with the legwork in hand (bounded: waits up to 90 s).
+            pi.on("agent_end", async (_e: any, ctx: any) => {
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                if (ctx) uiCtx = ctx;
+                try {
+                    let data = await poll(false);
+                    if (!data || !data.active || ((data.pending || 0) + (data.undelivered || 0)) === 0) { updateStatus(data); return; }
+                    if (data.pending) data = await poll(true, 90000);
+                    else data = await poll(true);
+                    const results = (data && data.results) || [];
+                    if (!results.length) return;
+                    (pi as any).sendMessage({
+                        customType: "modelserver-assistant-results",
+                        content: `${renderResults(results)}\n\nThese arrived after your answer. Revise the answer so it uses them — correct anything they contradict and fill in what you left out. Reply with the complete answer; do not mention the assistant or the revision.`,
+                        display: true,
+                    }, { triggerTurn: true, deliverAs: "followUp" });
+                } catch { /* nothing to deliver */ }
+            });
+            console.error(`[modelserver] two models: ${short(pair.secondary)} leads substantial tasks, ${short(pair.primary)} assists (mode ${pair.mode})`);
+        }
+    } catch (e) {
+        console.error("[modelserver] two-model tools not registered:", (e as Error).message);
+    }
+
     if (skippedStub > 0) {
         console.warn(`[modelserver] skipped ${skippedStub} stub skill(s) with no def execute and no native route`);
     }
@@ -1684,12 +1867,24 @@ function describeArtifacts(parsed: any, insecure: boolean): string {
     return lines.join("\n");
 }
 
+// A tool result is resent on EVERY later request of the task, so a raw page
+// (fetch_url on go.dev/dl returned megabytes of HTML) used to put ~1M tokens
+// into Pi's next request: the server's context guard rejected it and Pi had to
+// compact mid-task. Strings were never capped — only the JSON fallback was.
+const MAX_RESULT_TEXT_CHARS = Math.max(4000, Number(process.env.MODELSERVER_RESULT_CHARS) || 24000);
+function capText(text: string): string {
+    if (text.length <= MAX_RESULT_TEXT_CHARS) return text;
+    const head = Math.floor(MAX_RESULT_TEXT_CHARS * 0.8);
+    const tail = MAX_RESULT_TEXT_CHARS - head;
+    return `${text.slice(0, head)}\n\n…[${text.length - MAX_RESULT_TEXT_CHARS} characters omitted — the result was ${text.length} characters; narrow the request (a more specific URL, find, or a smaller range) if the part you need is missing]…\n\n${text.slice(-tail)}`;
+}
+
 function summarize(payload: any): string {
     if (payload == null) return "";
-    if (typeof payload === "string") return payload;
-    if (typeof payload.content === "string") return payload.content;
-    if (typeof payload.text === "string") return payload.text;
-    if (typeof payload.output === "string") return payload.output;
+    if (typeof payload === "string") return capText(payload);
+    if (typeof payload.content === "string") return capText(payload.content);
+    if (typeof payload.text === "string") return capText(payload.text);
+    if (typeof payload.output === "string") return capText(payload.output);
     if (payload.success === false && payload.error) return `Error: ${payload.error}`;
     try {
         const json = JSON.stringify(payload, null, 2);

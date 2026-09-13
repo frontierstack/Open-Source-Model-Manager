@@ -6015,6 +6015,95 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 .msg-answer-divider > span { min-height: 1.2em; line-height: 1.2em; }
 .msg-answer-divider--pending > span { display: none; }
 .msg-answer-divider--pending { min-height: 1.2em; opacity: .7; }
+
+
+/* ── Two-model turn card + working notes (2026-09-13) ─────────────────────
+   One visual language for the pairing: a quiet card with a small-caps header,
+   the two model pills, right-aligned totals, and a vertical timeline. Tokens
+   only, so every theme applies. */
+.msg-turn {
+    margin: 6px 0 8px; padding: 10px 12px 8px; min-width: 0; max-width: 100%;
+    background: var(--surface, var(--bg-elevated));
+    border: 1px solid var(--rule, var(--border-primary)); border-radius: 10px;
+    font-size: 12.5px; --fs: 12.5px; line-height: 1.45; color: var(--ink-2);
+}
+.msg-turn--live { background: transparent; }
+.msg-turn-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; margin-bottom: 8px; }
+.msg-turn-label {
+    font-size: 10.5px; --fs: 10.5px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ink-4); white-space: nowrap;
+}
+.msg-turn-pair { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.msg-turn-totals, .msg-turn-meta {
+    margin-left: auto; color: var(--ink-4); font-variant-numeric: tabular-nums;
+    white-space: nowrap; flex-shrink: 0; font-size: 11.5px; --fs: 11.5px;
+}
+.msg-turn-muted { color: var(--ink-4); }
+.msg-turn-pill {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 170px; min-width: 0; flex-shrink: 0;
+    padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule, var(--border-primary));
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; --fs: 11px;
+    color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.msg-turn-pill::before { content: '\25CB'; font-size: 8px; line-height: 1; color: var(--ink-4); flex-shrink: 0; }
+.msg-turn-pill--lead { background: color-mix(in oklab, var(--accent) 14%, transparent); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
+.msg-turn-pill--lead::before { content: '\25CF'; color: var(--accent); }
+.msg-turn-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; position: relative; }
+.msg-turn-timeline::before {
+    content: ''; position: absolute; left: 3px; top: 7px; bottom: 7px; width: 1px;
+    background: var(--rule, var(--border-primary));
+}
+.msg-turn-event { position: relative; padding-left: 18px; min-width: 0; }
+.msg-turn-dot {
+    position: absolute; left: 0; top: 6px; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ink-4); box-shadow: 0 0 0 3px var(--surface, var(--bg-elevated));
+}
+.msg-turn--live .msg-turn-dot { box-shadow: 0 0 0 3px var(--bubble-ai-bg, var(--bg-2, var(--bg-secondary))); }
+.msg-turn-event[data-state="done"] .msg-turn-dot { background: var(--ok, #7bbf7b); }
+.msg-turn-event[data-state="failed"] .msg-turn-dot { background: var(--danger, #e06c75); }
+.msg-turn-event[data-state="warn"] .msg-turn-dot { background: var(--warn, #d1a35c); }
+.msg-turn-event[data-state="running"] .msg-turn-dot { background: var(--accent); animation: msg-turn-pulse 1.4s ease-in-out infinite; }
+@keyframes msg-turn-pulse { 50% { opacity: .35; } }
+.msg-turn-event--job { padding-left: 32px; }
+.msg-turn-event--job .msg-turn-dot { left: 14px; width: 5px; height: 5px; top: 7px; }
+.msg-turn-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.msg-turn-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-turn-event[data-state="warn"] .msg-turn-text { color: var(--warn, #d1a35c); }
+.msg-turn-detail {
+    margin-top: 2px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.msg-turn-jobs { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.msg-turn-job-row {
+    display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; text-align: left;
+    padding: 3px 6px; margin-left: -6px; border-radius: 6px; background: none; border: 0;
+    color: inherit; font: inherit; cursor: default;
+}
+.msg-turn-job-row[aria-expanded] { cursor: pointer; }
+.msg-turn-job-row[aria-expanded]:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.msg-turn-glyph { width: 12px; flex-shrink: 0; text-align: center; color: var(--ok, #7bbf7b); }
+.msg-turn-job[data-state="failed"] .msg-turn-glyph { color: var(--danger, #e06c75); }
+.msg-turn-job[data-state="running"] .msg-turn-glyph { color: var(--ink-4); }
+.msg-turn-job-name { font-weight: 500; color: var(--ink-2); white-space: nowrap; flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+.msg-turn-job-task { color: var(--ink-3); min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-turn-job-task.is-open { white-space: normal; overflow: visible; }
+
+/* Working notes header in the same language as the card header. */
+.msg-notes-toggle .msg-turn-label { color: var(--ink-4); }
+.msg-notes-toggle .msg-turn-totals { margin-left: 8px; }
+.msg-notes-body { gap: 8px; }
+
+@media (max-width: 640px) {
+    .msg-turn { padding: 9px 10px 7px; }
+    .msg-turn-totals { margin-left: 0; flex-basis: 100%; }
+    .msg-turn-line { flex-wrap: wrap; row-gap: 2px; }
+    .msg-turn-text { white-space: normal; flex-basis: 100%; order: 2; }
+    .msg-turn-line .msg-turn-meta { order: 1; }
+    .msg-turn-job-row { flex-wrap: wrap; row-gap: 1px; }
+    .msg-turn-job-task { flex-basis: 100%; padding-left: 20px; }
+    .msg-turn-job-name { max-width: 60%; }
+}
+.msg-notes-toggle .msg-turn-totals { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.msg-turn-job-name { padding-right: 1px; }
 .hover\:underline:hover{
   text-decoration-line: underline;
 }

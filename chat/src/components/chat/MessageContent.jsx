@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeWordTags from '../../utils/rehypeWordTags';
+import { completeStreamingMarkdown } from '../../utils/streamingMarkdown';
 import 'katex/dist/katex.min.css';
 import CodeBlock from './CodeBlock';
 import CodePreviewBlock from './CodePreviewBlock';
@@ -235,7 +236,11 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
     const fenced = repairedTables.includes('```')
         ? repairedTables.replace(/([^\n`])(```[A-Za-z0-9_+#.-]*\n)/g, '$1\n$2')
         : repairedTables;
-    const processed = escapeCurrency(fenced.replace(/<br\s*\/?>/gi, '  \n'));
+    // While streaming, close whatever the tail has opened (an unfinished
+    // **bold**, a table header without its delimiter row, an open ``` fence)
+    // so the answer renders formatted as it is built, not as raw symbols.
+    const tail = isStreaming ? completeStreamingMarkdown(fenced) : fenced;
+    const processed = escapeCurrency(tail.replace(/<br\s*\/?>/gi, '  \n'));
     return (
         <div className="markdown-content">
             <ReactMarkdown

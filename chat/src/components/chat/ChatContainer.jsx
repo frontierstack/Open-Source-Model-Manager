@@ -945,6 +945,30 @@ export default function ChatContainer({
     };
     const stopJobContent = () => { if (!abortControllerRef.current) streamActiveRef.current = false; };
 
+    // `assistant_progress` carries EVERY job of the turn; each job names the
+    // ask_assistant chip that dispatched it (`chipId`). Patch each chip with
+    // ITS jobs only — patching the whole list onto whichever chip was current
+    // is what showed the first batch (or duplicates) and nothing else. Jobs
+    // without a chipId (older server) fall back to the frame's toolCallId.
+    // The live rows still get the full list.
+    const applyAssistantProgress = (parsed) => {
+        const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+        const byChip = new Map();
+        for (const j of jobs) {
+            if (!j) continue;
+            const id = j.chipId || parsed.toolCallId || parsed.tool_call_id || null;
+            if (!id) continue;
+            if (!byChip.has(id)) byChip.set(id, []);
+            byChip.get(id).push(j);
+        }
+        for (const [id, list] of byChip) patchStreamingToolCall(id, { assistantJobs: list });
+        patchStreamingHandoff({
+            jobs,
+            ...(parsed.model ? { assistant: parsed.model } : {}),
+            ...(parsed.from ? { lead: parsed.from } : {}),
+        });
+    };
+
     const checkActiveStreaming = async (conversationId) => {
         // GUARD: never start a background poll while the FOREGROUND stream for
         // this same conversation is still live. This fires on a fresh send —
@@ -2071,24 +2095,7 @@ export default function ChatContainer({
                                 continue;
                             }
                             if (parsed.type === 'assistant_progress') {
-                                // Patch the queue onto the dispatch CHIP so it renders
-                                // inside the chip (AgentsPanel) and SURVIVES the commit —
-                                // the status rows below are live-only and vanish with the
-                                // turn, which is why a finished transcript showed no sign
-                                // the two models had passed work to each other.
-                                if (parsed.toolCallId && Array.isArray(parsed.jobs)) {
-                                    patchStreamingToolCall(parsed.toolCallId, { assistantJobs: parsed.jobs });
-                                }
-                                // Background jobs the secondary handed BACK to the
-                                // primary — they run CONCURRENTLY with the
-                                // secondary's own work, which is exactly what
-                                // the live rows show.
-                                patchStreamingHandoff({
-                                    jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
-                                    // Never clobber a known assistant with undefined.
-                                    ...(parsed.model ? { assistant: parsed.model } : {}),
-                                    ...(parsed.from ? { lead: parsed.from } : {}),
-                                });
+                                applyAssistantProgress(parsed);
                                 continue;
                             }
                             if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
@@ -2581,10 +2588,14 @@ export default function ChatContainer({
             // ask_assistant chip — the same place the server's save puts it.
             const turnReview = (turnHandoff && turnHandoff.review) ? turnHandoff.review : undefined;
             const turnJobs = (turnHandoff && Array.isArray(turnHandoff.jobs)) ? turnHandoff.jobs : [];
-            if (turnJobs.length) {
+            // Per-chip lists (patched by chipId) are kept as they are; the
+            // whole-turn list is folded onto the last ask_assistant chip only
+            // when NO chip carries its own (older server without chipId).
+            const anyChipHasJobs = toolCalls.some(c => c && c.label === 'ask_assistant' && Array.isArray(c.assistantJobs) && c.assistantJobs.length);
+            if (turnJobs.length && !anyChipHasJobs) {
                 for (let i = toolCalls.length - 1; i >= 0; i--) {
                     if (toolCalls[i] && toolCalls[i].label === 'ask_assistant') {
-                        if (!toolCalls[i].assistantJobs) toolCalls[i] = { ...toolCalls[i], assistantJobs: turnJobs };
+                        toolCalls[i] = { ...toolCalls[i], assistantJobs: turnJobs };
                         break;
                     }
                 }
@@ -3167,24 +3178,7 @@ export default function ChatContainer({
                                     continue;
                                 }
                                 if (parsed.type === 'assistant_progress') {
-                                    // Patch the queue onto the dispatch CHIP so it renders
-                                    // inside the chip (AgentsPanel) and SURVIVES the commit —
-                                    // the status rows below are live-only and vanish with the
-                                    // turn, which is why a finished transcript showed no sign
-                                    // the two models had passed work to each other.
-                                    if (parsed.toolCallId && Array.isArray(parsed.jobs)) {
-                                        patchStreamingToolCall(parsed.toolCallId, { assistantJobs: parsed.jobs });
-                                    }
-                                    // Background jobs the secondary handed BACK to the
-                                    // primary — they run CONCURRENTLY with the
-                                    // secondary's own work, which is exactly
-                                    // what the live rows show.
-                                    patchStreamingHandoff({
-                                        jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
-                                        // Never clobber a known assistant with undefined.
-                                        ...(parsed.model ? { assistant: parsed.model } : {}),
-                                        ...(parsed.from ? { lead: parsed.from } : {}),
-                                    });
+                                    applyAssistantProgress(parsed);
                                     continue;
                                 }
                                 if (parsed.type === 'helper_review' || parsed.type === 'checker_review') {
