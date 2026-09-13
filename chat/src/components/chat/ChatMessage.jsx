@@ -616,7 +616,9 @@ export default React.memo(function ChatMessage({
         return () => clearTimeout(t);
     }, [revisedAt]);
     // Working notes (narration + chips before the answer): open while the
-    // turn streams, folded to the header once it commits.
+    // turn streams and LEFT open when it commits — folding them at that
+    // moment shoves the answer up just as the user starts reading it. A
+    // fresh mount (reload, switching back) starts folded.
     const [notesOpen, setNotesOpen] = useState(!!isStreaming);
     React.useEffect(() => {
         if (!hasRunningTool) return undefined;
@@ -627,7 +629,6 @@ export default React.memo(function ChatMessage({
     React.useEffect(() => {
         if (prevStreamingRef.current && !isStreaming) {
             setToolsExpanded(false);
-            setNotesOpen(false);
         }
         prevStreamingRef.current = isStreaming;
     }, [isStreaming]);
@@ -898,8 +899,15 @@ export default React.memo(function ChatMessage({
                             isStreaming={isStreaming}
                         />
                     )}
+                    {/* The ANSWER label is held until the turn ends: while it
+                        streams, text after the last call may still turn out to
+                        be narration (the next tool call moves it up into the
+                        notes), so an unlabelled rule of the same height keeps
+                        the separation without asserting what the text is. */}
                     {notesLayout && !bodyCollapsed && !!split.answer.trim() && (
-                        <div className="msg-answer-divider" aria-hidden="true"><span>Answer</span></div>
+                        <div className={`msg-answer-divider${isStreaming ? ' msg-answer-divider--pending' : ''}`} aria-hidden="true">
+                            <span>{isStreaming ? '' : 'Answer'}</span>
+                        </div>
                     )}
 
                     {/* Body content */}

@@ -5281,3 +5281,6 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     color: var(--ink-4); font-size: 10.5px; --fs: 10.5px; letter-spacing: .06em; text-transform: uppercase;
 }
 .msg-answer-divider::before, .msg-answer-divider::after { content: ''; flex: 1; height: 1px; background: var(--rule-2); }
+.msg-answer-divider > span { min-height: 1.2em; line-height: 1.2em; }
+.msg-answer-divider--pending > span { display: none; }
+.msg-answer-divider--pending { min-height: 1.2em; opacity: .7; }
