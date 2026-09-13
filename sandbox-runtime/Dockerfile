@@ -314,6 +314,18 @@ RUN pip install --no-cache-dir \
     && rm -rf /root/.cache \
     && python3 -c "import dpkt; print('dpkt', dpkt.__version__, 'OK')"
 
+# Windows event logs (.evtx) are a first-class DFIR input like pcaps. Without a
+# parser in the image the model web-searched for one, pip-installed inside the
+# script (not importable in the same run) and looped (live, 2026-09-13).
+# `evtx` = pyevtx-rs, a fast Rust parser yielding JSON/XML per record;
+# `python-evtx` = the pure-Python reference (Evtx.Evtx). Late layer, cached
+# heavy layers untouched.
+RUN pip install --no-cache-dir \
+        evtx==0.12.1 \
+        python-evtx==0.8.1 \
+    && rm -rf /root/.cache \
+    && python3 -c "from evtx import PyEvtxParser; import Evtx.Evtx; print('evtx parsers OK')"
+
 USER sandbox
 WORKDIR /tmp
 

@@ -1057,16 +1057,33 @@ async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINE
     const resolutions = [];
     // Path-shaped tokens under the mount. Stop at whitespace, quotes, and the
     // shell/format punctuation that commonly abuts a path literal.
-    const re = new RegExp(`${mount.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}/[^\\s'"\`,);:]+`, 'g');
+    const escMount = mount.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`${escMount}/[^\\s'"\`,);:]+`, 'g');
+    // A path INSIDE a string literal may legitimately contain spaces —
+    // "Windows PowerShell.evtx" is a real upload name. The bare-token scan
+    // above stops at the space, "recovers" the fragment
+    // `/workspace/uploads/Windows` to the real file and splices the full
+    // name over the fragment, leaving the literal's own tail behind:
+    // `/workspace/uploads/Windows PowerShell.evtx PowerShell.evtx` — on
+    // every call, so the model concluded the platform was mangling its
+    // paths (live, 2026-09-13). Quoted literals are therefore scanned
+    // FIRST, whole, and a bare fragment that is merely the head of a
+    // literal already present in the code is never touched.
+    const quotedRe = new RegExp(`(['"\`])(${escMount}/[^'"\`\\n]+?)\\1`, 'g');
     const seen = new Set();
     const dirCache = new Map();
     let out = codeText;
-    const matches = codeText.match(re) || [];
+    const quoted = [];
+    for (const m of codeText.matchAll(quotedRe)) quoted.push(m[2]);
+    const matches = [...quoted, ...(codeText.match(re) || [])];
     for (let token of matches) {
         // Trim a trailing dot the regex may have caught from prose.
         token = token.replace(/\.$/, '');
         if (seen.has(token)) continue;
         seen.add(token);
+        // The head of a longer literal that is already in the code (a name
+        // with a space, cut at the space by the bare-token scan).
+        if (quoted.some(q => q !== token && q.startsWith(token) && /\s/.test(q.slice(token.length, token.length + 1)))) continue;
         const rel = token.slice(mount.length + 1);
         if (!rel || rel.includes('..')) continue;
         const topDir = rel.split('/')[0];
@@ -1092,6 +1109,9 @@ async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINE
             if (isDerivedName(wantedBase, hit.name)) continue;  // `<upload>_big.png` is an OUTPUT
             const resolved = path.posix.join(mount, path.relative(root, hit.full).split(path.sep).join('/'));
             if (resolved === token) continue;
+            // The real path is already spelled out somewhere in the code and
+            // this token is a fragment of it: splicing would duplicate the tail.
+            if (resolved.startsWith(token) && out.includes(resolved)) continue;
             // Replace every occurrence of this exact literal.
             out = out.split(token).join(resolved);
             resolutions.push({ from: token, to: resolved });

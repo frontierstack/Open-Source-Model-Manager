@@ -18635,14 +18635,23 @@ app.post('/api/chat/upload', requireAuth, chatUploadRawBody, async (req, res) =>
             });
             const isAudio = finalMime.startsWith('audio/');
             const isVideo = finalMime.startsWith('video/');
+            const isEvtx = /\.evtx$/i.test(String(filename || ''));
+            const isPcap = /\.pcap(?:ng)?$/i.test(String(filename || ''));
+            const onDisk = `/workspace/uploads/${sanitizeUploadName(filename)}`;
+            // Name the parser that is ALREADY in the sandbox: without this the
+            // model web-searched for one and pip-installed inside its script.
             const hint = isAudio
-                ? `Call transcribe_audio with {"file_path":"/workspace/uploads/${filename}"} to transcribe.`
+                ? `Call transcribe_audio with {"file_path":"${onDisk}"} to transcribe.`
                 : isVideo
                     ? `Use ffmpeg via run_python/run_node to extract audio or frames, then process.`
-                    : `Read with run_python (open(..., 'rb')) or other sandbox skills.`;
+                    : isEvtx
+                        ? `Parse with run_python — the parsers are preinstalled, do NOT pip install: \`from evtx import PyEvtxParser; import json; recs=[json.loads(r["data"]) for r in PyEvtxParser("${onDisk}").records_json()]\` (each record's Event.System has EventID/TimeCreated/Provider; Event.EventData holds the fields). python-evtx (\`import Evtx.Evtx\`) is also available. Use the path EXACTLY as written above.`
+                        : isPcap
+                            ? `Parse with run_python — dpkt is preinstalled (dpkt.pcap.Reader / dpkt.pcapng.Reader). Use the path EXACTLY as written above.`
+                            : `Read with run_python (open(..., 'rb')) or other sandbox skills. Use the path EXACTLY as written above.`;
             const marker =
                 `[Binary file uploaded: ${filename} (${finalMime}, ${buffer.length} bytes). ` +
-                `On disk at /workspace/uploads/${filename}. ${hint}]`;
+                `On disk at /workspace/uploads/${sanitizeUploadName(filename)}. ${hint}]`;
             return {
                 type: 'file',
                 filename,
@@ -19135,6 +19144,24 @@ app.delete('/api/chat/continuation/:conversationId', requireAuth, (req, res) => 
 // `attachmentOwnerId` follows /api/chat/upload's ownerId
 // (req.user?.id || req.apiKeyData?.id || 'default') so loadBytes()
 // finds the right attachment row.
+// ONE name for an upload on disk, used by the materializer AND by every
+// marker/pre-flight that tells the model where the file is. Whitespace
+// collapses to `_`: a space inside a path is what every path scanner, shell
+// command and model transcription trips over (live: "Windows PowerShell.evtx"
+// was re-resolved on every call as the fragment `/workspace/uploads/Windows`).
+// The attachment keeps its original display name; only the on-disk name changes.
+function sanitizeUploadName(raw) {
+    let n = String(raw == null ? 'untitled' : raw);
+    n = n.replace(/[\\/]/g, '_');           // no path separators
+    n = n.replace(/^\.+/, '_');             // no leading-dot hidden files
+    n = n.replace(/[\x00-\x1f\x7f]/g, '');  // no controls
+    n = n.replace(/\s+/g, '_');              // no whitespace
+    // Whitelist filename-safe characters; everything else collapses to _.
+    n = n.replace(/[^A-Za-z0-9._\-()\[\]+]/g, '_');
+    if (n.length > 200) n = n.slice(0, 200);
+    return n || 'untitled';
+}
+
 async function materializeAttachmentsToWorkspace(workspaceUserId, attachmentOwnerId, conversationId, attachments) {
     if (!conversationId || !Array.isArray(attachments) || attachments.length === 0) {
         return { written: 0 };
@@ -19158,16 +19185,7 @@ async function materializeAttachmentsToWorkspace(workspaceUserId, attachmentOwne
         return { written: 0, error: 'mkdir uploads: ' + e.message };
     }
 
-    const sanitizeName = (raw) => {
-        let n = String(raw == null ? 'untitled' : raw);
-        n = n.replace(/[\\/]/g, '_');           // no path separators
-        n = n.replace(/^\.+/, '_');             // no leading-dot hidden files
-        n = n.replace(/[\x00-\x1f\x7f]/g, '');  // no controls
-        // Whitelist filename-safe characters; everything else collapses to _.
-        n = n.replace(/[^A-Za-z0-9._\-()\[\]+ ]/g, '_');
-        if (n.length > 200) n = n.slice(0, 200);
-        return n || 'untitled';
-    };
+    const sanitizeName = sanitizeUploadName;
 
     let written = 0;
     const filesWritten = [];
@@ -21999,7 +22017,7 @@ const chatStreamHandlerInner = async (req, res) => {
             if (imageNames.length && latestUserMsgIdx >= 0) {
                 const ocrAvailable = fullToolCatalog.some(t => t?.function?.name === 'ocr_image');
                 if (ocrAvailable) preflightForcedTools.add('ocr_image');
-                const paths = imageNames.map(n => `/workspace/uploads/${n}`).join(', ');
+                const paths = imageNames.map(n => `/workspace/uploads/${sanitizeUploadName(n)}`).join(', ');
                 const imgNote =
                     `[SYSTEM: The user attached ${imageNames.length === 1 ? 'an image' : imageNames.length + ' images'} (${imageNames.join(', ')}). ` +
                     'This model has NO vision — you cannot see the picture; the automatic OCR text in the FILE block (if any) is all that was read from it, and OCR of small UI text is often garbled. ' +
