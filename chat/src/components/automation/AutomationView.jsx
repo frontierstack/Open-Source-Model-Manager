@@ -10,8 +10,7 @@ import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
     Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
      Wand2, FlaskConical, RotateCcw,
-    LayoutGrid, Workflow, ListChecks, Boxes, Clock, Blocks,
-} from 'lucide-react';
+    LayoutGrid, Workflow, ListChecks, Boxes, Clock, Blocks } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
 import AutomationNode, { iconFor, handlesFor, NodeDropContext, NodeToggleContext } from './AutomationNode';
@@ -1375,6 +1374,14 @@ function FlowEditor({ showSnackbar, models }) {
                     : { width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     {!isMobile && <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />}
                     <div style={{ padding: '12px 12px 11px', flexShrink: 0 }}>
+                        {isMobile && (
+                            <div className="auto-rail__mhead">
+                                <span>Automations</span>
+                                <button className="auto-btn auto-btn--icon" onClick={() => setLeftDrawerOpen(false)} aria-label="Close automations list" title="Close">
+                                    <CloseIcon size={16} />
+                                </button>
+                            </div>
+                        )}
                         <div style={{ display: 'flex', justifyContent: 'center' }}>
                             <button className="auto-btn auto-btn--accent auto-newbtn" onClick={newAutomation}>
                                 <Plus size={14} strokeWidth={2.2} /> <span>New automation</span>

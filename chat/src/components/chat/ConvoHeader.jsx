@@ -62,15 +62,15 @@ export default function ConvoHeader({
     };
     const sep = { color: 'var(--ink-4)' };
     return (
-        <div style={head}>
+        <div style={head} className="convo-head">
             <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={breadcrumb}>
+                <div style={breadcrumb} className="convo-crumbs">
                     <span style={crumbText}>Chat</span>
                     <span style={sep}>/</span>
                     {favorite && <span style={crumbAccent}>pinned</span>}
                 </div>
-                <h1 style={titleStyle}>{title || 'New conversation'}</h1>
-                <div style={metaLine}>
+                <h1 style={titleStyle} className="convo-title">{title || 'New conversation'}</h1>
+                <div style={metaLine} className="convo-meta">
                     {startedStr && <><span>{startedStr}</span><span style={sep}>·</span></>}
                     <span>{messageCount} {messageCount === 1 ? 'message' : 'messages'}</span>
                     {estimatedTokens > 0 && <>

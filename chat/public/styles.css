@@ -6104,6 +6104,116 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 }
 .msg-notes-toggle .msg-turn-totals { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .msg-turn-job-name { padding-right: 1px; }
+
+/* ============================================================
+   Mobile comfort pass (2026-09-14) — readable type, roomy controls,
+   nothing squished. Appended LAST so it wins by source order over
+   every block above (same trick as the "Neutral page surfaces" and
+   type-scale guards). Scope: phones (≤640px) and touch screens.
+   ============================================================ */
+.sb-row-more { display: none; } /* touch-only, see the mobile block below */
+
+@media (max-width: 640px) {
+    /* --- Type floor: nothing the user reads sits under 12px on a phone.
+       Inline-styled labels (fontSize: 10.5 / 11 / 11.5) can only be reached
+       through the style attribute, hence the [style*=] selectors. --- */
+    [style*="font-size: 10"],
+    [style*="font-size: 11"] { font-size: 12px !important; }
+    .sb-group-label, .sb-subtitle, .sb-count, .sb-footer, .sb-footer * { font-size: 12px; }
+    .app-toolbar-menu-head span { font-size: 12px; }
+    .msg-meta { font-size: 13px; --fs: 13px; }
+    .msg-collapse-btn { font-size: 12.5px; --fs: 12.5px; height: 30px; padding: 0 10px; }
+    .msg-turn-label { font-size: 12px; --fs: 12px; }
+    .msg-turn-pill { font-size: 12.5px; --fs: 12.5px; }
+    .msg-turn-totals, .msg-turn-meta, .msg-turn-detail, .msg-turn-job-task, .msg-turn-job-name, .msg-turn-text { font-size: 12.5px; --fs: 12.5px; }
+    .msg-notes-toggle { min-height: 36px; }
+    .msg-answer-divider > span { font-size: 12px; --fs: 12px; }
+    .message-actions-row .msg-stats { font-size: 12px; --fs: 12px; }
+    .set-range-ends span { font-size: 12.5px; --fs: 12.5px; }
+    .app-toolbar .ctl-chip { height: 36px; min-height: 36px; padding: 0 10px; }
+    .set-label, .set-label-inline, .set-tooltip { font-size: 12.5px; --fs: 12.5px; }
+    .set-card .set-card-sub { font-size: 12px; --fs: 12px; }
+    .set-row-help { font-size: 13px; --fs: 13px; }
+
+    /* --- Sidebar drawer: taller rows, a bigger search box, and per-row
+       actions behind a "more" button instead of four always-visible icons
+       (those squeezed every title to ~14 characters). --- */
+    .sb-row { min-height: 44px; font-size: 14.5px; padding-right: 4px; gap: 6px; }
+    .sb-folder { height: 40px; font-size: 14px; }
+    .sb-search { height: 44px; }
+    .sb-search input { font-size: 16px; } /* 16px also stops iOS zoom-on-focus */
+    .sb-row-more { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; color: var(--ink-3); }
+    .sb-row .chat-row-actions { opacity: 0 !important; pointer-events: none; right: 42px; gap: 2px; }
+    .sb-row .chat-row-actions.is-open { opacity: 1 !important; pointer-events: auto; }
+    .sb-row:hover .sb-row-title { padding-right: 0; }
+    .sb-row:has(.chat-row-actions.is-open) .sb-row-title { padding-right: 150px; }
+    .chat-row-actions .ctl-icon-xs { width: 36px !important; height: 36px !important; min-width: 36px !important; min-height: 36px !important; }
+    .chat-row-actions .ctl-icon-xs svg { width: 15px; height: 15px; }
+    .sb-folder-actions .ctl-icon-xs { width: 34px; height: 34px; }
+    .sb-folder-actions .ctl-icon-xs svg { width: 14px; height: 14px; }
+
+    /* --- Conversation header: the toolbar already shows the title, so keep
+       this one compact (it was 22px + breadcrumb + 44px of padding). --- */
+    .convo-head { padding-bottom: 12px !important; margin-bottom: 14px !important; gap: 10px !important; }
+    .convo-crumbs { display: none !important; }
+    .convo-title { font-size: 18px !important; line-height: 1.25; }
+    .convo-meta { font-size: 12.5px !important; margin-top: 4px !important; }
+
+    /* --- Assistant meta row: "Assistant · model / with X / time / Collapse"
+       was one flex line whose items each wrapped INTERNALLY into two-line
+       columns. Let the row wrap between items instead. --- */
+    .msg-meta { flex-wrap: wrap; row-gap: 6px; }
+    .msg-meta .msg-name, .msg-meta .msg-time { white-space: nowrap; }
+    .msg-meta .msg-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .message-actions-row button { min-height: 36px; }
+
+    /* --- Composer: give the model chip the free space (the left group had
+       flex:1 and hoarded it as an empty gap) and make every control ≥36px. --- */
+    .composer-bottom-row > div:first-child { flex: 0 0 auto !important; }
+    .composer-bottom-row > div:last-child { flex: 1 1 auto !important; justify-content: flex-end; min-width: 0; }
+    /* The model anchor takes exactly the leftover width (basis 0 + grow), the
+       icon-only chips keep their natural size — deterministic, no overflow. */
+    .composer-bottom-row .composer-chip-anchor { flex: 0 0 auto !important; }
+    .composer-bottom-row .composer-chip-anchor:has(.composer-chip-model) { flex: 1 1 0 !important; display: flex; justify-content: flex-end; }
+    .composer-chip-model { max-width: 100% !important; height: 36px !important; font-size: 13.5px !important; }
+    .composer-chip-persona, .composer-chip-effort { height: 36px !important; font-size: 13.5px !important; }
+    .composer-bottom-row button[aria-label="Attach files"],
+    .composer-bottom-row button[aria-label="Send"],
+    .composer-bottom-row button[aria-label="Queue message"],
+    .composer-bottom-row button[aria-label="Stop"] { width: 38px !important; height: 38px !important; }
+    .composer-chip-persona-icon { display: none; }
+    .composer-popover button > div,
+    .composer-popover button > div > span:first-child { font-size: 14px !important; }
+    .composer-popover button > div > div,
+    .composer-popover button > div > span:last-child { font-size: 12.5px !important; }
+    .composer-popover [style*="font-size: 10"] { font-size: 12px !important; }
+
+    /* Context stats line under the composer */
+    .composer-wrapper > div:last-child > div[style*="font-size"] { font-size: 12px !important; }
+
+    /* --- Settings dialog: comfortable tabs, toggles, segmented controls. --- */
+    .set-tab { min-height: 46px; font-size: 13.5px; }
+    .set-tab svg { width: 17px; height: 17px; }
+    .set-body { padding: 16px 16px 22px; gap: 18px; }
+    .set-seg-btn { height: 36px; font-size: 13.5px; --fs: 13.5px; }
+    .set-row-title { font-size: 15px; --fs: 15px; }
+
+    /* Tool chips / working notes / sources — readable captions, 36px hit areas */
+    .tool-chip-header { min-height: 36px; }
+    .src-chip { min-height: 32px; }
+}
+
+/* Narrow phones (≤430px): the persona chip is icon-only — show a person
+   icon, not a lonely chevron. The model chip keeps whatever is left. */
+@media (max-width: 430px) {
+    .composer-chip-persona-icon { display: inline-flex !important; }
+    .composer-chip-persona .composer-chip-label { display: none !important; }
+    .composer-chip-effort .composer-chip-persona-icon { display: none !important; }
+    .composer-chip-model { max-width: 100% !important; min-width: 60px !important; }
+}
+@media (max-width: 360px) {
+    .composer-chip-model { max-width: 100% !important; min-width: 48px !important; padding: 0 7px !important; }
+}
 .hover\:underline:hover{
   text-decoration-line: underline;
 }
@@ -7869,4 +7979,75 @@ svg.react-flow__connectionline {
 .auto-ncard__actions button:hover { border-color: var(--accent); color: var(--accent); }
 .auto-ncard__actions button.is-danger:hover { border-color: var(--cat-coral); color: var(--cat-coral); }
 .auto-ncard__owner { font-size: 9.5px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+
+/* ============================================================ *
+ * Mobile comfort pass (2026-09-14) — phone layout for the console.
+ * The icon side-rail becomes a bottom tab bar (60px of a 390px
+ * screen was going to four icons), the builder toolbar wraps into
+ * two tidy rows instead of clipping the name input, and every tap
+ * target is at least 36px. Appended last so it wins by source order.
+ * ============================================================ */
+@media (max-width: 768px) {
+    /* Shell: nav at the bottom, in flow (no overlap with the canvas). The
+       shell's flex-direction is set INLINE, hence !important. */
+    .auto-shell { flex-direction: column-reverse !important; }
+    .auto-iconrail {
+        width: auto; height: 58px; flex-direction: row; justify-content: space-around;
+        padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 4px;
+        border-right: 0; border-top: 1px solid var(--rule);
+    }
+    .auto-iconrail__brand, .auto-iconrail__sp { display: none; }
+    .auto-iconrail__btn { width: 56px; height: 44px; }
+
+    /* Builder toolbar: row 1 = nav, row 2 = name + actions. */
+    .auto-toolbar { padding: 8px 10px !important; row-gap: 8px !important; }
+    .auto-toolbar > input { flex: 1 1 130px !important; min-width: 130px !important; height: 38px; font-size: 15px; }
+    .auto-toolbar__actions { margin-left: 0 !important; flex: 1 0 auto; justify-content: flex-end; gap: 4px !important; }
+    .auto-shell .auto-btn { height: 36px; font-size: 13px; padding: 0 11px; }
+    .auto-shell .auto-btn--icon { width: 38px; }
+    .auto-shell .auto-btn--sm { height: 32px; font-size: 12.5px; }
+    .auto-shell .auto-btn--icon.auto-btn--sm { width: 32px; }
+
+    /* Automations drawer: header with a close button, readable list rows,
+       delete buttons you can actually hit. */
+    .auto-rail__mhead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+    .auto-rail__aihint { font-size: 11px; }
+    .auto-rail__section { font-size: 11px; }
+    .auto-rail__item { padding: 10px 10px; font-size: 14px; }
+    .auto-rail__item .auto-rail__del { opacity: .7; width: 34px; height: 34px; }
+    .auto-rail__item .auto-rail__del svg { width: 16px; height: 16px; }
+    .auto-newbtn { height: 38px; }
+    .auto-rail__aibtns .auto-btn { height: 36px; }
+
+    /* Canvas affordances */
+    .auto-edge-delete { width: 22px; height: 22px; font-size: 14px; }
+    .auto-node__chip { font-size: 10px; }
+
+    /* Dashboard / Runs / Library screens */
+    .auto-phead { padding: 16px 14px 0; flex-wrap: wrap; }
+    .auto-ptitle { font-size: 19px; }
+    .auto-psub { font-size: 13px; }
+    .auto-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 14px 14px 4px; }
+    .auto-stat { padding: 12px 13px; border-radius: 12px; }
+    .auto-stat__num { font-size: 22px; }
+    .auto-cardgrid { grid-template-columns: 1fr; gap: 10px; padding: 10px 14px 24px; }
+    .auto-runsgrid { grid-template-columns: 1fr; gap: 12px; padding: 0 14px 24px; }
+    .auto-libsearch input { width: 100%; max-width: none; font-size: 15px; padding: 10px 12px; }
+    .auto-libpage { grid-template-columns: 1fr; gap: 10px; padding: 12px 14px 24px; }
+    .auto-libsection__c { font-size: 12px; }
+}
+@media (max-width: 480px) {
+    /* At 360–430px even the nav row is tight: keep the icons, shrink the pads. */
+    .auto-toolbar > .auto-btn { padding: 0 9px; }
+}
+@media (max-width: 768px) {
+    /* Runs screen: filters wrap, the table scrolls inside its own box
+       (five fixed columns cannot fit 390px; squeezing them collided headers). */
+    .auto-filters { flex-wrap: wrap; padding: 12px 14px 10px; }
+    .auto-fchip { height: 36px; font-size: 13px; }
+    .auto-tbl { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .auto-trow { min-width: 540px; grid-template-columns: 96px 1fr 120px 100px 72px; }
+    .auto-trow--head { font-size: 12px; }
+    .auto-pill { font-size: 12px; }
+}
 

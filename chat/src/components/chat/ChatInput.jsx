@@ -20,6 +20,7 @@ import {
     Eye,
     Clock,
     Gauge,
+    UserRound,
 } from 'lucide-react';
 
 const EFFORT_LEVELS = [
@@ -899,6 +900,8 @@ export default function ChatInput({
                                         aria-label="Choose persona"
                                         title={selectedPrompt ? `Persona: ${selectedPrompt.name}` : 'Choose persona'}
                                     >
+                                        {/* Icon stands in for the label on narrow phones (CSS shows it ≤430px) */}
+                                        <UserRound className="composer-chip-persona-icon w-[13px] h-[13px] shrink-0" strokeWidth={1.75} aria-hidden="true" />
                                         <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                             {selectedPrompt ? selectedPrompt.name : 'Persona'}
                                         </span>

@@ -4220,3 +4220,20 @@ body:not(.theme-light):not(.theme-research) {
     --surface-secondary: rgba(37, 37, 41, 0.8);
     --surface-glass:     rgba(17, 17, 19, 0.9);
 }
+
+/* ============================================================
+   Mobile comfort pass (2026-09-14, admin app). Phone-only: captions
+   and small chips get a 12px floor, MUI small icon buttons a 36px hit
+   area, and admin tables keep one line per row while scrolling inside
+   their box (a row that wraps chips vertically was ~400px tall).
+   ============================================================ */
+@media (max-width: 640px) {
+    .MuiTypography-caption { font-size: 0.75rem !important; }
+    .MuiChip-labelSmall { font-size: 0.75rem !important; }
+    .MuiChip-sizeSmall { height: 26px !important; }
+    .MuiIconButton-sizeSmall { min-width: 36px; min-height: 36px; }
+    .MuiTable-root .MuiTableCell-root { white-space: nowrap; }
+    .MuiTable-root .MuiTableCell-root .MuiStack-root,
+    .MuiTable-root .MuiTableCell-root .MuiBox-root { white-space: nowrap; flex-wrap: nowrap !important; }
+    [class*="text-[0.66rem]"], [class*="text-[0.7rem]"] { font-size: 0.75rem !important; }
+}

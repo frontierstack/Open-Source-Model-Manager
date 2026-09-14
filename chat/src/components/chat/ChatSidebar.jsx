@@ -16,6 +16,7 @@ import {
     FolderPlus,
     FolderInput,
     Workflow,
+    MoreHorizontal,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 import { useChatStore } from '../../stores/useChatStore';
@@ -56,6 +57,10 @@ export default function ChatSidebar({
     const [editingFolderId, setEditingFolderId] = useState(null);
     const [editingFolderName, setEditingFolderName] = useState('');
     const [moveMenuConvId, setMoveMenuConvId] = useState(null);
+    // Touch screens: the per-row action strip is hidden until this row's
+    // "more" button is tapped (four always-visible icons squeezed every
+    // title to ~14 characters on a phone).
+    const [rowActionsOpenId, setRowActionsOpenId] = useState(null);
     // Drag & drop: which drop target is currently being hovered.
     // `null` = none, a folder id = that folder, `'unassigned'` = unassigned bucket.
     const [dragOverTarget, setDragOverTarget] = useState(null);
@@ -121,6 +126,7 @@ export default function ChatSidebar({
     };
 
     const handleSelectConversation = (id) => {
+        setRowActionsOpenId(null);
         onSelectConversation(id);
         if (onMobileClose) onMobileClose();
     };
@@ -371,6 +377,7 @@ export default function ChatSidebar({
         const active = activeConversationId === conv.id;
         const isEditing = editingId === conv.id;
         const moveMenuOpen = moveMenuConvId === conv.id;
+        const rowActionsOpen = rowActionsOpenId === conv.id;
         const currentFolderId = conversationFolderMap?.[conv.id] || null;
         const isDragging = draggingConvId === conv.id;
         return (
@@ -440,8 +447,19 @@ export default function ChatSidebar({
                                 }}
                             />
                         )}
+                        {/* Touch-only "more" toggle — reveals the action strip for THIS row */}
+                        <button
+                            type="button"
+                            className="ctl ctl-icon-sm sb-row-more"
+                            onClick={(e) => { e.stopPropagation(); setRowActionsOpenId(rowActionsOpen ? null : conv.id); if (rowActionsOpen) setMoveMenuConvId(null); }}
+                            aria-label={rowActionsOpen ? 'Hide conversation actions' : 'Conversation actions'}
+                            aria-expanded={rowActionsOpen}
+                            title="More"
+                        >
+                            {rowActionsOpen ? <X strokeWidth={2} /> : <MoreHorizontal strokeWidth={1.75} />}
+                        </button>
                         {/* Hover actions */}
-                        <div className={`chat-row-actions${moveMenuOpen ? ' is-open' : ''}`}>
+                        <div className={`chat-row-actions${(moveMenuOpen || rowActionsOpen) ? ' is-open' : ''}`}>
                             <button
                                 type="button"
                                 onClick={(e) => handleToggleFavorite(conv.id, e)}
@@ -976,7 +994,7 @@ export default function ChatSidebar({
                 className="md:hidden"
                 style={{
                     ...aside,
-                    width: 268,
+                    width: 'min(86vw, 340px)',
                     position: 'fixed', inset: '0 auto 0 0',
                     zIndex: 50,
                     borderRight: '1px solid var(--rule)',

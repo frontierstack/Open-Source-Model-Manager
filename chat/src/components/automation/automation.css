@@ -1062,3 +1062,74 @@
 .auto-ncard__actions button:hover { border-color: var(--accent); color: var(--accent); }
 .auto-ncard__actions button.is-danger:hover { border-color: var(--cat-coral); color: var(--cat-coral); }
 .auto-ncard__owner { font-size: 9.5px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+
+/* ============================================================ *
+ * Mobile comfort pass (2026-09-14) — phone layout for the console.
+ * The icon side-rail becomes a bottom tab bar (60px of a 390px
+ * screen was going to four icons), the builder toolbar wraps into
+ * two tidy rows instead of clipping the name input, and every tap
+ * target is at least 36px. Appended last so it wins by source order.
+ * ============================================================ */
+@media (max-width: 768px) {
+    /* Shell: nav at the bottom, in flow (no overlap with the canvas). The
+       shell's flex-direction is set INLINE, hence !important. */
+    .auto-shell { flex-direction: column-reverse !important; }
+    .auto-iconrail {
+        width: auto; height: 58px; flex-direction: row; justify-content: space-around;
+        padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 4px;
+        border-right: 0; border-top: 1px solid var(--rule);
+    }
+    .auto-iconrail__brand, .auto-iconrail__sp { display: none; }
+    .auto-iconrail__btn { width: 56px; height: 44px; }
+
+    /* Builder toolbar: row 1 = nav, row 2 = name + actions. */
+    .auto-toolbar { padding: 8px 10px !important; row-gap: 8px !important; }
+    .auto-toolbar > input { flex: 1 1 130px !important; min-width: 130px !important; height: 38px; font-size: 15px; }
+    .auto-toolbar__actions { margin-left: 0 !important; flex: 1 0 auto; justify-content: flex-end; gap: 4px !important; }
+    .auto-shell .auto-btn { height: 36px; font-size: 13px; padding: 0 11px; }
+    .auto-shell .auto-btn--icon { width: 38px; }
+    .auto-shell .auto-btn--sm { height: 32px; font-size: 12.5px; }
+    .auto-shell .auto-btn--icon.auto-btn--sm { width: 32px; }
+
+    /* Automations drawer: header with a close button, readable list rows,
+       delete buttons you can actually hit. */
+    .auto-rail__mhead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+    .auto-rail__aihint { font-size: 11px; }
+    .auto-rail__section { font-size: 11px; }
+    .auto-rail__item { padding: 10px 10px; font-size: 14px; }
+    .auto-rail__item .auto-rail__del { opacity: .7; width: 34px; height: 34px; }
+    .auto-rail__item .auto-rail__del svg { width: 16px; height: 16px; }
+    .auto-newbtn { height: 38px; }
+    .auto-rail__aibtns .auto-btn { height: 36px; }
+
+    /* Canvas affordances */
+    .auto-edge-delete { width: 22px; height: 22px; font-size: 14px; }
+    .auto-node__chip { font-size: 10px; }
+
+    /* Dashboard / Runs / Library screens */
+    .auto-phead { padding: 16px 14px 0; flex-wrap: wrap; }
+    .auto-ptitle { font-size: 19px; }
+    .auto-psub { font-size: 13px; }
+    .auto-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 14px 14px 4px; }
+    .auto-stat { padding: 12px 13px; border-radius: 12px; }
+    .auto-stat__num { font-size: 22px; }
+    .auto-cardgrid { grid-template-columns: 1fr; gap: 10px; padding: 10px 14px 24px; }
+    .auto-runsgrid { grid-template-columns: 1fr; gap: 12px; padding: 0 14px 24px; }
+    .auto-libsearch input { width: 100%; max-width: none; font-size: 15px; padding: 10px 12px; }
+    .auto-libpage { grid-template-columns: 1fr; gap: 10px; padding: 12px 14px 24px; }
+    .auto-libsection__c { font-size: 12px; }
+}
+@media (max-width: 480px) {
+    /* At 360–430px even the nav row is tight: keep the icons, shrink the pads. */
+    .auto-toolbar > .auto-btn { padding: 0 9px; }
+}
+@media (max-width: 768px) {
+    /* Runs screen: filters wrap, the table scrolls inside its own box
+       (five fixed columns cannot fit 390px; squeezing them collided headers). */
+    .auto-filters { flex-wrap: wrap; padding: 12px 14px 10px; }
+    .auto-fchip { height: 36px; font-size: 13px; }
+    .auto-tbl { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .auto-trow { min-width: 540px; grid-template-columns: 96px 1fr 120px 100px 72px; }
+    .auto-trow--head { font-size: 12px; }
+    .auto-pill { font-size: 12px; }
+}

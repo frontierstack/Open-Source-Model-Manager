@@ -190,7 +190,7 @@ export default function MemoryPanel() {
     return (
         <div className="flex flex-col" style={{ color: 'var(--text-primary)', height: 'calc(100vh - 140px)', minHeight: '460px' }}>
             {/* Header */}
-            <div className="flex items-center justify-between gap-3 px-1 pb-4">
+            <div className="flex flex-col items-stretch gap-3 px-1 pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2.5">
                     <BrainIcon size={20} strokeWidth={1.75} style={{ color: 'var(--accent-primary)' }} />
                     <div>
@@ -202,7 +202,7 @@ export default function MemoryPanel() {
                         </div>
                     </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
                         type="button" onClick={() => loadMemories()} title="Refresh memories"
                         className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition"
