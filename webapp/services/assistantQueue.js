@@ -45,7 +45,8 @@ function createAssistantQueue({ maxParallel = 3, maxJobs = 12, run, onChange, jo
             try { p = Promise.resolve(run(j)); } catch (e) { p = Promise.reject(e); }
             p.then((r) => {
                 if (j.status === 'cancelled') return null;   // aborted mid-flight
-                j.status = (r && r.status === 'ok') ? 'done' : 'failed';
+                // A job stopped at its time limit still delivers what it found.
+                j.status = (r && (r.status === 'ok' || (r.status === 'timeout' && String(r.answer || '').trim()))) ? 'done' : 'failed';
                 j.result = r;
                 j.seconds = r && typeof r.seconds === 'number' ? r.seconds : Math.round((Date.now() - j.startedAt) / 100) / 10;
                 j.finishedAt = Date.now();

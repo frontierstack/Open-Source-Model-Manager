@@ -11968,8 +11968,7 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             if (pending.length) {
                 let closed = false;
                 req.on('close', () => { closed = true; });
-                const readyNow = scope().some(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
-                if (!readyNow) await Promise.race([...pending.map(p => p.then(() => true, () => true)), new Promise(r => setTimeout(r, waitMs))]);
+                await awaitJobsWindow(scope(), { maxMs: waitMs, isClosed: () => closed });
                 if (closed) return;
             }
         }
@@ -24044,6 +24043,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     if (j.status !== 'done') {
                         return `• "${j.name}" (${j.id}) FAILED${j.error ? `: ${j.error}` : ''}. Do it yourself or work around it.`;
                     }
+                    if (j.result && j.result.status === 'timeout') {
+                        return `• "${j.name}" (${j.id}, ${j.seconds}s) stopped at its time limit — partial report:\n${String(j.result.answer || '').slice(0, DELEGATE_ANSWER_CHARS)}`;
+                    }
                     const body = String((j.result && j.result.answer) || '').slice(0, DELEGATE_ANSWER_CHARS);
                     const files = (j.result && j.result.filesWritten) || [];
                     return `• "${j.name}" (${j.id}, ${j.seconds}s)${files.length ? ` — wrote ${files.join(', ')}` : ''}:\n${body}`;
@@ -27270,6 +27272,35 @@ const HANDOFF_QUICK_BRIEF_MS = Math.max(3000, parseInt(process.env.HANDOFF_QUICK
 const HANDOFF_QUICK_BRIEF_TOKENS = Math.max(200, parseInt(process.env.HANDOFF_QUICK_BRIEF_TOKENS || '600', 10) || 600);
 // Follow-up legwork batches per turn (see scheduleFollowUpLegwork); 0 disables.
 const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_MAX || '2', 10) || 0);
+// A background job's budget (rounds, then wall clock) and how long
+// await_assistant keeps collecting once the first result is in.
+const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '6', 10) || 6);
+const ASSISTANT_JOB_TIMEOUT_MS = Math.max(30000, parseInt(process.env.ASSISTANT_JOB_TIMEOUT_MS || '240000', 10) || 240000);
+const ASSISTANT_AWAIT_WINDOW_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_WINDOW_MS || '45000', 10) || 0);
+const ASSISTANT_AWAIT_MAX_MS = Math.max(10000, parseInt(process.env.ASSISTANT_AWAIT_MAX_MS || '240000', 10) || 240000);
+
+// Wait for assistant jobs in BATCHES: return when all are done, or once at
+// least one has finished and the collection window has passed, or at maxMs.
+// Returning on the very first finish made a lead that had nothing else to do
+// spend one slow round per job (measured: 8 await calls in one Pi task);
+// waiting for all of them left it idle behind the slowest.
+async function awaitJobsWindow(wanted, { windowMs = ASSISTANT_AWAIT_WINDOW_MS, maxMs = ASSISTANT_AWAIT_MAX_MS, isClosed = null } = {}) {
+    const start = Date.now();
+    const ready = () => wanted.some(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
+    for (;;) {
+        const pending = wanted.filter(assistantQueue.isPending);
+        if (!pending.length) return;
+        if (isClosed && isClosed()) return;
+        const elapsed = Date.now() - start;
+        const haveOne = ready();
+        if (elapsed >= maxMs || (haveOne && elapsed >= windowMs)) return;
+        const until = haveOne ? windowMs - elapsed : maxMs - elapsed;
+        await Promise.race([
+            ...pending.map(j => (j.promise ? j.promise.then(() => true, () => true) : Promise.resolve(true))),
+            new Promise(r => setTimeout(r, Math.max(50, until))),
+        ]);
+    }
+}
 const HANDOFF_FOLLOWUP_JOBS = Math.max(1, parseInt(process.env.HANDOFF_FOLLOWUP_JOBS || '3', 10) || 3);
 // Background legwork the lead can have running at once (ask_assistant).
 const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
@@ -27348,8 +27379,13 @@ function startAssistantJobs(ctx, items, model) {
     // The queue hangs off the turn's job Map, not the ctx: a per-call ctx view
     // (Object.create) would otherwise get its own queue on the first dispatch.
     if (!jobs._queue) {
+        // Never more parallel jobs than the assistant model has slots: a 3rd job
+        // on a 2-slot llama.cpp model only queues inside llama-server, where it
+        // looks "running" while doing nothing and slows the other two.
+        const assistantSlots = (() => { try { return modelSlotCount(modelInstances.get(model)) || 0; } catch (_) { return 0; } })();
+        const wantParallel = ctx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL;
         jobs._queue = assistantQueue.createAssistantQueue({
-            maxParallel: ctx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL,
+            maxParallel: assistantSlots > 0 ? Math.max(1, Math.min(wantParallel, assistantSlots)) : wantParallel,
             maxJobs: ctx.assistantMaxJobs || ASSISTANT_MAX_JOBS,
             jobs,
             onChange: () => { if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId)); },
@@ -27364,8 +27400,13 @@ function startAssistantJobs(ctx, items, model) {
                 job.abort = () => ac.abort();
                 return runDelegatedTurn({
                     parentReq: ctx._req,
-                    task: job.task,
+                    // Legwork is bounded: measured, unbounded jobs ran 150-500 s
+                    // each and the lead's answer waited on them. A round cap makes
+                    // the job write its report at the cap instead of researching on.
+                    task: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} tool rounds and about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s). Do just this lookup, then reply with a SHORT report of what you found (bullets, with sources). Do not attempt the user's whole request.]\n\n${job.task}`,
                     label: job.name,
+                    maxRounds: ASSISTANT_JOB_MAX_ROUNDS,
+                    timeoutMs: ASSISTANT_JOB_TIMEOUT_MS,
                     siblings: [],
                     model: job.model || model,
                     reasoningEffort: ctx.reasoningEffort,
@@ -27426,14 +27467,15 @@ function startAssistantJobs(ctx, items, model) {
     return dispatched;
 }
 
-async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null }) {
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null }) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
     if (signal) {
         if (signal.aborted) controller.abort();
         else signal.addEventListener('abort', forwardAbort, { once: true });
     }
-    const timer = setTimeout(() => controller.abort(), DELEGATE_TIMEOUT_MS);
+    const turnTimeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : DELEGATE_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(), turnTimeoutMs);
     const startedAt = Date.now();
 
     const body = {
@@ -27556,7 +27598,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
 
     const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
     const aborted = controller.signal.aborted;
-    const timedOut = aborted && !(signal && signal.aborted) && Date.now() - startedAt >= DELEGATE_TIMEOUT_MS - 1000;
+    const timedOut = aborted && !(signal && signal.aborted) && Date.now() - startedAt >= turnTimeoutMs - 1000;
     let answer = String(content || '').trim();
     let truncated = false;
     if (answer.length > DELEGATE_ANSWER_CHARS) { answer = answer.slice(0, DELEGATE_ANSWER_CHARS); truncated = true; }
@@ -34482,11 +34524,7 @@ app.use((req, res) => {
             // Return as soon as the FIRST of them finishes (or one already has),
             // not when all do: measured, a lead blocked 188 s on three jobs doing
             // nothing, which is exactly what two models working together is not.
-            const readyNow = wanted.filter(j => assistantQueue.isSettled(j) && !j.delivered);
-            if (!readyNow.length) {
-                const pend = wanted.filter(assistantQueue.isPending).map(j => j.promise).filter(Boolean);
-                if (pend.length) await Promise.race(pend.map(p => p.then(() => true, () => true)));
-            }
+            await awaitJobsWindow(wanted);
             const settled = wanted.filter(j => assistantQueue.isSettled(j));
             const stillRunning = wanted.filter(assistantQueue.isPending);
             const reports = settled.map(j => {
