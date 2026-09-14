@@ -17333,6 +17333,15 @@ async function planPiPair(req, requestedInstance) {
     if (/^You are a (?:context )?summarization assistant/i.test(sysText.trim())) return null;
     const latestUserText = v1LatestUserText(messages);
     if (!latestUserText.trim()) return null;
+    // The extension's follow-up turn (results that landed after the answer)
+    // arrives as a new user-role message. It is the SAME task continuing: a
+    // fresh plan here re-briefed (measured 20 s) and cancelled the task's
+    // remaining jobs. Keep routing it to the lead, no new brief or note.
+    if (/^\s*\[ASSISTANT RESULTS/.test(latestUserText)) {
+        const entry = piAssistantByKey.get(keyId);
+        if (!entry) return null;
+        return { taskKey: entry.taskKey, runOn: entry.lead, engaged: true, lead: entry.lead, assistant: entry.assistant, note: null, reason: 'follow-up with late results', jobs: [] };
+    }
     const pair = await resolvePiPairRoles(req);
     if (!pair.enabled) return null;
     const userMsgCount = messages.filter(m => m?.role === 'user').length;
