@@ -368,6 +368,60 @@ function buildLegworkOnlyTask({ userText, leadModel }) {
     ].join('\n');
 }
 
+// Continuous delegation that does not depend on the lead remembering to ask.
+// Measured on the user's turns: after the automatic first batch the lead never
+// called ask_assistant again (it even blocked on await_assistant for 188 s),
+// so "delegation is continuous" was only ever true in the prompt. Each time a
+// batch lands, the ASSISTANT reads what came back and proposes the next jobs.
+function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = [], maxJobs = 3 }) {
+    const done = jobs.slice(-12).map((j) => {
+        const head = String(j.answer || '').replace(/\s+/g, ' ').trim().slice(0, 420);
+        return `- ${j.name}: ${String(j.task || '').slice(0, 200)} → ${j.status}${head ? ` — result: ${head}` : ''}`;
+    });
+    const steps = leadSteps.slice(-12).map((s) => `- ${String(s).slice(0, 160)}`);
+    return [
+        `${leadModel || 'The main model'} is still working on the request below. You have been running background jobs for it; their results are summarised underneath.`,
+        `Propose the NEXT background jobs (at most ${maxJobs}) that would genuinely help it finish: a gap those results left open, a claim worth checking against a second independent source, a detail the final answer will need. Each job must be independent of anything the main model has not written yet, and must NOT repeat a job already done or a step the main model already took.`,
+        'If nothing more would help, say so — do not invent work.',
+        '',
+        'THE USER ASKED:',
+        askForFirstPass(userText, 2500),
+        '',
+        'JOBS ALREADY DONE:',
+        ...(done.length ? done : ['- none']),
+        '',
+        'STEPS THE MAIN MODEL ALREADY TOOK:',
+        ...(steps.length ? steps : ['- none recorded']),
+        '',
+        'Reply with ONLY this section, nothing else:',
+        'LEGWORK',
+        '- <short name>: <one-line brief saying exactly what to find or do and what to report back>',
+        'If nothing would help, reply exactly: LEGWORK\n- none',
+    ].join('\n');
+}
+
+const JOB_STOP = new Set('the a an and or of to for in on at by with from is are be it its this that what which find report back current latest check verify get look up'.split(' '));
+function jobTokens(text) {
+    return new Set(String(text || '').toLowerCase().replace(/https?:\/\/\S+/g, (u) => u.replace(/[^a-z0-9]+/g, ' '))
+        .split(/[^a-z0-9.]+/).filter((w) => w.length > 2 && !JOB_STOP.has(w)));
+}
+// A proposed job that restates one already done (same name, or most of its
+// task words) is dropped — re-running a finished lookup is pure latency.
+function isDuplicateJob(candidate, existing = [], threshold = 0.6) {
+    const name = String(candidate && candidate.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const ct = jobTokens(`${candidate && candidate.name} ${candidate && candidate.task}`);
+    for (const e of existing) {
+        const en = String(e && e.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        if (name && en && name === en) return true;
+        const et = jobTokens(`${e && e.name} ${e && e.task}`);
+        if (!ct.size || !et.size) continue;
+        let inter = 0;
+        for (const w of ct) if (et.has(w)) inter++;
+        if (inter / Math.min(ct.size, et.size) >= threshold) return true;
+    }
+    return false;
+}
+
 // Pull the LEGWORK lines back out of the brief so the note can tell the primary
 // to dispatch exactly those. Tolerant of the shapes a small model produces
 // (numbered or bare heading, "- name: brief" or "name — brief").
@@ -477,6 +531,8 @@ function buildJobPartnerLine({ partnerModel, maxJobs }) {
 module.exports = {
     MODES,
     buildLegworkOnlyTask,
+    buildFollowUpLegworkTask,
+    isDuplicateJob,
     buildPartnerPrelude,
     buildJobPartnerLine,
     cleanAsk,

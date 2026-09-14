@@ -11968,7 +11968,8 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             if (pending.length) {
                 let closed = false;
                 req.on('close', () => { closed = true; });
-                await Promise.race([Promise.allSettled(pending), new Promise(r => setTimeout(r, waitMs))]);
+                const readyNow = scope().some(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
+                if (!readyNow) await Promise.race([...pending.map(p => p.then(() => true, () => true)), new Promise(r => setTimeout(r, waitMs))]);
                 if (closed) return;
             }
         }
@@ -11984,7 +11985,10 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
                     filesWritten: (j.result && j.result.filesWritten) || [],
                 });
             }
-            if (results.length) logUserActivity(req.userId || keyId, `Pi assistant: delivered ${results.length} result(s) to ${entry.lead} — ${results.map(r => `"${r.name}" (${r.status})`).join(', ')}`);
+            if (results.length) {
+                logUserActivity(req.userId || keyId, `Pi assistant: delivered ${results.length} result(s) to ${entry.lead} — ${results.map(r => `"${r.name}" (${r.status})`).join(', ')}`);
+                piFollowUpLegwork(entry);
+            }
         }
         const list = all();
         res.json({
@@ -17220,10 +17224,36 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
         entry = null;
     }
     if (!entry) {
-        entry = { taskKey, lead, assistant, ctx: newPiAssistantCtx(req, keyId, lead) };
+        entry = { taskKey, lead, assistant, keyId, userId: req.userId || keyId, userText: v1LatestUserText(req.body?.messages || []), ctx: newPiAssistantCtx(req, keyId, lead) };
         piAssistantByKey.set(keyId, entry);
     }
     return entry;
+}
+
+function piFollowUpLegwork(entry) {
+    try {
+        if (!entry || !entry.userText || HANDOFF_FOLLOWUP_MAX <= 0 || entry.followUpInFlight || (entry.followUps || 0) >= HANDOFF_FOLLOWUP_MAX) return;
+        const jobs = entry.ctx._assistantJobs;
+        const all = [...jobs.values()];
+        if (all.length >= ASSISTANT_MAX_JOBS || all.filter(j => j.status === 'running').length >= ASSISTANT_MAX_PARALLEL) return;
+        entry.followUpInFlight = true;
+        Promise.race([
+            requestModelCompletion({
+                messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: entry.userText, leadModel: entry.lead, jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer })), maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                model: entry.assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
+            }),
+            new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
+        ]).then((r) => {
+            entry.followUpInFlight = false;
+            if (piAssistantByKey.get(entry.keyId) !== entry) return;
+            const proposed = leadHandoff.parseLegwork(r && r.content).filter(j => !leadHandoff.isDuplicateJob(j, [...jobs.values()])).slice(0, HANDOFF_FOLLOWUP_JOBS);
+            if (!proposed.length) return;
+            entry.followUps = (entry.followUps || 0) + 1;
+            const started = startAssistantJobs(entry.ctx, proposed, entry.assistant);
+            logUserActivity(entry.userId, `Pi two models: follow-up batch ${entry.followUps} — ${entry.assistant} took ${started.length} more job(s): ${started.map(d => `"${d.name}"`).join(', ')}`);
+            console.log(`[Pi/Pair] follow-up batch ${entry.followUps}: ${started.map(d => d.name).join(' | ')}`);
+        }).catch(() => { entry.followUpInFlight = false; });
+    } catch (_) { entry.followUpInFlight = false; }
 }
 
 async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair }) {
@@ -22419,6 +22449,87 @@ const chatStreamHandlerInner = async (req, res) => {
             } catch (_) { clientConnected = false; }
         };
 
+        // --- Follow-up legwork: delegation that keeps going ------------------
+        // Each time a batch of results reaches the lead, the ASSISTANT reads
+        // them and proposes the next independent jobs, which start at once as
+        // a new batch. Measured on the user's turns: after the automatic first
+        // batch the lead never called ask_assistant again, so continuous
+        // delegation existed only in the prompt. Bounded: HANDOFF_FOLLOWUP_MAX
+        // batches per turn, duplicates of finished work dropped, never while
+        // the lead is revising its final draft (that would stall the answer).
+        let followUpBatches = 0;
+        let followUpInFlight = false;
+        const scheduleFollowUpLegwork = (reason) => {
+            try {
+                if (HANDOFF_FOLLOWUP_MAX <= 0 || followUpInFlight || followUpBatches >= HANDOFF_FOLLOWUP_MAX) return;
+                if (req.delegate || !toolCtx || !toolCtx._assistantJobs || !toolCtx.assistantModel) return;
+                if (streamAbortController.signal.aborted) return;
+                const all = [...toolCtx._assistantJobs.values()];
+                if (all.length >= (toolCtx.assistantMaxJobs || ASSISTANT_MAX_JOBS)) return;
+                // Only while the assistant has room: a follow-up queued behind
+                // three running jobs would just wait.
+                if (all.filter(j => j.status === 'running').length >= (toolCtx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL)) return;
+                const assistant = toolCtx.assistantModel;
+                const lead = targetModel;
+                followUpInFlight = true;
+                const leadSteps = persistedToolChips
+                    .filter(c => c && c.label && !['first_pass', 'ask_assistant', 'await_assistant'].includes(c.label))
+                    .map(c => `${c.label}${c.purpose ? `: ${c.purpose}` : ''}`);
+                const jobsForPrompt = all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer }));
+                const t0 = Date.now();
+                Promise.race([
+                    requestModelCompletion({
+                        messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: latestUserText, leadModel: lead, jobs: jobsForPrompt, leadSteps, maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                        model: assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
+                    }),
+                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
+                ]).then((r) => {
+                    followUpInFlight = false;
+                    if (streamAbortController.signal.aborted || assistantRevising) return;
+                    const existing = [...toolCtx._assistantJobs.values()];
+                    const proposed = leadHandoff.parseLegwork(r && r.content)
+                        .filter(j => !leadHandoff.isDuplicateJob(j, existing))
+                        .filter(j => !leadHandoff.isDuplicateJob(j, leadSteps.map(x => ({ name: '', task: x }))))
+                        .slice(0, HANDOFF_FOLLOWUP_JOBS);
+                    const secs = Math.round((Date.now() - t0) / 100) / 10;
+                    if (!proposed.length) {
+                        console.log(`[Chat Stream] Hand-off: follow-up legwork after ${reason} — ${assistant} proposed nothing new (${secs}s)`);
+                        return;
+                    }
+                    followUpBatches += 1;
+                    const chip = openHandoffChip({
+                        type: 'native_tool_call',
+                        label: 'ask_assistant',
+                        model: lead,
+                        purpose: `Handing ${proposed.length} follow-up job${proposed.length === 1 ? '' : 's'} to ${assistant}`,
+                        query: proposed.map(i => i.name).join(', ').slice(0, 60),
+                        args: { requests: proposed.map(i => ({ name: i.name, task: i.task })), followUp: true },
+                        _startedAt: Date.now(),
+                    });
+                    const view = Object.create(toolCtx);
+                    view._assistantChipId = chip.toolCallId;
+                    const started = startAssistantJobs(view, proposed, assistant);
+                    logChatActivity(`Two models: follow-up batch ${followUpBatches} — ${assistant} took ${started.length} more job(s) after ${reason}: ${started.map(d => `"${d.name}"`).join(', ')}`);
+                    console.log(`[Chat Stream] Hand-off: follow-up batch ${followUpBatches} (${secs}s to propose) started ${started.length} job(s): ${started.map(d => d.name).join(' | ')}`);
+                    const promises = started.map(d => (toolCtx._assistantJobs.get(d.id) || {}).promise).filter(Boolean);
+                    Promise.allSettled(promises).then(() => {
+                        const rows = started.map(d => toolCtx._assistantJobs.get(d.id)).filter(Boolean).map(j => ({
+                            id: j.id, name: j.name, model: j.model || assistant, status: j.status, calls: j.calls || 0,
+                            ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                            ...(j.error ? { error: j.error } : {}),
+                        }));
+                        chip.assistantJobs = rows;
+                        closeHandoffChip(chip, {
+                            purpose: `${assistant} ran ${rows.filter(x => x.status === 'done').length}/${rows.length} follow-up job${rows.length === 1 ? '' : 's'} for ${lead}`,
+                            result: { model: assistant, requestedBy: lead, followUp: true, jobs: rows },
+                        });
+                    });
+                }).catch((e) => { followUpInFlight = false; console.warn('[Chat Stream] follow-up legwork failed:', e.message); });
+            } catch (e) { followUpInFlight = false; console.warn('[Chat Stream] follow-up legwork skipped:', e.message); }
+        };
+        let assistantRevising = false;
+        toolCtx._onAssistantDelivered = (reason) => scheduleFollowUpLegwork(reason);
+
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
         // the lead a short brief. The lead then writes the real answer. The
@@ -25881,6 +25992,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // in the same slot — the lead reads them right before its
                     // next round without ever having waited on them.
                     const assistantMsg = deliverAssistantResults();
+                    if (assistantMsg) scheduleFollowUpLegwork('a delivered batch');
                     const idleMsg = idleAssistantNudge(safeToolCalls);
                     currentMessages = [
                         ...currentMessages,
@@ -26103,6 +26215,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         }
                         const drained = deliverAssistantResults();
                         if (drained) {
+                            assistantRevising = true;
                             // Keep what the lead already wrote as its own turn,
                             // then let it revise with the results in hand.
                             // This round's own text (turnContent is scoped to
@@ -27155,6 +27268,9 @@ const HANDOFF_FIRST_PASS_ROUNDS = Math.max(1, parseInt(process.env.HANDOFF_FIRST
 const HANDOFF_FIRST_PASS_MODE = /^full$/i.test(String(process.env.HANDOFF_FIRST_PASS_MODE || '')) ? 'full' : 'quick';
 const HANDOFF_QUICK_BRIEF_MS = Math.max(3000, parseInt(process.env.HANDOFF_QUICK_BRIEF_MS || '30000', 10) || 30000);
 const HANDOFF_QUICK_BRIEF_TOKENS = Math.max(200, parseInt(process.env.HANDOFF_QUICK_BRIEF_TOKENS || '600', 10) || 600);
+// Follow-up legwork batches per turn (see scheduleFollowUpLegwork); 0 disables.
+const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_MAX || '2', 10) || 0);
+const HANDOFF_FOLLOWUP_JOBS = Math.max(1, parseInt(process.env.HANDOFF_FOLLOWUP_JOBS || '3', 10) || 3);
 // Background legwork the lead can have running at once (ask_assistant).
 const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
 // How many of the jobs the first pass proposes the server starts on its own.
@@ -34353,8 +34469,17 @@ app.use((req, res) => {
                 ? [...jobs.values()].filter(j => ids.includes(j.id) || ids.includes(j.name))
                 : [...jobs.values()].filter(j => assistantQueue.isPending(j) || !j.delivered);
             if (!wanted.length) return { error: 'No matching assistant jobs.', known: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status })) };
-            await Promise.all(wanted.map(j => j.promise).filter(Boolean));
-            const reports = wanted.map(j => {
+            // Return as soon as the FIRST of them finishes (or one already has),
+            // not when all do: measured, a lead blocked 188 s on three jobs doing
+            // nothing, which is exactly what two models working together is not.
+            const readyNow = wanted.filter(j => assistantQueue.isSettled(j) && !j.delivered);
+            if (!readyNow.length) {
+                const pend = wanted.filter(assistantQueue.isPending).map(j => j.promise).filter(Boolean);
+                if (pend.length) await Promise.race(pend.map(p => p.then(() => true, () => true)));
+            }
+            const settled = wanted.filter(j => assistantQueue.isSettled(j));
+            const stillRunning = wanted.filter(assistantQueue.isPending);
+            const reports = settled.map(j => {
                 j.delivered = true;
                 return {
                     id: j.id, name: j.name, status: j.status, seconds: j.seconds,
@@ -34363,7 +34488,14 @@ app.use((req, res) => {
                     filesWritten: (j.result && j.result.filesWritten) || [],
                 };
             });
-            return { success: true, reports, note: 'Continue the work with these. Anything still running will reach you as it finishes.' };
+            if (typeof ctx._onAssistantDelivered === 'function' && reports.length) ctx._onAssistantDelivered('await_assistant');
+            return {
+                success: true, reports,
+                ...(stillRunning.length ? { stillRunning: stillRunning.map(j => ({ id: j.id, name: j.name, status: j.status })) } : {}),
+                note: stillRunning.length
+                    ? `Continue the work with these now. ${stillRunning.length} job(s) still running — they reach you as they finish; do not wait on them unless you truly cannot continue.`
+                    : 'Continue the work with these. Anything still running will reach you as it finishes.',
+            };
         },
     });
 

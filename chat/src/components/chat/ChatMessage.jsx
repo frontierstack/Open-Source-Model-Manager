@@ -389,7 +389,7 @@ function exchangeSteps(toolCalls, review) {
                 from: tc.model,
                 to,
                 text: n
-                    ? `delegated ${n} task${n === 1 ? '' : 's'}${to ? ` to ${shortModel(to)}` : ''}`
+                    ? `delegated ${n} ${tc.args && tc.args.followUp ? 'follow-up ' : ''}task${n === 1 ? '' : 's'}${to ? ` to ${shortModel(to)}` : ''}`
                     : 'handed work to the other model',
                 jobs: jobs.map(j => ({ ...j, task: asked[j.name] })),
             });
