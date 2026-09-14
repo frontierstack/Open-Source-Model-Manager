@@ -427,6 +427,41 @@ function isDuplicateJob(candidate, existing = [], threshold = 0.6) {
     return false;
 }
 
+// Reworded duplicates. A lead re-dispatching a running job under its own
+// wording ("tcl-firmware: Find the current TCL C8K firmware version…" for
+// "current TCL TV firmware version: find the exact firmware version…") shares
+// ~30% of its words — the same as two genuinely different jobs on one topic —
+// so the word check cannot see it. Right before a job starts, jobs whose text
+// embeds close to it are shown to the assistant model for one short verdict.
+function buildDuplicateJudgeTask({ job, existing = [] }) {
+    const letters = 'ABCDEFGHIJKL';
+    return [
+        'Background research jobs are running for one user request. Decide whether the NEW job would mostly find the same information as one of the EXISTING jobs.',
+        'It is a DUPLICATE only when an existing job already covers its main question — a reworded or more detailed version of the same lookup, or a question the existing job\'s report already answers. A job asking for a different or narrower fact that the existing task and report do not cover is NEW (a follow-up that fills a gap in a report is NEW).',
+        '',
+        'EXISTING JOBS:',
+        ...existing.slice(0, letters.length).map((e, i) => {
+            const report = String(e.report || '').replace(/\s+/g, ' ').trim();
+            return `${letters[i]}. ${e.name}: ${String(e.task || '').replace(/\s+/g, ' ').slice(0, 320)}${report ? `\n   Its report: ${report.slice(0, 600)}` : ' (still running)'}`;
+        }),
+        '',
+        'NEW JOB:',
+        `${job.name}: ${String(job.task || '').replace(/\s+/g, ' ').slice(0, 480)}`,
+        '',
+        'Reply with exactly one line: "DUPLICATE OF <letter>" or "NEW".',
+    ].join('\n');
+}
+
+function parseDuplicateVerdict(text, existing = []) {
+    const t = String(text || '').replace(/\*\*/g, '').trim();
+    const m = t.match(/\bDUPLICATE\s+(?:OF\s+)?(?:JOB\s+)?\(?([A-L])\b/i);
+    if (m) {
+        const idx = m[1].toUpperCase().charCodeAt(0) - 65;
+        return existing[idx] || null;
+    }
+    return null;
+}
+
 // A proposed job the assistant cannot actually do. Seen live: a follow-up
 // named "Connect the TCL TV to your PC via USB cable" — a step for the USER on
 // their own hardware, which a server-side model has no access to; it burned a
@@ -440,6 +475,11 @@ function isWorkableJob(job) {
     const name = String(job && job.name || '').trim();
     const task = String(job && job.task || '').trim();
     if (task.length < 15) return false;
+    // The proposal prompt's own template echoed back ("<short name>: <one-line
+    // brief…>", "If nothing would help, reply exactly: …") is not a job. Seen
+    // live: both lines started as jobs and ran 34 s and 61 s each.
+    if (/<[^>]{2,40}>/.test(`${name} ${task}`)) return false;
+    if (/^(?:if nothing\b|reply (?:exactly|with only)\b)/i.test(name) || /\breply exactly\b/i.test(`${name} ${task}`)) return false;
     if (HARD_USER_STEP_NAME.test(name) || HARD_USER_STEP_NAME.test(task)) return false;
     if (USER_STEP_START.test(task) && !RESEARCH_VERB.test(task)) return false;
     if (USER_DEVICE.test(task) && !RESEARCH_VERB.test(task)) return false;
@@ -609,6 +649,8 @@ function buildJobPartnerLine({ partnerModel, maxJobs }) {
 }
 
 module.exports = {
+    buildDuplicateJudgeTask,
+    parseDuplicateVerdict,
     MODES,
     buildLegworkOnlyTask,
     buildFollowUpLegworkTask,

@@ -25406,6 +25406,30 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             p = chatTools.executeToolCall(call, /^(delegate|ask_assistant|await_assistant)$/.test(call.function.name)
                                 ? Object.assign(Object.create(toolCtx), { _toolCallId: call.id })
                                 : toolCtx);
+                            // A background job past its soft deadline stops
+                            // waiting on a slow call (a browser read can take
+                            // 20 s+) so it still has time to write its report —
+                            // the round-top check alone let one job run into
+                            // its hard limit with a lookup in flight.
+                            if (req.delegate && req.delegate.softDeadlineAt) {
+                                const cutAt = req.delegate.softDeadlineAt + ASSISTANT_JOB_TOOL_GRACE_MS;
+                                const waitMs = Math.max(3000, cutAt - Date.now());
+                                let cutTimer;
+                                p = Promise.race([
+                                    p,
+                                    new Promise((resolve) => {
+                                        cutTimer = setTimeout(() => {
+                                            console.log(`[Chat Stream] Delegated turn "${req.delegate.label || ''}": ${call.function.name} still running at the time limit — reporting without it`);
+                                            resolve({
+                                                tool_call_id: call.id,
+                                                role: 'tool',
+                                                name: call.function.name,
+                                                content: JSON.stringify({ success: false, error: 'job_time_limit', message: 'ABANDONED: this call was still running at your job\'s time limit, so its result is UNKNOWN — it may not have finished and nothing it printed or returned reached you. Never state or guess what it returned. Do not call more tools: write your report now from the results you actually received, and list this call as not completed.' }),
+                                            });
+                                        }, waitMs);
+                                    }),
+                                ]).finally(() => clearTimeout(cutTimer));
+                            }
                             dispatchCache.set(k, p);
                             return p;
                         }
@@ -26587,7 +26611,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // Artifact delivery only needs a short prose summary; an
                             // inline deliverable needs real headroom (up to 32k) so a
                             // full file fits instead of truncating mid-code-block.
-                            const synthMaxTokens = deliveredViaArtifact
+                            const synthMaxTokens = (deliveredViaArtifact || (req.delegate && req.delegate.softDeadlineAt))
                                 ? Math.max(512, Math.min(2048, synthHeadroom))
                                 : Math.max(512, Math.min(Math.max(initialMaxTokens, 32768), synthHeadroom));
                             // Actually turn OFF the model's reasoning pass for the
@@ -27378,6 +27402,13 @@ const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_M
 // await_assistant keeps collecting once the first result is in.
 const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '5', 10) || 5);
 const ASSISTANT_JOB_TIMEOUT_MS = Math.max(30000, parseInt(process.env.ASSISTANT_JOB_TIMEOUT_MS || '240000', 10) || 240000);
+// A tool call still running this long past a job's soft deadline is abandoned
+// so the job can write its report before the hard limit.
+const ASSISTANT_JOB_TOOL_GRACE_MS = Number(process.env.ASSISTANT_JOB_TOOL_GRACE_MS) || 15000;
+// Reworded-duplicate screen at job start: embedding similarity at or above this
+// sends the pair to the assistant model for a one-line verdict.
+const JOB_DUP_SCREEN_MIN = Number(process.env.JOB_DUP_SCREEN_MIN) || 0.6;
+const JOB_DUP_JUDGE_MS = Number(process.env.JOB_DUP_JUDGE_MS) || 12000;
 // Time kept back from a job's limit so it can write its report (see softDeadlineAt).
 const ASSISTANT_JOB_SYNTH_RESERVE_MS = Math.max(10000, parseInt(process.env.ASSISTANT_JOB_SYNTH_RESERVE_MS || '60000', 10) || 60000);
 const IDLE_ASSISTANT_NUDGE_MAX = Math.max(0, parseInt(process.env.IDLE_ASSISTANT_NUDGE_MAX || '2', 10) || 0);
@@ -27473,6 +27504,42 @@ function assistantProgressFrame(jobs, model, toolCallId) {
     };
 }
 
+// Is this job, about to start, a reworded repeat of one already running or
+// done from an EARLIER dispatch? Embedding similarity screens out clearly
+// different jobs for free; the close ones get a one-line verdict from the
+// assistant model (the slot this job is about to use is free). Fails open.
+async function screenDuplicateJob(jobs, job, model) {
+    try {
+        const others = [...jobs.values()].filter(j => j !== job && j.batch !== job.batch && !j.duplicateOf
+            && (j.status === 'running' || j.status === 'done'));
+        if (!others.length) return null;
+        const text = (j) => `${j.name}: ${String(j.task || '').replace(/\s+/g, ' ').slice(0, 600)}`;
+        const sim = await Promise.race([
+            embeddingEngine.call('/similarity', { a: [text(job)], b: others.map(text) }),
+            new Promise(resolve => setTimeout(() => resolve(null), 3000)),
+        ]);
+        const scores = sim && Array.isArray(sim.scores) && sim.scores[0];
+        if (!scores) return null;
+        const near = others.map((j, i) => ({ j, s: Number(scores[i]) || 0 }))
+            .filter(x => x.s >= JOB_DUP_SCREEN_MIN)
+            .sort((a, b) => b.s - a.s).slice(0, 4);
+        if (!near.length) return null;
+        const t0 = Date.now();
+        const verdict = await Promise.race([
+            requestModelCompletion({
+                messages: [{ role: 'user', content: leadHandoff.buildDuplicateJudgeTask({ job, existing: near.map(x => ({ name: x.j.name, task: x.j.task, report: x.j.status === 'done' && x.j.result ? x.j.result.answer : '' })) }) }],
+                model, temperature: 0, maxTokens: 24, disableThinking: true,
+            }),
+            new Promise(resolve => setTimeout(() => resolve(null), JOB_DUP_JUDGE_MS)),
+        ]);
+        const dup = leadHandoff.parseDuplicateVerdict(verdict && verdict.content, near.map(x => x.j));
+        console.log(`[Assistant] duplicate screen "${job.name}": nearest ${near.map(x => `"${x.j.name}" ${x.s.toFixed(2)}`).join(', ')} → ${dup ? `DUPLICATE of "${dup.name}"` : (verdict ? 'new' : 'no verdict')} (${Date.now() - t0}ms)`);
+        return dup;
+    } catch (e) {
+        return null;
+    }
+}
+
 function startAssistantJobs(ctx, items, model) {
     const jobs = ctx._assistantJobs;
     if (!jobs || !Array.isArray(items) || !items.length) return [];
@@ -27494,7 +27561,23 @@ function startAssistantJobs(ctx, items, model) {
             maxJobs: ctx.assistantMaxJobs || ASSISTANT_MAX_JOBS,
             jobs,
             onChange: () => { if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId)); },
-            run: (job) => {
+            run: (job) => screenDuplicateJob(jobs, job, model).then((dup) => {
+                if (job.status === 'cancelled') return null;
+                if (dup) {
+                    job.duplicateOf = dup.id;
+                    logUserActivity(ctx.userId, `Assistant: skipped "${job.name}" — it repeats "${dup.name}" (${dup.status})`);
+                    return {
+                        name: job.name, status: 'ok', toolCalls: 0, tools: [], filesWritten: [],
+                        seconds: Math.round((Date.now() - (job.startedAt || Date.now())) / 100) / 10,
+                        duplicateOf: dup.id,
+                        answer: `Not run: this repeats "${dup.name}" (${dup.id}), which ${dup.status === 'done' ? 'has already reported' : 'is still running'} — its report is delivered to you separately. Do not dispatch it again.`,
+                    };
+                }
+                return runJob(job);
+            }),
+        });
+        function runJob(job) {
+            {
                 // Own controller per job, chained to the turn's, so the turn can
                 // reclaim the slot from a job nobody ever waited for.
                 const ac = new AbortController();
@@ -27516,7 +27599,7 @@ function startAssistantJobs(ctx, items, model) {
                         plan: (ctx._handoffGoal && ctx._handoffGoal.plan) || [],
                         leadModel: ctx.model,
                         siblings: [...jobs.values()].map(j => ({ id: j.id, name: j.name, task: j.task, status: j.status })),
-                        findings: [...jobs.values()].filter(j => j.status === 'done' && j.result && j.result.answer).map(j => ({ name: j.name, text: j.result.answer })),
+                        findings: [...jobs.values()].filter(j => j.status === 'done' && !j.duplicateOf && j.result && j.result.answer).map(j => ({ name: j.name, text: j.result.answer })),
                         budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} tool rounds, aim for 3-6 tool calls in all (one search plus the one or two pages that answer it), about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s). Then reply with your report. Do not attempt the user's whole request.]`,
                     }),
                     label: job.name,
@@ -27572,8 +27655,8 @@ function startAssistantJobs(ctx, items, model) {
                     if (typeof ctx._onAssistantSettled === 'function') setTimeout(() => { try { ctx._onAssistantSettled(job); } catch (_) {} }, 0);
                     return r;
                 });
-            },
-        });
+            }
+        }
     }
     const q = jobs._queue;
     // chipId = the ask_assistant chip that dispatched this job (the auto
@@ -27581,7 +27664,8 @@ function startAssistantJobs(ctx, items, model) {
     // progress frame carries every job of the turn; the client groups them by
     // chipId so each chip shows ITS batch — patching the whole list onto
     // whichever chip was current showed only the first batch ("just 3 tasks").
-    const { accepted, rejected } = q.add(items, { model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null, chipId: ctx._assistantChipId || ctx._toolCallId || null });
+    jobs._batchSeq = (jobs._batchSeq || 0) + 1;
+    const { accepted, rejected } = q.add(items, { batch: jobs._batchSeq, model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null, chipId: ctx._assistantChipId || ctx._toolCallId || null });
     if (rejected.length) console.warn(`[Chat Stream] Hand-off: ${rejected.length} job(s) refused — per-turn budget of ${ASSISTANT_MAX_JOBS} reached`);
     const dispatched = accepted.map(a => ({ id: a.id, name: a.name, status: a.status }));
     dispatched.rejected = rejected;

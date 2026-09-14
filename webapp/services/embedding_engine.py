@@ -303,7 +303,18 @@ def op_get_doc(body):
             'charCount': len(text), 'truncated': truncated, 'text': text}
 
 
-OPS = {'/ingest': op_ingest, '/ingest_bulk': op_ingest_bulk, '/search': op_search,
+def op_similarity(body):
+    # Pairwise cosine between two short text lists (no index). Used to screen
+    # background jobs for near-duplicates before a model is asked to judge.
+    a = [str(t or '')[:2000] for t in (body.get('a') or [])][:50]
+    b = [str(t or '')[:2000] for t in (body.get('b') or [])][:50]
+    if not a or not b:
+        return {'ok': True, 'scores': []}
+    sims = _embed(a) @ _embed(b).T
+    return {'ok': True, 'scores': [[round(float(x), 4) for x in row] for row in sims]}
+
+
+OPS = {'/similarity': op_similarity, '/ingest': op_ingest, '/ingest_bulk': op_ingest_bulk, '/search': op_search,
        '/delete_doc': op_delete_doc, '/stats': op_stats, '/get_doc': op_get_doc}
 
 
