@@ -375,12 +375,13 @@ function buildLegworkOnlyTask({ userText, leadModel }) {
 // called ask_assistant again (it even blocked on await_assistant for 188 s),
 // so "delegation is continuous" was only ever true in the prompt. Each time a
 // batch lands, the ASSISTANT reads what came back and proposes the next jobs.
-function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = [], maxJobs = 3 }) {
+function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = [], plan = [], maxJobs = 3 }) {
     const done = jobs.slice(-12).map((j) => {
         const head = String(j.answer || '').replace(/\s+/g, ' ').trim().slice(0, 420);
         return `- ${j.name}: ${String(j.task || '').slice(0, 200)} → ${j.status}${head ? ` — result: ${head}` : ''}`;
     });
     const steps = leadSteps.slice(-12).map((s) => `- ${String(s).slice(0, 160)}`);
+    const planLines = plan.slice(0, 6).map((st, i) => `${i + 1}. ${String(st).slice(0, 200)}`);
     return [
         `${leadModel || 'The main model'} is still working on the request below. You have been running background jobs for it; their results are summarised underneath.`,
         `Propose the NEXT background jobs (at most ${maxJobs}) that would genuinely help it finish: a gap those results left open, a claim worth checking against a second independent source, a detail the final answer will need. Each job must be independent of anything the main model has not written yet, and must NOT repeat a job already done or a step the main model already took.`,
@@ -390,7 +391,8 @@ function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = 
         'THE USER ASKED:',
         askForFirstPass(userText, 2500),
         '',
-        'JOBS ALREADY DONE:',
+        ...(planLines.length ? ['THE MAIN MODEL\'S PLAN (its roadmap — not yet done unless a job or step below covers it):', ...planLines, ''] : []),
+        'JOBS SO FAR:',
         ...(done.length ? done : ['- none']),
         '',
         'STEPS THE MAIN MODEL ALREADY TOOK:',
@@ -446,28 +448,80 @@ function isWorkableJob(job) {
 
 const JOB_RULE = 'A job is work done with web lookups, reading files or running scripts on the server. It is NEVER a step for the user to perform on their own device (connect a cable, press a button, open a settings menu, reboot) — you have no access to the user\'s hardware. Start each brief with what to find or check.';
 
-// Pull the LEGWORK lines back out of the brief so the note can tell the primary
-// to dispatch exactly those. Tolerant of the shapes a small model produces
-// (numbered or bare heading, "- name: brief" or "name — brief").
-function parseLegwork(brief) {
-    // Models write the section as markdown — `**4. LEGWORK**`, `### LEGWORK`,
-    // and job names in backticks. Strip the decoration before matching;
-    // a bolded heading silently produced zero jobs, which is why the secondary
-    // never dispatched anything (user-reported: "not seeing any queue jobs").
+// One section of a brief. Section boundaries are the brief's OWN headings,
+// matched case-sensitively: a case-insensitive "any capitalised word" boundary
+// cut a plan off at its first numbered step ("2. Research the firmware…")
+// and at any line starting with a capitalised word.
+const SECTION_HEADS = 'TASK|WHAT I FOUND|PLAN|LEGWORK|OPEN QUESTIONS?';
+function briefSection(brief, name) {
     const text = String(brief || '')
         .replace(/\*\*/g, '')
         .replace(/__/g, '')
         .replace(/`/g, '')
         .replace(/^\s{0,3}#{1,6}\s*/gm, '');
-    // NOTE: the trailing alternative must be (?![\s\S]), not $ — the /m flag
-    // makes $ mean end-of-LINE, which cut the section off after its first job.
-    // The heading may carry the first job on ITS OWN line ("LEGWORK — - name:
-    // brief"), and a one-line brief may run every section together; split on
-    // the next ALL-CAPS heading wherever it sits, then on " - " job starts.
-    const m = text.match(/^\s*(?:\d+[.)]\s*)?LEGWORK\b[ \t]*[—–:-]*[ \t]*([^\n]*)\n?([\s\S]*?)(?=\n\s*(?:\d+[.)]\s*)?[A-Z][A-Z ]{3,}\b|(?![\s\S]))/mi);
-    if (!m) return [];
-    const body = [m[1], m[2]].filter(Boolean).join('\n')
-        .replace(/\s+(?:OPEN QUESTIONS?|PLAN|TASK|WHAT I FOUND)\b[\s\S]*$/, '')
+    const titled = name.charAt(0) + name.slice(1).toLowerCase();
+    // A heading at the start of a line (either case), or run into a one-line
+    // brief mid-line (upper case followed by a colon or dash).
+    const headRe = new RegExp(`^[ \\t]*(?:\\d+[.)][ \\t]*)?(?:${name}|${titled})\\b[ \\t]*[—–:-]*[ \\t]*|[ \\t](?:\\d+[.)][ \\t]*)?${name}[ \\t]*[—–:-]+[ \\t]*`, 'm');
+    const m = headRe.exec(text);
+    if (!m) return null;
+    const rest = text.slice(m.index + m[0].length);
+    const end = rest.search(new RegExp(`(?:^|[ \\t])(?:\\d+[.)][ \\t]*)?(?:${SECTION_HEADS})\\b`, 'm'));
+    return end >= 0 ? rest.slice(0, end) : rest;
+}
+
+// The PLAN section of a brief, as steps (the lead's roadmap; jobs and
+// follow-ups are told where they fit in it).
+function parsePlan(brief) {
+    const body = briefSection(brief, 'PLAN');
+    if (!body) return [];
+    const steps = [];
+    for (const raw of body.split(/\n|(?<=[.;])\s+(?=\d+[.)]\s)/)) {
+        const line = raw.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim();
+        if (line.length >= 6 && !/^none\b/i.test(line)) steps.push(line);
+        if (steps.length >= 8) break;
+    }
+    return steps;
+}
+
+// What a background job is handed. A bare one-line task left the job blind:
+// it did not know the user's goal, the lead's plan, what its sibling jobs
+// cover (so two jobs researched the same thing) or what was already found
+// (so it re-found it). This frames the task as ONE part of shared work.
+function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], leadModel, budgetLine }) {
+    const L = [];
+    if (budgetLine) L.push(budgetLine);
+    L.push(`You are running ONE background job for ${leadModel || 'the main model'}, which is writing the answer to the user's request while you work. Your report is the only thing it will see from you.`);
+    // Sections are capped so the brief stays small next to a job's own tool
+    // results in a per-slot context window.
+    if (goal) L.push('', 'THE USER\'S GOAL:', String(goal).trim().slice(0, 1200));
+    if (plan.length) L.push('', 'THE MAIN MODEL\'S PLAN:', ...plan.slice(0, 6).map((st, i) => `${i + 1}. ${String(st).slice(0, 200)}`));
+    // Other jobs by identity (two jobs may share a derived name); a failed or
+    // cancelled job covers nothing, so it is not listed as covered.
+    const self = (sb) => (job.id != null && sb.id != null) ? sb.id === job.id : sb.name === job.name && sb.task === job.task;
+    const others = siblings
+        .filter(sb => sb && sb.name && !self(sb) && sb.status !== 'failed' && sb.status !== 'cancelled')
+        .slice(-8);
+    if (others.length) L.push('', 'OTHER JOBS COVER THESE (do not repeat them):', ...others.map(sb => `- ${sb.name}${sb.task ? `: ${String(sb.task).slice(0, 140)}` : ''}${sb.status === 'done' ? ' (done)' : ' (in progress)'}`));
+    const found = findings.filter(f => f && f.text).slice(-4);
+    if (found.length) L.push('', 'ALREADY FOUND (build on it, do not re-find it):', ...found.map(f => `- ${f.name ? `${f.name}: ` : ''}${String(f.text).replace(/\s+/g, ' ').trim().slice(0, 300)}`));
+    L.push('', 'YOUR JOB:', String(job.task || '').trim().slice(0, 1500));
+    L.push('', 'Report format: 3-10 bullets of facts with a source for each (URL or file path), then one line on anything you could not confirm. Only what THIS job asked for — no introduction, no advice on the rest of the request.');
+    return L.join('\n');
+}
+
+// Pull the LEGWORK lines back out of the brief so the note can tell the primary
+// to dispatch exactly those. Tolerant of the shapes a small model produces
+// (numbered or bare heading, "- name: brief" or "name — brief").
+function parseLegwork(brief) {
+    // Models write the section as markdown — `**4. LEGWORK**`, `### LEGWORK`,
+    // and job names in backticks; briefSection strips the decoration (a bolded
+    // heading silently produced zero jobs). The heading may carry the first job
+    // on ITS OWN line ("LEGWORK — - name: brief"), and a one-line brief may run
+    // every section together; split on " - " job starts.
+    const section = briefSection(brief, 'LEGWORK');
+    if (section == null) return [];
+    const body = section
         .replace(/\s+-\s+(?=[^\n]{1,60}?\s*[:—–-]\s+)/g, '\n- ');
     const jobs = [];
     for (const raw of body.split('\n')) {
@@ -503,7 +557,7 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
     const tail = !legworkAvailable
         ? 'You are working alone on this one.'
         : started.length
-            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now (${started.map(n => `"${n}"`).join(', ')}) — do NOT redo that work yourself. Start on the parts only you can do; each result is delivered to you as it lands. As your work reveals further independent legwork, hand it over with \`ask_assistant\` right away (it queues past the parallel limit) — and if nothing more is needed, just carry on.`
+            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now:\n${started.map(j => (typeof j === 'string' ? `- "${j}"` : `- "${j.name}": ${String(j.task || '').slice(0, 220)}`)).join('\n')}\nDo NOT redo that work yourself and do NOT dispatch it again under another name — each of those results is delivered to you when it lands. Do not sit and wait for them: start writing NOW — the structure of the answer, every step or fact you already know, the parts only you can do. Never put a placeholder, "pending" marker or "results to follow" note in the answer: write around the missing piece and fill it in when its result is delivered to you (each one is, as it lands). Call \`await_assistant\` only when you have nothing left to write without it. ${who} may propose further jobs as results come in; hand over more yourself with \`ask_assistant\` whenever your work reveals another independent lookup (it queues past the parallel limit) — and if nothing more is needed, just carry on.`
             : jobs.length
             ? `${who} is idle and waiting for work. Your FIRST action should be a single \`ask_assistant\` call dispatching the LEGWORK jobs above (${jobs.map(j => `"${j.name}"`).join(', ')}) — it returns immediately and they run on ${who}'s own GPU while you write. Then start writing without waiting; each result is delivered to you as it lands.`
             : `${who} is standing by — hand it any lookup, file read or script run you would otherwise stop to do yourself with \`ask_assistant\`, and keep working while it runs.`;
@@ -558,6 +612,8 @@ module.exports = {
     MODES,
     buildLegworkOnlyTask,
     buildFollowUpLegworkTask,
+    buildJobBrief,
+    parsePlan,
     isDuplicateJob,
     isWorkableJob,
     buildPartnerPrelude,

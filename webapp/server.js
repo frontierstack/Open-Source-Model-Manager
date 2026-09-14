@@ -11931,6 +11931,7 @@ app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             if (!enabled) return res.status(409).json({ error: 'pair_not_active', note: 'Two models are not configured and loaded, so there is no assistant. Do the work yourself.' });
             entry = piAssistantEntry(req, `adhoc|${keyId}|${Date.now()}`, roles.secondary, roles.primary);
         }
+        entry.lastSeenAt = Date.now();
         const b = req.body || {};
         let raw = Array.isArray(b.requests) ? b.requests : Array.isArray(b.tasks) ? b.tasks : (b.task ? [b] : []);
         if (typeof b.requests === 'string') { try { raw = JSON.parse(b.requests); } catch (_) { raw = [{ task: b.requests }]; } }
@@ -11938,7 +11939,18 @@ app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             .filter(r => r && typeof r.task === 'string' && r.task.trim().length >= 8)
             .map((r, i) => ({ name: String(r.name || r.id || r.task.split(/\s+/).slice(0, 4).join(' ') || `task ${i + 1}`).slice(0, 60), task: r.task.trim() }));
         if (!items.length) return res.status(400).json({ error: 'requests must be a list of { name, task } with a task of at least a few words' });
-        const dispatched = startAssistantJobs(entry.ctx, items, entry.assistant);
+        const live = [...entry.ctx._assistantJobs.values()].filter(j => j.status !== 'failed' && j.status !== 'cancelled');
+        const covered = [];
+        const fresh = items.filter((t) => {
+            const hit = live.find(j => leadHandoff.isDuplicateJob(t, [j]));
+            if (hit) { covered.push({ requested: t.name, id: hit.id, name: hit.name, status: hit.status }); return false; }
+            return true;
+        });
+        if (!fresh.length) {
+            return res.json({ success: true, assistant: entry.assistant, dispatched: [], alreadyCovered: covered,
+                note: `Nothing new started — already covered by this task's jobs (${covered.map(c => `"${c.name}" ${c.status}`).join(', ')}). Results are appended to your next tool result; keep working.` });
+        }
+        const dispatched = startAssistantJobs(entry.ctx, fresh, entry.assistant);
         const jobs = [...entry.ctx._assistantJobs.values()];
         logUserActivity(req.userId || keyId, `Pi assistant: ${entry.lead} handed ${dispatched.length} job(s) to ${entry.assistant} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
         res.json({
@@ -11946,6 +11958,7 @@ app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             assistant: entry.assistant,
             dispatched,
             ...(dispatched.rejected && dispatched.rejected.length ? { rejected: dispatched.rejected } : {}),
+            ...(covered.length ? { alreadyCovered: covered } : {}),
             running: jobs.filter(j => j.status === 'running').length,
             queued: jobs.filter(j => j.status === 'queued').length,
             jobsUsed: `${jobs.length}/${ASSISTANT_MAX_JOBS} this task`,
@@ -11959,6 +11972,7 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
         const keyId = req.apiKeyData?.id;
         const entry = keyId ? piAssistantByKey.get(keyId) : null;
         if (!entry) return res.json({ active: false, jobs: [], results: [], pending: 0 });
+        entry.lastSeenAt = Date.now();
         const all = () => [...entry.ctx._assistantJobs.values()];
         const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean);
         const scope = () => (ids.length ? all().filter(j => ids.includes(j.id) || ids.includes(j.name)) : all());
@@ -11968,7 +11982,9 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
             if (pending.length) {
                 let closed = false;
                 req.on('close', () => { closed = true; });
-                await awaitJobsWindow(scope(), { maxMs: waitMs, isClosed: () => closed });
+                entry.activeWaits = (entry.activeWaits || 0) + 1;
+                try { await awaitJobsWindow(scope(), { maxMs: waitMs, isClosed: () => closed }); }
+                finally { entry.activeWaits = Math.max(0, entry.activeWaits - 1); entry.lastSeenAt = Date.now(); }
                 if (closed) return;
             }
         }
@@ -17154,6 +17170,10 @@ function v1PersonaCacheSet(key, result) {
 const PI_PAIR_TASK_TTL_MS = 2 * 60 * 60 * 1000;
 const piPairTasks = new Map();        // taskKey -> { at, plan } | { at, pending: Promise }
 const piAssistantByKey = new Map();   // apiKeyId -> { taskKey, lead, assistant, ctx }
+const piLastAskByKey = new Map();     // apiKeyId -> { text, plan, at } — the ask behind an ad-hoc dispatch
+// A follow-up batch starts only while Pi is still around to read it: the
+// extension polls every 3 s during a run and holds a wait open after it.
+const PI_FOLLOWUP_IDLE_MS = Number(process.env.PI_FOLLOWUP_IDLE_MS) || 30000;
 
 function piRunningModelNames() {
     const names = [];
@@ -17223,7 +17243,13 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
         entry = null;
     }
     if (!entry) {
-        entry = { taskKey, lead, assistant, keyId, userId: req.userId || keyId, userText: v1LatestUserText(req.body?.messages || []), ctx: newPiAssistantCtx(req, keyId, lead) };
+        // An ad-hoc entry (ask_assistant with no planned task) has no messages
+        // in its request; the goal is the key's latest ask.
+        const lastAsk = piLastAskByKey.get(keyId);
+        const userText = v1LatestUserText(req.body?.messages || []) || (lastAsk && lastAsk.text) || '';
+        entry = { taskKey, lead, assistant, keyId, userId: req.userId || keyId, userText, lastSeenAt: Date.now(), activeWaits: 0, ctx: newPiAssistantCtx(req, keyId, lead) };
+        entry.ctx._handoffGoal = { userText: leadHandoff.askForFirstPass(entry.userText, 1500), plan: (lastAsk && lastAsk.text === userText && lastAsk.plan) || [] };
+        entry.ctx._onAssistantSettled = (job) => { if (job && job.status !== 'cancelled' && job.status !== 'failed') piFollowUpLegwork(entry); };
         piAssistantByKey.set(keyId, entry);
     }
     return entry;
@@ -17232,13 +17258,17 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
 function piFollowUpLegwork(entry) {
     try {
         if (!entry || !entry.userText || HANDOFF_FOLLOWUP_MAX <= 0 || entry.followUpInFlight || (entry.followUps || 0) >= HANDOFF_FOLLOWUP_MAX) return;
+        // A replaced task (a new Pi user message started another one) is over.
+        if (piAssistantByKey.get(entry.keyId) !== entry) return;
+        // Pi already answered and stopped reading: a batch now would run for nobody.
+        if (!entry.activeWaits && Date.now() - (entry.lastSeenAt || 0) > PI_FOLLOWUP_IDLE_MS) return;
         const jobs = entry.ctx._assistantJobs;
         const all = [...jobs.values()];
         if (all.length >= ASSISTANT_MAX_JOBS || all.filter(j => j.status === 'running').length >= ASSISTANT_MAX_PARALLEL) return;
         entry.followUpInFlight = true;
         Promise.race([
             requestModelCompletion({
-                messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: entry.userText, leadModel: entry.lead, jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer })), maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: entry.userText, leadModel: entry.lead, jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer })), leadSteps: [], plan: (entry.ctx._handoffGoal && entry.ctx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
                 model: entry.assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
             }),
             new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
@@ -17295,16 +17325,20 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
             } catch (_) { /* the lead can still dispatch its own */ }
         }
         let started = [];
-        if (proposed.length) {
+        let briefPlan = [];
+        try { briefPlan = leadHandoff.parsePlan(brief); } catch (_) { /* optional */ }
+        { const keyId = req.apiKeyData?.id; if (keyId) piLastAskByKey.set(keyId, { text: latestUserText, plan: briefPlan, at: Date.now() }); }
+        if (proposed.length || toolsOffered) {
             const entry = piAssistantEntry(req, taskKey, out.lead, out.assistant);
-            started = startAssistantJobs(entry.ctx, proposed.slice(0, HANDOFF_AUTO_JOBS), out.assistant);
-            out.jobs = started.map(d => d.name);
-        } else if (toolsOffered) {
-            piAssistantEntry(req, taskKey, out.lead, out.assistant);
+            entry.ctx._handoffGoal.plan = briefPlan;
+            if (proposed.length) {
+                started = startAssistantJobs(entry.ctx, proposed.slice(0, HANDOFF_AUTO_JOBS), out.assistant);
+                out.jobs = started.map(d => d.name);
+            }
         }
         const briefNote = brief ? leadHandoff.renderBriefNote({
             brief, assistantModel: out.assistant, firstPassSeconds: secs, toolCalls: 0,
-            legworkAvailable: toolsOffered && plan.legwork, startedJobs: out.jobs, quick: true,
+            legworkAvailable: toolsOffered && plan.legwork, startedJobs: started.map(d => ({ name: d.name, task: (proposed.find(p => p.name === d.name) || {}).task || '' })), quick: true,
         }) : '';
         const toolsLine = (toolsOffered && plan.legwork)
             ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it independent legwork (a lookup, reading a server-side file, running a script and reporting) and returns immediately; finished results are appended to your next tool result. Hand over more whenever your work reveals it. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
@@ -17315,6 +17349,7 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
     } else if (plan.partner && plan.partnerLegwork && toolsOffered) {
         out.lead = targetModel;
         out.assistant = plan.partner;
+        { const keyId = req.apiKeyData?.id; if (keyId) piLastAskByKey.set(keyId, { text: latestUserText, plan: [], at: Date.now() }); }
         piAssistantEntry(req, taskKey, out.lead, out.assistant);
         out.note = `${PI_PAIR_MARKER} — two models loaded; runtime context, not part of the user's message]\n`
             + leadHandoff.buildPartnerPrelude({ partnerModel: out.assistant, partnerIsStronger: out.assistant === roles.secondary, maxParallel: ASSISTANT_MAX_PARALLEL })
@@ -17340,6 +17375,7 @@ async function planPiPair(req, requestedInstance) {
     if (/^\s*\[ASSISTANT RESULTS/.test(latestUserText)) {
         const entry = piAssistantByKey.get(keyId);
         if (!entry) return null;
+        entry.lastSeenAt = Date.now();
         return { taskKey: entry.taskKey, runOn: entry.lead, engaged: true, lead: entry.lead, assistant: entry.assistant, note: null, reason: 'follow-up with late results', jobs: [] };
     }
     const pair = await resolvePiPairRoles(req);
@@ -17349,6 +17385,7 @@ async function planPiPair(req, requestedInstance) {
     const now = Date.now();
     for (const [k, v] of piPairTasks) if (now - v.at > PI_PAIR_TASK_TTL_MS) piPairTasks.delete(k);
     const hit = piPairTasks.get(taskKey);
+    { const e = piAssistantByKey.get(keyId); if (e && e.taskKey === taskKey) e.lastSeenAt = now; }
     if (hit) return hit.plan || (hit.pending ? hit.pending : null);
     const pending = buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair })
         .then((plan) => { piPairTasks.set(taskKey, { at: Date.now(), plan }); return plan; })
@@ -22417,7 +22454,10 @@ const chatStreamHandlerInner = async (req, res) => {
             const id = `handoff_${Date.now().toString(36)}_${++handoffChipSeq}`;
             chip.toolCallId = id;
             chip.status = 'running';
-            chip.contentOffset = fullResponse.length;
+            // An async chip (a follow-up batch opened while the lead is
+            // mid-answer) passes its own offset: the answer's start, so the
+            // answer is not filed under the working notes.
+            if (typeof chip.contentOffset !== 'number') chip.contentOffset = fullResponse.length;
             persistedToolChips.push(chip);
             if (clientConnected) {
                 try {
@@ -22469,7 +22509,7 @@ const chatStreamHandlerInner = async (req, res) => {
         let followUpInFlight = false;
         const scheduleFollowUpLegwork = (reason) => {
             try {
-                if (HANDOFF_FOLLOWUP_MAX <= 0 || followUpInFlight || followUpBatches >= HANDOFF_FOLLOWUP_MAX) return;
+                if (turnEnded || assistantDraining || assistantRevising || HANDOFF_FOLLOWUP_MAX <= 0 || followUpInFlight || followUpBatches >= HANDOFF_FOLLOWUP_MAX) return;
                 if (req.delegate || !toolCtx || !toolCtx._assistantJobs || !toolCtx.assistantModel) return;
                 if (streamAbortController.signal.aborted) return;
                 const all = [...toolCtx._assistantJobs.values()];
@@ -22487,13 +22527,13 @@ const chatStreamHandlerInner = async (req, res) => {
                 const t0 = Date.now();
                 Promise.race([
                     requestModelCompletion({
-                        messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: latestUserText, leadModel: lead, jobs: jobsForPrompt, leadSteps, maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                        messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: latestUserText, leadModel: lead, jobs: jobsForPrompt, leadSteps, plan: (toolCtx._handoffGoal && toolCtx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
                         model: assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
                     }),
                     new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
                 ]).then((r) => {
                     followUpInFlight = false;
-                    if (streamAbortController.signal.aborted || assistantRevising) return;
+                    if (turnEnded || streamAbortController.signal.aborted || assistantRevising || assistantDraining) return;
                     const existing = [...toolCtx._assistantJobs.values()];
                     const proposed = leadHandoff.parseLegwork(r && r.content)
                         .filter(j => !leadHandoff.isDuplicateJob(j, existing))
@@ -22512,6 +22552,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         purpose: `Handing ${proposed.length} follow-up job${proposed.length === 1 ? '' : 's'} to ${assistant}`,
                         query: proposed.map(i => i.name).join(', ').slice(0, 60),
                         args: { requests: proposed.map(i => ({ name: i.name, task: i.task })), followUp: true },
+                        contentOffset: Math.max(0, Math.min(lastToolContentOffset, fullResponse.length)),
                         _startedAt: Date.now(),
                     });
                     const view = Object.create(toolCtx);
@@ -22536,7 +22577,22 @@ const chatStreamHandlerInner = async (req, res) => {
             } catch (e) { followUpInFlight = false; console.warn('[Chat Stream] follow-up legwork skipped:', e.message); }
         };
         let assistantRevising = false;
+        let assistantDraining = false;
+        // Once the answer is final, a job that settles (or is cancelled by the
+        // orphan cleanup) must not start a follow-up batch nobody will read.
+        let turnEnded = false;
         toolCtx._onAssistantDelivered = (reason) => scheduleFollowUpLegwork(reason);
+        toolCtx._onAssistantSettled = (job) => {
+            if (turnEnded || !job || job.status === 'cancelled' || job.status === 'failed') return;
+            scheduleFollowUpLegwork(`"${job.name}" finished`);
+        };
+        // What every job is told about the shared work (goal + the lead's plan,
+        // filled in once the brief exists; the goal alone for a solo turn).
+        // A delegated turn's own "ask" is its job brief; the real goal is the
+        // parent's, passed down with the delegation.
+        toolCtx._handoffGoal = req.delegate
+            ? (req.delegate.handoffGoal || null)
+            : { userText: leadHandoff.askForFirstPass(latestUserText, 1500), plan: [] };
 
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
@@ -22660,6 +22716,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     // ones the model that just read the task wanted, so start
                     // them now and let the results land mid-turn.
                     if (handoff.legwork && proposed.length && toolCtx._assistantJobs) {
+                        try { toolCtx._handoffGoal.plan = leadHandoff.parsePlan(fp.answer); } catch (_) { /* optional */ }
                         const items = proposed.slice(0, HANDOFF_AUTO_JOBS);
                         try {
                             // Open the queue chip FIRST so the jobs' own
@@ -22679,6 +22736,7 @@ const chatStreamHandlerInner = async (req, res) => {
                             toolCtx._assistantChipId = queueChip.toolCallId;
                             const started = startAssistantJobs(toolCtx, items, handoff.primary);
                             handoff.autoJobs = started.map(d => d.name);
+                            handoff.autoJobBriefs = started.map(d => ({ name: d.name, task: (items.find(i => i.name === d.name) || {}).task || '' }));
                             logChatActivity(`Two models: started ${started.length} background job(s) on ${handoff.primary} — ${started.map(d => `"${d.name}"`).join(', ')}`);
                             console.log(`[Chat Stream] Hand-off: auto-started ${started.length} background job(s) on ${handoff.primary}`);
                             // Close the chip once every job it dispatched has
@@ -22724,7 +22782,7 @@ const chatStreamHandlerInner = async (req, res) => {
                             firstPassSeconds: fpSecs,
                             toolCalls: fp.toolCalls,
                             legworkAvailable: handoff.legwork,
-                            startedJobs: handoff.autoJobs,
+                            startedJobs: handoff.autoJobBriefs || handoff.autoJobs,
                             quick: quickBrief,
                         })
                         : note;
@@ -22736,6 +22794,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         else um.content.unshift({ type: 'text', text: block });
                     }
                     handoff.brief = fp.answer;
+                    try { toolCtx._handoffGoal.plan = leadHandoff.parsePlan(fp.answer); } catch (_) { /* optional */ }
                     handoff.firstPassSeconds = fpSecs;
                     handoff.firstPassCalls = fp.toolCalls || 0;
                     // Make the hand-over VISIBLE in the transcript. Without
@@ -24022,10 +24081,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // One-shot: the lead ran the legwork itself while its assistant
             // sat idle with no job at all this turn (the real-model check:
             // ten retrieval calls on the lead, zero hand-offs).
-            let idleAssistantNudged = false;
+            let idleAssistantNudged = 0;
+            let leadLookupStreak = 0;
             const RETRIEVAL_TOOL_NAMES = new Set(['web', 'web_search', 'fetch_url', 'scrapling_fetch', 'playwright_fetch', 'crawl_pages', 'http_request', 'read_file', 'grep_code', 'scan_source_files', 'list_directory', 'outline_file', 'read_pdf']);
             const idleAssistantNudge = (calls) => {
-                if (idleAssistantNudged || req.delegate || !toolCtx.assistantModel || !toolCtx._assistantJobs || toolCtx._assistantJobs.size) return null;
+                // "Idle" = no job pending, not "no job was ever given": measured,
+                // after one job came back the lead ran five serial web calls
+                // itself (200 s) with the assistant idle and this never fired.
+                if (idleAssistantNudged >= IDLE_ASSISTANT_NUDGE_MAX || req.delegate || !toolCtx.assistantModel || !toolCtx._assistantJobs) return null;
+                if ([...toolCtx._assistantJobs.values()].some(assistantQueue.isPending)) return null;
                 // Only when the idle assistant is the FASTER model: pushing
                 // plain lookups onto the slower, stronger partner of a solo
                 // primary turn would cost time, not save it.
@@ -24034,12 +24098,20 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 for (const c of (calls || [])) {
                     try { if (RETRIEVAL_TOOL_NAMES.has(webEffectiveName(c.function.name, c.function.arguments))) n++; } catch (_) { /* */ }
                 }
-                if (n < 2) return null;
-                idleAssistantNudged = true;
-                console.log(`[Chat Stream] Hand-off: ${targetModel} ran ${n} lookups itself with ${toolCtx.assistantModel} idle and no job dispatched — nudging once`);
+                // One lookup per round, round after round, is the same waste as
+                // several in one round — count the streak across rounds.
+                leadLookupStreak = n > 0 ? leadLookupStreak + n : 0;
+                if (n < 2 && leadLookupStreak < 2) return null;
+                n = Math.max(n, leadLookupStreak);
+                leadLookupStreak = 0;
+                idleAssistantNudged += 1;
+                console.log(`[Chat Stream] Hand-off: ${targetModel} ran ${n} lookups itself with ${toolCtx.assistantModel} idle — nudging (${idleAssistantNudged}/${IDLE_ASSISTANT_NUDGE_MAX})`);
+                // And do not leave it to the lead alone: the assistant proposes
+                // its own next batch from the lead's steps so far.
+                scheduleFollowUpLegwork('the lead running lookups itself');
                 return {
                     role: 'system',
-                    content: `[Your assistant ${toolCtx.assistantModel} is IDLE — it has been given no work this turn, while you just ran ${n} lookups yourself. That is exactly the legwork to hand over: call ask_assistant NOW with the next lookups, page reads, file reads or checks you would otherwise do (it returns immediately; each result is delivered to you as it lands), and keep the design and the writing for yourself. If there is genuinely nothing left to look up, carry on.]`,
+                    content: `[Your assistant ${toolCtx.assistantModel} is IDLE while you just ran ${n} lookups yourself. That is exactly the legwork to hand over: call ask_assistant NOW with ALL the remaining lookups, page reads, file reads or checks you still need, in one call (they run in parallel; it returns immediately; each result is delivered to you as it lands), and keep the design and the writing for yourself. If there is genuinely nothing left to look up, carry on.]`,
                 };
             };
             const deliverAssistantResults = () => {
@@ -24081,7 +24153,17 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 };
             };
 
+            let softDeadlineHit = false;
             while (toolCallRound <= roundCap) {
+                // A background job past its soft deadline stops calling tools
+                // and writes its report from what it has (forced synthesis
+                // below) — the hard timeout used to cut it off mid-call with
+                // nothing to deliver (measured: two 240 s jobs, both empty).
+                if (toolCallRound > 0 && req.delegate && req.delegate.softDeadlineAt && Date.now() >= req.delegate.softDeadlineAt) {
+                    softDeadlineHit = true;
+                    console.log(`[Chat Stream] Delegated turn "${req.delegate.label || ''}" reached its soft deadline after ${toolCallRound} round(s) — writing the report now`);
+                    break;
+                }
                 // --- Tool router grow-only expansion (before reset) ----------
                 // A tool the model just used, or discovered via find_tools, is
                 // advertised on the NEXT round. The advertised set only GROWS
@@ -26211,6 +26293,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     const undelivered = [...toolCtx._assistantJobs.values()].filter(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
                     if (pending.length || undelivered.length) {
                         assistantDrains += 1;
+                        // A job settling during this wait must not start a new
+                        // follow-up batch: the lead is done and only waiting,
+                        // so a new batch would just hold the answer longer.
+                        assistantDraining = true;
                         if (pending.length) {
                             const names = pending.map(j => `"${j.name}"`).join(', ');
                             console.log(`[Chat Stream] Hand-off: lead finished first — waiting up to ${Math.round(ASSISTANT_DRAIN_MS / 1000)}s for ${pending.length} background job(s): ${names}`);
@@ -26225,6 +26311,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             console.log(`[Chat Stream] Hand-off: ${undelivered.length} finished job(s) landed after the last delivery — folding them in before the answer`);
                         }
                         const drained = deliverAssistantResults();
+                        assistantDraining = false;
                         if (drained) {
                             assistantRevising = true;
                             // Keep what the lead already wrote as its own turn,
@@ -26285,6 +26372,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 }
             }
 
+            // The tool loop is over: nothing started from here on (forced
+            // synthesis included) could be read by the lead.
+            turnEnded = true;
+
             // Forced synthesis triggers in two distinct situations:
             //
             // 1. We hit MAX_TOOL_ITERATIONS with the model still asking for
@@ -26308,7 +26399,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             const hitIterationCap = (toolCallRound > roundCap
                 && (finishReason === 'tool_calls'
                     || (finishReason === 'length' && accumulatedToolCalls.length > 0)))
-                || toolCallCapHit;
+                || toolCallCapHit
+                || softDeadlineHit;
             const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim();
             // 3. The model walked through many tool calls narrating each step
             //    ("Let me try X", "Now let me Y:") and then stopped mid-thought
@@ -26810,6 +26902,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // chat, cancelled turns, and when no checker is configured.
         // A revision generated behind the held draft is complete now (or the
         // turn ended some other way): show it before anything reads it.
+        turnEnded = true;
         releaseHeldContent();
         // Only the ANSWER is reviewed and polished — the narration before the
         // last tool call is the model's own working notes, and rewriting them
@@ -27283,8 +27376,11 @@ const HANDOFF_QUICK_BRIEF_TOKENS = Math.max(200, parseInt(process.env.HANDOFF_QU
 const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_MAX || '2', 10) || 0);
 // A background job's budget (rounds, then wall clock) and how long
 // await_assistant keeps collecting once the first result is in.
-const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '6', 10) || 6);
+const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '5', 10) || 5);
 const ASSISTANT_JOB_TIMEOUT_MS = Math.max(30000, parseInt(process.env.ASSISTANT_JOB_TIMEOUT_MS || '240000', 10) || 240000);
+// Time kept back from a job's limit so it can write its report (see softDeadlineAt).
+const ASSISTANT_JOB_SYNTH_RESERVE_MS = Math.max(10000, parseInt(process.env.ASSISTANT_JOB_SYNTH_RESERVE_MS || '60000', 10) || 60000);
+const IDLE_ASSISTANT_NUDGE_MAX = Math.max(0, parseInt(process.env.IDLE_ASSISTANT_NUDGE_MAX || '2', 10) || 0);
 const ASSISTANT_AWAIT_WINDOW_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_WINDOW_MS || '45000', 10) || 0);
 const ASSISTANT_AWAIT_MAX_MS = Math.max(10000, parseInt(process.env.ASSISTANT_AWAIT_MAX_MS || '240000', 10) || 240000);
 
@@ -27412,11 +27508,23 @@ function startAssistantJobs(ctx, items, model) {
                     // Legwork is bounded: measured, unbounded jobs ran 150-500 s
                     // each and the lead's answer waited on them. A round cap makes
                     // the job write its report at the cap instead of researching on.
-                    task: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} tool rounds and about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s). Do just this lookup, then reply with a SHORT report of what you found (bullets, with sources). Do not attempt the user's whole request.]\n\n${job.task}`,
+                    // The job is framed as one part of SHARED work (goal, plan,
+                    // sibling jobs, what is already found) — see buildJobBrief.
+                    task: leadHandoff.buildJobBrief({
+                        job,
+                        goal: ctx._handoffGoal && ctx._handoffGoal.userText,
+                        plan: (ctx._handoffGoal && ctx._handoffGoal.plan) || [],
+                        leadModel: ctx.model,
+                        siblings: [...jobs.values()].map(j => ({ id: j.id, name: j.name, task: j.task, status: j.status })),
+                        findings: [...jobs.values()].filter(j => j.status === 'done' && j.result && j.result.answer).map(j => ({ name: j.name, text: j.result.answer })),
+                        budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} tool rounds, aim for 3-6 tool calls in all (one search plus the one or two pages that answer it), about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s). Then reply with your report. Do not attempt the user's whole request.]`,
+                    }),
                     label: job.name,
-                    maxRounds: ASSISTANT_JOB_MAX_ROUNDS,
+                    // The loop runs rounds 0..maxRounds, i.e. maxRounds + 1.
+                    maxRounds: Math.max(1, ASSISTANT_JOB_MAX_ROUNDS - 1),
                     timeoutMs: ASSISTANT_JOB_TIMEOUT_MS,
-                    siblings: [],
+                    siblings: [...jobs.values()].filter(j => j.status !== 'failed' && j.status !== 'cancelled').map(j => j.name),
+                    handoffGoal: ctx._handoffGoal || null,
                     model: job.model || model,
                     reasoningEffort: ctx.reasoningEffort,
                     modelRoles: { primary: job.model || model, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
@@ -27458,6 +27566,10 @@ function startAssistantJobs(ctx, items, model) {
                     },
                 }).then((r) => {
                     logUserActivity(ctx.userId, `Assistant: "${job.name}" finished in ${r && r.seconds}s on ${job.model || model} (${(r && r.toolCalls) || 0} tool calls)`);
+                    // The assistant proposes the next batch the moment a job
+                    // settles — not when the lead next reads its results —
+                    // so it never idles behind a long lead generation.
+                    if (typeof ctx._onAssistantSettled === 'function') setTimeout(() => { try { ctx._onAssistantSettled(job); } catch (_) {} }, 0);
                     return r;
                 });
             },
@@ -27476,7 +27588,7 @@ function startAssistantJobs(ctx, items, model) {
     return dispatched;
 }
 
-async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null }) {
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null, handoffGoal = null }) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
     if (signal) {
@@ -27508,6 +27620,10 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
         once() {},
         delegate: {
             label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, maxRounds: maxRounds || null, signal: controller.signal,
+            handoffGoal: handoffGoal || null,
+            // With an explicit time limit (background jobs), stop tools early
+            // enough to write the report before the hard cutoff.
+            softDeadlineAt: Number(timeoutMs) > 0 ? startedAt + Math.max(15000, Number(timeoutMs) - ASSISTANT_JOB_SYNTH_RESERVE_MS) : null,
             // The OTHER model of the pair, when this job may hand it something
             // (bounded: one level, a couple of jobs) — the bidirectional half
             // of the hand-off. Null for plain worker agents.
@@ -34447,6 +34563,27 @@ app.use((req, res) => {
             }).filter(x => x.task);
             if (!taken.length) return { error: 'Every request was missing a `task`.' };
 
+            // A request that restates a job already running, queued or done is
+            // not started again. Measured: the lead re-dispatched the three
+            // auto-started jobs under shorter names 27 s in; the copies sat in
+            // the queue ahead of real follow-ups for over two minutes.
+            const live = [...jobs.values()].filter(j => j.status !== 'failed' && j.status !== 'cancelled');
+            const covered = [];
+            const fresh = taken.filter((t) => {
+                const hit = live.find(j => leadHandoff.isDuplicateJob(t, [j]));
+                if (hit) { covered.push({ requested: t.name, id: hit.id, name: hit.name, status: hit.status }); return false; }
+                return true;
+            });
+            if (!fresh.length) {
+                return {
+                    success: true,
+                    dispatched: [],
+                    alreadyCovered: covered,
+                    note: `Nothing new started — every request is already covered by a job of this turn (${covered.map(c => `"${c.name}" ${c.status}`).join(', ')}). Its result is delivered to you when it lands; keep writing.`,
+                };
+            }
+            taken.splice(0, taken.length, ...fresh);
+
             // Guard the mistake this tool invites: dispatching the assistant to
             // read/verify a /workspace file the lead has not written YET. The
             // assistant cannot find it, burns a slot hunting (observed: four
@@ -34485,6 +34622,7 @@ app.use((req, res) => {
             return {
                 success: true,
                 dispatched: dispatched.map(d => ({ id: d.id, name: d.name, status: d.status })),
+                ...(covered.length ? { alreadyCovered: covered } : {}),
                 model,
                 running: [...jobs.values()].filter(j => j.status === 'running').length,
                 queued: [...jobs.values()].filter(j => j.status === 'queued').length,
