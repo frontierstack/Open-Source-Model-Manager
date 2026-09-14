@@ -204,6 +204,13 @@ export const useChatStore = create(
         // not a glitch. Timestamp; stale once the next stream starts.
         streamingRevisedAt: 0,
 
+        // The assistant message whose Working notes should mount OPEN: the
+        // one just committed from a stream. The committed bubble is a fresh
+        // mount (its key is the message id, the live bubble's is not), so
+        // without this the notes folded the instant the turn ended and the
+        // answer jumped up as the user started reading. Consumed on mount.
+        notesOpenMessageId: null,
+
         // Optional server-driven status for the streaming bubble (chunking,
         // synthesizing, etc.). Cleared when streaming ends or when token
         // content arrives. Shape: { kind, text } or null.
@@ -678,8 +685,10 @@ export const useChatStore = create(
             const toAdd = Array.isArray(messageOrArray)
                 ? messageOrArray.filter(Boolean)
                 : messageOrArray ? [messageOrArray] : [];
+            const lastAssistant = [...toAdd].reverse().find(m => m && m.role === 'assistant' && m.id);
             return {
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
+                notesOpenMessageId: lastAssistant ? lastAssistant.id : state.notesOpenMessageId,
                 streamingContent: '',
                 streamingToolDrafts: {},
                 streamingReasoning: '',

@@ -21809,9 +21809,19 @@ const chatStreamHandlerInner = async (req, res) => {
         // re-typing the whole answer (user: "still doing a response
         // refresh/rewrite at the end"). Reasoning deltas keep flowing.
         let holdClientContent = false;
+        // The draft a reconnecting client must keep seeing while the hold is
+        // on: the reconnect poll (GET /streaming) serves job.content, and
+        // letting that follow the revision text wiped the answer and re-typed
+        // it in the refreshed tab — exactly the rewrite the hold exists to hide.
+        let heldJobContent = null;
         const releaseHeldContent = (reason = 'assistant_results') => {
             if (!holdClientContent) return;
             holdClientContent = false;
+            heldJobContent = null;
+            if (streamingConversationId) {
+                const job = activeStreamingJobs.get(streamingConversationId);
+                if (job) job.content = fullResponse;
+            }
             if (clientConnected && !res.writableEnded) {
                 try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason, content: fullResponse, held: true })}\n\n`); } catch (_) { clientConnected = false; }
             }
@@ -22157,6 +22167,10 @@ const chatStreamHandlerInner = async (req, res) => {
                 name: call.function && call.function.name,
                 arguments: (call.function && call.function.arguments) || '',
                 purpose: call.purpose || undefined,
+                // Narration/answer split key — without it a reconnected client
+                // drops to the legacy layout for as long as a tool is running.
+                contentOffset: typeof call.contentOffset === 'number' ? call.contentOffset : undefined,
+                model: call.model || undefined,
                 startedAt: Date.now(),
                 sandboxed: policy && policy.sandboxed,
                 source: policy && policy.source,
@@ -23665,7 +23679,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                                 if (streamingConversationId) {
                                                     const job = activeStreamingJobs.get(streamingConversationId);
                                                     if (job) {
-                                                        job.content = fullResponse;
+                                                        job.content = holdClientContent && heldJobContent != null ? heldJobContent : fullResponse;
                                                         job.reasoning = fullReasoning;
                                                     }
                                                 }
@@ -23735,7 +23749,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                                             fullResponse = fullResponse.slice(0, cutAt);
                                                             if (streamingConversationId) {
                                                                 const job = activeStreamingJobs.get(streamingConversationId);
-                                                                if (job) job.content = fullResponse;
+                                                                if (job) job.content = holdClientContent && heldJobContent != null ? heldJobContent : fullResponse;
                                                             }
                                                             console.warn(`[Chat Stream] Content loop detected — ${hit.reason}; rewound ${dropped} chars to the start of the repetition, aborting round to recover`);
                                                             if (clientConnected) {
@@ -26443,8 +26457,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // the draft stays visible while the revision is
                             // generated, and releaseHeldContent() swaps the
                             // finished text in with one content_rewind.
+                            heldJobContent = fullResponse;
                             fullResponse = fullResponse.slice(0, roundStart);
                             holdClientContent = true;
+                            if (streamingConversationId) {
+                                const job = activeStreamingJobs.get(streamingConversationId);
+                                if (job) job.content = heldJobContent;
+                            }
                             updateJobPhase('revising');
                             if (clientConnected && !res.writableEnded) {
                                 try {

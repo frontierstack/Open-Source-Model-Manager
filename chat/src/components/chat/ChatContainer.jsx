@@ -931,9 +931,12 @@ export default function ChatContainer({
             ensureSmoothPump(conversationId);
             return;
         }
-        if (content.length < (pendingContentRef.current || '').length) {
-            // Buffer replaced (the server rewound / revised the draft). Swap it
-            // in place — resetting the cursor re-typed the whole reply.
+        const prevPending = pendingContentRef.current || '';
+        if (content.length < prevPending.length || (prevPending && !content.startsWith(prevPending))) {
+            // Buffer replaced (the server rewound / revised the draft — a held
+            // revision can be LONGER than the draft, so a length test alone
+            // missed it). Swap it in place — resetting the cursor re-typed
+            // the whole reply — and flash like the live held rewind does.
             pendingContentRef.current = content;
             displayedContentLenRef.current = content.length;
             setStreamingContent(content);
@@ -1139,6 +1142,9 @@ export default function ChatContainer({
                                                     last && last.role === 'assistant' && !last.isError &&
                                                     serverMsgs.length >= localMessages.length;
                                                 if (serverHasNewAssistant) {
+                                                    // The committed bubble mounts fresh — keep its
+                                                    // Working notes open like a foreground commit.
+                                                    if (last.id) useChatStore.setState({ notesOpenMessageId: last.id });
                                                     setMessages(serverMsgs);
                                                     loaded = true;
                                                 } else if (!hasLocalStreamContent && serverMsgs.length > 0) {
