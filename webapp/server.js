@@ -23488,6 +23488,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         })(),
                     };
 
+                    if (process.env.CHAT_PREFIX_DEBUG === '1' || require('fs').existsSync('/tmp/prefix-debug')) {
+                        try {
+                            const h = (x) => crypto.createHash('sha1').update(typeof x === 'string' ? x : JSON.stringify(x)).digest('hex').slice(0, 8);
+                            const msgs = (requestBody.messages || []).map((m, i) => `${i}:${m.role}:${h(m.content || '')}${m.tool_calls ? '+tc' : ''}:${String(typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length)}`);
+                            console.log(`[PrefixDebug] ${req.delegate ? 'job ' + (req.delegate.label || '') : 'turn'} model=${targetModel} tools=${h(requestBody.tools || [])}/${(requestBody.tools || []).length} [${(requestBody.tools || []).map(t => t.function && t.function.name).join(',').slice(0, 300)}] msgs=${msgs.join(' ')}`);
+                        } catch (_) {}
+                    }
                     const postRound = (body) => axios({
                         method: 'post',
                         url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
@@ -24078,6 +24085,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // How many times this turn has paused to wait for background work
             // it dispatched but never collected.
             let assistantDrains = 0;
+            // Set while the lead answers a drain with edits to its draft.
+            let pendingRevision = null;
             // One-shot: the lead ran the legwork itself while its assistant
             // sat idle with no job at all this turn (the real-model check:
             // ten retrieval calls on the lead, zero hand-offs).
@@ -26205,6 +26214,43 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     continue;
                 }
 
+                // The lead answered late results with edits to its draft:
+                // apply them to the draft (still on screen), or fall back to
+                // a full rewrite when they do not apply.
+                if (pendingRevision && accumulatedToolCalls.length === 0) {
+                    const rev = pendingRevision;
+                    pendingRevision = null;
+                    const out = fullResponse.slice(roundStart);
+                    const prefix = fullResponse.slice(0, roundStart);
+                    const r = leadHandoff.applyRevisionEdits(rev.draft, out);
+                    const secs = Math.round((Date.now() - rev.startedAt) / 100) / 10;
+                    if (r.kind !== 'invalid') {
+                        fullResponse = prefix + r.text;
+                        console.log(`[Chat Stream] Hand-off: revision by ${r.kind}${r.kind === 'edits' ? ` (${r.applied} applied)` : ''} in ${secs}s — ${rev.draft.length}→${r.text.length} chars`);
+                        if (streamingConversationId) {
+                            const job = activeStreamingJobs.get(streamingConversationId);
+                            if (job) job.content = fullResponse;
+                        }
+                    } else if (!rev.retried) {
+                        // One strict re-ask is seconds; a full rewrite is a minute.
+                        console.warn(`[Chat Stream] Hand-off: revision reply not in edit format (${r.applied} applied, ${r.failed} unmatched) after ${secs}s — asking once more: ${JSON.stringify(out.slice(0, 300))}`);
+                        fullResponse = prefix;
+                        pendingRevision = { ...rev, retried: true };
+                        currentMessages = [
+                            ...rev.base,
+                            { role: 'system', content: leadHandoff.REVISION_EDITS_PROMPT },
+                            { role: 'assistant', content: out },
+                            { role: 'system', content: leadHandoff.REVISION_EDITS_RETRY },
+                        ];
+                        continue;
+                    } else {
+                        console.warn(`[Chat Stream] Hand-off: revision edits did not apply (${r.applied} applied, ${r.failed} unmatched, ${out.length} chars) after ${secs}s — rewriting in full: ${JSON.stringify(out.slice(0, 400))}`);
+                        fullResponse = prefix;
+                        currentMessages = [...rev.base, { role: 'system', content: FULL_REVISION_PROMPT }];
+                        continue;
+                    }
+                }
+
                 // False-completion detector: model claims a file action
                 // ("saved", "created", "wrote") in prose without ever
                 // calling a file-write tool. Inject a corrective system
@@ -26343,14 +26389,19 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // This round's own text (turnContent is scoped to
                             // the tool-dispatch branch and does not exist here).
                             const draft = fullResponse.slice(roundStart);
-                            currentMessages = [
+                            const revisionBase = [
                                 ...currentMessages,
                                 ...(draft.trim() ? [{ role: 'assistant', content: draft }] : []),
                                 drained,
-                                {
-                                    role: 'system',
-                                    content: 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. If they reveal one more piece of legwork you genuinely need, you may dispatch it with ask_assistant first; otherwise reply with the COMPLETE final answer as if writing it for the first time — not a diff, not a comment on the change, and never a mention of the brief, the background results, the assistant or the revision itself. The user sees only this text, in place of the draft.',
-                                },
+                            ];
+                            // Edits, not a rewrite, when there is a draft to edit
+                            // (see leadHandoff.REVISION_EDITS_PROMPT); the full
+                            // rewrite stays as the fallback.
+                            const useEdits = HANDOFF_REVISION_MODE === 'edits' && draft.trim().length >= 200;
+                            pendingRevision = useEdits ? { draft, base: revisionBase, startedAt: Date.now() } : null;
+                            currentMessages = [
+                                ...revisionBase,
+                                { role: 'system', content: useEdits ? leadHandoff.REVISION_EDITS_PROMPT : FULL_REVISION_PROMPT },
                             ];
                             // The draft is replaced by the revision — but NOT
                             // on screen yet. Wiping the bubble and re-typing
@@ -27402,6 +27453,10 @@ const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_M
 // await_assistant keeps collecting once the first result is in.
 const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '5', 10) || 5);
 const ASSISTANT_JOB_TIMEOUT_MS = Math.max(30000, parseInt(process.env.ASSISTANT_JOB_TIMEOUT_MS || '240000', 10) || 240000);
+// How the lead revises a draft when late job results land: 'edits' (reply
+// NO CHANGES or SEARCH/REPLACE blocks applied to the draft) or 'full' (rewrite).
+const HANDOFF_REVISION_MODE = (process.env.HANDOFF_REVISION_MODE || 'edits').toLowerCase() === 'full' ? 'full' : 'edits';
+const FULL_REVISION_PROMPT = 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. If they reveal one more piece of legwork you genuinely need, you may dispatch it with ask_assistant first; otherwise reply with the COMPLETE final answer as if writing it for the first time — not a diff, not a comment on the change, and never a mention of the brief, the background results, the assistant or the revision itself. The user sees only this text, in place of the draft.';
 // A tool call still running this long past a job's soft deadline is abandoned
 // so the job can write its report before the hard limit.
 const ASSISTANT_JOB_TOOL_GRACE_MS = Number(process.env.ASSISTANT_JOB_TOOL_GRACE_MS) || 15000;
@@ -27437,6 +27492,8 @@ async function awaitJobsWindow(wanted, { windowMs = ASSISTANT_AWAIT_WINDOW_MS, m
         ]);
     }
 }
+// Cap on an await_assistant once the lead already has results this turn.
+const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
 const HANDOFF_FOLLOWUP_JOBS = Math.max(1, parseInt(process.env.HANDOFF_FOLLOWUP_JOBS || '3', 10) || 3);
 // Background legwork the lead can have running at once (ask_assistant).
 const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PARALLEL || '3', 10) || 3);
@@ -34755,7 +34812,25 @@ app.use((req, res) => {
             // Return as soon as the FIRST of them finishes (or one already has),
             // not when all do: measured, a lead blocked 188 s on three jobs doing
             // nothing, which is exactly what two models working together is not.
-            await awaitJobsWindow(wanted);
+            // Once results have already reached the lead, a further wait is
+            // capped: late results are merged into the answer by a few edits
+            // when they land (the drain), so writing now is faster than
+            // waiting. Measured: after its first results the lead dispatched a
+            // follow-up and waited 67 s on it before writing a word.
+            const alreadyDelivered = [...jobs.values()].some(j => j.delivered && !j.duplicateOf);
+            // A capped wait already came back once: waiting again in a loop
+            // (measured: three 20 s waits in a row) is the same idle time.
+            if (alreadyDelivered && jobs._cappedAwaits >= 1 && !wanted.some(j => assistantQueue.isSettled(j) && !j.delivered)) {
+                return {
+                    success: true, reports: [],
+                    stillRunning: wanted.filter(assistantQueue.isPending).map(j => ({ id: j.id, name: j.name, status: j.status })),
+                    note: 'Nothing new has finished. Do not wait again: write the complete answer NOW with what you have. Jobs still running are merged into your answer automatically when they land.',
+                };
+            }
+            if (alreadyDelivered) jobs._cappedAwaits = (jobs._cappedAwaits || 0) + 1;
+            await awaitJobsWindow(wanted, alreadyDelivered
+                ? { maxMs: ASSISTANT_AWAIT_AFTER_DELIVERY_MS, windowMs: Math.min(ASSISTANT_AWAIT_WINDOW_MS, ASSISTANT_AWAIT_AFTER_DELIVERY_MS) }
+                : {});
             const settled = wanted.filter(j => assistantQueue.isSettled(j));
             const stillRunning = wanted.filter(assistantQueue.isPending);
             const reports = settled.map(j => {
@@ -34771,7 +34846,9 @@ app.use((req, res) => {
             return {
                 success: true, reports,
                 ...(stillRunning.length ? { stillRunning: stillRunning.map(j => ({ id: j.id, name: j.name, status: j.status })) } : {}),
-                note: stillRunning.length
+                note: (stillRunning.length && alreadyDelivered)
+                    ? `${reports.length ? 'Use these, and w' : 'Nothing more has finished yet. W'}rite the answer NOW with what you have — do not wait again. The ${stillRunning.length} job(s) still running are merged into your answer automatically when they land.`
+                    : stillRunning.length
                     ? `Continue the work with these now. ${stillRunning.length} job(s) still running — they reach you as they finish; do not wait on them unless you truly cannot continue.`
                     : 'Continue the work with these. Anything still running will reach you as it finishes.',
             };

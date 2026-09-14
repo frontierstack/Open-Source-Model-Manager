@@ -610,6 +610,81 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
     ].join('\n');
 }
 
+// Late results revise the draft by EDITS, not a rewrite. Measured: the lead
+// regenerated the whole answer (1,743 tokens, 45 s) for a +158-character
+// change, and 2,216 tokens / 63 s on another turn. The draft is already in the
+// lead's prompt cache, so a reply of "NO CHANGES" or a few SEARCH/REPLACE
+// blocks costs seconds; the server applies them to the draft on screen.
+const REVISION_EDITS_PROMPT = [
+    'The background results above arrived after you drafted your reply (your previous message). Check the draft against them.',
+    'If the draft needs no change, reply with exactly: NO CHANGES',
+    'Otherwise reply ONLY with edit blocks, one per change, in exactly this format:',
+    '<<<<<<< SEARCH',
+    'text copied character-for-character from your draft (a whole line or sentence, unique in the draft)',
+    '=======',
+    'the replacement text',
+    '>>>>>>> REPLACE',
+    'To add new material, SEARCH a nearby line and REPLACE it with that same line followed by the new text. Correct anything the results contradict, fill in anything you had to leave out, and remove any claim that information was unavailable when the results supply it. Keep the same format and style as the draft. Never mention the brief, the background results, the assistant or the revision. Do not call tools now, and write nothing outside the edit blocks.',
+].join('\n');
+
+const REVISION_EDITS_RETRY = 'That reply was not in the required format, so nothing was applied. Reply again with ONLY one of: exactly NO CHANGES, or edit blocks (<<<<<<< SEARCH / exact text from your draft / ======= / replacement / >>>>>>> REPLACE). No other words.';
+
+const EDIT_BLOCK_RE = /<{5,}\s*SEARCH\s*\n([\s\S]*?)\n?={5,}\s*\n([\s\S]*?)\n?>{5,}\s*REPLACE/g;
+
+function stripEditBlocks(text) {
+    return String(text || '').replace(EDIT_BLOCK_RE, '').replace(/\n{3,}/g, '\n\n');
+}
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Locate `needle` in `hay`: exact first, then ignoring whitespace differences
+// (models re-flow spaces and trailing blanks when they copy a line).
+function locateText(hay, needle) {
+    const n = String(needle || '');
+    if (!n.trim()) return null;
+    const at = hay.indexOf(n);
+    if (at >= 0) return { start: at, end: at + n.length };
+    const trimmed = n.trim();
+    const at2 = hay.indexOf(trimmed);
+    if (at2 >= 0) return { start: at2, end: at2 + trimmed.length };
+    const parts = trimmed.split(/\s+/).map(escapeRe);
+    if (parts.length > 400) return null;
+    const m = new RegExp(parts.join('\\s+')).exec(hay);
+    return m ? { start: m.index, end: m.index + m[0].length } : null;
+}
+
+// → { kind: 'none'|'edits'|'full'|'invalid', text, applied, failed }
+function applyRevisionEdits(draft, output) {
+    const base = String(draft || '');
+    const out = String(output || '').replace(/^\s*```[a-z]*\s*\n/i, '').replace(/\n```\s*$/, '').trim();
+    const blocks = [...out.matchAll(EDIT_BLOCK_RE)];
+    if (!blocks.length) {
+        if (/^[`*_"'\s]*NO\s+CHANGES?\b/i.test(out) && out.length < 80) return { kind: 'none', text: base, applied: 0, failed: 0 };
+        // "The draft is consistent with the results…" — a no-change verdict in
+        // prose. Measured: read as invalid, it cost a 125 s full rewrite.
+        if (out.length < Math.max(1200, base.length * 0.4)
+            && /\b(?:no\s+(?:further\s+)?(?:changes?|edits?|revisions?)\s+(?:are\s+|is\s+)?(?:needed|required|necessary)|(?:draft|answer|reply)\s+(?:is\s+(?:already\s+)?)?(?:consistent|accurate|correct|complete)|already\s+(?:covers|includes|reflects|contains|accounts\s+for)|nothing\s+(?:to\s+change|needs?\s+(?:to\s+be\s+)?chang))/i.test(out)
+            && !/\b(?:however|but\s+(?:the|it)|should\s+(?:be\s+)?(?:updated|changed|corrected)|incorrect|contradict)/i.test(out)) {
+            return { kind: 'none', text: base, applied: 0, failed: 0 };
+        }
+        // The model ignored the format and rewrote the answer: use it when it
+        // is plausibly the whole answer, never a fragment.
+        if (out.length >= Math.max(200, base.length * 0.6) && !/<{5,}|>{5,}/.test(out)) return { kind: 'full', text: out, applied: 0, failed: 0 };
+        return { kind: 'invalid', text: base, applied: 0, failed: 0 };
+    }
+    let text = base;
+    let applied = 0;
+    let failed = 0;
+    for (const b of blocks) {
+        const loc = locateText(text, b[1]);
+        if (!loc) { failed++; continue; }
+        text = text.slice(0, loc.start) + b[2] + text.slice(loc.end);
+        applied++;
+    }
+    if (failed) return { kind: 'invalid', text: base, applied, failed };
+    return { kind: 'edits', text, applied, failed };
+}
+
 // Framing for the lead turn itself, appended to the shared prelude.
 function buildLeadPrelude({ assistantModel, maxParallel }) {
     const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
@@ -649,6 +724,10 @@ function buildJobPartnerLine({ partnerModel, maxJobs }) {
 }
 
 module.exports = {
+    REVISION_EDITS_PROMPT,
+    REVISION_EDITS_RETRY,
+    applyRevisionEdits,
+    stripEditBlocks,
     buildDuplicateJudgeTask,
     parseDuplicateVerdict,
     MODES,
