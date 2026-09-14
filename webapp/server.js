@@ -26188,7 +26188,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // job had been sent to fetch. Waiting a bounded moment for work
                 // the turn itself asked for is strictly better than answering
                 // around it.
-                if (assistantDrains < ASSISTANT_DRAIN_MAX && toolCtx._assistantJobs) {
+                if (!req.delegate && assistantDrains < ASSISTANT_DRAIN_MAX && toolCtx._assistantJobs) {
                     const pending = [...toolCtx._assistantJobs.values()].filter(assistantQueue.isPending);
                     // Results are folded in at the top of a TOOL round, so a job
                     // that finished after the last delivery and before this
@@ -27377,7 +27377,12 @@ function startAssistantJobs(ctx, items, model) {
                     // work back (a hard judgment, a verification) — the
                     // "primary <-> secondary" half. Bounded to a couple of jobs,
                     // one at a time, and never from a job of a job.
+                    // ...and only when the caller's model has a FREE slot right
+                    // now. A lead that is generating has none (a single-slot
+                    // 27B never does mid-turn), and a hand-back would just
+                    // queue behind the lead's own generation.
                     ...((ctx.delegateDepth || 0) === 0 && ctx.model && ctx.model !== (job.model || model)
+                        && ((chatCapacity().models.find(m => m.name === ctx.model) || {}).free || 0) > 0
                         ? { assistantModel: ctx.model, assistantMaxJobs: ASSISTANT_JOB_MAX_JOBS, assistantMaxParallel: 1 }
                         : {}),
                     onEvent: (ev) => {
@@ -34445,6 +34450,10 @@ app.use((req, res) => {
         name: 'await_assistant',
         build(ctx) {
             if (!ctx || !ctx.assistantModel) return null;
+            // A background JOB never blocks on its partner. Measured: a job
+            // handed work back to the lead and awaited it — the lead had no
+            // free slot (it was generating), so the job sat 307 s waiting.
+            if ((ctx.delegateDepth || 0) > 0) return null;
             return {
                 type: 'function',
                 function: {
@@ -34461,6 +34470,7 @@ app.use((req, res) => {
             };
         },
         async execute(args, ctx) {
+            if (ctx && (ctx.delegateDepth || 0) > 0) return { error: 'not_available_in_background_job', note: 'A background job does not wait on the other model. Finish your task with what you have; any hand-back still running is discarded.' };
             const jobs = ctx && ctx._assistantJobs;
             if (!jobs || jobs.size === 0) return { error: 'No assistant jobs have been started on this turn.' };
             let ids = args && args.ids;

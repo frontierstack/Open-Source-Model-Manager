@@ -343,6 +343,7 @@ function buildQuickBriefTask({ userText, leadModel, workspaceLines = null }) {
         'LEGWORK — 0 to 3 jobs to hand to you to run in the background, each on its own line as `- <short name>: <one-line brief saying exactly what to find or do and what to report back>`. Every lookup, benchmark, version check or file read that your PLAN needs belongs here — you will run it while the main model writes.',
         '   Good: looking up an API, a spec, a version or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; listing what is in the workspace; running an EXISTING script or test.',
         '   Bad: anything that depends on output the main model has not written yet, or the task itself. If nothing would help, write `- none`.',
+        '   ' + JOB_RULE,
         'OPEN QUESTIONS — anything genuinely ambiguous, or `none`.',
         'Never invent a fact — the sections describe the task, not its answer.',
     ].join('\n');
@@ -361,6 +362,7 @@ function buildLegworkOnlyTask({ userText, leadModel }) {
         askForFirstPass(userText, 3000),
         '',
         'List 1 to 3 background jobs you can do IN PARALLEL that would genuinely help — each independent of anything the main model has not written yet: a lookup of current facts, a spec, a version or an API; gathering reference material or examples; reading or summarising a file the user supplied; running an existing script.',
+        JOB_RULE,
         'Reply with ONLY this section, nothing else:',
         'LEGWORK',
         '- <short name>: <one-line brief saying exactly what to find or do and what to report back>',
@@ -383,6 +385,7 @@ function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = 
         `${leadModel || 'The main model'} is still working on the request below. You have been running background jobs for it; their results are summarised underneath.`,
         `Propose the NEXT background jobs (at most ${maxJobs}) that would genuinely help it finish: a gap those results left open, a claim worth checking against a second independent source, a detail the final answer will need. Each job must be independent of anything the main model has not written yet, and must NOT repeat a job already done or a step the main model already took.`,
         'If nothing more would help, say so — do not invent work.',
+        JOB_RULE,
         '',
         'THE USER ASKED:',
         askForFirstPass(userText, 2500),
@@ -422,6 +425,27 @@ function isDuplicateJob(candidate, existing = [], threshold = 0.6) {
     return false;
 }
 
+// A proposed job the assistant cannot actually do. Seen live: a follow-up
+// named "Connect the TCL TV to your PC via USB cable" — a step for the USER on
+// their own hardware, which a server-side model has no access to; it burned a
+// job slot and six tool calls producing nothing. A job must be work done with
+// lookups, reading files or running scripts on the server.
+const USER_STEP_START = /^(?:please\s+)?(?:connect|plug|unplug|press|hold|tap|click|reboot|restart|power(?:\s+(?:on|off|cycle))?|insert|remove|pair|unpair|open|go\s+to|navigate\s+to|turn\s+(?:on|off)|enable|disable|toggle|install|uninstall|select|choose|enter|type|set\s+up|set|change|make\s+sure|ensure|wait|try|use|log\s+in|sign\s+in|reset|factory\s+reset|update\s+(?:the|your)|attach|disconnect|swipe|scroll)\b/i;
+const HARD_USER_STEP_NAME = /^(?:please\s+)?(?:connect|plug|unplug|press|hold|tap|click|reboot|restart|power|insert|pair|attach|disconnect|swipe|factory\s+reset)\b/i;
+const RESEARCH_VERB = /\b(?:find|look\s*up|search|research|compare|summari[sz]e|document|investigate|determine|identify|gather|collect|extract|read|fetch|list|report|check\s+whether|verify\s+whether|confirm\s+whether|find\s+out)\b/i;
+const USER_DEVICE = /\b(?:your|the\s+user'?s)\s+(?:tv|pc|computer|laptop|phone|device|router|console|remote|screen|cable|machine)\b/i;
+function isWorkableJob(job) {
+    const name = String(job && job.name || '').trim();
+    const task = String(job && job.task || '').trim();
+    if (task.length < 15) return false;
+    if (HARD_USER_STEP_NAME.test(name) || HARD_USER_STEP_NAME.test(task)) return false;
+    if (USER_STEP_START.test(task) && !RESEARCH_VERB.test(task)) return false;
+    if (USER_DEVICE.test(task) && !RESEARCH_VERB.test(task)) return false;
+    return true;
+}
+
+const JOB_RULE = 'A job is work done with web lookups, reading files or running scripts on the server. It is NEVER a step for the user to perform on their own device (connect a cable, press a button, open a settings menu, reboot) — you have no access to the user\'s hardware. Start each brief with what to find or check.';
+
 // Pull the LEGWORK lines back out of the brief so the note can tell the primary
 // to dispatch exactly those. Tolerant of the shapes a small model produces
 // (numbered or bare heading, "- name: brief" or "name — brief").
@@ -454,7 +478,9 @@ function parseLegwork(brief) {
         const name = split ? split[1].trim() : line.slice(0, 50);
         const task = split ? split[2].trim() : line;
         if (task.length < 8) continue;
-        jobs.push({ name: name.replace(/[."]+$/, ''), task });
+        const job = { name: name.replace(/[."]+$/, ''), task };
+        if (!isWorkableJob(job)) continue;
+        jobs.push(job);
         if (jobs.length >= 3) break;
     }
     return jobs;
@@ -533,6 +559,7 @@ module.exports = {
     buildLegworkOnlyTask,
     buildFollowUpLegworkTask,
     isDuplicateJob,
+    isWorkableJob,
     buildPartnerPrelude,
     buildJobPartnerLine,
     cleanAsk,
