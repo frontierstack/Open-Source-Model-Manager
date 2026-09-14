@@ -16008,6 +16008,7 @@ async function llmExtractMemoriesFromTurn(userText, assistantText) {
                 ],
                 temperature: 0,
                 maxTokens: 700,
+                preferFree: true,
                 disableThinking: true, // memory extraction needs clean JSON, not a reasoning trace that truncates it
             }),
             new Promise((_, rej) => {
@@ -16535,7 +16536,7 @@ async function refineExperienceWithModel(userId, id, episode, chips, rec = null)
                     // being rewritten to describe whichever run happened last.
                     { role: 'user', content: experienceMemory.refinementInput(episode, chips, rec) },
                 ],
-                temperature: 0, maxTokens: 400, disableThinking: true,
+                temperature: 0, maxTokens: 400, disableThinking: true, preferFree: true,
             }),
             new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('refine timed out')), EXPERIENCE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
         ]);
@@ -20442,7 +20443,12 @@ const chatStreamHandlerInner = async (req, res) => {
                         chatUserId, chatConvId, memoryQuery,
                         // Budget scales with the model's window: a small-ctx
                         // model gets a lean persona block, a big one the full.
-                        memoryBudgetForCtx(contextSize), { activityHint }
+                        // The lead of a two-model turn gets a leaner block: its
+                        // first prompt is processed at ~1k tok/s on the big
+                        // model, standing instructions and the best-matching
+                        // experience always fit, and the legwork runs elsewhere.
+                        handoff.engaged ? Math.min(memoryBudgetForCtx(contextSize), HANDOFF_LEAD_MEMORY_TOKENS) : memoryBudgetForCtx(contextSize),
+                        { activityHint }
                     );
                     if (memoryResult && Array.isArray(memoryResult.experiences)) {
                         usedExperiences = memoryResult.experiences;
@@ -22939,6 +22945,11 @@ const chatStreamHandlerInner = async (req, res) => {
                     stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
                     forcedNames: preflightForcedTools,
                     convId: streamingConversationId,   // prompt-cache-stable selection per conversation
+                    // The lead of a two-model turn skips the weak semantic tail
+                    // (measured: Windows services / PowerShell / npm picks on a
+                    // TV question, ~2k tokens of its first prompt); find_tools
+                    // and grow-on-use still reach anything it needs.
+                    semanticTail: handoff.engaged ? 'strong' : 'all',
                 });
                 toolCatalog = sel.tools;
                 advertisedNames = sel.advertisedNames;
@@ -23492,6 +23503,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         try {
                             const h = (x) => crypto.createHash('sha1').update(typeof x === 'string' ? x : JSON.stringify(x)).digest('hex').slice(0, 8);
                             const msgs = (requestBody.messages || []).map((m, i) => `${i}:${m.role}:${h(m.content || '')}${m.tool_calls ? '+tc' : ''}:${String(typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length)}`);
+                            try {
+                                const flag = require('fs').readFileSync('/tmp/prefix-debug', 'utf8');
+                                if (/dump/.test(flag)) require('fs').writeFileSync(`/tmp/prefix-dump-${Date.now()}-${req.delegate ? 'job' : 'turn'}.json`, JSON.stringify({ tools: requestBody.tools, messages: requestBody.messages }, null, 1));
+                            } catch (_) {}
                             console.log(`[PrefixDebug] ${req.delegate ? 'job ' + (req.delegate.label || '') : 'turn'} model=${targetModel} tools=${h(requestBody.tools || [])}/${(requestBody.tools || []).length} [${(requestBody.tools || []).map(t => t.function && t.function.name).join(',').slice(0, 300)}] msgs=${msgs.join(' ')}`);
                         } catch (_) {}
                     }
@@ -24163,15 +24178,34 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             };
 
             let softDeadlineHit = false;
+            let finalReportAsked = false;
             while (toolCallRound <= roundCap) {
-                // A background job past its soft deadline stops calling tools
-                // and writes its report from what it has (forced synthesis
-                // below) — the hard timeout used to cut it off mid-call with
-                // nothing to deliver (measured: two 240 s jobs, both empty).
-                if (toolCallRound > 0 && req.delegate && req.delegate.softDeadlineAt && Date.now() >= req.delegate.softDeadlineAt) {
-                    softDeadlineHit = true;
-                    console.log(`[Chat Stream] Delegated turn "${req.delegate.label || ''}" reached its soft deadline after ${toolCallRound} round(s) — writing the report now`);
-                    break;
+                // A bounded delegated turn (a background job) on its last
+                // allowed round, or past its soft deadline, is asked for its
+                // report IN the round — tools stay in the request. Forced
+                // synthesis drops the tool list, and the tool list renders at
+                // the very top of the prompt, so the job's whole context was
+                // processed again (9–10k tokens) and the synthesis sometimes
+                // came back empty and retried. Forced synthesis stays the
+                // fallback when the model calls a tool anyway.
+                if (toolCallRound > 0 && req.delegate && Number(req.delegate.maxRounds) > 0) {
+                    const pastSoft = !!(req.delegate.softDeadlineAt && Date.now() >= req.delegate.softDeadlineAt);
+                    // (the loop body's own roundCap is declared further down)
+                    const lastRound = toolCallRound >= Math.min(chatTools.MAX_TOOL_ITERATIONS, Math.trunc(Number(req.delegate.maxRounds)));
+                    if ((pastSoft || lastRound) && !finalReportAsked) {
+                        finalReportAsked = true;
+                        currentMessages = [...currentMessages, {
+                            role: 'system',
+                            content: pastSoft
+                                ? 'Your time for this job is up. Do NOT call any more tools. Write your final report now from the results you already have, and say what you could not confirm.'
+                                : 'This is your last round. Do NOT call any more tools. Write your final report now from the results you already have, and say what you could not confirm.',
+                        }];
+                        console.log(`[Chat Stream] Delegated turn "${req.delegate.label || ''}": ${pastSoft ? 'soft deadline reached' : 'last round'} after ${toolCallRound} round(s) — asking for the report`);
+                    } else if (pastSoft && finalReportAsked) {
+                        softDeadlineHit = true;
+                        console.log(`[Chat Stream] Delegated turn "${req.delegate.label || ''}" reached its soft deadline after ${toolCallRound} round(s) — writing the report now`);
+                        break;
+                    }
                 }
                 // --- Tool router grow-only expansion (before reset) ----------
                 // A tool the model just used, or discovered via find_tools, is
@@ -27451,8 +27485,10 @@ const HANDOFF_QUICK_BRIEF_TOKENS = Math.max(200, parseInt(process.env.HANDOFF_QU
 const HANDOFF_FOLLOWUP_MAX = Math.max(0, parseInt(process.env.HANDOFF_FOLLOWUP_MAX || '2', 10) || 0);
 // A background job's budget (rounds, then wall clock) and how long
 // await_assistant keeps collecting once the first result is in.
-const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '5', 10) || 5);
+const ASSISTANT_JOB_MAX_ROUNDS = Math.max(2, parseInt(process.env.ASSISTANT_JOB_MAX_ROUNDS || '4', 10) || 4);
 const ASSISTANT_JOB_TIMEOUT_MS = Math.max(30000, parseInt(process.env.ASSISTANT_JOB_TIMEOUT_MS || '240000', 10) || 240000);
+// Account-memory budget (tokens) for the lead of an engaged two-model turn.
+const HANDOFF_LEAD_MEMORY_TOKENS = Math.max(300, parseInt(process.env.HANDOFF_LEAD_MEMORY_TOKENS || '1200', 10) || 1200);
 // How the lead revises a draft when late job results land: 'edits' (reply
 // NO CHANGES or SEARCH/REPLACE blocks applied to the draft) or 'full' (rewrite).
 const HANDOFF_REVISION_MODE = (process.env.HANDOFF_REVISION_MODE || 'edits').toLowerCase() === 'full' ? 'full' : 'edits';
@@ -27657,7 +27693,7 @@ function startAssistantJobs(ctx, items, model) {
                         leadModel: ctx.model,
                         siblings: [...jobs.values()].map(j => ({ id: j.id, name: j.name, task: j.task, status: j.status })),
                         findings: [...jobs.values()].filter(j => j.status === 'done' && !j.duplicateOf && j.result && j.result.answer).map(j => ({ name: j.name, text: j.result.answer })),
-                        budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} tool rounds, aim for 3-6 tool calls in all (one search plus the one or two pages that answer it), about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s). Then reply with your report. Do not attempt the user's whole request.]`,
+                        budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} rounds, about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s); aim for 2-4 tool calls in all (one search plus the one or two pages that answer it). Then reply with your report. Do not attempt the user's whole request.]`,
                     }),
                     label: job.name,
                     // The loop runs rounds 0..maxRounds, i.e. maxRounds + 1.
@@ -27666,7 +27702,10 @@ function startAssistantJobs(ctx, items, model) {
                     siblings: [...jobs.values()].filter(j => j.status !== 'failed' && j.status !== 'cancelled').map(j => j.name),
                     handoffGoal: ctx._handoffGoal || null,
                     model: job.model || model,
-                    reasoningEffort: ctx.reasoningEffort,
+                    // Legwork runs with thinking off (a lookup plan does not need
+                    // a reasoning pass before every call) unless the user asked
+                    // for more effort on this turn.
+                    reasoningEffort: (ctx.reasoningEffort === 'medium' || ctx.reasoningEffort === 'high') ? ctx.reasoningEffort : 'off',
                     modelRoles: { primary: job.model || model, secondary: '', mode: 'off', checkWorkers: false, review: 'off' },
                     workspaceBucket: ctx.workspaceBucket,
                     depth: (ctx.delegateDepth || 0),
@@ -28202,7 +28241,7 @@ function fitCompletionMessagesToContext(messages, budgetTokens) {
     return out;
 }
 
-async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking } = {}) {
+async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking, preferFree = false } = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error('messages[] is required');
     }
@@ -28213,6 +28252,22 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
         targetInstance = running.find(i => i.modelName === model)
             || modelInstances.get(model)
             || running[0];
+    } else if (preferFree && running.length > 1) {
+        // Background housekeeping (memory extraction, experience refinement,
+        // pruning) goes to the model with the most free slots, then the
+        // fastest — not simply the first instance. With a pair loaded that was
+        // the single-slot lead: every turn ended with a 30 tok/s extraction on
+        // the lead's only slot, replacing its cached context and making the
+        // next turn's first round wait behind it.
+        try {
+            const cap = chatCapacity().models;
+            const scored = running.map((i) => {
+                const c = cap.find(m => m.name === i.modelName) || {};
+                return { i, free: Number(c.free) || 0, tps: Number(c.tokensPerSecond) || 0 };
+            }).sort((a, b) => (b.free - a.free) || (b.tps - a.tps));
+            targetInstance = scored[0] && scored[0].i;
+        } catch (_) { /* fall back below */ }
+        targetInstance = targetInstance || running[0];
     } else {
         targetInstance = running[0] || Array.from(modelInstances.values())[0];
     }
@@ -30256,7 +30311,7 @@ async function pruneScratchFacts(userId, { apply }) {
         let raw;
         try {
             raw = await Promise.race([
-                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220, disableThinking: true }),
+                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220, disableThinking: true, preferFree: true }),
                 new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('prune timeout')), 25000); if (t.unref) t.unref(); }),
             ]);
         } catch (_) { continue; }                            // batch failed → keep this batch
@@ -30326,7 +30381,7 @@ app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
                     messages: [
                         { role: 'system', content: 'You merge several memory notes that are about the SAME thing into ONE concise note with the same meaning and no duplication. Keep it a single short statement about the user or their preference. Output ONLY the merged note, no preamble, no list.' },
                         { role: 'user', content: lines },
-                    ], temperature: 0, maxTokens: 160, disableThinking: true,
+                    ], temperature: 0, maxTokens: 160, disableThinking: true, preferFree: true,
                 }),
                 new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('merge timeout')), 20000); if (t.unref) t.unref(); }),
             ]);

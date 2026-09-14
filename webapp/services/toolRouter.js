@@ -355,7 +355,7 @@ async function selectForTurn(opts) {
     const {
         fullCatalog = [], query = '', contextSize = 4096, profile = 'balanced',
         isDiffusion = false, stickyNames = new Set(), forcedNames = new Set(),
-        hardCeilingTok = null, convId = null, intentText = null,
+        hardCeilingTok = null, convId = null, intentText = null, semanticTail = 'all',
     } = opts || {};
     // Intent rules match against the user query PLUS (optionally) the system
     // prompt, so a persona ("you are to download a copy, then grep_code the
@@ -438,8 +438,11 @@ async function selectForTurn(opts) {
     };
     mandatory.forEach(n => take(n, true));
     strong.forEach(n => take(n, false));
-    keep.forEach(n => take(n, false));
-    floor.forEach(n => take(n, false));
+    // semanticTail 'strong': mandatory tiers + strong semantic picks only.
+    if (semanticTail !== 'strong') {
+        keep.forEach(n => take(n, false));
+        floor.forEach(n => take(n, false));
+    }
 
     // 6) always append find_tools (its own def, bypassing the present-gate) when routing is active.
     const outTools = chosen.map(n => compactOf.get(n) || compactSchema(present.get(n), level));
