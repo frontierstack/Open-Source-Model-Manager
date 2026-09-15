@@ -17904,7 +17904,13 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             progress: job.progress || null,
             events: Array.isArray(job.events) ? job.events : [],
             toolSig,
-            ...(toolsChanged ? { toolCalls: chips, runningToolCalls: running } : {}),
+            ...(toolsChanged ? {
+                toolCalls: chips, runningToolCalls: running,
+                // Two-model frames (hand-off phases + the latest job list) so
+                // a refreshed tab rebuilds the "Two models working" rows.
+                handoffFrames: Array.isArray(job.handoffFrames) ? job.handoffFrames : [],
+                assistantProgress: job.assistantProgress || null,
+            } : {}),
         });
     } catch (error) {
         console.error('Error checking streaming status:', error);
@@ -20178,6 +20184,17 @@ const chatStreamHandlerInner = async (req, res) => {
             job.phase = phase;
             if (extra) Object.assign(job, extra);
         };
+        // Mirror the two-model frames onto the streaming job so a client that
+        // reconnects mid-turn (refresh) can rebuild the "Two models working"
+        // rows — they otherwise lived only in the SSE stream.
+        const recordHandoffFrame = (frame) => {
+            if (!streamingConversationId || !frame) return;
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (!job) return;
+            if (frame.type === 'assistant_progress') job.assistantProgress = frame;
+            else { if (!Array.isArray(job.handoffFrames)) job.handoffFrames = []; job.handoffFrames.push(frame); }
+            job.toolRev = (job.toolRev || 0) + 1;
+        };
         const pushJobEvent = (entry) => {
             if (!streamingConversationId) return;
             const job = activeStreamingJobs.get(streamingConversationId);
@@ -22033,6 +22050,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     }
                 } catch (_) { /* best-effort */ }
             }
+            if (ev.type === 'assistant_progress' || ev.type === 'handoff') recordHandoffFrame(ev);
             if (!clientConnected || res.writableEnded) return;
             try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch (_) { clientConnected = false; }
         };
@@ -22382,6 +22400,11 @@ const chatStreamHandlerInner = async (req, res) => {
                     preflightForcedTools.add('read_file');
                     preflightForcedTools.add('list_directory');
                     preflightForcedTools.add('grep_code');
+                    // A file already in the workspace is usually what the user
+                    // wants CHANGED next ("make the kick show two legs"): with
+                    // no edit tool advertised the lead narrated "let me make the
+                    // edits" and then fired `web {query:"placeholder"}` ×7.
+                    if (ws.files.length) { preflightForcedTools.add('replace_lines'); preflightForcedTools.add('create_file'); }
                     // Any source TREE — a git clone OR an extracted archive
                     // (which lands as a plain dir under archives/) — gets the
                     // batch reader. Before 2026-08-31 this was repos-only, so a
@@ -22445,18 +22468,22 @@ const chatStreamHandlerInner = async (req, res) => {
 
         // A paired setup where the primary is answering ALONE still needs to say
         // so — otherwise the user cannot tell which of the two replied.
-        if (pairedTurn && !handoff.engaged && clientConnected) {
-            try {
-                res.write(`data: ${JSON.stringify({
-                    type: 'handoff', phase: 'solo',
-                    lead: targetModel, primary: targetModel,
-                    // The other model is idle but reachable (primary → secondary):
-                    // name it so the live rows can show its jobs when they start.
-                    assistant: assistantModelForTurn || null, helper: assistantModelForTurn || null,
-                    reason: handoff.reason || 'the secondary was not needed',
-                })}\n\n`);
-                if (res.flush) res.flush();
-            } catch (_) { clientConnected = false; }
+        if (pairedTurn && !handoff.engaged) {
+            const soloFrame = {
+                type: 'handoff', phase: 'solo',
+                lead: targetModel, primary: targetModel,
+                // The other model is idle but reachable (primary → secondary):
+                // name it so the live rows can show its jobs when they start.
+                assistant: assistantModelForTurn || null, helper: assistantModelForTurn || null,
+                reason: handoff.reason || 'the secondary was not needed',
+            };
+            recordHandoffFrame(soloFrame);
+            if (clientConnected) {
+                try {
+                    res.write(`data: ${JSON.stringify(soloFrame)}\n\n`);
+                    if (res.flush) res.flush();
+                } catch (_) { clientConnected = false; }
+            }
         }
 
         // --- Make the two models' exchange VISIBLE in the transcript --------
@@ -22623,6 +22650,7 @@ const chatStreamHandlerInner = async (req, res) => {
         if (handoff.engaged && handoff.firstPass && latestUserMsgIdx >= 0) {
             const fpStart = Date.now();
             try {
+                recordHandoffFrame({ type: 'handoff', phase: 'first_pass', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, reason: handoff.reason });
                 if (clientConnected) {
                     try {
                         res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'first_pass', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, reason: handoff.reason })}\n\n`);
@@ -22873,6 +22901,7 @@ const chatStreamHandlerInner = async (req, res) => {
                         result: { model: handoff.primary, error: 'the first pass produced nothing' },
                     });
                 }
+                recordHandoffFrame({ type: 'handoff', phase: 'lead', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, firstPassSeconds: fpSecs, briefChars: String(handoff.brief || '').length });
                 if (clientConnected) {
                     try {
                         res.write(`data: ${JSON.stringify({ type: 'handoff', phase: 'lead', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, firstPassSeconds: fpSecs, briefChars: String(handoff.brief || '').length })}\n\n`);
@@ -26465,15 +26494,17 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 if (job) job.content = heldJobContent;
                             }
                             updateJobPhase('revising');
+                            const revisingFrame = {
+                                type: 'handoff', phase: 'revising',
+                                lead: targetModel, primary: targetModel,
+                                assistant: toolCtx.assistantModel || handoff.primary || null,
+                                helper: toolCtx.assistantModel || handoff.primary || null,
+                                jobs: [...toolCtx._assistantJobs.values()].filter(j => j.delivered).length,
+                            };
+                            recordHandoffFrame(revisingFrame);
                             if (clientConnected && !res.writableEnded) {
                                 try {
-                                    res.write(`data: ${JSON.stringify({
-                                        type: 'handoff', phase: 'revising',
-                                        lead: targetModel, primary: targetModel,
-                                        assistant: toolCtx.assistantModel || handoff.primary || null,
-                                        helper: toolCtx.assistantModel || handoff.primary || null,
-                                        jobs: [...toolCtx._assistantJobs.values()].filter(j => j.delivered).length,
-                                    })}\n\n`);
+                                    res.write(`data: ${JSON.stringify(revisingFrame)}\n\n`);
                                 } catch (_) { clientConnected = false; }
                             }
                             continue; // re-stream with the results in context
@@ -31124,6 +31155,22 @@ app.use((req, res) => {
         async execute(args, ctx) {
             const a = args || {};
             const reg = tools.toolRegistry;
+            // A stub query is a mis-fired call, not a search: the 27B lead,
+            // with no edit tool in its catalog, narrated "let me make the
+            // edits" and then called `web {query:"placeholder"}` seven times.
+            // Refuse it up front (the arg-repeat guard needs three of them and
+            // each burns a real search) and put the file tools back in reach.
+            const stubQuery = typeof a.query === 'string' && !a.url && !(Array.isArray(a.urls) && a.urls.length)
+                && (a.query.trim().length < 3 || /^(placeholder|placeholder text|test|testing|query|search|string|text|todo|tbd|example|none|null|undefined|n\/a|\.{2,}|-+|\?+)$/i.test(a.query.trim()));
+            if (stubQuery) {
+                if (!ctx._forcedToolNames) ctx._forcedToolNames = new Set();
+                for (const t of ['replace_lines', 'create_file', 'read_file']) ctx._forcedToolNames.add(t);
+                return {
+                    success: false,
+                    error: 'stub_query',
+                    message: `web was called with the stub query "${a.query}" — that is not a search. If you meant to CHANGE a file, call replace_lines (edit a line range) or create_file (write it whole); to look something up, pass the real search terms.`,
+                };
+            }
             const run = (name, routedArgs) => {
                 const def = reg.get(name);
                 if (!def || typeof def.execute !== 'function') return Promise.resolve({ error: `web: inner tool "${name}" unavailable` });

@@ -878,7 +878,9 @@ export default function ChatContainer({
         (Array.isArray(data.toolCalls) ? data.toolCalls : []).forEach((chip, i) => {
             if (!chip || typeof chip !== 'object') return;
             next.push({
-                tool_call_id: `bg-chip-${i}`,
+                // The persisted chip keeps the dispatch id on a paired turn, so
+                // assistant_progress patches (matched by chipId) still land.
+                tool_call_id: chip.toolCallId || `bg-chip-${i}`,
                 name: chip.label || 'tool',
                 arguments: '',
                 status: chip.status === 'failed' ? 'failed' : 'success',
@@ -904,6 +906,14 @@ export default function ChatContainer({
         const sig = (l) => l.map(t => `${t.tool_call_id}:${t.status}`).join('|');
         const cur = useChatStore.getState().streamingToolCalls || [];
         if (sig(next) !== sig(cur)) setStreamingToolCalls(next);
+        // Two-model frames the live stream would have delivered: replay the
+        // hand-off phases in order, then the latest job list, so the "Two
+        // models working" rows and each ask_assistant chip's jobs come back
+        // after a refresh instead of vanishing with the SSE connection.
+        if (Array.isArray(data.handoffFrames) && data.handoffFrames.length) {
+            for (const f of data.handoffFrames) { if (f && f.type === 'handoff') patchStreamingHandoff(handoffPatchFromFrame(f)); }
+        }
+        if (data.assistantProgress && typeof data.assistantProgress === 'object') applyAssistantProgress(data.assistantProgress);
     };
 
     // Feed a background job's polled text to the bubble. When no foreground

@@ -3,7 +3,7 @@ import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircl
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
-import ToolMilestones from './ToolMilestones';
+import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
 import SearchSources from './SearchSources';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
@@ -512,15 +512,48 @@ function ExchangePanel({ steps }) {
 }
 
 // The model's working narration and the tool calls it made, in order, above
-// the answer. Reuses the live milestone lines while streaming and the chip
-// blocks once committed — the chips are the same objects the bubble's
-// charts/images/artifacts passes read.
+// the answer — as a numbered timeline of STEPS (user: "make the working notes
+// easier to follow and better structured"). One step = the prose the model
+// wrote before a tool round + that round's calls. Each step opens with a
+// one-line summary of what it did ("Read stick_fighter.html · Browsed the web
+// ×2"), a state dot and its duration, then the narration, then the calls —
+// live milestone lines while streaming, the chip blocks once committed (the
+// chips are the same objects the bubble's charts/images/artifacts passes read).
+function fmtMs(ms) {
+    if (!(ms > 0)) return '';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+    return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+}
+function stepSummary(calls) {
+    const groups = [];
+    for (const tc of calls) {
+        if (!tc) continue;
+        const name = tc.label || tc.name || 'tool';
+        const last = groups[groups.length - 1];
+        if (last && last.name === name) last.calls.push(tc);
+        else groups.push({ name, calls: [tc] });
+    }
+    return groups.map(g => {
+        const done = !g.calls.some(c => c.status === 'partial' || c.status === 'running');
+        const verb = stepVerb(g.name, done);
+        const subject = g.calls.length === 1 ? callSubject(g.calls[0]) : '';
+        const count = g.calls.length > 1 ? ` \u00d7${g.calls.length}` : '';
+        return `${verb}${subject ? ` ${subject}` : ''}${count}`;
+    });
+}
+function stepState(calls) {
+    if (calls.some(c => c && (c.status === 'partial' || c.status === 'running'))) return 'running';
+    if (calls.some(c => c && c.status === 'failed')) return 'failed';
+    return 'done';
+}
 function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
     const calls = Array.isArray(toolCalls) ? toolCalls.length : 0;
-    const ms = totalToolMs(toolCalls);
-    const dur = ms > 0 ? (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`) : '';
+    const dur = fmtMs(totalToolMs(toolCalls));
+    const failed = Array.isArray(toolCalls) ? toolCalls.filter(t => t && t.status === 'failed').length : 0;
     const meta = [`${segments.length} step${segments.length === 1 ? '' : 's'}`];
     if (calls !== segments.length) meta.push(`${calls} tool call${calls === 1 ? '' : 's'}`);
+    if (failed) meta.push(`${failed} failed`);
     if (dur) meta.push(dur);
     return (
         <div className="msg-notes">
@@ -533,27 +566,43 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
             >
                 <ChevronDown strokeWidth={2} />
                 <span className="msg-turn-label">Working notes</span>
-                <span className="msg-turn-totals">{meta.join(' · ')}</span>
+                <span className="msg-turn-totals">{meta.join(' \u00b7 ')}</span>
             </button>
             {open && (
-                <div className="msg-notes-body">
-                    {segments.map((seg, i) => (
-                        <div key={i} className="msg-notes-seg">
-                            {seg.text.trim() ? (
-                                <div className="msg-notes-text">
-                                    <MessageContent content={seg.text} isStreaming={isStreaming} />
+                <ol className="msg-notes-steps">
+                    {segments.map((seg, i) => {
+                        const state = stepState(seg.calls);
+                        const summary = stepSummary(seg.calls);
+                        const stepMs = totalToolMs(seg.calls);
+                        const text = seg.text.trim();
+                        return (
+                            <li key={i} className="msg-notes-step" data-state={state}>
+                                <span className="msg-notes-step-dot" aria-hidden="true" />
+                                <div className="msg-notes-step-head">
+                                    <span className="msg-notes-step-n">Step {i + 1}</span>
+                                    <span className="msg-notes-step-sum" title={summary.join(' \u00b7 ')}>{summary.join(' \u00b7 ')}</span>
+                                    {state === 'running'
+                                        ? <span className="msg-turn-meta">in progress</span>
+                                        : (stepMs > 0 ? <span className="msg-turn-meta">{fmtMs(stepMs)}</span> : null)}
                                 </div>
-                            ) : null}
-                            {isStreaming ? (
-                                <ToolMilestones toolCalls={seg.calls} />
-                            ) : (
-                                <div className="msg-tools-list">
-                                    {seg.calls.map((tc, j) => <ToolCallBlock key={j} tool={tc} />)}
+                                {text ? (
+                                    <div className="msg-notes-text">
+                                        <MessageContent content={seg.text} isStreaming={isStreaming} />
+                                    </div>
+                                ) : null}
+                                <div className="msg-notes-calls">
+                                    {isStreaming ? (
+                                        <ToolMilestones toolCalls={seg.calls} />
+                                    ) : (
+                                        <div className="msg-tools-list">
+                                            {seg.calls.map((tc, j) => <ToolCallBlock key={j} tool={tc} />)}
+                                        </div>
+                                    )}
                                 </div>
-                            )}
-                        </div>
-                    ))}
-                </div>
+                            </li>
+                        );
+                    })}
+                </ol>
             )}
         </div>
     );

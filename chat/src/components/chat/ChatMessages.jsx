@@ -22,7 +22,11 @@ function StreamingMessage() {
     const liveToolCalls = (streamingToolCalls || []).map(tc => {
         // A chip handed over by the server on reconnect is already in the
         // persisted shape — render it as-is.
-        if (tc.chip && typeof tc.chip === 'object') return { ...tc.chip };
+        if (tc.chip && typeof tc.chip === 'object') {
+            // A job list patched onto the record after the reconnect (by chipId)
+            // sits on the wrapper, not inside the chip — carry it through.
+            return Array.isArray(tc.assistantJobs) && tc.assistantJobs.length ? { ...tc.chip, assistantJobs: tc.assistantJobs } : { ...tc.chip };
+        }
         let argPreview = '';
         // Parsed args mid-flight too, so the chip's args table renders the
         // structured view (delegate's per-task lines) instead of raw JSON.

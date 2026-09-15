@@ -283,3 +283,6 @@ export default function ToolMilestones({ toolCalls }) {
         </div>
     );
 }
+
+// Shared with the Working-notes step summaries (ChatMessage.jsx).
+export { verbFor as stepVerb, extractSubject as callSubject };
