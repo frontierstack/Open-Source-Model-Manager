@@ -23,7 +23,7 @@ export default function ToolCallBlock({ tool }) {
     // counter does, and it hands straight off to the final durationMs on
     // completion. Read off `tool` directly: these hooks must sit above the
     // `if (!tool)` bail-out, before the destructure below.
-    const running = tool?.status === 'partial';
+    const running = tool?.status === 'partial' || tool?.status === 'running';
     const startedAt = tool?.startedAt;
     const [elapsedMs, setElapsedMs] = useState(0);
     useEffect(() => {
@@ -94,7 +94,7 @@ export default function ToolCallBlock({ tool }) {
         : null;
     const hasJobs = Array.isArray(jobRows) && jobRows.length > 0;
 
-    const isRunning = status === 'partial';
+    const isRunning = status === 'partial' || status === 'running';
     const isFailed = status === 'failed';
     // load_skill is the only chip that's actually loading a SKILL — an
     // instructional procedure body, not an executable operation. Mark it

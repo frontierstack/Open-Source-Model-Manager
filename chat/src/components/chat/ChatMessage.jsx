@@ -537,7 +537,16 @@ function stepSummary(calls) {
     return groups.map(g => {
         const done = !g.calls.some(c => c.status === 'partial' || c.status === 'running');
         const verb = stepVerb(g.name, done);
-        const subject = g.calls.length === 1 ? callSubject(g.calls[0]) : '';
+        // The call's own `purpose` reads best ("Write cfg.json with three keys");
+        // fall back to the argument subject, clipped so a raw shell command or
+        // a long path never becomes the headline.
+        const clip = (v, n) => (v.length > n ? v.slice(0, n - 1).replace(/\s+\S*$/, '') + '\u2026' : v);
+        let subject = '';
+        if (g.calls.length === 1) {
+            const c = g.calls[0];
+            const purpose = String(c.purpose || '').replace(/\s+/g, ' ').trim();
+            subject = purpose ? `\u2014 ${clip(purpose, 72)}` : clip(callSubject(c), 40);
+        }
         const count = g.calls.length > 1 ? ` \u00d7${g.calls.length}` : '';
         return `${verb}${subject ? ` ${subject}` : ''}${count}`;
     });
@@ -590,14 +599,13 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
                                         <MessageContent content={seg.text} isStreaming={isStreaming} />
                                     </div>
                                 ) : null}
+                                {/* The same chip view live and committed (user: the notes
+                                    "have a different view when all responses are done") — a
+                                    running chip carries its clock, a finished one its result. */}
                                 <div className="msg-notes-calls">
-                                    {isStreaming ? (
-                                        <ToolMilestones toolCalls={seg.calls} />
-                                    ) : (
-                                        <div className="msg-tools-list">
-                                            {seg.calls.map((tc, j) => <ToolCallBlock key={j} tool={tc} />)}
-                                        </div>
-                                    )}
+                                    <div className="msg-tools-list">
+                                        {seg.calls.map((tc, j) => <ToolCallBlock key={tc.tool_call_id || tc.toolCallId || j} tool={tc} />)}
+                                    </div>
                                 </div>
                             </li>
                         );
