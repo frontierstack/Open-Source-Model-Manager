@@ -956,7 +956,18 @@ export default function ChatContainer({
         pendingReasoningRef.current = reasoning;
         ensureSmoothPump(conversationId);
     };
-    const stopJobContent = () => { if (!abortControllerRef.current) streamActiveRef.current = false; };
+    const stopJobContent = () => {
+        if (abortControllerRef.current) return;
+        streamActiveRef.current = false;
+        // Drop the polled buffers: the next send starts its pump before the
+        // first token arrives, and a stale buffer here re-revealed the
+        // PREVIOUS answer's text in the new bubble (seen after a mid-turn
+        // refresh followed by a new message).
+        pendingContentRef.current = '';
+        pendingReasoningRef.current = '';
+        displayedContentLenRef.current = 0;
+        lastReasoningLenRef.current = 0;
+    };
 
     // `assistant_progress` carries EVERY job of the turn; each job names the
     // ask_assistant chip that dispatched it (`chipId`). Patch each chip with
@@ -1759,8 +1770,18 @@ export default function ChatContainer({
             setStreaming(true);
             setStreamingContent('');
             setStreamingReasoning('');
-            // No hand-off until this turn's server frames say otherwise.
+            // No hand-off until this turn's server frames say otherwise — and
+            // no chips, drafts or status from a previous turn either: whatever
+            // path the last turn ended on, the new bubble starts empty.
             setStreamingHandoff(null);
+            setStreamingToolCalls([]);
+            useChatStore.setState({ streamingToolDrafts: {}, streamingStatus: null, streamingRevisedAt: 0 });
+            // The pump reads these refs from its first frame — before the first
+            // token — so they must not carry a previous turn's text.
+            pendingContentRef.current = '';
+            pendingReasoningRef.current = '';
+            displayedContentLenRef.current = 0;
+            lastReasoningLenRef.current = 0;
             setIsLoading(true);
         }
         // Prepare messages for API (use fullContent for the last message to include attachments)
