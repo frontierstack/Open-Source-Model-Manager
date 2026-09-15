@@ -21831,16 +21831,23 @@ const chatStreamHandlerInner = async (req, res) => {
         // letting that follow the revision text wiped the answer and re-typed
         // it in the refreshed tab — exactly the rewrite the hold exists to hide.
         let heldJobContent = null;
+        // Where the held draft starts. Tool calls made DURING the revision
+        // are stamped here, not at their position inside the revision text —
+        // the client never sees that text, so an offset inside it split the
+        // on-screen draft at an arbitrary point ("Now update reset() to rese").
+        let heldAnswerStart = -1;
         const releaseHeldContent = (reason = 'assistant_results') => {
             if (!holdClientContent) return;
             holdClientContent = false;
             heldJobContent = null;
+            const answerStart = heldAnswerStart;
+            heldAnswerStart = -1;
             if (streamingConversationId) {
                 const job = activeStreamingJobs.get(streamingConversationId);
                 if (job) job.content = fullResponse;
             }
             if (clientConnected && !res.writableEnded) {
-                try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason, content: fullResponse, held: true })}\n\n`); } catch (_) { clientConnected = false; }
+                try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', reason, content: fullResponse, held: true, ...(answerStart >= 0 ? { answerStart } : {}) })}\n\n`); } catch (_) { clientConnected = false; }
             }
         };
 
@@ -24761,8 +24768,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // Position of this call in the visible content: the
                         // narration written before it ends here, and the
                         // answer (if this is the last round) begins here.
-                        call.contentOffset = fullResponse.length;
-                        lastToolContentOffset = fullResponse.length;
+                        call.contentOffset = (holdClientContent && heldAnswerStart >= 0) ? heldAnswerStart : fullResponse.length;
+                        lastToolContentOffset = call.contentOffset;
                         if (clientConnected) {
                             try {
                                 res.write(`data: ${JSON.stringify({
@@ -26303,6 +26310,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     const secs = Math.round((Date.now() - rev.startedAt) / 100) / 10;
                     if (r.kind !== 'invalid') {
                         fullResponse = prefix + r.text;
+                        // The revised text replaces the draft wholesale, so a
+                        // chip stamped inside the old draft (or inside the
+                        // revision's own markup) can only sit at the answer's start.
+                        for (const c of persistedToolChips) { if (c && typeof c.contentOffset === 'number' && c.contentOffset > prefix.length) c.contentOffset = prefix.length; }
+                        if (lastToolContentOffset > prefix.length) lastToolContentOffset = prefix.length;
+                        if (streamingConversationId) { const jb = activeStreamingJobs.get(streamingConversationId); if (jb) jb.toolRev = (jb.toolRev || 0) + 1; }
                         console.log(`[Chat Stream] Hand-off: revision by ${r.kind}${r.kind === 'edits' ? ` (${r.applied} applied)` : ''} in ${secs}s — ${rev.draft.length}→${r.text.length} chars`);
                         if (streamingConversationId) {
                             const job = activeStreamingJobs.get(streamingConversationId);
@@ -26487,6 +26500,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // generated, and releaseHeldContent() swaps the
                             // finished text in with one content_rewind.
                             heldJobContent = fullResponse;
+                            heldAnswerStart = roundStart;
                             fullResponse = fullResponse.slice(0, roundStart);
                             holdClientContent = true;
                             if (streamingConversationId) {

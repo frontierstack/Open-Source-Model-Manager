@@ -2069,6 +2069,17 @@ export default function ChatContainer({
                                         upsertStreamingToolDraft({ ...d, complete: true, ...(fin && fin.source ? { filePath: fin.filePath || d.filePath, source: fin.source } : {}) });
                                     }
                                 } catch (_) { /* ignore */ }
+                                // The narration before this call is complete on the
+                                // server; reveal it up to the call's offset now so the
+                                // step never shows a half word next to its chip while
+                                // the pump is still catching up.
+                                if (Number.isFinite(parsed.contentOffset)) {
+                                    const upTo = Math.min(parsed.contentOffset, (pendingContentRef.current || '').length);
+                                    if (displayedContentLenRef.current < upTo) {
+                                        displayedContentLenRef.current = upTo;
+                                        setStreamingContent(pendingContentRef.current.slice(0, upTo));
+                                    }
+                                }
                                 startStreamingToolCall({
                                     tool_call_id: parsed.tool_call_id,
                                     name: parsed.name,
@@ -2274,6 +2285,14 @@ export default function ChatContainer({
                                     displayedContentLenRef.current = pendingContentRef.current.length;
                                     setStreamingContent(pendingContentRef.current);
                                     markStreamingRevised();
+                                    // The swapped-in text replaced the draft from
+                                    // `answerStart` on; a chip stamped past that point
+                                    // would split the new text at a stale position.
+                                    if (Number.isFinite(parsed.answerStart)) {
+                                        for (const tc of (useChatStore.getState().streamingToolCalls || [])) {
+                                            if (tc && Number.isFinite(tc.contentOffset) && tc.contentOffset > parsed.answerStart) patchStreamingToolCall(tc.tool_call_id, { contentOffset: parsed.answerStart });
+                                        }
+                                    }
                                     continue;
                                 }
                                 if (displayedContentLenRef.current > pendingContentRef.current.length) {
