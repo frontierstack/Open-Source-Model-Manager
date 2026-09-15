@@ -74,29 +74,211 @@ const SANDBOX_GID = parseInt(process.env.SANDBOX_GID || '1000', 10);
 const MAX_TEXT_BYTES_PER_ENTRY = 200_000; // 200KB
 const MAX_TOTAL_TEXT_BYTES = 2_000_000;   // 2MB across all entries
 
-// Extension → handler. Tested in order; the first whose `matches` returns
-// true wins. Multi-part suffixes (.tar.gz) live before single (.gz).
+// ---------------------------------------------------------------------------
+// Formats
+//
+// Every multi-file format carries an ordered list of STRATEGIES (one per tool
+// that can open it). They are tried in order, skipping tools not installed in
+// this image, so a format never depends on a single extractor: 7-Zip here is
+// the Debian dfsg build (no RAR codec), unzip cannot read AES/zipx methods,
+// cabextract cannot read InstallShield cabs, GNU tar has no lz4/brotli, etc.
+//
+// Strategy fields: `bin`, `args` (tokens __FILE__ / __DIR__), optional `pw`
+// (builds password switches, spliced at index 1 — after a subcommand like
+// `7z x`, before the archive name, where unzip/unrar/arj treat trailing args
+// as member selectors), optional `cwd` (tools that extract into the working
+// directory: ar, cpio), or `run` (a custom async step).
+//
+// `pw` is called with '' when no password was given — 7z NEEDS the bare `-p`
+// then so it fails fast with "Wrong password?" instead of the opaque "Break
+// signaled" it emits when its prompt hits a closed stdin.
+// ---------------------------------------------------------------------------
+
+const S7Z = { bin: '7z', args: ['x', '-y', '-bd', '-o__DIR__', '__FILE__'], pw: (p) => [`-p${p}`] };
+const BSDTAR = { bin: 'bsdtar', args: ['-x', '-f', '__FILE__', '-C', '__DIR__'], pw: (p) => (p ? ['--passphrase', p] : []) };
+// unar (The Unarchiver): widest legacy coverage (RAR5, StuffIt, ACE, ARC, ZOO,
+// ALZ, EGG, CPT…). -D: never invent a wrapping directory; -f: overwrite.
+const UNAR = { bin: 'unar', args: ['-q', '-f', '-D', '-o', '__DIR__', '__FILE__'], pw: (p) => (p ? ['-p', p] : []) };
+const TAR_AUTO = { bin: 'tar', args: ['-xf', '__FILE__', '-C', '__DIR__'] }; // GNU tar sniffs gz/bz2/xz/lzma/zst/lz/lzo/Z itself
+
+// Single-stream compressors: decompress to stdout (never in place — the
+// decompressors disagree about suffixes and -k support). 7z's `e -so` is the
+// fallback wherever it knows the codec.
+const CODECS = {
+    gz:   { cmds: [['gzip', ['-dc']], ['7z', ['e', '-so', '-tgzip']]], suffix: /\.(gz|gzip)$/i },
+    bz2:  { cmds: [['bzip2', ['-dc']], ['7z', ['e', '-so', '-tbzip2']]], suffix: /\.(bz2|bzip2|bz)$/i },
+    xz:   { cmds: [['xz', ['-dc']], ['7z', ['e', '-so', '-txz']]], suffix: /\.xz$/i },
+    lzma: { cmds: [['xz', ['--format=lzma', '-dc']], ['7z', ['e', '-so', '-tlzma']]], suffix: /\.lzma$/i },
+    zst:  { cmds: [['zstd', ['-dcq']], ['7z', ['e', '-so', '-tzstd']]], suffix: /\.(zst|zstd)$/i },
+    lz4:  { cmds: [['lz4', ['-dcq']]], suffix: /\.lz4$/i },
+    lz:   { cmds: [['lzip', ['-dc']]], suffix: /\.lz$/i },
+    lzo:  { cmds: [['lzop', ['-dc']]], suffix: /\.lzo$/i },
+    br:   { cmds: [['brotli', ['-dc']]], suffix: /\.(br|brotli)$/i },
+    Z:    { cmds: [['gzip', ['-dc']], ['uncompress', ['-c']], ['7z', ['e', '-so', '-tZ']]], suffix: /\.z$/i },
+};
+
+// Tested in order; the first whose `ext` matches the filename wins, so
+// multi-part suffixes (.tar.zst) sit before single ones (.zst).
 const HANDLERS = [
-    { name: 'tar.gz',  matches: (n) => /\.(tar\.gz|tgz)$/i.test(n),  cmd: ['tar', ['-xzf', '__FILE__', '-C', '__DIR__']] },
-    { name: 'tar.bz2', matches: (n) => /\.(tar\.bz2|tbz2?)$/i.test(n), cmd: ['tar', ['-xjf', '__FILE__', '-C', '__DIR__']] },
-    { name: 'tar.xz',  matches: (n) => /\.(tar\.xz|txz)$/i.test(n),  cmd: ['tar', ['-xJf', '__FILE__', '-C', '__DIR__']] },
-    { name: 'tar',     matches: (n) => /\.tar$/i.test(n),            cmd: ['tar', ['-xf',  '__FILE__', '-C', '__DIR__']] },
-    // `pw` builds the password arguments for encrypted archives. It is called
-    // with '' when the caller gave no password — 7z NEEDS the bare `-p` in
-    // that case so it fails fast with "Cannot open encrypted archive. Wrong
-    // password?" instead of the opaque "Break signaled" it emits when its
-    // prompt hits a closed stdin.
-    { name: 'zip',     matches: (n) => /\.zip$/i.test(n),            cmd: ['unzip', ['-qq', '-o', '__FILE__', '-d', '__DIR__']], pw: (p) => (p ? ['-P', p] : []) },
-    { name: '7z',      matches: (n) => /\.7z$/i.test(n),             cmd: ['7z', ['x', '-y', '-bd', '-o__DIR__', '__FILE__']], pw: (p) => [`-p${p}`] },
-    { name: 'rar',     matches: (n) => /\.rar$/i.test(n),            cmd: ['unrar-free', ['-x', '__FILE__', '__DIR__/']], pw: (p) => (p ? ['-p', p] : []) },
-    { name: 'gz',      matches: (n) => /\.gz$/i.test(n),             single: 'gz' },
-    { name: 'bz2',     matches: (n) => /\.bz2$/i.test(n),            single: 'bz2' },
-    { name: 'xz',      matches: (n) => /\.xz$/i.test(n),             single: 'xz' },
+    { name: 'tar.gz',   ext: /\.(tar\.gz|tgz|tpz|taz\.gz)$/i, strategies: [{ bin: 'tar', args: ['-xzf', '__FILE__', '-C', '__DIR__'] }, BSDTAR] },
+    { name: 'tar.bz2',  ext: /\.(tar\.bz2|tbz2?|tb2)$/i,     strategies: [{ bin: 'tar', args: ['-xjf', '__FILE__', '-C', '__DIR__'] }, BSDTAR] },
+    { name: 'tar.xz',   ext: /\.(tar\.xz|txz)$/i,            strategies: [{ bin: 'tar', args: ['-xJf', '__FILE__', '-C', '__DIR__'] }, BSDTAR] },
+    { name: 'tar.zst',  ext: /\.(tar\.zst|tar\.zstd|tzst)$/i, strategies: [TAR_AUTO, BSDTAR] },
+    { name: 'tar.lzma', ext: /\.(tar\.lzma|tlzma)$/i,        strategies: [TAR_AUTO, BSDTAR] },
+    { name: 'tar.lz',   ext: /\.(tar\.lz|tlz)$/i,            strategies: [TAR_AUTO, BSDTAR] },
+    { name: 'tar.lzo',  ext: /\.(tar\.lzo|tzo)$/i,           strategies: [TAR_AUTO, BSDTAR] },
+    { name: 'tar.lz4',  ext: /\.(tar\.lz4|tlz4)$/i,          strategies: [BSDTAR] },
+    { name: 'tar.Z',    ext: /\.(tar\.z|taz)$/i,             strategies: [TAR_AUTO, BSDTAR] },
+    { name: 'tar.br',   ext: /\.(tar\.br|tbr)$/i,            single: 'br' },
+    { name: 'tar',      ext: /\.(tar|ova)$/i,                strategies: [{ bin: 'tar', args: ['-xf', '__FILE__', '-C', '__DIR__'] }, BSDTAR, S7Z] },
+    // zip and the formats that ARE zips under another name. 7z/bsdtar/unar
+    // follow unzip for AES encryption and zipx methods (LZMA/PPMd/xz) that
+    // unzip 6.0 reports as "unsupported compression method".
+    { name: 'zip',      ext: /\.(zip|jar|war|ear|aar|apk|xapk|xpi|whl|nupkg|vsix|epub|ipa|appx|appxbundle|msix|msixbundle|kmz|sb3|ora)$/i,
+        strategies: [{ bin: 'unzip', args: ['-qq', '-o', '__FILE__', '-d', '__DIR__'], pw: (p) => (p ? ['-P', p] : []) }, S7Z, BSDTAR, UNAR] },
+    { name: 'zipx',     ext: /\.zipx$/i,                     strategies: [S7Z, UNAR, BSDTAR] },
+    { name: '7z',       ext: /\.7z$/i,                       strategies: [S7Z, UNAR, BSDTAR] },
+    { name: 'rar',      ext: /\.(rar|cbr)$/i,
+        strategies: [UNAR, { bin: 'unrar-free', args: ['-x', '__FILE__', '__DIR__/'], pw: (p) => (p ? ['-p', p] : []) }, BSDTAR, S7Z] },
+    // Microsoft Cabinet (+ .msu Windows update packages, which are cabs).
+    // cabextract (libmspack) handles MSZIP, Quantum and LZX.
+    { name: 'cab',      ext: /\.(cab|msu)$/i,
+        strategies: [{ bin: 'cabextract', args: ['-q', '-d', '__DIR__', '__FILE__'] }, S7Z, BSDTAR, UNAR] },
+    // InstallShield cabinets share the extension but not the format ("ISc(").
+    { name: 'installshield-cab', ext: null,                  strategies: [{ bin: 'unshield', args: ['-d', '__DIR__', 'x', '__FILE__'] }, UNAR] },
+    // MS-DOS compress.exe / expand.exe (SZDD / KWAJ): setup.ex_, driver.sy_.
+    { name: 'mslz',     ext: /\.[a-z0-9]{2}_$/i,             strategies: [S7Z, { bin: 'cabextract', args: ['-q', '-d', '__DIR__', '__FILE__'] }, UNAR] },
+    { name: 'msi',      ext: /\.(msi|msp|msm)$/i,            strategies: [{ bin: 'msiextract', args: ['-C', '__DIR__', '__FILE__'] }, S7Z] },
+    { name: 'deb',      ext: /\.(deb|udeb|ipk)$/i,           strategies: [{ bin: 'ar', args: ['x', '__FILE__'], cwd: true }, BSDTAR, S7Z], unwrap: 'deb' },
+    { name: 'ar',       ext: /\.(ar|a|lib)$/i,               strategies: [{ bin: 'ar', args: ['x', '__FILE__'], cwd: true }, BSDTAR, S7Z] },
+    { name: 'rpm',      ext: /\.(rpm|srpm)$/i,               strategies: [BSDTAR, { run: rpm2cpioStep, bin: 'rpm2cpio' }, S7Z], unwrap: 'payload' },
+    { name: 'cpio',     ext: /\.cpio$/i,
+        strategies: [BSDTAR, { bin: 'cpio', args: ['-idmu', '--no-absolute-filenames', '--quiet', '-F', '__FILE__'], cwd: true }, S7Z] },
+    { name: 'xar',      ext: /\.(xar|pkg|mpkg|xip)$/i,       strategies: [S7Z, BSDTAR, UNAR], unwrap: 'payload' },
+    { name: 'iso',      ext: /\.(iso|udf|isz)$/i,            strategies: [S7Z, BSDTAR, UNAR] },
+    { name: 'dmg',      ext: /\.(dmg|hfs|hfsx|apfs)$/i,      strategies: [S7Z] },
+    { name: 'wim',      ext: /\.(wim|swm|esd)$/i,            strategies: [S7Z] },
+    { name: 'chm',      ext: /\.(chm|chi|chw|chq|lit|hxs)$/i, strategies: [S7Z, UNAR] },
+    { name: 'arj',      ext: /\.arj$/i,
+        strategies: [S7Z, { bin: 'arj', args: ['x', '-y', '__FILE__', '__DIR__/'], pw: (p) => (p ? [`-g${p}`] : []) }, UNAR] },
+    { name: 'lzh',      ext: /\.(lzh|lha)$/i,                strategies: [S7Z, { bin: 'lha', args: ['-xqfw=__DIR__', '__FILE__'] }, UNAR] },
+    { name: 'squashfs', ext: /\.(squashfs|sqsh|sfs|snap)$/i,
+        strategies: [S7Z, { bin: 'unsquashfs', args: ['-f', '-no-xattrs', '-d', '__DIR__', '__FILE__'] }] },
+    { name: 'cramfs',   ext: /\.cramfs$/i,                   strategies: [S7Z] },
+    { name: 'disk-image', ext: /\.(vhd|vhdx|avhdx|vmdk|vdi|qcow2?|img|simg)$/i, strategies: [S7Z] },
+    { name: 'nsis',     ext: null,                           strategies: [S7Z] },
+    // Legacy / Mac / DOS formats only The Unarchiver reads.
+    { name: 'unar',     ext: /\.(sit|sitx|sea|cpt|arc|ark|zoo|alz|egg|ace|pit|lbr|hqx|pak|dms|adf)$/i, strategies: [UNAR, S7Z, BSDTAR] },
+    // Single-stream compressors (inner tar is detected and unpacked).
+    { name: 'gz',       ext: /\.(gz|gzip)$/i,                single: 'gz' },
+    { name: 'bz2',      ext: /\.(bz2|bzip2)$/i,              single: 'bz2' },
+    { name: 'xz',       ext: /\.xz$/i,                       single: 'xz' },
+    { name: 'lzma',     ext: /\.lzma$/i,                     single: 'lzma' },
+    { name: 'zst',      ext: /\.(zst|zstd)$/i,               single: 'zst' },
+    { name: 'lz4',      ext: /\.lz4$/i,                      single: 'lz4' },
+    { name: 'lz',       ext: /\.lz$/i,                       single: 'lz' },
+    { name: 'lzo',      ext: /\.lzo$/i,                      single: 'lzo' },
+    { name: 'br',       ext: /\.(br|brotli)$/i,              single: 'br' },
+    { name: 'Z',        ext: /\.z$/i,                        single: 'Z' },
 ];
+const HANDLER_BY_NAME = new Map(HANDLERS.map(h => [h.name, h]));
+for (const h of HANDLERS) h.matches = (n) => !!h.ext && h.ext.test(n);
+
+// Compressed-tar ↔ bare-stream siblings: the outer magic of a bz2/xz/zst
+// stream cannot say whether a tar is inside, so each falls back to the other.
+const FALLBACK = {
+    'tar.gz': 'gz', 'tar.bz2': 'bz2', 'tar.xz': 'xz', 'tar.zst': 'zst', 'tar.lzma': 'lzma',
+    'tar.lz': 'lz', 'tar.lzo': 'lzo', 'tar.lz4': 'lz4', 'tar.Z': 'Z',
+    gz: 'tar.gz', bz2: 'tar.bz2', xz: 'tar.xz',
+};
+
+// Human list for errors and the tool description.
+const SUPPORTED_FORMATS_TEXT =
+    'zip (+ jar/war/apk/whl/nupkg/vsix/epub/ipa/appx/msix), zipx, 7z, rar, cab/msu (MSZIP, LZX, Quantum), InstallShield cab, ' +
+    'MS-DOS SZDD compressed files (setup.ex_), msi/msp, tar and every compressed tar (tar.gz/tgz, tar.bz2, tar.xz, tar.zst, tar.lz4, tar.lz, tar.lzma, tar.lzo, tar.Z, tar.br), ' +
+    'single-file gz, bz2, xz, lzma, zst, lz4, lz, lzo, br, Z, deb/ipk, rpm, cpio, ar, xar/pkg, iso/udf, dmg, wim/esd, chm, arj, lzh/lha, ' +
+    'squashfs/snap, cramfs, disk images (vhd/vhdx/vmdk/vdi/qcow2/img), NSIS / 7z / RAR self-extracting .exe, Inno Setup installers, ' +
+    'and StuffIt/ACE/ARC/ZOO/ALZ/EGG';
+
+// Extensions that mean "this upload/workspace file is an archive the user
+// wants opened" — the dedicated archive + compression formats. Packaging
+// formats that happen to be zips (jar/apk/docx), disk images and executables
+// still extract when asked, but are not auto-treated as archives on upload.
+const ARCHIVE_EXT_RE = /\.(zip|zipx|7z|rar|cab|msu|msi|tar|tgz|tbz2?|txz|tzst|tlz|taz|gz|gzip|bz2|xz|lzma|zst|zstd|lz4|lz|lzo|br|z|deb|udeb|rpm|cpio|xar|pkg|iso|dmg|wim|esd|swm|arj|lzh|lha|squashfs|sit|sitx|ace|arc|zoo|alz|egg|cbr|cbz|chm)$/i;
+
+// Strip any recognised archive/compression suffix (for legible output dirs).
+function stripArchiveExt(name) {
+    let s = String(name || '');
+    for (let i = 0; i < 2; i++) {
+        const next = s.replace(/\.(tar\.[a-z0-9]+|tgz|tbz2?|txz|tzst|tlz4?|tlzma|tzo|taz|tbr|zipx?|7z|rar|cab|msu|msi|msp|msm|tar|gz|gzip|bz2|bzip2|xz|lzma|zstd?|lz4|lz|lzo|br|z|deb|udeb|ipk|rpm|srpm|cpio|xar|pkg|mpkg|xip|iso|udf|dmg|wim|esd|swm|arj|lzh|lha|squashfs|sqsh|snap|cramfs|sitx?|sea|ace|arc|zoo|alz|egg|cbr|cbz|chm|jar|war|ear|apk|whl|nupkg|vsix|epub|ipa|appx|msix)$/i, '');
+        if (next === s) break;
+        s = next;
+    }
+    return s;
+}
 
 function pickHandler(filename) {
     const n = (filename || '').toLowerCase();
     return HANDLERS.find(h => h.matches(n)) || null;
+}
+
+// Is a binary on PATH? Positive answers are cached; a negative is re-checked
+// (cheap) so a tool installed into a running container is picked up.
+const _binCache = new Map();
+function hasBin(bin) {
+    if (_binCache.get(bin)) return true;
+    for (const dir of String(process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin').split(':')) {
+        if (!dir) continue;
+        try { fs.accessSync(path.join(dir, bin), fs.constants.X_OK); _binCache.set(bin, true); return true; }
+        catch (_) { /* keep looking */ }
+    }
+    return false;
+}
+
+// Stream a decompressor's stdout into a file. Byte-counted so a
+// decompression bomb is killed at the extraction ceiling instead of filling
+// the disk first. Rejects with {code, stderr, killed} like execFileP.
+function decompressToFile(bin, args, outPath, { timeout, maxBytes } = {}) {
+    const { spawn } = require('child_process');
+    return new Promise((resolve, reject) => {
+        const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const out = fs.createWriteStream(outPath);
+        let stderr = '', bytes = 0, killedFor = null, settled = false;
+        const timer = timeout ? setTimeout(() => { killedFor = 'timeout'; child.kill('SIGKILL'); }, timeout) : null;
+        const finish = (err) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            if (err) { out.destroy(); reject(err); } else resolve({ bytes });
+        };
+        child.stdout.on('data', (chunk) => {
+            bytes += chunk.length;
+            if (maxBytes && bytes > maxBytes && !killedFor) { killedFor = 'size'; child.kill('SIGKILL'); }
+        });
+        child.stdout.pipe(out);
+        child.stderr.on('data', (d) => { if (stderr.length < 8000) stderr += d.toString(); });
+        child.on('error', (e) => finish(e));
+        child.on('close', (code) => {
+            out.end(() => {
+                if (killedFor === 'size') {
+                    const e = new Error(`decompressed stream exceeded the ${maxBytes}-byte extraction ceiling (ARCHIVE_MAX_EXTRACTED_BYTES)`);
+                    e.sizeExceeded = true; return finish(e);
+                }
+                if (killedFor === 'timeout') { const e = new Error(`${bin} timed out`); e.killed = true; e.stderr = stderr; return finish(e); }
+                if (code !== 0) { const e = new Error(`${bin} exited ${code}: ${stderr.trim().split('\n').slice(-2).join(' ')}`); e.code = code; e.stderr = stderr; return finish(e); }
+                finish(null);
+            });
+        });
+    });
+}
+
+// rpm → cpio payload → files, for images without bsdtar.
+async function rpm2cpioStep(file, dir, { timeout, maxBytes }) {
+    const payload = path.join(path.dirname(file), `${path.basename(file)}.cpio`);
+    await decompressToFile('rpm2cpio', [file], payload, { timeout, maxBytes });
+    try {
+        await execFileP('cpio', ['-idmu', '--no-absolute-filenames', '--quiet', '-F', payload], { cwd: dir, timeout });
+    } finally { await rmrf(payload); }
 }
 
 // gzip outer magic says nothing about what's inside (.tar.gz vs a single
@@ -115,12 +297,190 @@ function sniffGzipInner(buf) {
     } catch (_) { return null; }
 }
 
+// 7-Zip "Type = …" values that are NOT archives: extracting them yields
+// executable sections or decoded text, never the files a user means.
+const NON_ARCHIVE_7Z_TYPES = new Set(['PE', 'ELF', 'MachO', 'Mub', 'COFF', 'TE', 'Base64', 'IHex', 'Hash', 'FLV', 'SWF', 'SWFc', 'Ppmd']);
+
+// Unknown extension + unknown magic: let the broad-coverage tools identify
+// it. Returns a synthetic handler or null.
+async function probeUnknownFormat(sourcePath, buffer, filename) {
+    let file = sourcePath, tmp = null;
+    try {
+        if (!file) {
+            tmp = path.join(os.tmpdir(), `archive-probe-${crypto.randomBytes(6).toString('hex')}-${path.basename(filename || 'file')}`);
+            await fs.promises.writeFile(tmp, buffer);
+            file = tmp;
+        }
+        let type = null;
+        if (hasBin('7z')) {
+            // Bare -p: an encrypted-header 7z must fail fast, not prompt.
+            const r = await execFileP('7z', ['l', '-slt', '-p', file], { timeout: 60_000, maxBuffer: 64 * 1024 * 1024 }).catch(e => e);
+            const m = String(r?.stdout || '').match(/^Type = (.+)$/m);
+            type = m ? m[1].trim() : null;
+        }
+        if (type && !NON_ARCHIVE_7Z_TYPES.has(type)) {
+            return { name: `7z:${type.toLowerCase()}`, probedType: type, strategies: [S7Z, UNAR, BSDTAR] };
+        }
+        if (type === 'PE') {
+            // A plain Windows executable: only an installer format 7-Zip does
+            // not recognise is still worth trying (Inno Setup; unar knows a few more).
+            return {
+                name: 'windows-installer', probedType: 'PE executable', nonArchiveHint: 'a Windows executable',
+                strategies: [{ bin: 'innoextract', args: ['-e', '-q', '-d', '__DIR__', '__FILE__'], pw: (p) => (p ? ['--password', p] : []) }, UNAR],
+            };
+        }
+        if (type) return null;
+        if (hasBin('lsar')) {
+            const ok = await execFileP('lsar', [file], { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 }).then(() => true).catch(() => false);
+            if (ok) return { name: 'unar', probedType: 'lsar', strategies: [UNAR, BSDTAR] };
+        }
+        return null;
+    } finally {
+        if (tmp) await rmrf(tmp);
+    }
+}
+
+// Unpack archive members of a package in place. `deb`: control.tar.* and
+// data.tar.* → control/ and data/. `payload`: a compressed cpio/tar payload
+// (7-Zip's view of an rpm, a xar/pkg component's Payload/Scripts) → a
+// directory beside it, or the root when it is the only thing extracted.
+// Returns the list of unpacked member paths.
+async function unwrapContainer(kind, extractDir, opts) {
+    const done = [];
+    const candidates = [];
+    async function scan(dir, rel, depth) {
+        const ents = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+        for (const ent of ents) {
+            const full = path.join(dir, ent.name);
+            const r = rel ? `${rel}/${ent.name}` : ent.name;
+            if (ent.isDirectory() && kind === 'payload' && depth < 3) await scan(full, r, depth + 1);
+            else if (ent.isFile()) candidates.push({ full, rel: r, name: ent.name, depth });
+        }
+    }
+    await scan(extractDir, '', 0);
+    const topLevel = candidates.filter(c => c.depth === 0);
+    for (const c of candidates) {
+        let target = null;
+        if (kind === 'deb') {
+            const m = c.depth === 0 && c.name.match(/^(data|control)\.tar(\.[a-z0-9]+)?$/i);
+            if (m) target = path.join(extractDir, m[1].toLowerCase());
+        } else {
+            if (!/(^Payload$|^Scripts$|\.cpio(\.[a-z0-9]+)?$|\.tar(\.[a-z0-9]+)?$)/i.test(c.name)) continue;
+            const head = Buffer.alloc(4096);
+            const fd = await fs.promises.open(c.full, 'r').catch(() => null);
+            if (!fd) continue;
+            try { await fd.read(head, 0, head.length, 0); } finally { await fd.close(); }
+            const fmt = sniffStrong(head);
+            if (!fmt || !/^(cpio|tar|tar\.\w+|gz|bz2|xz|zst|lzma|lz4|lz|Z)$/.test(fmt)) continue;
+            const stem = c.name.replace(/(\.cpio|\.tar)?(\.[a-z0-9]+)?$/i, '') || c.name;
+            target = (c.depth === 0 && topLevel.length === 1)
+                ? path.join(extractDir, `.unwrap-${crypto.randomBytes(4).toString('hex')}`)
+                : path.join(path.dirname(c.full), c.name === stem ? `${stem}.d` : stem);
+        }
+        if (!target) continue;
+        try {
+            await fs.promises.mkdir(target, { recursive: true });
+            await extractArchive(null, c.name, {
+                sourcePath: c.full, extractTo: target, pathBase: target,
+                inlineText: false, maxEntries: 1, _depth: (opts._depth || 0) + 1,
+            });
+            await rmrf(c.full);
+            if (path.basename(target).startsWith('.unwrap-')) {
+                for (const n of await fs.promises.readdir(target)) {
+                    await fs.promises.rename(path.join(target, n), path.join(extractDir, n)).catch(() => {});
+                }
+                await rmrf(target);
+            }
+            done.push(c.rel);
+        } catch (_) {
+            if (path.basename(target).startsWith('.unwrap-')) await rmrf(target);
+            /* leave the member as-is */
+        }
+    }
+    return done;
+}
+
+// Stage the other parts of a multi-volume archive next to the staged first
+// part (hardlinks, copy fallback). Bounded: ≤ 200 parts from the SAME
+// directory, matched by name pattern — never a directory-wide copy, except a
+// chained cabinet, whose next-part names live in its header (all .cab files
+// in the directory, ≤ 64).
+async function stageVolumeSiblings(sourcePath, archivePath, head) {
+    const base = path.basename(sourcePath);
+    if (base !== path.basename(archivePath)) return { multiVolume: false, staged: [] };
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let re = null, m;
+    if ((m = base.match(/^(.*)\.part0*1\.rar$/i))) re = new RegExp(`^${esc(m[1])}\\.part\\d+\\.rar$`, 'i');
+    else if ((m = base.match(/^(.*)\.rar$/i))) re = new RegExp(`^${esc(m[1])}\\.(r\\d{2}|s\\d{2})$`, 'i');
+    else if ((m = base.match(/^(.*)\.0{1,3}1$/))) re = new RegExp(`^${esc(m[1])}\\.\\d{2,4}$`);
+    else if ((m = base.match(/^(.*)\.zip$/i))) re = new RegExp(`^${esc(m[1])}\\.z\\d{2}$`, 'i');
+    else if (asciiAt(head, 0, 'MSCF') && head.length >= 32 && (head.readUInt16LE(30) & 0x0002)) re = /\.cab$/i;
+    // RAR 4 main header: type 0x73 at offset 9, flag 0x0001 = "volume".
+    const rar4Volume = head.length >= 12 && asciiAt(head, 0, 'Rar!\x1a\x07\x00') && head[9] === 0x73 && (head.readUInt16LE(10) & 0x0001);
+    let multiVolume = !!(re && (/\.part0*1\.rar$|\.0{1,3}1$/i.test(base) || re.source === '\\.cab$' || rar4Volume));
+    if (!re) return { multiVolume: false, staged: [] };
+    const dir = path.dirname(sourcePath);
+    const names = (await fs.promises.readdir(dir).catch(() => [])).filter(n => n !== base && re.test(n));
+    const cap = re.source === '\\.cab$' ? 64 : 200;
+    const staged = [];
+    for (const n of names.slice(0, cap)) {
+        const st = await fs.promises.stat(path.join(dir, n)).catch(() => null);
+        if (!st || !st.isFile()) continue;
+        const dest = path.join(path.dirname(archivePath), n);
+        try { await fs.promises.link(path.join(dir, n), dest); }
+        catch (_) { await fs.promises.copyFile(path.join(dir, n), dest).catch(() => {}); }
+        staged.push(n);
+    }
+    if (staged.length) multiVolume = true;
+    return { multiVolume, staged };
+}
+
 // Sniff the archive format from the leading bytes. Protects against
 // files whose extension lies (a .7z that's actually a zip, a renamed
 // tarball, etc.) — we trust the magic over the extension when they
 // disagree. Returns a handler name matching HANDLERS[].name, or null.
+const bytesAt = (buf, off, arr) => buf.length >= off + arr.length && arr.every((b, i) => buf[off + i] === b);
+const asciiAt = (buf, off, s) => buf.length >= off + s.length && buf.subarray(off, off + s.length).toString('latin1') === s;
+// Magics too short to trust against an extension that says otherwise.
+const WEAK_SNIFFS = new Set(['arj', 'lzh', 'cpio', 'mslz', 'lzma']);
+
 function sniffFormat(buf) {
     if (!Buffer.isBuffer(buf) || buf.length < 4) return null;
+    const strong = sniffStrong(buf);
+    if (strong) return strong;
+    // Formats whose magic sits beyond the first bytes or is short/weak.
+    if (asciiAt(buf, 32769, 'CD001') || asciiAt(buf, 34817, 'CD001') || asciiAt(buf, 32769, 'BEA01')) return 'iso';
+    if (buf.length >= 22 && asciiAt(buf, 2, '-lh') && buf[6] === 0x2D) return 'lzh';
+    if (bytesAt(buf, 0, [0x60, 0xEA])) return 'arj';
+    if (bytesAt(buf, 0, [0xC7, 0x71]) || bytesAt(buf, 0, [0x71, 0xC7])) return 'cpio';
+    if (buf.length >= 13 && buf[0] === 0x5D && buf[1] === 0x00 && buf[2] === 0x00) return 'lzma';
+    return null;
+}
+
+function sniffStrong(buf) {
+    if (asciiAt(buf, 0, 'MSCF') && bytesAt(buf, 4, [0, 0, 0, 0])) return 'cab';
+    if (asciiAt(buf, 0, 'ISc(')) return 'installshield-cab';
+    if (bytesAt(buf, 0, [0x53, 0x5A, 0x44, 0x44, 0x88, 0xF0, 0x27, 0x33]) ||   // SZDD
+        bytesAt(buf, 0, [0x4B, 0x57, 0x41, 0x4A, 0x88, 0xF0, 0x27, 0xD1])) return 'mslz'; // KWAJ
+    if (bytesAt(buf, 0, [0x28, 0xB5, 0x2F, 0xFD])) return 'zst';
+    if (bytesAt(buf, 0, [0x04, 0x22, 0x4D, 0x18]) || bytesAt(buf, 0, [0x02, 0x21, 0x4C, 0x18])) return 'lz4';
+    if (asciiAt(buf, 0, 'LZIP')) return 'lz';
+    if (bytesAt(buf, 0, [0x89, 0x4C, 0x5A, 0x4F, 0x00, 0x0D, 0x0A, 0x1A, 0x0A])) return 'lzo';
+    if (bytesAt(buf, 0, [0x1F, 0x9D])) return 'Z';
+    if (asciiAt(buf, 0, '!<arch>\n')) return asciiAt(buf, 8, 'debian-binary') ? 'deb' : 'ar';
+    if (bytesAt(buf, 0, [0xED, 0xAB, 0xEE, 0xDB])) return 'rpm';
+    if (asciiAt(buf, 0, '070701') || asciiAt(buf, 0, '070702') || asciiAt(buf, 0, '070707')) return 'cpio';
+    if (asciiAt(buf, 0, 'xar!')) return 'xar';
+    if (asciiAt(buf, 0, 'MSWIM\0\0\0')) return 'wim';
+    if (asciiAt(buf, 0, 'ITSF')) return 'chm';
+    if (asciiAt(buf, 0, 'hsqs') || asciiAt(buf, 0, 'sqsh')) return 'squashfs';
+    if (bytesAt(buf, 0, [0x45, 0x3D, 0xCD, 0x28])) return 'cramfs';
+    if (asciiAt(buf, 0, 'SIT!') || asciiAt(buf, 0, 'StuffIt') || asciiAt(buf, 10, 'rLau')) return 'unar';
+    if (asciiAt(buf, 7, '**ACE**') || asciiAt(buf, 0, 'ALZ\x01') || asciiAt(buf, 0, 'EGGA') || asciiAt(buf, 20, '\xDC\xA7\xC4\xFD')) return 'unar';
+    return sniffClassic(buf);
+}
+
+function sniffClassic(buf) {
     // 7z: 37 7A BC AF 27 1C
     if (buf.slice(0, 6).equals(Buffer.from([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]))) return '7z';
     // zip: PK\x03\x04 or PK\x05\x06 (empty) or PK\x07\x08 (spanned)
@@ -246,18 +606,18 @@ async function zipFileIsEncrypted(fullPath) {
     }
 }
 
-const PASSWORD_ERROR_RE = /unable to get password|incorrect password|wrong password|bad password|cannot open encrypted|encrypted archive|password is incorrect|need password|password required/i;
+const PASSWORD_ERROR_RE = /unable to get password|incorrect password|wrong password|bad password|cannot open encrypted|encrypted archive|password is incorrect|need password|password required|requires a password|missing password|passphrase required|incorrect passphrase|wrong passphrase/i;
 
 // Does this extractor failure mean "the archive is encrypted and we don't have
 // the right password"? unzip is the tricky one: a wrong -P password exits 82
 // with NO output at all, so the exit code has to carry the verdict.
-function isPasswordFailure(err, handlerName, encInfo) {
+function isPasswordFailure(err, tool, encInfo) {
     const text = `${err?.stderr || ''}\n${err?.stdout || ''}\n${err?.message || ''}`;
     if (PASSWORD_ERROR_RE.test(text)) return true;
     // unzip exit 82 = "nothing extracted". Only a password verdict when the
     // central directory actually says entries are encrypted — otherwise 82 is
     // an ordinary empty/filtered archive and must keep its own error.
-    if (handlerName === 'zip' && err?.code === 82 && encInfo?.encrypted > 0) return true;
+    if (tool === 'unzip' && err?.code === 82 && encInfo?.encrypted > 0) return true;
     return false;
 }
 
@@ -474,44 +834,68 @@ async function extractArchive(buffer, filename, opts = {}) {
     const sniffed = sniffFormat(head);
     let handler = extHandler;
     let sourcedFrom = 'extension';
+    const family = (n) => n.startsWith('tar.') ? n.slice(4) : n;
     if (!handler && sniffed) {
-        handler = HANDLERS.find(h => h.name === sniffed);
+        handler = HANDLER_BY_NAME.get(sniffed);
         sourcedFrom = 'magic';
     } else if (handler && sniffed && handler.name !== sniffed) {
         // Extension and magic disagree. Within the same compression family
-        // (xz↔tar.xz, bz2↔tar.bz2) the magic side is a blind tar-first GUESS
-        // (we can't peek inside bz2/xz), while the extension is an informed
-        // claim — keep the extension. gzip is the exception: sniffGzipInner
-        // positively identified the inner content, so its verdict wins. Any
-        // cross-family mismatch (a .tgz that's really a zip) → magic wins.
-        const family = (n) => n.startsWith('tar.') ? n.slice(4) : n;
+        // (xz↔tar.xz, zst↔tar.zst) the magic side is a blind GUESS (we can't
+        // peek inside the stream), while the extension is an informed claim —
+        // keep the extension. gzip is the exception: sniffGzipInner positively
+        // identified the inner content, so its verdict wins. A weak (1-3 byte)
+        // magic never overrides an extension. Any other cross-family mismatch
+        // (a .tgz that's really a zip, an .apk that's a gzip'd tar) → magic.
         const sameFamily = family(handler.name) === family(sniffed);
-        if (sameFamily && (family(sniffed) === 'bz2' || family(sniffed) === 'xz')) {
-            sourcedFrom = 'extension (family match)';
+        if ((sameFamily && family(sniffed) !== 'gz') || WEAK_SNIFFS.has(sniffed)) {
+            sourcedFrom = sameFamily ? 'extension (family match)' : 'extension (weak magic ignored)';
         } else {
-            handler = HANDLERS.find(h => h.name === sniffed);
+            handler = HANDLER_BY_NAME.get(sniffed);
             sourcedFrom = 'magic (extension mismatch)';
         }
     }
     if (!handler) {
         const preview = head.slice(0, 16).toString('hex');
         const kind = describeNonArchive(head);
-        throw new Error(
-            kind
-                ? `"${filename}" is not an archive — the content looks like ${kind}. ` +
-                  `(first 16 bytes: ${preview})`
-                : `Cannot detect archive type. Filename "${filename}" extension is not recognized ` +
-                  `and the first 16 bytes (${preview}) don't match any known magic number. ` +
-                  `Supported: .zip, .7z, .rar, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz. ` +
-                  `If this is a truncated base64 payload, ensure the full archive was passed.`
-        );
+        if (kind) {
+            throw new Error(`"${filename}" is not an archive — the content looks like ${kind}. (first 16 bytes: ${preview})`);
+        }
+        // Unknown extension, unknown magic, binary content: ask 7-Zip what it
+        // is (it recognises ~50 container formats by structure, including
+        // self-extracting .exe and NSIS installers), then fall back to the
+        // other broad-coverage tools.
+        handler = await probeUnknownFormat(sourcePath, buffer, filename);
+        sourcedFrom = handler ? `probe (${handler.probedType || handler.name})` : sourcedFrom;
+        if (!handler) {
+            throw new Error(
+                `Cannot detect archive type. Filename "${filename}" extension is not recognized ` +
+                `and the first 16 bytes (${preview}) don't match any known archive format. ` +
+                `Supported: ${SUPPORTED_FORMATS_TEXT}. ` +
+                `If this is a truncated base64 payload, ensure the full archive was passed.`
+            );
+        }
     }
-    // Attempt chain: compressed-tar handlers fall back to their single-file
-    // sibling (a plain .gz/.bz2/.xz that the outer magic can't distinguish
-    // from a compressed tar), and vice versa. Bounded to 2 attempts.
-    const FALLBACK = { 'tar.gz': 'gz', 'tar.bz2': 'bz2', 'tar.xz': 'xz', 'gz': 'tar.gz', 'bz2': 'tar.bz2', 'xz': 'tar.xz' };
-    const attempts = [handler];
-    if (FALLBACK[handler.name]) attempts.push(HANDLERS.find(h => h.name === FALLBACK[handler.name]));
+    // Attempt chain: every installed tool for the format, then (for a
+    // compressed tar / bare stream) the sibling interpretation.
+    const attemptHandlers = [handler];
+    if (FALLBACK[handler.name]) attemptHandlers.push(HANDLER_BY_NAME.get(FALLBACK[handler.name]));
+    const attempts = [];
+    const missingTools = new Set();
+    for (const h of attemptHandlers) {
+        if (!h) continue;
+        if (h.single) {
+            const cmds = CODECS[h.single].cmds.filter(([bin]) => hasBin(bin) || (missingTools.add(bin), false));
+            if (cmds.length) attempts.push({ name: h.name, handler: h, single: h.single, cmds, tool: cmds.map(c => c[0]).join('|') });
+            continue;
+        }
+        for (const s of h.strategies) {
+            if (!hasBin(s.bin)) { missingTools.add(s.bin); continue; }
+            attempts.push({ name: h.name, handler: h, strategy: s, pw: s.pw, tool: s.bin });
+        }
+    }
+    if (!attempts.length) {
+        throw new Error(`"${filename}" is a ${handler.name} archive, but none of the tools that open it are installed on this server (${[...missingTools].join(', ')}).`);
+    }
 
     const password = typeof opts.password === 'string' ? opts.password : '';
     // Parsed once up front so a password verdict can be reached even when the
@@ -547,10 +931,14 @@ async function extractArchive(buffer, filename, opts = {}) {
         await rmrf(persistMode ? archiveStageDir : workRoot);
         throw new Error(`Not enough free disk to extract "${filename}" (${size} bytes; ${free} bytes free). Free space on the server's models volume and retry.`);
     }
+    let volumeInfo = { multiVolume: false, staged: [] };
     if (sourcePath) {
         // Hardlink when possible (same filesystem, zero copy); copy otherwise.
         try { await fs.promises.link(sourcePath, archivePath); }
         catch (_) { await fs.promises.copyFile(sourcePath, archivePath); }
+        // Multi-volume sets (x.part2.rar, x.r00, x.7z.002, x.z01, chained
+        // cabinets) only open with every part beside the first one.
+        volumeInfo = await stageVolumeSiblings(sourcePath, archivePath, head).catch(() => volumeInfo);
     } else {
         await fs.promises.writeFile(archivePath, buffer);
     }
@@ -563,6 +951,7 @@ async function extractArchive(buffer, filename, opts = {}) {
         let lastErr = null;
         let used = null;
         let passwordWarning = null;
+        const attemptErrors = [];
         for (const attempt of attempts) {
             if (!attempt) continue;
             if (lastErr) {
@@ -573,50 +962,70 @@ async function extractArchive(buffer, filename, opts = {}) {
             }
             try {
                 if (attempt.single) {
-                    // Single-stream compressions (.gz / .bz2 / .xz of one
-                    // file). The decompressors demand a recognized suffix, so
-                    // stage a correctly-suffixed copy when the name lacks one.
-                    const binMap = { gz: 'gunzip', bz2: 'bunzip2', xz: 'xz' };
-                    const bin = binMap[attempt.single];
-                    let srcPath = archivePath;
-                    if (!new RegExp(`\\.${attempt.single}$`, 'i').test(srcPath)) {
-                        srcPath = `${archivePath}.${attempt.single}`;
-                        await fs.promises.copyFile(archivePath, srcPath);
+                    // Single-stream compression of one file. Decompress to a
+                    // sibling of the staged archive, trying each installed tool.
+                    const base = path.basename(archivePath);
+                    let outName = base.replace(/\.(t(gz|pz|bz2?|b2|xz|zst|lzma|lz4?|zo|az|br))$/i, '.tar');
+                    if (outName === base) outName = base.replace(CODECS[attempt.single].suffix, '');
+                    if (!outName || outName === base) outName = `${base}.out`;
+                    // Written INSIDE extractDir under a hidden temp name: the
+                    // staging dir may sit on another filesystem (/tmp vs the
+                    // models volume), where the final rename would be a copy.
+                    const tmpDir = path.join(extractDir, `.decompressing-${crypto.randomBytes(4).toString('hex')}`);
+                    const stripped = path.join(tmpDir, outName);
+                    await fs.promises.mkdir(tmpDir, { recursive: true });
+                    let decErr = null;
+                    for (const [bin, cargs] of attempt.cmds) {
+                        try {
+                            await decompressToFile(bin, [...cargs, archivePath], stripped, { timeout: execTimeout, maxBytes: MAX_EXTRACTED_BYTES });
+                            decErr = null;
+                            attempt.tool = bin;
+                            break;
+                        } catch (e) {
+                            decErr = e;
+                            attempt.tool = bin;
+                            if (e.sizeExceeded) break;
+                        }
                     }
-                    const args = attempt.single === 'xz' ? ['-d', '-k', '-f', srcPath] : ['-k', '-f', srcPath];
-                    // gunzip/bunzip2/xz with -k (keep original) write foo.ext -> foo.
-                    await execFileP(bin, args, { timeout: execTimeout });
-                    const stripped = srcPath.replace(/\.(gz|bz2|xz)$/i, '');
-                    if (!fs.existsSync(stripped)) {
-                        throw new Error(`Decompression produced no output (expected ${stripped})`);
-                    }
-                    // The decompressed stream may itself be a tar (a .bz2/.xz
-                    // whose outer magic couldn't be peeked) — unpack the inner
-                    // tar instead of returning an opaque single entry.
+                    if (decErr) { await rmrf(tmpDir); throw decErr; }
+                    const st = await fs.promises.stat(stripped).catch(() => null);
+                    if (!st || !st.size) { await rmrf(tmpDir); throw new Error('decompression produced no output'); }
+                    // The decompressed stream may itself be a tar or cpio (a
+                    // .xz/.zst whose outer magic couldn't be peeked, an
+                    // initramfs .cpio.gz) — unpack it instead of returning one
+                    // opaque entry. Anything else stays a single file.
                     const innerHead = Buffer.alloc(263);
                     const fd = await fs.promises.open(stripped, 'r');
                     try { await fd.read(innerHead, 0, 263, 0); } finally { await fd.close(); }
+                    const inner = sniffStrong(innerHead);
                     if (innerHead.subarray(257, 262).toString('ascii') === 'ustar') {
                         await execFileP('tar', ['-xf', stripped, '-C', extractDir], { timeout: execTimeout });
-                        await rmrf(stripped);
+                        attempt.inner = 'tar';
+                    } else if (inner === 'cpio' && (hasBin('bsdtar') || hasBin('cpio'))) {
+                        // bsdtar refuses absolute and ../ member names by default.
+                        if (hasBin('bsdtar')) await execFileP('bsdtar', ['-x', '-f', stripped, '-C', extractDir], { timeout: execTimeout });
+                        else await execFileP('cpio', ['-idmu', '--no-absolute-filenames', '--quiet', '-F', stripped], { cwd: extractDir, timeout: execTimeout });
+                        attempt.inner = 'cpio';
                     } else {
-                        // Content isn't a tar — drop any leftover archive-ish
-                        // suffix so the single entry doesn't masquerade as an
-                        // archive ("data.tgz" holding plain text → "data").
-                        const base = path.basename(stripped);
-                        const dest = path.join(extractDir, base.replace(/\.(tgz|tbz2?|txz|tar)$/i, '') || base);
+                        // Not a tar — drop any leftover archive-ish suffix so
+                        // the entry doesn't masquerade ("data.tgz" → "data").
+                        const dest = path.join(extractDir, outName.replace(/\.(tar|cpio)$/i, '') || outName);
                         await fs.promises.rename(stripped, dest);
+                        if (inner) attempt.innerArchive = inner;
                     }
+                    await rmrf(tmpDir);
+                } else if (attempt.strategy.run) {
+                    await attempt.strategy.run(archivePath, extractDir, { timeout: execTimeout, maxBytes: MAX_EXTRACTED_BYTES, password });
                 } else {
-                    const [bin, tmpl] = attempt.cmd;
-                    const args = tmpl.map(a => a
+                    const s = attempt.strategy;
+                    const args = s.args.map(a => a
                         .replace('__FILE__', archivePath)
                         .replace('__DIR__', extractDir));
                     // Password switches go at index 1 — after the subcommand
                     // (`7z x`) but before the archive name (unzip/unrar treat
                     // anything after the archive as a file selector).
-                    if (attempt.pw) args.splice(1, 0, ...attempt.pw(password));
-                    await execFileP(bin, args, { timeout: execTimeout, maxBuffer: 10 * 1024 * 1024 });
+                    if (s.pw) args.splice(1, 0, ...s.pw(password));
+                    await execFileP(s.bin, args, { timeout: execTimeout, maxBuffer: 10 * 1024 * 1024, ...(s.cwd ? { cwd: extractDir } : {}) });
                 }
                 // An extractor that exits 0 but produces nothing (tar can on
                 // some non-tar streams) is a failure — let the next attempt run.
@@ -627,17 +1036,33 @@ async function extractArchive(buffer, filename, opts = {}) {
                 break;
             } catch (e) {
                 lastErr = { attempt, err: e };
+                const tailOf = (x) => String(x?.stderr || x?.stdout || x?.message || '').trim().split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
+                attemptErrors.push(`${attempt.name} via ${attempt.tool}: ${tailOf(e)}`);
                 // An encrypted archive is not a format mismatch — the fallback
                 // chain can only produce a more confusing error, so stop here
-                // and let the password branch below report it.
-                if (isPasswordFailure(e, attempt.name, encInfo)) break;
+                // and let the password branch below report it. A bomb stops too.
+                if (isPasswordFailure(e, attempt.tool, encInfo) || e.sizeExceeded) break;
             }
         }
         // Password failure. A mixed archive (some entries encrypted, some not)
         // still leaves the readable files on disk — keep them and warn, rather
         // than throwing away a partial extraction the model can use.
-        if (lastErr && !used && isPasswordFailure(lastErr.err, lastErr.attempt.name, encInfo)) {
-            const produced = await fs.promises.readdir(extractDir).catch(() => []);
+        if (lastErr && !used && isPasswordFailure(lastErr.err, lastErr.attempt.tool, encInfo)) {
+            // 7-Zip creates each output file BEFORE decrypting it, so a wrong
+            // password leaves empty/garbage files named in its error lines —
+            // remove those, or they would pass for a partial extraction.
+            const errText = `${lastErr.err?.stderr || ''}\n${lastErr.err?.stdout || ''}`;
+            for (const m of errText.matchAll(/(?:Wrong password|Data Error in encrypted file\. Wrong password\?|CRC Failed in encrypted file\. Wrong password\?)\s*:\s*(.+)$/gm)) {
+                const victim = path.resolve(extractDir, m[1].trim());
+                if (victim.startsWith(extractDir + path.sep)) await rmrf(victim);
+            }
+            let produced = (await walkDir(extractDir, { pruneEscapingSymlinks: false }).catch(() => ({ files: [] }))).files;
+            // unar/bsdtar/7z create an entry before decrypting it; a locked
+            // entry is left as a 0-byte placeholder. unzip skips cleanly.
+            if (lastErr.attempt.tool !== 'unzip') {
+                for (const f of produced) if (!f.size) await rmrf(f.fullPath);
+                produced = produced.filter(f => f.size);
+            }
             const locked = encInfo?.encrypted
                 ? `${encInfo.encrypted} of ${encInfo.total} entries are encrypted${encInfo.names.length ? ` (e.g. ${encInfo.names.slice(0, 3).join(', ')})` : ''}`
                 : 'its contents are encrypted';
@@ -662,19 +1087,31 @@ async function extractArchive(buffer, filename, opts = {}) {
             // Surface the tool's stderr plus the leading bytes so the caller
             // can tell apart "file isn't what the extension says" from
             // "base64 got truncated in transit".
-            const { attempt, err } = lastErr;
+            const { err } = lastErr;
             const preview = head.slice(0, 16).toString('hex');
-            const tail = (err.stderr || err.stdout || err.message || '').toString().trim().split('\n').slice(-3).join(' ');
-            const tried = attempts.filter(Boolean).map(a => a.name).join(' → ');
             const kind = describeNonArchive(head);
             const timedOut = err && (err.killed || /ETIMEDOUT|timed? ?out/i.test(String(err.message || '')));
+            if (err?.sizeExceeded) throw new Error(`"${filename}" ${err.message}. The output was discarded.`);
             throw new Error(
-                (kind ? `"${filename}" does not contain archive data — it looks like ${kind}. ` : '') +
+                (kind && !sniffed ? `"${filename}" does not contain archive data — it looks like ${kind}. ` : '') +
+                (handler.nonArchiveHint ? `"${filename}" is ${handler.nonArchiveHint} that is not a self-extracting archive or a supported installer (7z/RAR/zip SFX, NSIS, Inno Setup, cab). ` : '') +
                 (timedOut ? `Extraction of ${filename} exceeded the ${Math.round(execTimeout / 1000)} s limit (ARCHIVE_EXTRACT_TIMEOUT_MAX_MS). ` : '') +
-                `Extraction failed on ${filename} (size=${size}, first16=${preview}, detectedVia=${sourcedFrom}, tried=${tried}); last error (${attempt.name}): ${tail}`
+                `Extraction failed on ${filename} (size=${size}, first16=${preview}, detectedVia=${sourcedFrom}). ` +
+                `Tried, in order: ${attemptErrors.join(' | ')}` +
+                (missingTools.size ? ` (not installed: ${[...missingTools].join(', ')})` : '') +
+                (volumeInfo.multiVolume
+                    ? ` This looks like one part of a MULTI-VOLUME archive${volumeInfo.staged.length ? ` (found ${volumeInfo.staged.length} other part(s) beside it)` : ' and no other parts were found beside it'} — every part must sit in the same workspace directory with its original name; pass the FIRST part.`
+                    : '')
             );
         }
         handler = used;
+
+        // Package formats whose members are themselves archives: a .deb is an
+        // ar of control.tar.* + data.tar.*, an rpm/xar opened by 7z yields a
+        // compressed cpio "payload". Unpack those so the model sees files.
+        const unwrapped = (used.handler?.unwrap && (opts._depth || 0) < 2)
+            ? await unwrapContainer(used.handler.unwrap, extractDir, opts).catch(() => [])
+            : [];
 
         // Persist mode hands these files to a sandboxed reader (uid 1000); the
         // archive's stored modes/owner may not grant it read/traversal, so
@@ -743,6 +1180,9 @@ async function extractArchive(buffer, filename, opts = {}) {
             ok: true,
             archive: filename,
             format: handler.name,
+            tool: handler.tool,
+            ...(unwrapped.length ? { unwrapped } : {}),
+            ...(handler.innerArchive ? { innerFormat: handler.innerArchive } : {}),
             archiveBytes: size,
             entryCount: files.length,
             extractedBytes,
@@ -756,6 +1196,8 @@ async function extractArchive(buffer, filename, opts = {}) {
             note: [
                 truncated ? `Listing shows the first ${maxEntries} of ${files.length}${walked.capped ? '+' : ''} files; \`topLevel\` summarizes every top-level directory (file count + bytes). Use list_directory / scan_source_files on a subdirectory to see the rest.` : '',
                 walked.droppedSymlinks.length ? `${walked.droppedSymlinks.length} symlink(s) pointing outside the extraction directory were removed.` : '',
+                unwrapped.length ? `Nested package payloads were unpacked in place: ${unwrapped.join(', ')}.` : '',
+                handler.innerArchive ? `The decompressed file is itself a ${handler.innerArchive} archive — call extract_archive again with path set to that entry to open it.` : '',
                 passwordWarning || '',
                 lockedEntries.length
                     ? `NOTE: ${lockedEntries.length === 1 ? 'this extracted entry is itself a password-protected zip' : 'these extracted entries are themselves password-protected zips'}: ${lockedEntries.slice(0, 5).join(', ')}. To read inside, call extract_archive again with path="<that entry>" AND the "password" argument — ask the user for the password if you do not have one (malware-sample archives are commonly locked with "infected").`
@@ -773,4 +1215,4 @@ async function extractArchive(buffer, filename, opts = {}) {
     }
 }
 
-module.exports = { extractArchive, pickHandler, execTimeoutFor, MAX_EXTRACTED_BYTES };
+module.exports = { extractArchive, pickHandler, sniffFormat, execTimeoutFor, stripArchiveExt, MAX_EXTRACTED_BYTES, ARCHIVE_EXT_RE, SUPPORTED_FORMATS_TEXT };

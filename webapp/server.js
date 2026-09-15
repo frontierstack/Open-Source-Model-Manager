@@ -16492,7 +16492,7 @@ function deriveAttachmentKinds(attachments) {
         else if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/.test(name) || mime.startsWith('image/')) kinds.add('image');
         else if (/\.(mp4|mov|webm|mkv|avi|m4v|mpe?g)$/.test(name) || mime.startsWith('video/')) kinds.add('video');
         else if (/\.(mp3|wav|m4a|flac|ogg|aac)$/.test(name) || mime.startsWith('audio/')) kinds.add('audio');
-        else if (/\.(zip|7z|rar|tar|tgz|gz|bz2|xz)$/.test(name)) kinds.add('archive');
+        else if (require('./services/archiveExtractor').ARCHIVE_EXT_RE.test(name)) kinds.add('archive');
         else if (/\.(jsx?|tsx?|py|go|rs|java|c|cpp|h|hpp|rb|php|sh|json|ya?ml|toml)$/.test(name)) kinds.add('code');
     }
     return kinds;
@@ -18932,7 +18932,7 @@ app.post('/api/chat/upload', requireAuth, chatUploadRawBody, async (req, res) =>
         // tool-call arguments (where base64 routinely gets truncated or
         // mangled by the tokenizer — observed with 15MB 7z files that
         // arrived as 30 bytes of random-looking data on the tool side).
-        const ARCHIVE_EXTS = /\.(zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|gz|bz2|xz)$/i;
+        const ARCHIVE_EXTS = require('./services/archiveExtractor').ARCHIVE_EXT_RE;
         if (filename && ARCHIVE_EXTS.test(filename)) {
             try {
                 const archiveRootDir = '/tmp/modelserver-archives';
@@ -33714,7 +33714,7 @@ app.use((req, res) => {
     // (archiveId) worked, so the documented "fetch the .tgz → extract_archive"
     // flow dead-ended on "No uploaded archives are available". Skips the
     // archives/ output dir (already-extracted content) and node_modules.
-    const ARCHIVE_EXT_RE = /\.(zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|gz|bz2|xz)$/i;
+    const ARCHIVE_EXT_RE = archiveExtractor.ARCHIVE_EXT_RE;
     // `includeExtracted` also walks archives/ (where a previous extract_archive
     // landed its output). It is off for the "which archives could you mean?"
     // listing — that would be noise — but ON when resolving a path the model
@@ -33896,11 +33896,11 @@ app.use((req, res) => {
                 function: {
                     name: 'extract_archive',
                     description:
-                        'Extract an archive (.zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz). Type is detected from the file bytes, so a mislabeled extension still extracts. ' +
+                        'Extract or decompress an archive, compressed file, package, installer or disk image — zip, 7z, rar, cab/msu (MSZIP/LZX/Quantum), msi, tar and any compressed tar, gz/bz2/xz/zst/lz4/lzma/lz/lzo/br/Z, deb, rpm, cpio, iso, dmg, wim, chm, arj, lzh, squashfs, self-extracting .exe and more. Type is detected from the file bytes, so a mislabeled or missing extension still extracts; for a multi-volume set pass the first part with the other parts beside it. ' +
                         'Three inputs (pass exactly one): (1) `archiveId` from the `[Archive uploaded: ... archiveId=... ]` marker when the user uploaded the archive; ' +
                         '(2) `path` — the workspace path of an archive a previous tool downloaded or created (use the exact savePath/path that tool returned, e.g. after download_file or fetch_url); ' +
                         '(3) `base64Data` + `filename` for tiny inline archives ONLY — base64 in tool args gets truncated, never paste real archive bytes. ' +
-                        'Pass `password` for a password-protected (encrypted) zip/7z/rar. ' +
+                        'Pass `password` for a password-protected (encrypted) archive. ' +
                         'Extracts into the conversation workspace and returns the entry list — pass an entry `path` to read_file/grep_code to inspect contents.',
                     parameters: {
                         type: 'object',
@@ -33923,7 +33923,7 @@ app.use((req, res) => {
                             },
                             password: {
                                 type: 'string',
-                                description: 'Password for an encrypted zip/7z/rar. Use the one the user gave you; ask them if the result says the archive is password-protected. Ignored for unencrypted archives.',
+                                description: 'Password for an encrypted zip/7z/rar/arj/Inno Setup archive. Use the one the user gave you; ask them if the result says the archive is password-protected. Ignored for unencrypted archives.',
                             },
                         },
                         additionalProperties: false,
@@ -34090,8 +34090,7 @@ app.use((req, res) => {
                 // model will retype, and it then truncates the path itself on
                 // the follow-up call (live-observed).
                 const legibleBase = (() => {
-                    const cleaned = String(filename || 'archive')
-                        .replace(/\.(zip|7z|rar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|tar|gz|bz2|xz)$/i, '')
+                    const cleaned = archiveExtractor.stripArchiveExt(String(filename || 'archive'))
                         .replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
                     if (cleaned.length <= 40) return cleaned || 'archive';
                     const cut = cleaned.slice(0, 40);

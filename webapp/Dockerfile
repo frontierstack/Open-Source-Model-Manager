@@ -140,6 +140,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr-a
     && rm -rf /var/lib/apt/lists/* \
     && tesseract --list-langs | tail -n +2 | wc -l | xargs -I{} echo "[tesseract] {} languages installed"
 
+# Wider archive/compression coverage for extract_archive (services/
+# archiveExtractor.js tries each installed tool per format, in order):
+# cabextract (MS Cabinet: MSZIP/LZX/Quantum), unshield (InstallShield cabs),
+# msitools (msiextract), innoextract (Inno Setup), unar/lsar (RAR5, StuffIt,
+# ACE, ARC, ZOO…), libarchive-tools (bsdtar: rpm/cpio/xar/iso/cab/rar),
+# zstd/lz4/lzip/lzop/brotli/ncompress streams, rpm2cpio+cpio, lhasa, arj,
+# squashfs-tools. The 7-Zip here is the Debian dfsg build (no RAR codec).
+# Python cab/msi libraries for in-process tools: pycab, cabarchive, pymsi
+# (only a release candidate is published). Late layer — the Playwright/
+# patchright/tesseract layers above stay cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cabextract unshield msitools innoextract unar libarchive-tools \
+        zstd lz4 lzip lzop brotli ncompress rpm2cpio cpio lhasa arj squashfs-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --break-system-packages --no-cache-dir \
+        pycab==0.2 cabarchive==0.2.5 pymsi==0.0.0rc1 \
+    && python3 -c "import pycab, cabarchive, pymsi; print('[archive] python cab/msi libs OK')" \
+    && for b in cabextract unshield msiextract innoextract unar lsar bsdtar zstd lz4 lzip lzop brotli rpm2cpio cpio lha arj unsquashfs; do command -v $b >/dev/null || { echo "[archive] missing $b"; exit 1; }; done
+
 COPY . .
 RUN npm run build
 

@@ -326,6 +326,19 @@ RUN pip install --no-cache-dir \
     && rm -rf /root/.cache \
     && python3 -c "from evtx import PyEvtxParser; import Evtx.Evtx; print('evtx parsers OK')"
 
+# Microsoft Cabinet / MSI readers for run_python: pycab, cabarchive (MSZIP
+# cab read/write), pymsi (MSI tables + embedded cabs incl. LZX; only a
+# release candidate exists on PyPI) and cabextract as a CLI for LZX/Quantum
+# cabs the pure-Python readers cannot decode. Late layer, heavy layers cached.
+RUN apt-get update && apt-get install -y --no-install-recommends cabextract \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir \
+        pycab==0.2 \
+        cabarchive==0.2.5 \
+        pymsi==0.0.0rc1 \
+    && rm -rf /root/.cache \
+    && python3 -c "import pycab, cabarchive, pymsi; print('cab/msi python libs OK')"
+
 USER sandbox
 WORKDIR /tmp
 

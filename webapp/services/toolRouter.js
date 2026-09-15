@@ -122,7 +122,7 @@ const INTENT_RULES = [
     [/\b(video|clip|movie|footage|trailer)\b|play (me )?a|watch a/i, ['find_video']],
     [/\.(xlsx|xls|csv)\b|spreadsheet|excel/i, ['read_xlsx', 'create_xlsx']],
     [/\btranscri|\.(mp3|wav|m4a|flac|ogg)\b|audio (file|clip)/i, ['transcribe_audio']],
-    [/\.(zip|tar|gz|tgz|7z|rar|bz2|xz)\b|archiveId=|\[Archive uploaded/i, ['extract_archive']],
+    [/\.(zip|zipx|tar|gz|tgz|7z|rar|bz2|xz|zst|tzst|lz4|lzma|cab|msu|msi|deb|rpm|cpio|iso|dmg|wim|arj|lzh|xar)\b|archiveId=|\[Archive uploaded|\b(decompress|unpack|unarchive|extract)\b[\s\S]{0,60}\b(archive|cab(inet)?|installer|package|compressed)\b/i, ['extract_archive']],
     [/\b(grep|find in|search) (the )?code|where is .* (defined|function)|outline (the|this) file|read the file\b/i, ['grep_code', 'read_file', 'outline_file']],
     [/\b(xor|hex ?dump|hex ?convert|extract strings|carve|entropy|magic bytes)\b/i, ['xor_bytes', 'hex_dump', 'extract_strings']],
     // Network-capture / traffic forensics. A capture is opaque to every reading

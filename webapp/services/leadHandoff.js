@@ -100,7 +100,7 @@ const CODE_FENCE_RE = /```|\bfunction\s+\w+\s*\(|\bclass\s+\w+|\bdef\s+\w+\s*\(|
 // ("=== FILE 1: capture.pcap (2.1 MB) ==="). Used only to tell a heavy
 // attachment (repo, capture, spreadsheet) from a snapshot someone pasted.
 const EXT_KIND = [
-    [/\.(zip|tar|tgz|gz|bz2|xz|7z|rar)$/i, 'archive'],
+    [/\.(zip|zipx|tar|tgz|gz|bz2|xz|zst|lz4|lzma|7z|rar|cab|msu|msi|deb|rpm|cpio|iso|dmg|wim|arj|lzh)$/i, 'archive'],
     [/\.(pcap|pcapng|cap)$/i, 'capture'],
     [/\.(csv|tsv|xlsx?|ods)$/i, 'spreadsheet'],
     [/\.(pdf|docx?|odt|rtf|pptx?)$/i, 'document'],
