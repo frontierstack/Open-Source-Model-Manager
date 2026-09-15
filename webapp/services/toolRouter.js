@@ -236,7 +236,7 @@ function compactSchema(def, level) {
         if (level === 'light' && v && typeof v.description === 'string') {
             nv.description = firstSentence(v.description, 80);       // light keeps a short param hint
         }
-        if (v && v.items && v.type === 'array') nv.items = { type: v.items.type || 'string' };
+        if (v && v.items && v.type === 'array') nv.items = v.items.type ? { type: v.items.type } : {};
         newProps[k] = nv;
     }
     const newParams = { type: 'object', properties: newProps };

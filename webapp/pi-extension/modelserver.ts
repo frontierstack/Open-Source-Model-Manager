@@ -1798,7 +1798,7 @@ function isPrivateOrLoopbackUrl(u: string): boolean {
 function toTypeboxSchema(params: SkillParam) {
     const props: Record<string, any> = {};
     for (const [key, decl] of Object.entries(params)) {
-        const typeName = (typeof decl === "string" ? decl : decl?.type || "string").toLowerCase();
+        const typeName = (typeof decl === "string" ? decl : decl?.type || "string").toLowerCase().replace(/\?$/, "").replace(/^(array|list)<\w+>$/, "$1");
         let t: any;
         switch (typeName) {
             case "number":

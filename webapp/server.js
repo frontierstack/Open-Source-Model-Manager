@@ -34194,12 +34194,15 @@ app.use((req, res) => {
                 const v = hintStr;
                 const hint = String(v || '').toLowerCase();
                 let type = 'string';
+                // 'array<array>' / 'array<object>' / 'array<any>' name the item
+                // type; a bare 'array' keeps the historical string items.
+                const itemHint = (hint.match(/^(?:array|list)<(\w+)>$/) || [])[1];
                 if (hint === 'number' || hint === 'integer' || hint === 'float') type = 'number';
                 else if (hint === 'boolean' || hint === 'bool') type = 'boolean';
-                else if (hint === 'array' || hint === 'list') type = 'array';
+                else if (hint === 'array' || hint === 'list' || itemHint) type = 'array';
                 else if (hint === 'object' || hint === 'dict' || hint === 'map') type = 'object';
                 properties[k] = type === 'array'
-                    ? { type: 'array', items: { type: 'string' } }
+                    ? { type: 'array', items: itemHint === 'any' ? {} : { type: itemHint || 'string' } }
                     : { type };
                 if (!optional) required.push(k);
             }
