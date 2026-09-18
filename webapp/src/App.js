@@ -435,6 +435,12 @@ const App = () => {
             return [];
         }
     });
+    // How much of the server-side history this client already holds. The Logs
+    // tab used to be a pure browser buffer, so anything emitted while the page
+    // was closed/asleep/reconnecting was lost; the server now records every log
+    // frame and we backfill from this cursor on mount and on every reconnect.
+    // Clear sets it to the current head so cleared lines never come back.
+    const [logHistoryInfo, setLogHistoryInfo] = useState({ buffered: 0, hydrated: false });
     const [wsConnected, setWsConnected] = useState(false);
     const [loading, setLoading] = useState(false);
     const [logFilter, setLogFilter] = useState('all'); // 'all', 'error', 'warning', 'success', 'info'
@@ -842,6 +848,11 @@ const App = () => {
     // 100+ log lines/sec triggers a full re-render + auto-scroll + localStorage
     // write per line, which visibly "spazzes" the logs pane.
     const logBufferRef = useRef([]);
+    // Highest server log sequence this client holds (see logHistoryInfo above).
+    const logSeqRef = useRef((() => {
+        try { return parseInt(localStorage.getItem('modelserver_log_cursor'), 10) || 0; }
+        catch { return 0; }
+    })());
 
     // Dynamic base URLs from current host
     const protocol = window.location.protocol;
@@ -893,17 +904,83 @@ const App = () => {
 
     // Persist logs to localStorage on a 2s debounce instead of on every
     // state change — JSON.stringify of 500 entries was running on every
-    // log arrival and blocking the main thread.
+    // log arrival and blocking the main thread. The seq cursor rides along so
+    // a reload asks the server only for what it is actually missing.
     useEffect(() => {
         const saveId = setTimeout(() => {
             try {
-                localStorage.setItem('modelserver_logs', JSON.stringify(logs.slice(-500)));
+                localStorage.setItem('modelserver_logs', JSON.stringify(logs.slice(-800)));
+                localStorage.setItem('modelserver_log_cursor', String(logSeqRef.current || 0));
             } catch (error) {
                 console.error('Failed to save logs to localStorage:', error);
             }
         }, 2000);
         return () => clearTimeout(saveId);
     }, [logs]);
+
+    // Pull everything this client missed from the server-side history. Called
+    // once on mount and again on every WebSocket (re)connect, so a page that
+    // was closed, asleep or briefly disconnected comes back with the gap
+    // filled instead of an empty feed.
+    const hydrateLogHistory = React.useCallback(async () => {
+        try {
+            const since = logSeqRef.current || 0;
+            const res = await fetch(`/api/logs?since=${since}&limit=1500`, { credentials: 'include' });
+            if (!res.ok) return;
+            const data = await res.json();
+            const incoming = Array.isArray(data.entries) ? data.entries : [];
+            if (typeof data.latestSeq === 'number') {
+                logSeqRef.current = Math.max(logSeqRef.current || 0, data.latestSeq);
+            }
+            setLogHistoryInfo({ buffered: data.buffered || 0, hydrated: true });
+            if (!incoming.length) return;
+            setLogs(prev => {
+                // `gap` means our cursor fell off the back of the server ring
+                // while we were away, so what came back is a fresh tail rather
+                // than a continuation — and a first load with no cursor may hold
+                // legacy entries that predate sequence numbers. Replace in both
+                // cases; otherwise merge and drop anything we already have.
+                const replace = data.gap || (!since && prev.some(l => !l || typeof l === 'string' || l.seq == null));
+                if (replace) return incoming.slice(-800);
+                const have = new Set(prev.map(l => (l && typeof l === 'object' ? l.seq : null)).filter(v => v != null));
+                const fresh = incoming.filter(e => !have.has(e.seq));
+                if (!fresh.length) return prev;
+                const merged = [...prev, ...fresh];
+                merged.sort((a, b) => {
+                    const as = (a && a.seq) || 0, bs = (b && b.seq) || 0;
+                    if (as && bs) return as - bs;
+                    return ((a && a.timestamp) || 0) - ((b && b.timestamp) || 0);
+                });
+                return merged.slice(-1200);
+            });
+        } catch (_) {
+            // Backfill is best-effort — the live socket is still the primary feed.
+        }
+    }, []);
+
+    // A backgrounded or sleeping tab can keep a socket that is dead in practice
+    // without ever firing onclose, so returning to the page is another moment
+    // worth reconciling against the server history.
+    useEffect(() => {
+        const onVisible = () => { if (document.visibilityState === 'visible') hydrateLogHistory(); };
+        document.addEventListener('visibilitychange', onVisible);
+        window.addEventListener('online', onVisible);
+        return () => {
+            document.removeEventListener('visibilitychange', onVisible);
+            window.removeEventListener('online', onVisible);
+        };
+    }, [hydrateLogHistory]);
+
+    // Clearing is per-browser: it wipes the local view and parks the cursor at
+    // the current head so the next backfill does not resurrect what was cleared.
+    const clearLogs = React.useCallback(() => {
+        setLogs([]);
+        logBufferRef.current = [];
+        try {
+            localStorage.setItem('modelserver_logs', '[]');
+            localStorage.setItem('modelserver_log_cursor', String(logSeqRef.current || 0));
+        } catch (_) { /* storage disabled */ }
+    }, []);
 
     // Reset search page when sort/size filters change
     useEffect(() => {
@@ -957,6 +1034,8 @@ const App = () => {
         fetchSkills();
         fetchMdSkills();
         fetchTasks();
+        // Backfill anything logged while this page was closed.
+        hydrateLogHistory();
 
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.hostname;
@@ -976,6 +1055,9 @@ const App = () => {
                 setWsConnected(true);
                 if (reconnectAttempts > 0) {
                     showSnackbar('Reconnected to backend', 'success');
+                    // A dropped socket is exactly when lines go missing —
+                    // close the gap from the server-side history.
+                    hydrateLogHistory();
                 } else {
                     showSnackbar('Connected to backend', 'success');
                 }
@@ -1005,7 +1087,11 @@ const App = () => {
                         }
                         // Push to the ref-backed buffer; the flush interval
                         // above drains it into React state on a throttle.
+                        if (typeof data.seq === 'number' && data.seq > (logSeqRef.current || 0)) {
+                            logSeqRef.current = data.seq;
+                        }
                         logBufferRef.current.push({
+                            seq: typeof data.seq === 'number' ? data.seq : undefined,
                             message: msg,
                             level: level,
                             timestamp: dockerTime ? dockerTime.getTime() : Date.now()
@@ -1119,6 +1205,7 @@ const App = () => {
                 wsRef.current.close();
             }
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Data fetching functions
@@ -13435,6 +13522,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             <LogsPanel
                                 logs={logs}
                                 setLogs={setLogs}
+                                onClear={clearLogs}
+                                wsConnected={wsConnected}
+                                historyBuffered={logHistoryInfo.buffered}
                                 logFilter={logFilter}
                                 setLogFilter={setLogFilter}
                                 logSearch={logSearch}

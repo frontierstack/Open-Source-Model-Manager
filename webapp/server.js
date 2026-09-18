@@ -235,6 +235,7 @@ const attachmentStore = require('./services/attachmentStore');
 const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
 const pageObstacles = require('./services/pageObstacles');
 const urlRecovery = require('./services/urlRecovery');
+const logHistory = require('./services/logHistory');
 
 // Automation engine (in-process DAG executor) + per-user run-history store.
 const automationEngine = require('./services/automationEngine');
@@ -2690,6 +2691,10 @@ const API_KEYS_FILE = path.join(DATA_DIR, 'api-keys.json');
 const API_KEY_USAGE_STATS_FILE = path.join(DATA_DIR, 'api-key-usage-stats.json');
 const SYSTEM_SETTINGS_FILE = path.join(DATA_DIR, 'system-settings.json'); // admin-wide toggles (e.g. allowInternalNetwork)
 
+// Process-log history lives beside the other flat JSON stores so the Logs tab
+// survives a webapp restart (see services/logHistory.js for why it exists).
+logHistory.init(DATA_DIR);
+
 // Load persisted system settings at boot: hydrate the in-process
 // allowInternalNetworkFlag and push it to the egress proxy so BOTH enforcement
 // points (web-tool SSRF guard + sandbox egress) honor the same admin choice.
@@ -3372,6 +3377,27 @@ wss.on('connection', async (ws, req) => {
 const broadcast = (data, targetUserId = null) => {
     // Wrap in try-catch to prevent crashes from broadcast failures
     try {
+        // Several call sites (logUserActivity and friends) put the recipient
+        // INSIDE the frame instead of passing the second argument, which meant
+        // a per-account line was delivered to every authenticated socket. Honor
+        // both spellings so targeting actually targets.
+        if (!targetUserId && data && data.targetUserId) targetUserId = data.targetUserId;
+
+        // Record every log line server-side BEFORE sending. This is the one
+        // choke point every `{type:'log'}` frame passes through, so collection
+        // no longer depends on a browser being attached — the Logs tab
+        // backfills from `GET /api/logs` on mount and on every reconnect.
+        // The seq rides along on the frame so the client can dedupe exactly.
+        if (data && data.type === 'log') {
+            const seq = logHistory.record({
+                message: data.message,
+                level: data.level,
+                targetUserId,
+                timestamp: data.timestamp,
+            });
+            if (seq != null) data = { ...data, seq };
+        }
+
         const jsonData = JSON.stringify(data);
 
         wss.clients.forEach((client) => {
@@ -30623,6 +30649,38 @@ app.post('/api/memories/search', requireAuth, async (req, res) => {
         scored.sort((a, b) => b.score - a.score);
         const results = scored.filter((m) => m.score > 0).slice(0, k);
         res.json({ query, count: results.length, results, mode: sem ? 'semantic+keyword' : 'keyword' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================================
+// PROCESS LOG HISTORY
+// ============================================================================
+
+// Backfill for the Logs tab. The WebSocket only delivers lines to whoever is
+// connected RIGHT NOW, so anything emitted while the page was closed, asleep or
+// reconnecting used to be lost. Every `{type:'log'}` frame is recorded by
+// `broadcast()`; this hands a client everything it missed.
+//
+// `since` is the highest seq the client already holds (0 = give me the tail).
+// Visibility is identical to the WS: global frames plus this account's own.
+app.get('/api/logs', requireAuth, (req, res) => {
+    try {
+        const userId = req.user?.id || req.userId || null;
+        const sinceSeq = parseInt(req.query.since, 10) || 0;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 1000, logHistory.MAX_ENTRIES);
+        const out = logHistory.since(sinceSeq, { userId, limit });
+        res.json({
+            entries: out.entries,
+            latestSeq: out.latestSeq,
+            oldestSeq: out.oldestSeq,
+            buffered: out.total,
+            // The client's cursor fell off the back of the ring while it was
+            // away, so what it gets back is a NEW tail, not a continuation —
+            // it should replace its buffer rather than append to a stale one.
+            gap: sinceSeq > 0 && out.oldestSeq > sinceSeq + 1,
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
