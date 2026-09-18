@@ -5230,10 +5230,20 @@ body[class*="font-size-"] .markdown-content h4 { font-size: calc(15px * var(--fs
    --surface <- --bg-elevated, --ink <- --text-primary), so overriding the four
    background vars is enough to cover both variable systems.
 
-   Light themes are excluded. Specificity here is (0,1,1) vs a theme block's
-   (0,1,0), so this wins regardless of source order. */
+   Light themes are excluded — and the body arm MUST be guarded by the <html>
+   class as well, not only its own. The two apps carry the theme class in
+   different places (chat on <body>, the admin app on <html>), so a bare
+   `body:not(.theme-light)` matches the admin app's unclassed <body> even under
+   theme-light: body took this dark ramp and every descendant inherited it, so
+   the whole admin app rendered dark while <html> correctly held the light
+   values (measured --bg-primary #fafafa on <html> vs #111113 computed on
+   <body>). Requiring a non-light <html> ancestor fixes the admin app and is
+   equivalent for chat, where <html> is unclassed and the body arm still decides.
+
+   Specificity is (0,4,2) vs a theme block's (0,1,0), so this wins regardless
+   of source order. */
 html:not(.theme-light):not(.theme-research),
-body:not(.theme-light):not(.theme-research) {
+html:not(.theme-light):not(.theme-research) > body:not(.theme-light):not(.theme-research) {
     --bg-primary:   #111113;
     --bg-secondary: #1a1a1e;
     --bg-tertiary:  #252529;
