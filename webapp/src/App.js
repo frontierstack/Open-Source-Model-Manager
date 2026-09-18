@@ -878,11 +878,13 @@ const App = () => {
     };
 
     const scrollToBottom = () => {
-        if (isUserNearBottomRef.current) {
-            // 'auto' (instant) avoids animation queueing when many log lines
-            // arrive in quick succession — 'smooth' fights itself and stutters.
-            logsEndRef.current?.scrollIntoView({ behavior: "auto" });
-        }
+        if (!isUserNearBottomRef.current) return;
+        // Scroll the LOG CONTAINER only, never scrollIntoView: that walks up
+        // and scrolls every scrollable ancestor including the page, so each
+        // arriving line yanked the whole dashboard downward while the user was
+        // reading something else. Setting scrollTop cannot move an ancestor.
+        const container = logsContainerRef.current;
+        if (container) container.scrollTop = container.scrollHeight;
     };
 
     // Flush the incoming log buffer into state on a fixed interval so we

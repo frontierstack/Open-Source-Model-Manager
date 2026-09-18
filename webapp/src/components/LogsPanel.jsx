@@ -527,18 +527,21 @@ export default function LogsPanel({
     const firstTime = timeStrOf(decorated[0] && decorated[0].entry);
     const lastTime = timeStrOf(decorated[decorated.length - 1] && decorated[decorated.length - 1].entry);
 
-    // The resource monitor takes its natural height, and on a multi-GPU host that
-    // is tall enough to squeeze the log feed down to a few visible lines. Growing
-    // past the viewport (the page scrolls) and giving the feed a floor keeps the
-    // logs the subject of the Logs tab.
+    // The card gets an EXPLICIT viewport-derived height rather than flex-1. With a
+    // growable parent, flex-1 resolves against content: the card grew with every
+    // arriving line, its overflow-auto feed never actually overflowed, and the
+    // PAGE scrolled instead — so each new log line nudged the whole dashboard
+    // down while the user was reading. A bounded height keeps the scrolling
+    // inside the feed, where it belongs, and still floors the feed at 460px so
+    // the resource monitor below cannot squeeze it on a multi-GPU host.
     return (
-        <div className="flex flex-col gap-4" style={{ minHeight: 'calc(100vh - 200px)' }}>
+        <div className="flex flex-col gap-4">
             <div
-                className="flex flex-1 flex-col overflow-hidden rounded-xl border"
+                className="flex flex-col overflow-hidden rounded-xl border"
                 style={{
                     backgroundColor: 'var(--surface-primary, var(--bg-secondary))',
                     borderColor: 'var(--border-primary)',
-                    minHeight: 460,
+                    height: 'clamp(460px, calc(100vh - 240px), 1100px)',
                 }}
             >
                 <div className="flex h-full flex-col p-4">

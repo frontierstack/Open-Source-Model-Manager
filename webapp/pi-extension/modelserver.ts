@@ -1151,8 +1151,22 @@ export default async function (pi: ExtensionAPI) {
     // both models working (status line + widget).
     try {
         const pr = await authedFetch("/api/pi/pair");
-        const pair: any = pr.ok ? await pr.json() : null;
-        if (pair && pair.enabled && pair.legwork !== false) {
+        if (!pr.ok) throw new Error(`GET /api/pi/pair -> HTTP ${pr.status}`);
+        const pair: any = await pr.json();
+        // Register whenever the account has CONFIGURED a pair, not only when both
+        // models happen to be loaded this second. Tools can only be registered at
+        // extension load, so gating on "enabled" meant that loading the second
+        // model after starting Pi left delegation dead for the whole session with
+        // nothing logged to explain it. When a model is missing the server answers
+        // these tools with `pair_not_active` and the lead just does the work
+        // itself; the moment the model is loaded, delegation starts working.
+        const configuredPair = !!(pair && pair.configured && pair.configured.primary && pair.configured.secondary
+            && pair.configured.primary !== pair.configured.secondary && pair.configured.mode !== "off");
+        if (pair && !pair.enabled) {
+            console.error(`[modelserver] two models NOT active: ${pair.detail || "pairing is off"}`
+                + (configuredPair ? " (handover tools are registered and start working as soon as it is)" : ""));
+        }
+        if (pair && (pair.enabled || configuredPair) && pair.legwork !== false) {
             const short = (name: string) => {
                 const base = String(name || "").split("/").pop() || "";
                 const segs = base.split(/[-_]/).filter(Boolean);
@@ -1319,7 +1333,11 @@ export default async function (pi: ExtensionAPI) {
                     }, { triggerTurn: true, deliverAs: "followUp" });
                 } catch { /* nothing to deliver */ }
             });
-            console.error(`[modelserver] two models: ${short(pair.secondary)} leads substantial tasks, ${short(pair.primary)} assists (mode ${pair.mode})`);
+            const leadName = short(pair.secondary || pair.configured?.secondary);
+            const asstName = short(pair.primary || pair.configured?.primary);
+            console.error(pair.enabled
+                ? `[modelserver] two models: ${leadName} leads substantial tasks, ${asstName} assists (mode ${pair.mode})`
+                : `[modelserver] two models configured (${leadName} leads, ${asstName} assists) but NOT active yet — handover tools registered anyway`);
         }
     } catch (e) {
         console.error("[modelserver] two-model tools not registered:", (e as Error).message);

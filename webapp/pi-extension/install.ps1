@@ -504,11 +504,40 @@ Say "Shell:      $bashSummary"
 Say "Extension:  $ExtensionDir"
 Say "Settings:   $SettingsPath"
 Say "Base URL:   $BaseUrl"
+
+# ---------- two models (multi-agent) ----------
+# The extension registers the handover tools (ask_assistant / await_assistant)
+# from this endpoint at startup. When the pair is not usable the agent simply
+# has no way to delegate, which looks exactly like the models "choosing" not to
+# -- so report the real state here rather than leaving the user to guess.
+$pairSummary = 'unknown (could not reach the server)'
+if ($env:MODELSERVER_API_KEY) {
+    try {
+        $pairRaw = Invoke-Insecure -Uri "$BaseUrl/api/pi/pair" -Headers @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
+        # PS5.1 goes through curl.exe and returns a string; PS7 returns a response object.
+        $pairJson = if ($pairRaw -is [string]) { $pairRaw } else { $pairRaw.Content }
+        $pair = $pairJson | ConvertFrom-Json
+        if ($pair.enabled) {
+            $pairSummary = "ACTIVE -- $($pair.secondary) leads, $($pair.primary) assists (mode $($pair.mode))"
+        } else {
+            $pairSummary = "NOT ACTIVE -- $($pair.detail)"
+        }
+    } catch {
+        $pairSummary = "unknown ($($_.Exception.Message))"
+    }
+}
+Say "Two models: $pairSummary"
 Write-Host ''
 if (-not $InstallFailed) {
     Say 'This shell is ready -- run:'
     Say '  pi'
     Say '(new terminals pick everything up from the user environment automatically)'
+    if ($pairSummary -like 'NOT ACTIVE*') {
+        Write-Host ''
+        Say 'Multi-agent delegation is OFF for the reason above. Fix it in the web UI'
+        Say 'Models tab -> Model roles (pick two DIFFERENT loaded models), then just'
+        Say 'start pi -- the handover tools are already installed.'
+    }
 } else {
     Say 'Fix the errors above and re-run -- the installer is idempotent and skips finished steps.'
 }

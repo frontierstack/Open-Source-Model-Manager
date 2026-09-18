@@ -552,6 +552,32 @@ say "Pi:         ${c_green}${pi_ver:-$(pi --version 2>/dev/null || echo MISSING)
 say "Extension:  $EXT_DIR"
 say "Settings:   $SETTINGS"
 say "Base URL:   $BASE_URL"
+
+# Two models (multi-agent). The extension registers the handover tools
+# (ask_assistant / await_assistant) from this endpoint at startup; when the pair
+# is not usable the agent has no way to delegate at all, which looks exactly
+# like the models "choosing" not to — so report the real state instead of
+# leaving the user to guess.
+pair_summary="unknown (could not reach the server)"
+if [ -n "${MODELSERVER_API_KEY:-}" ]; then
+    pair_json="$(curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" "$BASE_URL/api/pi/pair" 2>/dev/null || true)"
+    if [ -n "$pair_json" ]; then
+        pair_summary="$(printf '%s' "$pair_json" | node -e '
+let raw = ""; process.stdin.on("data", (d) => (raw += d)).on("end", () => {
+    try {
+        const p = JSON.parse(raw);
+        process.stdout.write(p.enabled
+            ? `ACTIVE - ${p.secondary} leads, ${p.primary} assists (mode ${p.mode})`
+            : `NOT ACTIVE - ${p.detail || "pairing is off"}`);
+    } catch { process.stdout.write("unknown (unreadable response)"); }
+});' 2>/dev/null || echo "unknown")"
+    fi
+fi
+case "$pair_summary" in
+    ACTIVE*)     say "Two models: ${c_green}${pair_summary}${c_off}" ;;
+    "NOT ACTIVE"*) say "Two models: ${c_yellow}${pair_summary}${c_off}" ;;
+    *)           say "Two models: ${c_dim}${pair_summary}${c_off}" ;;
+esac
 echo ""
 # This script runs in a child bash (curl | bash) — it CANNOT export vars or
 # PATH into the shell that invoked it. Everything needed is now in $shell_rc,

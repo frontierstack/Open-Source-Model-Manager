@@ -11929,11 +11929,18 @@ app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
 // await_assistant tools and its status widget; see planPiPair).
 app.get('/api/pi/pair', requireAuth, async (req, res) => {
     try {
-        const { roles, enabled } = await resolvePiPairRoles(req);
+        const info = await resolvePiPairRoles(req);
+        const { roles, configured, enabled, reason, missing, running } = info;
         const entry = req.apiKeyData?.id ? piAssistantByKey.get(req.apiKeyData.id) : null;
         res.json({
             enabled, mode: roles.mode, primary: roles.primary || null, secondary: roles.secondary || null,
             legwork: roles.legwork !== false,
+            // What the account CONFIGURED, plus why it is not active right now, so
+            // the client can say something actionable instead of registering
+            // nothing in silence.
+            configured: { primary: configured.primary || null, secondary: configured.secondary || null, mode: configured.mode },
+            ...(enabled ? {} : { reason, missing, detail: piPairReasonText(info) }),
+            running,
             task: entry ? { lead: entry.lead, assistant: entry.assistant } : null,
         });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -17219,14 +17226,46 @@ function piInstanceName(instance) {
 
 async function resolvePiPairRoles(req) {
     const running = piRunningModelNames();
-    const roles = modelRolesSvc.resolveModelRoles({
-        body: {},
-        prefs: await getChatPrefsForUser(req.user?.id || req.userId || null),
-        system: systemModelRoles,
-        running,
-    });
+    const prefs = await getChatPrefsForUser(req.user?.id || req.userId || null);
+    const base = { body: {}, prefs, system: systemModelRoles };
+    const roles = modelRolesSvc.resolveModelRoles({ ...base, running });
+    // resolveModelRoles BLANKS a role whose model is not currently loaded, so a
+    // configured pair with one model unloaded is indistinguishable from "no pair
+    // configured" in `roles` alone. Resolve again WITHOUT the running filter to
+    // recover what the account actually asked for — that difference is the whole
+    // diagnosis, and without it Pi registered no delegation tools and said
+    // nothing about why.
+    const configured = modelRolesSvc.resolveModelRoles(base);
     const enabled = !!(roles && roles.primary && roles.secondary && roles.primary !== roles.secondary && roles.mode !== 'off');
-    return { roles, running, enabled };
+    let reason = null;
+    let missing = [];
+    if (!enabled) {
+        if (configured.mode === 'off') reason = 'mode_off';
+        else if (configured.sameModel) reason = 'same_model';
+        else if (!configured.primary || !configured.secondary) reason = 'not_configured';
+        else {
+            missing = [configured.primary, configured.secondary].filter((m) => !running.includes(m));
+            reason = missing.length ? 'model_not_loaded' : 'not_configured';
+        }
+    }
+    return { roles, configured, running, enabled, reason, missing };
+}
+
+// One sentence a human can act on, for the Pi status line and both installers.
+// Kept PURE ASCII on purpose: install.ps1 reads this through curl.exe on
+// PowerShell 5.1, whose stdout is OEM-decoded, so an em-dash here comes out as
+// mojibake in the installer's summary.
+function piPairReasonText({ reason, missing }) {
+    switch (reason) {
+        case 'mode_off':
+            return 'the two-model mode is set to "off" - turn it on in the Models tab (Model roles) or in chat Settings.';
+        case 'same_model':
+            return 'the primary and secondary name the SAME model - the pair needs two different models.';
+        case 'model_not_loaded':
+            return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not loaded - load ${missing.length > 1 ? 'them' : 'it'} and delegation starts working (no need to restart Pi).`;
+        default:
+            return 'no primary/secondary pair is configured - set both in the Models tab (Model roles).';
+    }
 }
 
 function piOfferedToolNames(body) {
