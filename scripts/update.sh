@@ -1107,7 +1107,7 @@ if [ "$DO_TEST" = true ]; then
 
     # --- inside the webapp: the services that must load at boot ----------------
     if docker compose exec -T webapp node -e "
-        for (const m of ['./services/chatTools.js','./services/loopGuard.js','./services/automationEngine.js','./services/memoryService.js']) require(m);
+        for (const m of ['./services/chatTools.js','./services/loopGuard.js','./services/automationEngine.js','./services/coreMemory.js']) require(m);
         console.log('ok');
     " 2>/dev/null | grep -q '^ok$'; then
         test_pass "webapp core services load"

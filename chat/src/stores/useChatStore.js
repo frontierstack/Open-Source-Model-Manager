@@ -264,7 +264,7 @@ export const useChatStore = create(
             // below) so a user who turned it on stays opted in across
             // reloads.
             codePreviewEnabled: false,
-            // Account memory — ON by default. When true, the server stops
+            // Core memory — ON by default. When true, the server stops
             // injecting, extracting, and recording memories for this user.
             // Synced to the server (see serverPreferencesSync) so the backend
             // can honor it; managed in the webapp Memory tab.

@@ -587,10 +587,10 @@ export default function ChatSettings({
                                 <label className="flex items-start justify-between gap-3 cursor-pointer">
                                     <div className="flex-1 min-w-0">
                                         <div className="set-row-title">
-                                            Account memory
+                                            Core memory
                                         </div>
                                         <div className="set-row-help">
-                                            Lets the assistant remember preferences, facts, and lessons across all your chats and pull the most relevant into each reply. Manage what's stored from the Memory tab in the main app. Turn off to stop using, extracting, and recording memories.
+                                            One living memory per kind of work (research, coding, data analysis, …). Each finished task refines its theme's playbook, and the next task of that kind starts from it. Manage themes from the Memory tab in the main app. Turn off to stop recalling and recording.
                                         </div>
                                     </div>
                                     <button

@@ -3,7 +3,7 @@
  * (embedding_engine.py): spawn it once at boot, keep it warm, restart it if it
  * dies, talk to it over a loopback HTTP port. One model2vec model in RAM,
  * shared by every consumer:
- *   - memoryIndex.js  — account-memory semantic index
+ *   - coreMemory.js   — (no longer indexed; the tool router is the remaining consumer)
  *   - toolIndex.js    — tool-router semantic catalog index
  * The engine only ever returns top-k rows, so callers stay context-cheap.
  */

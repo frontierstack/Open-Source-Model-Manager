@@ -249,8 +249,7 @@ const embeddingEngine = require('./services/embeddingEngine');
 // Account-scoped memory: persona/fact memories that follow the user across all
 // conversations (replaces the old per-conversation store). Storage only — the
 // extraction heuristics live in this file.
-const memoryService = require('./services/memoryService');
-const memoryIndex = require('./services/memoryIndex');
+const coreMemory = require('./services/coreMemory');
 const experienceMemory = require('./services/experienceMemory');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
@@ -3437,7 +3436,7 @@ const broadcast = (data, targetUserId = null) => {
 
 // Emit a user-visible process-log line (Logs tab) from ANYWHERE — the chat
 // stream has its own scoped `logChatActivity`, but post-response work
-// (memory extraction) and bottom-of-file tool executes (record_learning)
+// (core-memory recording/refinement) and bottom-of-file tool executes (record_learning)
 // run outside that closure and still need to surface
 // what they did. Same `[Chat]` prefix + per-user targeting so it lands in the
 // same stream the user already watches.
@@ -3782,7 +3781,7 @@ const PREF_FIELDS = new Set([
     'roleHelperModel', 'roleCheckerModel', 'roleCheckFinal', 'roleConsult', 'roleHandoff',
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
-    'memoryDisabled', // boolean — chat: turn off account memory (inject + extract + record_learning)
+    'memoryDisabled', // boolean — chat: turn off core memory (recall + record + record_learning)
     'compactSidebar', // boolean — webapp left rail collapsed
     'folders',       // chat sidebar folders: [{ id, name, order, createdAt }]
     'conversationFolderMap', // chat: { [conversationId]: folderId }
@@ -15653,663 +15652,46 @@ async function saveConversationMessages(userId, conversationId, messages, { memo
         // Non-critical - don't fail message save if index update fails
     }
 
-    // Fire-and-forget memory extraction from any new user→assistant pairs
-    // since the last save. Memory work must never block the save or leak
-    // errors back to the caller — user turns always succeed to disk.
-    // `memoryUserId` (defaults to the conversation owner) lets the chat stream
-    // route extraction to the ACCOUNT memory bucket even when the conversation
-    // itself is owned by an API key — so an API-key chat's memories land where
-    // retrieval (memAccountId) later reads them.
-    extractNewMemoriesFromSave(memoryUserId, conversationId, messages).catch(err => {
-        console.warn(`[Memory] Extraction failed for ${conversationId}: ${err.message}`);
-    });
+    // Memory no longer extracts facts from saved turns. The model's memory is
+    // the per-theme CORE MEMORY (services/coreMemory.js), fed by
+    // recordTurnActivity at the end of every tool-using turn.
+    void memoryUserId;
 }
 
 // ============================================================================
-// ACCOUNT MEMORY — extraction heuristics
+// CORE MEMORY — one living memory per THEME of work (services/coreMemory.js)
 // ============================================================================
-// Memory is ACCOUNT-scoped (see services/memoryService.js for storage). The
-// chat stream extracts short, heuristically-compressed facts from user↔assistant
-// turns and hands them to the memory service, which dedups account-wide and
-// keeps them bounded. On follow-up messages the stream scores the user's whole
-// memory against the new query and injects the top matches as a system message.
-// The functions below (scoring / shorthand / sentence splitting) PRODUCE the
-// candidate facts; persistence lives in the service.
+// The model's memory of an account is a handful of CORE MEMORIES, one per kind
+// of work it does for the user (research, coding, data analysis, documents,
+// media, security analysis, automations). Every tool-using turn flows into
+// the core memory of its theme (`recordTurnActivity`): statistics, the proven
+// approach, lessons and pitfalls land deterministically, and a background
+// refinement (`refineCoreMemory`, the local model, thinking off) rewrites the
+// theme's PLAYBOOK from the accumulated evidence — so the research memory is
+// "how I do research for this user" and it changes and improves over time.
+// On a turn, `retrieveRelevantMemories` recalls the ONE core memory whose
+// theme the ask belongs to (nothing for a themeless ask) and the caller puts
+// it in the latest user message. There is no fact/preference/limitation
+// extraction any more (removed 2026-09-22 at the user's request: those rows
+// surfaced on unrelated turns and steered answers wrong).
 
-// Target token budget for injected memories on a single turn (fallback when
-// the model's context size is unknown — see memoryBudgetForCtx).
-const MEMORY_RETRIEVAL_TOKEN_BUDGET = 1500;
-// Minimum factuality score to keep a sentence as a memory.
-const MEMORY_MIN_SCORE = 2;
-// Cosine threshold for the SEMANTIC relevance gate (memoryIndex embeddings).
-// potion-retrieval cosines, measured against real chat queries: a relevant
-// intent phrased as a full chat sentence lands ~0.26-0.43 (instruction
-// boilerplate dilutes the embedding; the same intent phrased tersely scores
-// ~0.4-0.66), unrelated content tops out ~0.2. 0.28 sits between the bands —
-// 0.35 looked safe on terse probes but rejected most sentence-length queries.
-// Tunable without a rebuild via env.
-const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') || 0.28;
-// Max memories pulled in by 1-hop LINK EXPANSION at retrieval. A memory the user
-// or the model CONNECTED to a relevant one rides along even if it wouldn't pass
-// the relevance gate on its own — that's the whole point of a link. Bounded +
-// token-budgeted so a dense link graph can't flood the context; 1-hop only (we
-// never expand an expansion). Set to 0 to disable. Tunable without a rebuild.
-const LINK_EXPANSION_MAX = parseInt(process.env.MEMORY_LINK_EXPANSION_MAX) || 4;
-// How many tools named by a RECALLED experience are force-kept in the tool
-// catalog for the turn. The router advertises ~13 of 133 tools, picked by
+// Injection budget for the recalled core memory (fallback when the model's
+// context size is unknown — see memoryBudgetForCtx). Deliberately lean: one
+// playbook, one proven approach, a few lessons.
+const MEMORY_RETRIEVAL_TOKEN_BUDGET = 700;
+// How many tools named by the recalled proven approach are force-kept in the
+// tool catalog for the turn (the router advertises ~13 of 133 tools by
 // semantics on the ask alone, so a remembered path can name a tool that is not
-// on offer — the model is then told to "reuse this approach" and cannot. Small
-// on purpose: the whole point of routing is a lean catalog (~130 tok/tool).
+// on offer). Small on purpose.
 const EXPERIENCE_FORCED_TOOL_MAX = parseInt(process.env.EXPERIENCE_FORCED_TOOL_MAX) || 6;
 
-// Semantic scores for a chat query: search with the full text AND a
-// keyword-condensed form, keeping the best cosine per memory. Real chat
-// queries carry instruction boilerplate ("one sentence", "don't search the
-// web") that dilutes the embedding — on the same intent the full sentence
-// measured 0.257 vs 0.289 condensed vs 0.395 terse against the matching
-// memory, so the condensed pass recovers part of the lost signal for one
-// extra local CPU search. Same null-on-engine-down contract as
-// memoryIndex.search; the condensed pass is best-effort on top.
-async function semanticMemoryScores(userId, query, k = 32) {
-    const sem = await memoryIndex.search(userId, query, k);
-    if (!sem) return null;
-    // Experiences moved to their own index namespace (they were losing top-k
-    // chunk slots to auto-facts). A store written before that split still has
-    // them in the main index — detectable as "this account has experiences but
-    // the experience namespace is empty" — so heal it in the background.
-    if (sem.expTotal === 0) {
-        try {
-            const list = await memoryService.listMemories(userId);
-            if (list.some(m => m.type === 'procedure' && m.task)) memoryService.reindexUser(userId).catch(() => {});
-        } catch (_) { /* best-effort */ }
-    }
-    const condensed = extractQueryKeywords(query).join(' ');
-    if (condensed && condensed.length < String(query).trim().length) {
-        try {
-            const semCond = await memoryIndex.search(userId, condensed, k);
-            if (semCond) {
-                for (const [id, s] of semCond.scores) {
-                    const prev = sem.scores.get(id);
-                    if (prev == null || s > prev) sem.scores.set(id, s);
-                }
-            }
-        } catch (_) { /* best-effort — full-query scores already in hand */ }
-    }
-    return sem;
-}
-
-// Scale the memory/persona injection budget with the model's context window —
-// a 4k-ctx model can't afford the same block a 131k one shrugs off. ~4% of
-// ctx, clamped: 4-8k → min, 32k → ~1.3k, 64k+ → capped.
-function memoryBudgetForCtx(ctx, { base = MEMORY_RETRIEVAL_TOKEN_BUDGET, min = 400, max = 2500 } = {}) {
+// Scale the core-memory block with the model's context window — ~2% of ctx,
+// clamped: 8k → 300, 32k → ~650, 64k+ → capped at 1200.
+function memoryBudgetForCtx(ctx, { base = MEMORY_RETRIEVAL_TOKEN_BUDGET, min = 300, max = 1200 } = {}) {
     if (!Number.isFinite(ctx) || ctx <= 0) return base;
-    return Math.max(min, Math.min(max, Math.floor(ctx * 0.04)));
+    return Math.max(min, Math.min(max, Math.floor(ctx * 0.02)));
 }
 
-
-// Score a sentence for how "fact-like" it is. Facts are what we want to
-// remember; filler phrases and meta-commentary are what we want to drop.
-// This is a heuristic, not a classifier — tuned so the top-scored sentences
-// from a typical Q&A turn are the ones a human would also pick.
-function scoreFactuality(sentence) {
-    const s = sentence.trim();
-    if (s.length < 15 || s.length > 500) return 0;
-    let score = 0;
-    // URLs and identifiers are high-value
-    if (/https?:\/\//.test(s)) score += 4;
-    if (/\b[a-z][a-zA-Z0-9]+[A-Z][a-zA-Z0-9]+\b/.test(s)) score += 2; // camelCase
-    if (/\b[a-z0-9]+_[a-z0-9_]+\b/.test(s)) score += 2;               // snake_case
-    if (/\b[A-Z][A-Z0-9_]{3,}\b/.test(s)) score += 2;                  // ALL_CAPS constants
-    // Filesystem paths: absolute (/etc/foo), home (~/foo), or relative
-    // (./foo, ../foo) — the dot-prefixed forms appear constantly in build
-    // instructions ("./build.sh") and must score as high-value.
-    if (/(^|\s)(\.{1,2}\/|[/~])[\w./-]+/.test(s)) score += 2;
-    // Bare filenames with a common extension ("build.sh", "config.yaml",
-    // "model.gguf") are also path-like facts worth keeping.
-    if (/\b[\w-]+\.(sh|py|js|jsx|ts|tsx|json|ya?ml|toml|conf|cfg|ini|md|txt|log|sql|go|rs|rb|java|cpp|c|h|hpp|html|css|xml|env|lock|gguf|bin|onnx)\b/i.test(s)) score += 2;
-    if (/`[^`]+`/.test(s)) score += 2;                                 // backtick code
-    if (/"[^"]{3,}"|'[^']{3,}'/.test(s)) score += 1;                   // quoted strings
-    // Numbers, dates, versions, amounts
-    if (/\b\d+(\.\d+)?\b/.test(s)) score += 1;
-    if (/\b\d{4}-\d{2}-\d{2}\b/.test(s)) score += 2;                   // ISO date
-    if (/\bv?\d+\.\d+(\.\d+)?\b/.test(s)) score += 1;                  // version
-    // Declarative predicates — expanded beyond the basic copula to cover
-    // the verbs that most often introduce concrete facts in technical
-    // prose. Missing these produces lots of false-negatives on simple
-    // statements like "the webapp listens on port 3001" or "the build
-    // runs ./build.sh".
-    if (/\b(is|was|are|were|has|have|had|named|called|equals?|returns?|contains?|requires?|means?|uses|runs|listens?|provides?|accepts?|includes?|mounts?|exports?|handles?|matches?|starts?|stops?|binds?|loads?|writes?|reads?|stores?|points?|lives?|located|depends?\s+on)\b/i.test(s)) score += 1;
-    // Capitalized words that are not sentence-initial — proper nouns
-    const caps = (s.match(/(?<=[a-z]\s)[A-Z][a-zA-Z]+/g) || []).length;
-    if (caps >= 1) score += Math.min(2, caps);
-    // Filler/meta-commentary penalties
-    if (/^(sure|okay|ok|yes|no|thanks|thank you|got it|great|alright|certainly)\b/i.test(s)) score -= 5;
-    if (/\b(let me|I'll|I will|I can|here's|here is|as requested|as an ai)\b/i.test(s)) score -= 3;
-    if (/\b(in summary|to summarize|in conclusion|overall|basically|essentially)\b/i.test(s)) score -= 2;
-    return score;
-}
-
-// Lightweight JS-side shorthand compression — a subset of AIMem's shorthand
-// stage ported over to avoid spawning a Python subprocess on every turn.
-// These replacements are lossless for meaning but shave ~15-25% off length
-// on typical prose. Longer replacements come first to avoid partial overlap.
-const SHORTHAND_REPLACEMENTS = [
-    [/\bin order to\b/gi, 'to'],
-    [/\bdue to the fact that\b/gi, 'because'],
-    [/\bwith respect to\b/gi, 're:'],
-    [/\bfor the purpose of\b/gi, 'to'],
-    [/\bin the event that\b/gi, 'if'],
-    [/\bat this point in time\b/gi, 'now'],
-    [/\bfor example\b/gi, 'e.g.'],
-    [/\bthat is\b/gi, 'i.e.'],
-    [/\bas well as\b/gi, 'and'],
-    [/\bin addition to\b/gi, 'and'],
-    [/\bas a result\b/gi, 'so'],
-    [/\bit is important to note that\b/gi, 'note:'],
-    [/\bit should be noted that\b/gi, 'note:'],
-    [/\bplease note that\b/gi, 'note:'],
-    [/\bkeep in mind that\b/gi, 'note:'],
-    [/\bthe user (?:is )?asking\b/gi, 'user asks'],
-    [/\bthe user wants\b/gi, 'user wants'],
-    [/\bthe user said\b/gi, 'user:'],
-    [/\bI would like to\b/gi, "I'd"],
-    [/\byou would like to\b/gi, "you'd"],
-    [/\bdo not\b/gi, "don't"],
-    [/\bdoes not\b/gi, "doesn't"],
-    [/\bis not\b/gi, "isn't"],
-    [/\bare not\b/gi, "aren't"],
-    [/\bwill not\b/gi, "won't"],
-    [/\bcannot\b/gi, "can't"],
-    [/\s{2,}/g, ' '],
-];
-function shorthandCompress(text) {
-    let out = text;
-    for (const [pattern, repl] of SHORTHAND_REPLACEMENTS) {
-        out = out.replace(pattern, repl);
-    }
-    return out.trim();
-}
-
-// Split text into sentences without breaking on dots inside filesystem
-// paths, URLs, version numbers, decimals, or mid-word abbreviations. A
-// sentence boundary is either a newline OR a .!? terminator followed by
-// whitespace and a capital-letter sentence start (optionally preceded by
-// an opening quote or paren). This preserves /etc/foo.conf, v1.2.3,
-// https://example.com/a.html, and 3.14 as single tokens inside whatever
-// sentence they belong to.
-function splitIntoSentences(text) {
-    if (!text) return [];
-    const out = [];
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (!trimmedLine) continue;
-        const parts = trimmedLine.split(/(?<=[.!?]["')\]]?)\s+(?=["'(\[]?[A-Z])/);
-        for (const p of parts) {
-            const t = p.trim();
-            if (t) out.push(t);
-        }
-    }
-    return out;
-}
-
-// Extract up to `maxKeep` memory-worthy sentences from a user→assistant pair.
-// Returns an array of { text, keywords, tokens, sourceRole }. Runs entirely
-// in-process, no subprocess spawn, safe to call on every save.
-// Heuristic type/impact classifier for AUTO-extracted memories. Extraction is
-// model-free (runs on every save), so this is cue-based and deliberately
-// CONSERVATIVE — it only assigns a non-'fact' type on a clear signal. Without
-// it every auto memory is a typeless, importance-less 'fact', so the Memory tab
-// shows a wall of untyped rows and it looks like nothing classifies them. A
-// user-stated preference/correction becomes a directive (always injected); a
-// plain fact's importance scales with its factuality score but never outranks
-// an explicit directive.
-function classifyMemoryHeuristic(sentence, role, factScore) {
-    const s = String(sentence).toLowerCase();
-    const isUser = role === 'user';
-    // Order matters: correction/limitation cues take precedence over a generic
-    // preference cue when a sentence trips more than one.
-    if (/\b(actually|that'?s (wrong|incorrect|not right)|not correct|i meant|i didn'?t mean|instead of|should (be|have been)|don'?t say|stop (doing|saying)|you (misunderstood|got .* wrong))\b/.test(s)) {
-        return { type: 'correction', impact: isUser ? 'important' : 'medium' };
-    }
-    if (/\b(doesn'?t work|not work(ing)?|cannot|can'?t|fail(s|ed)?|not supported|unsupported|no longer|deprecated|broke(n)?|not available|throws? (an )?error|errors? out)\b/.test(s)) {
-        return { type: 'limitation', impact: 'medium' };
-    }
-    if (/\b(i (prefer|like|love|want|use|always|never|usually|typically)|i'?d (prefer|rather)|please (always|use|don'?t|make sure|ensure)|from now on|going forward|by default|my (preferred|favou?rite|go-to))\b/.test(s)) {
-        return { type: 'preference', impact: isUser ? 'important' : 'medium' };
-    }
-    if (isUser && /\b(thanks?,? that (worked|helped)|that'?s (better|great|exactly|perfect)|good (job|call)|nailed it|works? (great|now|perfectly))\b/.test(s)) {
-        return { type: 'feedback', impact: 'low' };
-    }
-    // Plain fact — importance scales with factuality so the strongest facts
-    // still surface, but they never outrank explicit directives.
-    return { type: 'fact', impact: factScore >= 6 ? 'medium' : 'low' };
-}
-
-// Reject lines that are structural markdown noise, not durable facts. The
-// auto-extractor used to capture email-field dumps and report fragments verbatim
-// ("| Subject | Add Love to Your Story |", "| Body Links | https://… |") which
-// then became their own memory AND their own (garbage) title. These are never
-// worth remembering: they're transient analysis artifacts, not facts about the
-// user or their work. Conservative — only fires on clear table/separator/heading
-// structure so ordinary prose containing a single pipe or asterisk is kept.
-function isJunkMemoryLine(sentence) {
-    const t = String(sentence || '').trim();
-    if (!t) return true;
-    // Markdown table row or multi-cell line (≥2 pipes) — the biggest offender.
-    if ((t.match(/\|/g) || []).length >= 2) return true;
-    // Table separator / alignment row ( |---|:--:| ).
-    if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{0,}:?\s*)*\|?$/.test(t)) return true;
-    // Any markdown heading ("## Findings", "## What We Know So Far") — a section
-    // label from the assistant's formatted answer, not a durable fact.
-    if (/^#{1,6}\s+/.test(t)) return true;
-    // Markdown list item / numbered or analysis step ("- Watch …", "2. **Recipient**: …").
-    // These are pieces of a formatted answer, not standalone facts about the user.
-    if (/^[\s>]*([-*+]|\d+[.)])\s+/.test(t)) return true;
-    // A line that LEADS with a bolded span ("**Subject**: …", "**The irony:**
-    // …", "**Links**: …") — a row/label out of an assistant's structured
-    // breakdown, never a durable user fact (which reads as prose).
-    if (/^\s*\*\*[^*]+\*\*/.test(t)) return true;
-    // Code-ish line: shell/PowerShell pipelines, variable assignments, calls, or
-    // statement punctuation. Real facts mentioning code survive (the cue must be
-    // structural), code FRAGMENTS stored verbatim do not.
-    if (/^\s*\$\w+\s*=/.test(t)) return true;                         // $x = …
-    if (/^\s*(echo|curl|wget|sudo|apt|apk|npm|pip|git|chmod|mkdir|export)\s+["'-]/i.test(t)) return true;  // a line that IS a shell command (echo "…", curl -…), not prose about one
-    if (/^\s*["'][^"'\n]{1,60}["']\s*[:=]\s*["']/.test(t)) return true;                                     // "key" = "value" / "Header": "value" literal — a code/config fragment, not a fact
-    if (/\b(Where-Object|Write-Host|ForEach-Object|Select-Object|Invoke-RestMethod)\b/.test(t)) return true;
-    if (/=>|;\s*$|\{\s*$|^\s*(function|const|let|var|def|class|import|return|public|private)\b/.test(t)) return true;
-    // Link-dominated line ("📖 Read more: [Vogue HK](https://…)", "https://… for updates"):
-    // strip markdown links + bare URLs; if barely any prose remains, it's a
-    // pointer/citation, not a fact worth keeping.
-    const noLinks = t.replace(/\[[^\]]*\]\([^)]*\)/g, ' ').replace(/https?:\/\/\S+/g, ' ');
-    if ((t.match(/https?:\/\/|\]\(/g) || []).length >= 1 && (noLinks.match(/[a-zA-Z]/g) || []).length < 20) return true;
-    // Almost no letters (separator rules "---"/"===", pure number/symbol lines)
-    // — not a real fact. Kept low (<4) so genuine short facts ("Pi is 3.14",
-    // "IP 1.2.3.4") survive; the scoreFactuality length gate backstops the rest.
-    const letters = (t.match(/[a-zA-Z]/g) || []).length;
-    if (letters < 4) return true;
-    return false;
-}
-
-// A line that is a REQUEST/COMMAND to the assistant ("Give me all the info for
-// the Diablo 4 patch", "show me a picture of X", "can you check Y?") rather than
-// a durable FACT about the user. Such lines describe what the user wanted in one
-// turn, not a stable truth — re-injected later under "WHAT YOU KNOW ABOUT THIS
-// USER" they're noise (the largest junk class in the live store).
-// IMPORTANT: this is type-AWARE at every call site (only ever applied to
-// fact-typed / !isDirectiveType candidates). It must NOT be wired into
-// isJunkMemoryLine, which runs PRE-classification and would silently kill a
-// leading-imperative DIRECTIVE ("please always use tabs", "from now on output
-// JSON") — exactly the behavioral memory worth keeping.
-// `^`-anchored + multi-word, assistant-addressed openers only, so a mid-sentence
-// "the API lets users find records" never matches. Weak verbs (check/verify/…)
-// require an explicit "please" softener so a bare imperative isn't over-caught.
-function looksLikeRequest(text) {
-    const t = String(text || '').trim();
-    if (/\?\s*$/.test(t)) return true;                                  // trailing-? = a question
-    // Strong, unambiguous request openers (with or without a leading "please").
-    if (/^(please\s+)?(give me|show me|tell me|find me|get me|send me|look ?up|search for|help me|can you|could you|would you|will you)\b/i.test(t)) return true;
-    // Weaker verbs count as a request ONLY when softened by an explicit "please".
-    if (/^please\s+(give|show|tell|find|get|search|look ?up|check|verify|confirm|make sure|pull up)\b/i.test(t)) return true;
-    return false;
-}
-
-// ----------------------------------------------------------------------------
-// LLM-assisted extraction — the quality upgrade over the regex heuristics.
-// Every save runs right after a LOCAL model finished generating on the user's
-// own GPU, so a small post-save completion is free; it understands "my
-// daughter is 7" and "that approach failed, X worked" where scoreFactuality
-// (biased toward URLs/paths/code) scores them near zero. Fire-and-forget from
-// the save path, bounded in-flight, hard-timeout, and ALWAYS falls back to the
-// heuristic extractor on any failure — extraction can never regress below the
-// regex baseline. Returns:
-//   null  → LLM unavailable/failed (caller runs the heuristics)
-//   []    → LLM ran and judged nothing durable (VALID — do not fall back,
-//           that would re-add exactly the noise the model filtered out)
-//   [...] → candidates shaped like extractMemoriesFromTurn's output
-// ----------------------------------------------------------------------------
-let llmExtractInFlight = 0;
-const LLM_EXTRACT_MAX_INFLIGHT = 2;
-const LLM_EXTRACT_TIMEOUT_MS = 30000;
-
-const LLM_EXTRACT_SYSTEM_PROMPT =
-    'You extract long-term memories from one chat exchange so an assistant can serve this user better in FUTURE, unrelated conversations. ' +
-    'Return ONLY a JSON array, no prose. Each item: {"text": string, "type": string, "impact": "important"|"medium"|"low"}.\n' +
-    'Types:\n' +
-    '- "fact": a durable fact about the user, their life, work, projects, or environment.\n' +
-    '- "preference": how the user wants things done (style, tools, format).\n' +
-    '- "correction": the user corrected the assistant — what to do instead.\n' +
-    '- "limitation": something that does not work / is unavailable.\n' +
-    '- "workaround": a working alternative that was found.\n' +
-    '- "learning": what approach worked or failed when DOING a task (coding, research, analysis) — phrase as an ADAPTIVE heuristic the assistant should reuse ("ran into X, doing Y first avoids it"; "approach Z worked best for this kind of task"), never a rigid absolute. THIS IS THE MOST VALUABLE TYPE — prefer it.\n' +
-    'Rules:\n' +
-    '- Only items worth remembering WEEKS from now, in unrelated conversations.\n' +
-    '- The GOAL is to make the assistant work better next time: capture what went wrong and the fix, the best approach found for a task, durable facts about the user, and how they like work done. Favor experiential learnings (what worked / what to do better).\n' +
-    '- DO NOT store the user\'s passive INTERESTS, hobbies, or topics they were merely curious about this turn ("the user is interested in <show/game/topic>", "is a fan of X", "likes the series Y", "enjoys watching Z"). These are not actionable. (A working-style preference like "prefers concise answers" or a durable WORK/identity fact like "is a backend engineer" IS fine — the test is whether it changes how you should WORK or who they ARE, not what they happen to enjoy.)\n' +
-    '- NO content whose VALUE is time-bound (current date/time, today\'s news, live prices).\n' +
-    '- A durable change phrased with time words ("we are migrating to X this year", "I use Y now") IS worth keeping — rephrase it atemporally as the new steady state (e.g. "The user\'s hospital is migrating its network from Cisco to Juniper"), do not drop it.\n' +
-    '- DO NOT extract the assistant\'s OWN output as facts: article/search-result summaries, quoted passages, headings/bullets/tables, code snippets, commands, links/citations, or "what we found" write-ups are NOT memories. A memory is about the USER (their life/work/projects/environment), their stable preferences/corrections, or a reusable lesson from the task — never the content the assistant produced this turn.\n' +
-    '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
-    '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
-    '- NEVER add names, places, organizations or expansions of abbreviations that do not appear verbatim in the exchange (a domain like "xyschools.us" is NOT evidence of which district it is — keep the domain, do not guess the name). Invented specifics poison future answers.\n' +
-    '- NEVER turn a conditional or hypothetical the assistant posed into a fact about the user ("if you are 50 or older you can add $8,000" is NOT evidence that the user is 50 or older; "if this is a 401(k)" is not evidence that it is one). Only the user\'s own statements establish facts about the user.\n' +
-    '- If the assistant reply ends unfinished, was cut off, or admits it could not complete the task, do NOT turn its excuse into a "limitation" — a failed attempt is not evidence that something is impossible.\n' +
-    '- 0 to 5 items. If nothing qualifies, return [].';
-
-// An extracted memory must not name an entity the exchange never mentioned.
-// Live (2026-09-10): from a turn that mentioned only "ahschools.us", the
-// extractor minted "The user's school district is Alhambra Unified School
-// District" AND "…Arlington Heights School District" in the same call — two
-// contradictory expansions of an abbreviation, both stored as facts, and a
-// later turn then dismissed the real site as "the wrong district". Every
-// word of a multi-word Capitalized run in the memory must occur in the
-// source text; a run with an unseen word is an invented entity → drop.
-function memoryUnsupportedEntity(text, sourceText) {
-    const src = String(sourceText || '').toLowerCase();
-    if (!src) return null;
-    const runs = String(text || '').match(/\b[A-Z][\w'&-]*(?:\s+[A-Z][\w'&-]*)+/g) || [];
-    for (const run of runs) {
-        const words = run.split(/\s+/).map(w => w.toLowerCase().replace(/[^a-z0-9'&-]/g, '')).filter(w => w.length >= 3);
-        if (words.length && words.some(w => !src.includes(w))) return run;
-    }
-    return null;
-}
-
-async function llmExtractMemoriesFromTurn(userText, assistantText) {
-    if (process.env.MEMORY_LLM_EXTRACTION === '0') return null;
-    // Only when a local model is ALREADY serving — never queue behind a cold
-    // load, and never stack more than a couple of extraction completions.
-    let hasRunning = false;
-    for (const inst of modelInstances.values()) {
-        if (inst.status === 'running') { hasRunning = true; break; }
-    }
-    if (!hasRunning || llmExtractInFlight >= LLM_EXTRACT_MAX_INFLIGHT) return null;
-
-    const clean = (t, cap) => String(t || '')
-        .replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '')
-        .trim().slice(0, cap);
-    const u = clean(userText, 4000);
-    const a = clean(assistantText, 6000);
-    if (!u && !a) return null;
-
-    llmExtractInFlight++;
-    try {
-        const raw = await Promise.race([
-            runModelCompletion({
-                messages: [
-                    { role: 'system', content: LLM_EXTRACT_SYSTEM_PROMPT },
-                    { role: 'user', content: `USER MESSAGE:\n${u || '(none)'}\n\nASSISTANT REPLY:\n${a || '(none)'}` },
-                ],
-                temperature: 0,
-                maxTokens: 700,
-                preferFree: true,
-                disableThinking: true, // memory extraction needs clean JSON, not a reasoning trace that truncates it
-            }),
-            new Promise((_, rej) => {
-                const t = setTimeout(() => rej(new Error('llm extraction timed out')), LLM_EXTRACT_TIMEOUT_MS);
-                if (t.unref) t.unref();
-            }),
-        ]);
-        // Parse: strip reasoning, isolate the array, jsonrepair as fallback.
-        const stripped = String(raw || '')
-            .replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
-        const start = stripped.indexOf('[');
-        const end = stripped.lastIndexOf(']');
-        if (start < 0 || end <= start) return null;
-        const slice = stripped.slice(start, end + 1);
-        let arr;
-        try { arr = JSON.parse(slice); }
-        catch (_) {
-            try { arr = JSON.parse(require('jsonrepair').jsonrepair(slice)); }
-            catch (_) { return null; }
-        }
-        if (!Array.isArray(arr)) return null;
-
-        // Validate + apply the SAME safety filters the heuristic path uses —
-        // the model is better, not trusted: junk/ephemeral lines still drop.
-        const out = [];
-        for (const it of arr) {
-            if (out.length >= 5) break;
-            const text = shorthandCompress(String(it?.text || '').trim());
-            if (text.length < 12 || text.length > 600) continue;
-            if (isJunkMemoryLine(text)) continue;
-            const invented = memoryUnsupportedEntity(text, `${u}\n${a}`);
-            if (invented) { console.warn(`[Memory] Dropped extracted memory naming an entity the exchange never mentioned ("${invented}"): ${text.slice(0, 100)}`); continue; }
-            const type = (typeof it?.type === 'string' && memoryService.VALID_TYPES.has(it.type) && it.type !== 'procedure')
-                ? it.type : 'fact';
-            const isDirectiveType = type !== 'fact';
-            if (!isDirectiveType && isEphemeralFact(text)) continue;
-            const impact = memoryService.VALID_IMPACTS.has(it?.impact)
-                ? it.impact : (isDirectiveType ? 'medium' : 'low');
-            const keywords = extractQueryKeywords(text);
-            if (!keywords.length) continue;
-            out.push({
-                text,
-                keywords,
-                tokens: Math.ceil(text.length / 3),
-                score: impact === 'important' ? 7 : (impact === 'medium' ? 5 : 3),
-                type,
-                impact,
-                sourceRole: null,
-            });
-        }
-        return out;
-    } catch (_) {
-        return null; // unavailable/slow/garbled → heuristic fallback
-    } finally {
-        llmExtractInFlight--;
-    }
-}
-
-function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
-    const memories = [];
-
-    const processSide = (text, role) => {
-        if (!text || typeof text !== 'string') return;
-        // Strip reasoning blocks — they're introspection, not facts worth
-        // remembering across turns. Covers <think>, <thinking>, <reasoning>,
-        // and <reasoning_engine> variants emitted by different models.
-        const clean = text.replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
-        if (!clean) return;
-        // Skip pure-code payloads entirely — splitting code into "sentences"
-        // produces garbage and the useful facts about code live in the prose
-        // around it, not the code itself.
-        if (looksLikeCode(clean)) return;
-        const sentences = splitIntoSentences(clean);
-        for (const sentence of sentences) {
-            // Drop structural markdown noise (table rows / separators / bare
-            // headings) before any scoring — these are transient artifacts, not
-            // memories, and used to pollute both the store and the titles.
-            if (isJunkMemoryLine(sentence)) continue;
-            const score = scoreFactuality(sentence);
-            const { type, impact } = classifyMemoryHeuristic(sentence, role, score);
-            // Keep fact-like sentences (factuality gate) OR any sentence with a
-            // clear preference/correction/limitation/feedback cue. The latter
-            // are the durable BEHAVIORAL memories — and they routinely score ~0
-            // on factuality (a bare "I prefer dark mode" / "actually, use tabs"
-            // has no URLs/paths/numbers/code), so the score gate would drop them
-            // before they could ever be classified. Those are exactly what the
-            // user wants remembered, so a directive cue overrides the gate.
-            const isDirectiveType = type !== 'fact';
-            // Plain FACTS from the ASSISTANT side are almost always the model's
-            // own generated content (article summaries, search results, code,
-            // citations) — not durable facts ABOUT THE USER. scoreFactuality
-            // rewards URLs/paths/code/numbers, so that content scored high and
-            // flooded the store. Keep assistant-side ONLY for behavioral memories
-            // (corrections / workarounds / learnings the exchange established);
-            // real user facts come from the USER side (or the LLM extractor).
-            if (role === 'assistant' && !isDirectiveType) continue;
-            // A question OR a bare command to the assistant is the user ASKING,
-            // not a durable fact — "my script keeps crashing — any idea why?",
-            // "Give me all the info for the Diablo 4 patch" are not memories. Drop
-            // request-shaped sentences from the fact path. The `!isDirectiveType`
-            // guard is load-bearing: an imperative PREFERENCE ("please always use
-            // tabs", "from now on output JSON") is typed preference/correction by
-            // classifyMemoryHeuristic → isDirectiveType, and must stay exempt.
-            if (!isDirectiveType && looksLikeRequest(sentence)) continue;
-            if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
-            // Passive consumption-interest ("user is into the show X") is not a
-            // memory the user wants — drop it here too (the candidate choke point
-            // is the backstop, this keeps it out of the per-turn top-N as well).
-            if (!isDirectiveType && isLowValueInterest(sentence)) continue;
-            // Drop time-bound / live-news facts: their truth is anchored to this
-            // moment, so persisting them poisons future turns (a cached "today
-            // is …" date, yesterday's headlines). Directive-typed sentences
-            // (preferences/corrections) are kept even if they mention a day —
-            // their behavioral intent is durable.
-            if (!isDirectiveType && isEphemeralFact(sentence)) continue;
-            const compressed = shorthandCompress(sentence);
-            const keywords = extractQueryKeywords(compressed);
-            if (keywords.length === 0) continue;
-            // Floor a directive's score so it survives the per-turn top-N keep
-            // and outranks incidental facts.
-            const effScore = isDirectiveType
-                ? Math.max(score, impact === 'important' ? 6 : 4)
-                : score;
-            memories.push({
-                text: compressed,
-                keywords,
-                tokens: Math.ceil(compressed.length / 3),
-                sourceRole: role,
-                score: effScore,
-                type,
-                impact,
-            });
-        }
-    };
-
-    processSide(userText, 'user');
-    processSide(assistantText, 'assistant');
-
-    // Sort by score and keep the top N; also dedup within the same turn by
-    // keyword-set overlap so we don't save two paraphrases of the same fact.
-    memories.sort((a, b) => b.score - a.score);
-    const kept = [];
-    for (const m of memories) {
-        const dup = kept.some(k => jaccardSimilarity(k.keywords, m.keywords) >= 0.7);
-        if (!dup) kept.push(m);
-        if (kept.length >= maxKeep) break;
-    }
-    return kept;
-}
-
-function jaccardSimilarity(aKeywords, bKeywords) {
-    if (!aKeywords.length || !bKeywords.length) return 0;
-    const a = new Set(aKeywords);
-    const b = new Set(bKeywords);
-    let inter = 0;
-    for (const k of a) if (b.has(k)) inter++;
-    const union = a.size + b.size - inter;
-    return union === 0 ? 0 : inter / union;
-}
-
-// A sentence whose truth is anchored to the MOMENT it was captured — a current
-// date/time ("Today is Thursday, June 4, 2026"), a relative timestamp ("21 hours
-// ago"), or live news ("breaking headlines right now"). These must never become
-// durable memories: stored once and re-injected on a later turn, they actively
-// corrupt accuracy (the model parrots a stale date / yesterday's news as if it
-// were current). Deliberately CONSERVATIVE — only strong temporal-deixis /
-// relative-time / live-news cues fire, so durable facts that merely contain a
-// number, a date-like id (CVE-2026-…), or the bare word "now" are kept.
-const EPHEMERAL_PATTERNS = [
-    /\b(today|yesterday|tomorrow|tonight)\b/i,
-    /\bthis (morning|afternoon|evening|week|month|year|quarter)\b/i,
-    /\b(last|next|past|coming) (night|week|month|year|quarter|few days|couple (of )?days)\b/i,
-    /\bright now\b/i,
-    /\bas of (now|today|writing|this)\b/i,
-    /\bat (the moment|present|this time)\b/i,
-    /\b(these days|nowadays|currently|at present)\b/i,
-    /\b(\d+|a|an|few|several|couple|many)\s+(second|minute|hour|day|week|month|year|sec|min|hr|yr)s?\s+ago\b/i,
-    /\b(just|moments?|recently)\s+(now|ago|announced|released|published|reported|launched|happened)\b/i,
-    /\b(breaking|latest|top|recent)\s+(news|stories|headlines?)\b/i,
-    /\bheadlines?\b/i,
-    /\bnews (right now|today|this (week|morning))\b/i,
-    /\bin the news\b/i,
-    // Transient SESSION-scoped state — a file that was/wasn't on disk THIS
-    // session, what's available "in this conversation". True only for the moment
-    // it was captured; re-injected on a later turn it's actively misleading
-    // ("the SVG isn't available on disk in this session" when it later is).
-    /\b(in|for|during) this (session|conversation|chat|turn)\b/i,
-    /\b(isn'?t|is not|not|no longer)\s+(available|present|found|on disk)\b[^.]{0,40}\b(on disk|this session|this conversation)\b/i,
-];
-function isEphemeralFact(sentence) {
-    const s = String(sentence || '');
-    return EPHEMERAL_PATTERNS.some((re) => re.test(s));
-}
-
-// A PASSIVE consumption/curiosity statement about the user — "the user is
-// interested in X", "has an interest in the series Y", "is a fan of Z",
-// "enjoys watching/reading/playing W", "likes the show/anime/game …". The user
-// explicitly does NOT want these stored: they are not actionable for serving
-// them better. Memory should hold (a) durable WORK/identity facts, (b)
-// behavioral preferences (HOW they want work done), and (c) experiential
-// learnings (what approach worked / failed). Deliberately targets the
-// consumption/curiosity FRAMING, so professional-identity facts ("works in
-// cybersecurity", "is a backend engineer") and real working-style preferences
-// ("prefers concise answers", "wants code first") are NOT matched.
-const INTEREST_PATTERNS = [
-    /\binterest(ed)?\s+in\b/i,
-    /\bhas (an?|some) (interest|fascination|fondness|liking|passion|curiosity|affinity|obsession)\b/i,
-    /\bis (interested|curious|enthusiastic|passionate|keen|excited)\b/i,
-    /\b(is|are|being)\s+(a |an )?(big |huge |avid |major |massive )?fan(s)? of\b/i,
-    /\benjoys?\s+(watching|reading|playing|listening|following|the\b|this\b)/i,
-    /\b(likes?|loves?|enjoys?|follows?|watches?|reads?|plays?|into)\b[^.]*\b(series|show|movie|film|anime|manga|cartoon|game|video game|book|novel|comic|song|album|artist|band|musician|character|franchise|genre|sport|team|celebrity|youtuber|streamer)\b/i,
-];
-function isLowValueInterest(text) {
-    const s = String(text || '');
-    if (!s) return false;
-    return INTEREST_PATTERNS.some((re) => re.test(s));
-}
-
-// A keyword distinctive enough that a SINGLE shared one is a confident match:
-// an identifier (digit / underscore / camelCase), a path/URL token, or a
-// hyphen-compound (cve-2026-…, kv-cache). Common domain words ("security",
-// "running", "download") are NOT specific — they're long but collide constantly,
-// and keywords are lowercased at extraction so a raw-length rule can't tell an
-// identifier from an ordinary word. A plain word therefore needs a SECOND shared
-// keyword to match (see factKeywordMatch).
-function isSpecificKeyword(k) {
-    if (!k) return false;
-    if (/\d/.test(k)) return true;                        // versions, CVE ids, ports, dates
-    if (/_/.test(k)) return true;                         // snake_case
-    if (/[a-z][A-Z]/.test(k)) return true;                // camelCase (pre-lowercase safety)
-    if (/[/.~]/.test(k)) return true;                     // path / url-ish
-    if (k.includes('-') && k.length >= 6) return true;    // hyphen-compound
-    return false;
-}
-
-// Decide whether an auto-extracted FACT is relevant enough to the query to
-// inject. Replaces the old bare `jaccard >= 0.2` gate, which let a single
-// common shared word ("today", "news", "security") trigger a false-positive —
-// the root of memories corrupting accuracy. Rule: >=2 shared keywords (real
-// topical overlap), OR exactly one shared keyword that is highly specific
-// (an identifier). No jaccard floor — it rejected legitimate 2-keyword matches
-// between a long fact and a short query (2/12 = 0.16 < 0.2).
-function factKeywordMatch(factKeywords, queryKeywords) {
-    const fk = factKeywords || [];
-    if (!fk.length || !queryKeywords.length) return false;
-    const qs = new Set(queryKeywords);
-    let inter = 0, lastShared = null;
-    for (const k of fk) if (qs.has(k)) { inter++; lastShared = k; }
-    if (inter >= 2) return true;
-    if (inter === 1 && isSpecificKeyword(lastShared)) return true;
-    return false;
-}
-
-// Get text content from a chat message, handling both string and vision-array
-// formats. Strips image_url parts since memories are text-only.
-function messageText(msg) {
-    if (!msg || !msg.content) return '';
-    if (typeof msg.content === 'string') return msg.content;
-    if (Array.isArray(msg.content)) {
-        return msg.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n');
-    }
-    return '';
-}
-
-// Account-scoped memory disable check (chat-app preference). Best-effort: a
-// failed lookup defaults to ENABLED so memory never silently turns off on a
-// transient read error. Honored at extraction, retrieval, and record_learning.
 // The account's chat-scoped preferences (the chat UI syncs a whitelisted
 // subset — memoryDisabled, model roles — to the server so the backend can
 // honor them for API callers too). {} when there are none.
@@ -16323,6 +15705,9 @@ async function getChatPrefsForUser(userId) {
     } catch { return {}; }
 }
 
+// Account-scoped memory disable check (chat-app preference). Best-effort: a
+// failed lookup defaults to ENABLED so memory never silently turns off on a
+// transient read error. Honored at recall, recording, and record_learning.
 async function isMemoryDisabledForUser(userId) {
     try {
         if (!userId) return false;
@@ -16334,789 +15719,146 @@ async function isMemoryDisabledForUser(userId) {
     } catch { return false; }
 }
 
-// After a saveConversationMessages call, walk any user→assistant pairs newer
-// than the per-conversation extraction cursor and extract ACCOUNT-scoped
-// memories from each. Memories now belong to the user (not the conversation),
-// so they're deduped account-wide and follow the user everywhere. The cursor
-// (which assistant msg we last processed for THIS conversation) lives in the
-// memory service so re-saves don't re-extract. Fire-and-forget; errors swallow.
-async function extractNewMemoriesFromSave(userId, conversationId, messages) {
-    if (!Array.isArray(messages) || messages.length < 2) return;
-    if (await isMemoryDisabledForUser(userId)) return;
-    // Import any legacy per-conversation memories first (idempotent) so we
-    // don't re-extract turns that already produced memories before the move.
-    try { await memoryService.migrateLegacyForUser(userId); } catch (_) { /* best-effort */ }
+// ---- Playbook refinement (background, the local model) --------------------
+// Runs after a recorded episode marks the theme dirty. Bounded: one in flight,
+// at most one per theme per CORE_REFINE_MIN_GAP_MS (a burst of turns coalesces
+// into one rewrite), a hard timeout, and `preferFree` so it never takes the
+// slot a live turn is using. The deterministic parts already landed, so a
+// missing/slow model only delays the prose.
+let coreRefineInFlight = 0;
+const CORE_REFINE_MAX_INFLIGHT = 1;
+const CORE_REFINE_TIMEOUT_MS = parseInt(process.env.CORE_MEMORY_REFINE_TIMEOUT_MS, 10) || 60000;
+const CORE_REFINE_MIN_GAP_MS = parseInt(process.env.CORE_MEMORY_REFINE_GAP_MS, 10) || 45000;
+const coreRefineLast = new Map();      // `${userId}|${id}` -> last start ts
+const coreRefineScheduled = new Set(); // keys with a deferred retry pending
 
-    const cursor = await memoryService.getCursor(userId, conversationId);
-    let startIdx = 0;
-    if (cursor) {
-        const cursorIdx = messages.findIndex(m => m.id === cursor);
-        if (cursorIdx >= 0) startIdx = cursorIdx + 1;
-    }
-
-    // Collect the new user→assistant pairs first, then extract per pair.
-    let newestCursor = cursor;
-    const pairs = [];
-    for (let i = startIdx; i < messages.length; i++) {
-        const msg = messages[i];
-        if (msg.role !== 'assistant') continue;
-        // Walk backwards to find the most recent user message before this one.
-        let userMsg = null;
-        for (let j = i - 1; j >= 0; j--) {
-            if (messages[j].role === 'user') { userMsg = messages[j]; break; }
-            if (messages[j].role === 'assistant') break; // not paired
-        }
-        if (msg.id) newestCursor = msg.id;
-        if (!userMsg) continue;
-        // A reply the user stopped, a partial the client saved, or a turn the
-        // loop guard had to cut off is a FAILED attempt: its text is an excuse,
-        // not evidence. Live: an aborted policy lookup minted an "important"
-        // limitation ("sub-policy pages are not accessible … prioritize the
-        // parent policy") that would have steered every later lookup wrong.
-        // The user's own words are still extracted; the reply is not.
-        const assistantAborted = !!(msg.stoppedByUser || msg.isPartial || msg.needsContinuation || msg.loopExhausted);
-        if (assistantAborted) console.log(`[Memory] Skipping assistant side of an aborted/cut-off turn (${msg.id || '?'}) for extraction`);
-        pairs.push({ userText: messageText(userMsg), assistantText: assistantAborted ? '' : messageText(msg), msgId: msg.id || null });
-    }
-
-    const candidates = [];
-    let usedLlm = false;
-    for (const pair of pairs) {
-        // LLM extraction first (free — rides the loaded local model), but only
-        // on a normal-sized batch; a long legacy backlog goes straight to the
-        // heuristics rather than queueing N completions. `null` = unavailable
-        // → heuristic fallback. `[]` = the model judged nothing durable — a
-        // VALID verdict we keep (falling back would re-add the filtered noise).
-        let extracted = null;
-        if (pairs.length <= 2) {
-            extracted = await llmExtractMemoriesFromTurn(pair.userText, pair.assistantText);
-            if (extracted) usedLlm = true;
-        }
-        if (extracted == null) {
-            extracted = extractMemoriesFromTurn(pair.userText, pair.assistantText);
-        }
-        for (const mem of extracted) {
-            // Drop passive consumption/curiosity statements ("user is interested
-            // in X", "is a fan of Y") regardless of how either extractor typed
-            // them — the user wants memory focused on durable facts, behavioral
-            // preferences, and experiential learnings, not topic interests.
-            if (isLowValueInterest(mem.text)) continue;
-            // Bare request/command stored as a fact — covers BOTH the heuristic
-            // and the LLM extractor uniformly (the LLM path occasionally emits a
-            // raw user request as type:'fact'). Scoped to fact-typed only, so an
-            // imperative-phrased directive is untouched.
-            if (mem.type === 'fact' && looksLikeRequest(mem.text)) continue;
-            candidates.push({
-                text: mem.text,
-                keywords: mem.keywords,
-                tokens: mem.tokens,
-                score: mem.score,
-                type: mem.type,
-                impact: mem.impact,
-                sourceRole: mem.sourceRole,
-                sourceTurnId: pair.msgId,
-                sourceConvId: conversationId,
-            });
-        }
-    }
-
-    let added = 0, superseded = 0;
-    let addedItems = [];
-    if (candidates.length) {
-        // Dedup + supersedence are account-wide and prune-to-cap happens
-        // inside the service.
-        const res = await memoryService.addAutoMemories(userId, candidates, { sourceConvId: conversationId });
-        added = res.added;
-        superseded = res.superseded || 0;
-        addedItems = res.items || [];
-    }
-    if (newestCursor && newestCursor !== cursor) {
-        await memoryService.setCursor(userId, conversationId, newestCursor);
-    }
-    // Background self-consolidation: once the store grows past the soft cap, merge
-    // any near-duplicate clusters that have accumulated. Fire-and-forget, no LLM
-    // (keep-strongest text), so it stays cheap. Only does work when over the cap.
-    if (added > 0) {
-        memoryService.consolidateUser(userId, { auto: true }).then((r) => {
-            if (r && r.merged > 0) logUserActivity(userId, `Memory: consolidated ${r.merged} near-duplicate memories (${r.before} → ${r.after})`);
-        }).catch(() => {});
-    }
-    if (added > 0 || superseded > 0) {
-        const total = await memoryService.countForUser(userId).catch(() => -1);
-        console.log(`[Memory] Extracted ${added} new + ${superseded} refreshed account memories from conversation ${conversationId} (${usedLlm ? 'llm' : 'heuristic'}; account total: ${total})`);
-        // Surface it in the user's process log too (not just server console),
-        // with a brief preview of what was learned this turn.
-        const preview = addedItems.slice(0, 3)
-            .map(it => `${it.superseded ? '↻ ' : ''}${it.type}/${it.impact || 'low'}: “${(it.text || '').slice(0, 60)}”`).join('; ');
-        // Lead with "created new" vs "updated existing" so the user can tell at
-        // a glance whether this turn added a fresh memory or enhanced one already
-        // on file (supersedence refines an existing row in place).
-        const verbParts = [];
-        if (added > 0) verbParts.push(`created ${added} new`);
-        if (superseded > 0) verbParts.push(`updated ${superseded} existing`);
-        logUserActivity(userId,
-            `Memory: ${verbParts.join(', ')} memor${(added + superseded) === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
-    }
-}
-
-// ============================================================================
-// EXPERIENCE / PROCEDURE memories — the model's persona ("who you are")
-// ============================================================================
-// A turn is mapped to ONE high-level activity ("reading emails", "web
-// research") from the tools it used + the files it handled + the user's ask.
-// After the turn we record/refine an experience memory for that activity that
-// captures the SUCCESSFUL tool path (the lean recipe — failed/exploratory calls
-// are dropped). Injected back on the next similar task so the model front-loads
-// the approach that worked and skips the fumbling → fewer tool calls, faster.
-
-// Priority-ordered: the FIRST matching rule wins (most specific → most generic).
-// test(toolSet, attachmentKinds, userTextLower) → boolean.
-//
-// Each rule matches on the tools the turn USED and/or the attachment kinds —
-// AND, crucially, on TEXT cues from the user's ask. The text cues exist because
-// the activity hint is computed PRE-turn (before any tool runs), so a tool-only
-// rule (coding, data-viz, …) could never fire pre-turn and the matching
-// experience memory would never lead. That's what made memory injection drop
-// the relevant experience and look irrelevant: a coding question got no
-// activity hint, so its coding experience was indistinguishable from the
-// (irrelevant) email/web experiences. The text cues let the right experience
-// be identified from the question alone.
-const ACTIVITY_RULES = [
-    { activity: 'reading-emails', label: 'Reading emails',
-      test: (t, a, q) => a.has('email') || /\bemails?\b|\.eml\b|\.msg\b|\binbox\b|\bsender\b/.test(q) },
-    { activity: 'spreadsheet-analysis', label: 'Spreadsheet & data analysis',
-      test: (t, a, q) => a.has('spreadsheet') || t.has('read_xlsx') || t.has('create_xlsx') || t.has('query_sqlite')
-          || /\b(spreadsheet|excel|csv|tsv|xlsx?|pivot table|google sheets?)\b/.test(q) },
-    { activity: 'binary-ctf-analysis', label: 'Binary / CTF analysis',
-      test: (t, a, q) => t.has('hex_dump') || t.has('extract_strings') || t.has('xor_bytes') || t.has('hex_convert')
-          || /\b(ctf|reverse[- ]?engineer\w*|disassembl\w+|shellcode|hex dump|\bxor\b|crackme|buffer overflow|capture the flag)\b/.test(q) },
-    { activity: 'audio-transcription', label: 'Audio transcription',
-      test: (t, a, q) => a.has('audio') || t.has('transcribe_audio') || /\b(transcribe|transcription|audio file|voice memo)\b/.test(q) },
-    { activity: 'image-analysis', label: 'Image analysis',
-      test: (t, a, q) => a.has('image') || t.has('transform_image') || /\b(this image|the image|screenshot|photo|picture|resize|crop|rotate)\b/.test(q) },
-    { activity: 'code-analysis', label: 'Reading & analyzing code',
-      test: (t, a, q) => a.has('archive') || a.has('code') || t.has('extract_archive') || t.has('tar_extract')
-          || t.has('grep_code') || t.has('outline_file') || t.has('read_file') || t.has('list_directory') || t.has('search_files')
-          || /\b(analy[sz]e|review|explain|understand|trace|debug|audit|walk through)\b[^.]{0,40}\b(code|codebase|repo(sitory)?|stack ?trace|traceback|this (file|function|script|error|bug))\b/.test(q) },
-    { activity: 'document-analysis', label: 'Reading documents',
-      test: (t, a, q) => a.has('pdf') || a.has('document') || t.has('read_pdf') || /\bpdf\b|\bdocx?\b/.test(q) },
-    { activity: 'web-research', label: 'Web research',
-      test: (t, a, q) => t.has('web') || t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact')
-          || /\b(search the web|look ?up online|latest|current|news|who is|what is the (price|stock)|google)\b/.test(q) },
-    { activity: 'data-visualization', label: 'Data visualization',
-      test: (t, a, q) => t.has('render_chart') || t.has('fetch_timeseries')
-          || /\b(chart|graph|plot|visuali[sz]e|bar chart|line chart|pie chart|dashboard|histogram|scatter ?plot)\b/.test(q) },
-    { activity: 'coding', label: 'Writing & running code',
-      test: (t, a, q) => t.has('run_python') || t.has('run_node') || t.has('replace_lines') || t.has('create_file')
-          // Technical nouns only — 'app'/'website' were dropped because they
-          // false-matched non-coding asks like "write a story about a website".
-          || /\b(write|implement|create|generate|build|fix|refactor|optimi[sz]e|debug)\b[^.]{0,40}\b(function|code|script|class|method|program|algorithm|api|endpoint|component|query|regex|for ?loop)\b/.test(q)
-          || /\b(python|javascript|typescript|c\+\+|golang|\brust\b|\bsql\b|bash script|react|node\.?js)\b/.test(q) },
-];
-
-function deriveAttachmentKinds(attachments) {
-    const kinds = new Set();
-    for (const a of (Array.isArray(attachments) ? attachments : [])) {
-        const name = String(a?.filename || a?.name || '').toLowerCase();
-        const mime = String(a?.mimeType || a?.type || '').toLowerCase();
-        if (/\.(eml|msg)$/.test(name) || mime.includes('message/')) kinds.add('email');
-        else if (/\.(xlsx|xls|csv|tsv)$/.test(name) || mime.includes('spreadsheet') || mime.includes('csv')) kinds.add('spreadsheet');
-        else if (/\.pdf$/.test(name) || mime.includes('pdf')) kinds.add('pdf');
-        else if (/\.(docx?|odt|rtf)$/.test(name) || mime.includes('word') || mime.includes('officedocument.wordprocessing')) kinds.add('document');
-        else if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/.test(name) || mime.startsWith('image/')) kinds.add('image');
-        else if (/\.(mp4|mov|webm|mkv|avi|m4v|mpe?g)$/.test(name) || mime.startsWith('video/')) kinds.add('video');
-        else if (/\.(mp3|wav|m4a|flac|ogg|aac)$/.test(name) || mime.startsWith('audio/')) kinds.add('audio');
-        else if (require('./services/archiveExtractor').ARCHIVE_EXT_RE.test(name)) kinds.add('archive');
-        else if (/\.(jsx?|tsx?|py|go|rs|java|c|cpp|h|hpp|rb|php|sh|json|ya?ml|toml)$/.test(name)) kinds.add('code');
-    }
-    return kinds;
-}
-
-function classifyTurnActivity({ toolLabels = [], userText = '', attachmentKinds = new Set() }) {
-    const t = new Set(toolLabels);
-    const q = String(userText || '').toLowerCase();
-    for (const rule of ACTIVITY_RULES) {
-        try { if (rule.test(t, attachmentKinds, q)) return { activity: rule.activity, label: rule.label }; }
-        catch (_) { /* a bad rule must not break the turn */ }
-    }
-    return null;
-}
-
-// Fire-and-forget after a turn: record the EPISODE — what the task was, the
-// tool path that got it done (with argument hints), how efficient it was, the
-// pitfalls hit — and fold it into the closest existing experience (task
-// similarity via the embedding index) or start a new one. A later run of a
-// similar task retrieves it and goes straight to the proven approach. The
-// coarse activity label is kept only as a tag / weak signal. Optional LLM
-// refinement (generalized summary, task kind, alternative phrasings, lessons)
-// runs AFTER the record exists so a slow or absent model never blocks it.
-let experienceRefineInFlight = 0;
-const EXPERIENCE_REFINE_MAX_INFLIGHT = 1;
-const EXPERIENCE_REFINE_TIMEOUT_MS = parseInt(process.env.EXPERIENCE_REFINE_TIMEOUT_MS, 10) || 45000;
-
-async function refineExperienceWithModel(userId, id, episode, chips, rec = null) {
-    if (process.env.EXPERIENCE_LLM_REFINE === '0') return null;
+async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
+    if (process.env.CORE_MEMORY_LLM_REFINE === '0') return null;
+    if (!userId || !id) return null;
+    const key = `${userId}|${id}`;
+    const defer = (ms) => {
+        if (coreRefineScheduled.has(key)) return null;
+        coreRefineScheduled.add(key);
+        const t = setTimeout(() => { coreRefineScheduled.delete(key); refineCoreMemory(userId, id).catch(() => {}); }, ms);
+        if (t.unref) t.unref();
+        return null;
+    };
+    if (delayMs > 0) return defer(delayMs);
+    const sinceLast = Date.now() - (coreRefineLast.get(key) || 0);
+    if (sinceLast < CORE_REFINE_MIN_GAP_MS) return defer(CORE_REFINE_MIN_GAP_MS - sinceLast + 500);
     let hasRunning = false;
     for (const inst of modelInstances.values()) { if (inst.status === 'running') { hasRunning = true; break; } }
-    if (!hasRunning || experienceRefineInFlight >= EXPERIENCE_REFINE_MAX_INFLIGHT) return null;
-    experienceRefineInFlight++;
+    if (!hasRunning) return null;
+    if (coreRefineInFlight >= CORE_REFINE_MAX_INFLIGHT) return defer(15000);
+    const rec = await coreMemory.get(userId, id);
+    if (!rec || !rec.dirty) return null;
+    // One task is an anecdote, not a pattern — the deterministic parts (proven
+    // approach, observed lessons) carry the theme until a second task lands.
+    if ((rec.stats?.runs || 0) < coreMemory.MIN_REFINE_RUNS) return null;
+    coreRefineLast.set(key, Date.now());
+    coreRefineInFlight++;
     try {
         const raw = await Promise.race([
             runModelCompletion({
                 messages: [
-                    { role: 'system', content: experienceMemory.REFINE_PROMPT },
-                    // The accumulated record goes in too, so the summary/kind
-                    // GENERALIZE across every run of this task kind instead of
-                    // being rewritten to describe whichever run happened last.
-                    { role: 'user', content: experienceMemory.refinementInput(episode, chips, rec) },
+                    { role: 'system', content: coreMemory.REFINE_PROMPT },
+                    { role: 'user', content: coreMemory.refinementInput(rec) },
                 ],
-                temperature: 0, maxTokens: 400, disableThinking: true, preferFree: true,
+                temperature: 0, maxTokens: 800, disableThinking: true, preferFree: true,
             }),
-            new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('refine timed out')), EXPERIENCE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
+            new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('refine timed out')), CORE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
         ]);
-        const ref = experienceMemory.parseRefinement(raw);
-        if (!ref) return null;
-        const updated = await memoryService.applyExperienceRefinement(userId, id, ref);
-        if (updated) logUserActivity(userId, `Memory: refined experience wording — "${(ref.kind || ref.summary || '').slice(0, 70)}"${ref.phrasings?.length ? ` (+${ref.phrasings.length} phrasings)` : ''}`);
+        const ref = coreMemory.parseRefinement(raw);
+        if (!ref) { console.log(`[coreMemory] refinement for ${rec.label} returned nothing usable`); return null; }
+        const updated = await coreMemory.applyRefinement(userId, id, ref);
+        if (updated) {
+            logUserActivity(userId,
+                `Memory: refined the ${updated.label} core memory → playbook v${updated.playbookVersion} after ${updated.stats.runs} task${updated.stats.runs === 1 ? '' : 's'} — “${(updated.playbook || '').slice(0, 90)}”`);
+        }
         return updated;
-    } catch (_) {
+    } catch (e) {
+        console.warn(`[coreMemory] refinement failed for ${rec.label}: ${e.message}`);
         return null;
     } finally {
-        experienceRefineInFlight--;
+        coreRefineInFlight--;
     }
 }
 
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, usedExperiences = null, provisional = false }) {
+// Fire-and-forget after a turn: build the EPISODE (task, successful tool path
+// with argument hints, outcome, pitfalls, lessons), classify its THEME from the
+// tools that ran + the ask + attachments, and fold it into that theme's core
+// memory. `recalled` is what `retrieveRelevantMemories` handed this turn, so
+// the recorder can say whether the playbook was followed and whether the run
+// beat the remembered best. `taskKey`/`provisional` come from the /v1 bridge
+// (a Pi task is re-recorded while it runs; snapshots update ONE episode).
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
         // META tools act on the assistant's own memory/catalog, not on the task.
-        // Left in, `record_learning` became a STEP of the stored approach (and
-        // counted toward outcome.calls), so a turn whose only tool call was
-        // "remember this" minted an experience whose playbook was, literally,
-        // "call record_learning" — and a real playbook gained a phantom step.
         const META_TOOLS = new Set(['record_learning', 'find_tools']);
         const chips = (Array.isArray(toolChips) ? toolChips : []).filter(c => !(c && META_TOOLS.has(c.label)));
         const okChips = chips.filter(c => c && c.status === 'success' && !c.refusal && c.label);
-        const attachmentKinds = deriveAttachmentKinds(attachments);
-        // Classify the SAME cleaned ask the episode is keyed on. The raw text
-        // still carries this turn's runtime notes (the injected memory block, the
-        // workspace/image pre-flights), and ACTIVITY_RULES are first-match on a
-        // regex over that text — so the label could be decided by the platform's
-        // own note instead of the user's request.
-        const cleanAsk = experienceMemory.summarizeTask(userText) || String(userText || '');
-        const act = classifyTurnActivity({ toolLabels: okChips.map(c => c.label), userText: cleanAsk, attachmentKinds });
-        // Only record when the turn actually DID something procedural. An
-        // attachment alone is NOT enough: a turn answered inline from the pasted
-        // file content has no approach, and storing it as an experience taught
-        // the model "this kind of task needs no tools" — the opposite of the
-        // playbook it should recall next time.
+        // Only a turn that actually DID something procedural teaches anything.
         if (!okChips.length) return;
+        const attachmentKinds = coreMemory.deriveAttachmentKinds(attachments);
+        const cleanAsk = experienceMemory.summarizeTask(userText) || String(userText || '');
+        const cls = coreMemory.classifyTheme({ toolLabels: okChips.map(c => c.label), userText: cleanAsk, attachmentKinds, hasTools: true });
+        const theme = cls ? cls.theme : 'general';
         const episode = experienceMemory.buildEpisode(
-            { userText, attachmentKinds, chips, activity: act ? act.activity : null, quality, taskKey, provisional },
+            { userText, attachmentKinds, chips, activity: theme, quality, taskKey, provisional },
             { errorSignature: loopGuard.errorSignature }
         );
         if (!episode.task) return;
-        episode.keywords = extractQueryKeywords(
-            `${episode.task} ${(act ? act.label : '')} ${episode.approach.map(st => st.tool).join(' ')} ${[...attachmentKinds].join(' ')}`);
-
-        // Find the closest existing experience by TASK similarity (the index
-        // holds every memory; keep only experiences). Engine down → no match →
-        // a new record (consolidation catches duplicates later).
-        let matchId = null, matchScore = null;
-        // An IN-PROGRESS task (the /v1 bridge re-records a running Pi task as it
-        // accrues tools) resolves DETERMINISTICALLY to the record already open
-        // for that task — never by cosine, which would drift, and never as a new
-        // completion.
-        if (taskKey) {
-            try {
-                const open = (await memoryService.listMemories(userId))
-                    .find(m => m.type === 'procedure' && m.openTaskKey === taskKey);
-                // Belt and braces: the key now binds the ask, but a same-run
-                // match overwrites the record's approach unconditionally, so
-                // require the activity to agree as well before taking that path.
-                if (open && (!open.activity || !episode.activity || open.activity === episode.activity)) matchId = open.id;
-            } catch (_) { /* fall through to similarity */ }
-        }
-        // The experience the model was GIVEN this turn and actually followed is
-        // the most reliable identity signal there is — retrieval already judged
-        // the task similar enough to inject it, and the model then worked that
-        // way. Re-deriving identity from a cosine ≥ MERGE_SEM (0.62) at record
-        // time missed most of them (same-KIND tasks measure ~0.43-0.49), so the
-        // canonical "tank game → snake game" case filed a DUPLICATE instead of
-        // refining the record it had just used.
-        let matchedVia = null;
-        if (!matchId && Array.isArray(usedExperiences) && usedExperiences.length) {
-            for (const ux of usedExperiences) {
-                if (!ux || !ux.id) continue;
-                if (!experienceMemory.pathAdherence(ux.approach, episode.approach).followed) continue;
-                matchId = ux.id; matchedVia = 'applied';
-                break;
-            }
-        }
-        try {
-            const sem = matchId ? null : await semanticMemoryScores(userId, episode.task, 24);
-            if (sem && sem.scores.size) {
-                const all = await memoryService.listMemories(userId);
-                const byId = new Map(all.filter(m => m.type === 'procedure').map(m => [m.id, m]));
-                let best = null;
-                for (const [id, score] of sem.scores) {
-                    const m = byId.get(id);
-                    if (!m) continue;
-                    const same = !!(m.activity && episode.activity && m.activity === episode.activity);
-                    if (!experienceMemory.shouldMerge(score, same)) continue;
-                    if (!best || score > best.score) best = { id, score };
-                }
-                if (best) { matchId = best.id; matchScore = best.score; }
-            }
-        } catch (_) { /* keyword-only → new record */ }
-
-        const res = await memoryService.upsertExperience(userId, {
-            matchId, episode, source: 'auto', sourceConvId: conversationId, impact: 'medium',
+        const res = await coreMemory.recordEpisode(userId, {
+            episode, theme, convId: conversationId || null, recalled, taskKey, provisional,
         });
-        // ---- Effectiveness: did the experience injected at the TOP of this turn
-        // actually shape it? Compare what the model was told worked against what
-        // it just did. This is the platform's own evidence that recall pays off
-        // (or does not) — surfaced per turn in the Logs tab and accumulated on
-        // the record as uses/follows.
-        if (Array.isArray(usedExperiences) && usedExperiences.length) {
-            for (const used of usedExperiences) {
-                const adh = experienceMemory.pathAdherence(used.approach, episode.approach);
-                memoryService.noteExperienceUse(userId, used.id, {
-                    followed: adh.followed, calls: episode.outcome.calls,
-                    seconds: episode.outcome.seconds, converged: episode.outcome.converged,
-                }).catch(() => {});
-                const ben = used.benefit;
-                logUserActivity(userId,
-                    `Memory: experience ${experienceMemory.handleOf({ id: used.id })} ${adh.followed ? 'APPLIED' : 'not followed'}` +
-                    ` — this run ${episode.outcome.calls} call${episode.outcome.calls === 1 ? '' : 's'}` +
-                    (Number.isFinite(episode.outcome.seconds) ? `/${episode.outcome.seconds} s` : '') +
-                    (used.bestCalls != null ? `, remembered best ${used.bestCalls}` : '') +
-                    (ben && ben.savedCalls > 0 ? `, ${ben.savedCalls} fewer than the first run` : '') +
-                    ` (path overlap ${Math.round(adh.overlap * 100)}%)`);
-            }
-        }
+        if (!res) return;
         const oc = experienceMemory.renderOutcome(episode.outcome);
+        const bits = [];
+        if (res.newBest) bits.push('new best approach');
+        if (res.followed != null) bits.push(res.followed ? 'playbook followed' : 'playbook not followed');
+        if (Number.isFinite(res.improvedVsBest) && res.improvedVsBest > 0) bits.push(`${res.improvedVsBest} fewer call${res.improvedVsBest === 1 ? '' : 's'} than the remembered best`);
         logUserActivity(userId,
-            `Memory: ${res.updated ? `refined experience (${res.replaced ? 'new best approach' : 'reinforced'}, ×${res.count}${matchScore != null ? `, similarity ${matchScore.toFixed(2)}` : (matchedVia ? `, ${matchedVia}` : '')})` : 'recorded new experience'}` +
-            ` — "${episode.task.slice(0, 70)}" [${episode.activity || 'general'}] ${oc ? `(${oc})` : ''}: ${experienceMemory.renderApproach(episode.approach).slice(0, 160) || 'inline answer'}`);
-        // Refine wording/phrasings with the local model in the background — but
-        // only when there is something to generalize. Re-running it on every
-        // reinforcement burned a model call per turn and made `summary`/`kind`
-        // oscillate with the latest run's wording.
-        try {
-            const rec = await memoryService.getMemory(res.id);
-            const needsRefine = !res.updated                       // brand new record
-                || !rec || !rec.summary || !rec.kind               // never generalized
-                || res.replaced                                    // a new best approach to describe
-                || (rec.count || 1) === 3 || (rec.count || 1) === 10;   // depth milestones
-            if (needsRefine) refineExperienceWithModel(userId, res.id, episode, chips, rec).catch(() => {});
-        } catch (_) { refineExperienceWithModel(userId, res.id, episode, chips).catch(() => {}); }
+            `Memory: ${res.label} core memory ← “${episode.task.slice(0, 70)}” (${oc || 'no tools'})` +
+            (bits.length ? ` — ${bits.join(', ')}` : '') +
+            ` · ${res.runs} task${res.runs === 1 ? '' : 's'} so far`);
+        // A provisional mid-task snapshot refines the prose later, when the
+        // task is complete or the gap timer fires; a finished turn right away.
+        refineCoreMemory(userId, res.id, { delayMs: provisional ? CORE_REFINE_MIN_GAP_MS : 0 }).catch(() => {});
     } catch (e) {
-        console.warn('[Memory] experience record failed:', e.message);
+        console.warn('[Memory] core memory record failed:', e.message);
     }
 }
 
-// Pre-turn retrieval: score the user's ENTIRE account memory against the
-// incoming query and pack the top matches into a token budget. Memory is now
-// account-scoped, so this surfaces relevant facts/learnings from ANY past
-// conversation ("I worked on a similar thing before — here's what works"),
-// while a recency boost and a same-conversation boost keep the current thread's
-// context on top. Model-recorded learnings are floored so the evolving persona
-// persists even when keyword overlap is weak. Returns an injectable block or
-// null. `currentConvId` is optional (used only for the continuity boost).
-// A conversation works on ONE task across several turns ("now make the chart
-// blue", "add the totals row"). Retrieval only ever sees the LATEST message, so
-// every follow-up scored ~0 against the stored task and the playbook the thread
-// had been following silently dropped out — exactly when the model is deepest in
-// the work. Remember which experiences a thread has been given and keep them
-// eligible for the rest of it. Bounded + TTL'd; ids only, so the text/approach
-// injected is always the CURRENT record (a refinement mid-thread is picked up).
-const CONV_EXPERIENCE_TTL_MS = 2 * 60 * 60 * 1000;
-const CONV_EXPERIENCE_MAX = 512;
-const convExperienceCarry = new Map();   // convId -> { at, ids:Set }
-function carryExperienceIds(convId) {
-    if (!convId) return null;
-    const e = convExperienceCarry.get(convId);
-    if (!e) return null;
-    if (Date.now() - e.at > CONV_EXPERIENCE_TTL_MS) { convExperienceCarry.delete(convId); return null; }
-    return e.ids;
-}
-function noteCarriedExperiences(convId, ids) {
-    if (!convId || !ids || !ids.length) return;
-    const e = convExperienceCarry.get(convId) || { at: Date.now(), ids: new Set() };
-    for (const id of ids) e.ids.add(id);
-    e.at = Date.now();
-    convExperienceCarry.set(convId, e);
-    if (convExperienceCarry.size > CONV_EXPERIENCE_MAX) {
-        const oldest = [...convExperienceCarry.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-        if (oldest) convExperienceCarry.delete(oldest[0]);
-    }
-}
-
-async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint = null } = {}) {
+// Pre-turn recall: the ONE core memory for the ask's theme, rendered within
+// `tokenBudget`, or null when the ask has no theme / the theme has no memory.
+// `attachmentKinds`/`toolLabels` sharpen the classification (an image upload is
+// media work even when the ask says "what is this").
+async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { attachmentKinds = new Set(), toolLabels = [] } = {}) {
     if (!query || typeof query !== 'string') return null;
-    // Defense-in-depth: callers should pass clean user text, but strip any
-    // thinking-control prefix that slipped through (see the chat stream's
-    // latestUserText handling) so it never reaches the embedding or keywords.
     query = query.replace(/^\/(no_)?think\b\s*/i, '');
     if (!query.trim()) return null;
-    let all;
-    try { all = await memoryService.listMemories(userId); } catch { return null; }
-    if (!all || !all.length) return null;
-    // Muted memories are kept in the store but never injected (user flag).
-    const storedCount = all.length;
-    all = all.filter(m => !m.muted);
-    if (!all.length) return null;
-
-    const queryKeywords = extractQueryKeywords(query);
-
-    // ---- Semantic relevance (PRIMARY signal) ----------------------------
-    // Embedding cosine from the memory index. Catches paraphrase that keyword
-    // overlap can't ("can you graph this" ↔ a render_chart memory). When the
-    // engine is down `semScores` stays null and everything below degrades to
-    // the keyword gates — memory never silently stops working.
-    let semScores = null;
-    try {
-        const sem = await semanticMemoryScores(userId, query, 32);
-        if (sem) {
-            semScores = sem.scores;
-            // Self-heal: an EMPTY index while memories exist (store migrated
-            // before the engine was warm, wiped dir, …) → rebuild in the
-            // background; this turn falls back to keywords.
-            if (sem.total === 0 && storedCount > 0) {
-                memoryService.reindexUser(userId).catch(() => {});
-                semScores = null;
-            } else if (sem.total > 0) {
-                // Engine confirmed HEALTHY (real vectors back): if this account
-                // extracted memories while it was down, merge the duplicates that
-                // accreted keyword-only. Fire-and-forget, no-ops unless flagged.
-                memoryService.reconcileIfPending(userId);
-            }
-        }
-    } catch (_) { semScores = null; }
-    // Cosine for a memory, or null when semantic mode is unavailable.
-    // A memory outside the top-k has NO score — not a score of zero. Collapsing
-    // the two disabled the keyword backstop for everything that missed the cut
-    // (`isRelevant` short-circuits on a numeric score), so a memory the query
-    // names by an exact identifier could be silently unreachable.
-    const semOf = (m) => (semScores ? (semScores.has(m.id) ? semScores.get(m.id) : null) : null);
-    // …but ranking needs a number.
-    const semRank = (m) => (semOf(m) ?? 0);
-    // Experiences this conversation has already been given (see the carry cache
-    // above). Declared here because both the scorer and the candidate filter
-    // read it.
-    const carried = carryExperienceIds(currentConvId);
-    const now = Date.now();
-    // DIRECTIVES are curated, persona-shaping memories — anything you authored
-    // (manual), the model recorded (model learnings), or that's flagged
-    // important, or carries a non-'fact' type (preference/correction/…). These
-    // shape behavior and must inject regardless of keyword overlap. FACTS are
-    // plain auto-extracted statements; they're numerous and noisy, so they only
-    // inject on a strong keyword match. Without this split, at scale a flood of
-    // auto-facts sharing common words crowds out the handful of memories that
-    // actually matter.
-    // PROCEDURES are EXPERIENCE memories (how the model did an activity + the
-    // approach that worked) — the persona. DIRECTIVES are user-authored/model
-    // learnings/preferences. FACTS are noisy auto-extractions (keyword-gated).
-    const isProcedure = (m) => m.type === 'procedure';
-    // CURATED = the user (manual) or the model (record_learning) deliberately
-    // saved it. Curated memories are the persona's backbone and inject
-    // regardless of keyword overlap. AUTO-extracted memories are heuristic
-    // guesses, so they must EARN injection by being topically relevant (see the
-    // candidate filters below). Without this, an unrelated auto "preference" or
-    // "limitation" — a one-off task request, or a stray sentence misclassified
-    // as a limitation — injected on EVERY turn. That's the "coding question, but
-    // it surfaces a memory about buses" failure the relevance gate fixes.
-    const isCurated = (m) => m.source === 'manual' || m.source === 'model';
-    const isDirective = (m) => !isProcedure(m) && (isCurated(m)
-        || m.impact === 'important' || (m.type && m.type !== 'fact'));
-
-    // Relevance for RANKING: best of semantic cosine and keyword Jaccard.
-    const relOf = (m) => {
-        const j = jaccardSimilarity(m.keywords || [], queryKeywords);
-        const s = semOf(m);
-        return s != null ? Math.max(s, j) : j;
-    };
-    // Topical-relevance GATE for AUTO memories: semantic cosine ≥ threshold,
-    // OR the keyword rule (≥2 shared keywords / one specific identifier) as a
-    // hybrid backstop — embeddings can miss exact identifiers (a CVE id, a
-    // port number) that keywords nail. Curated memories bypass it.
-    const isRelevant = (m) => {
-        const s = semOf(m);
-        if (s != null && s >= MEMORY_SEM_THRESHOLD) return true;
-        return factKeywordMatch(m.keywords || [], queryKeywords);
-    };
-    // A GLOBAL behavioral directive — a durable, cross-topic rule about HOW to
-    // respond ("from now on, be concise", "always use type hints"). These apply
-    // to every turn, so an AUTO-extracted one still injects unconditionally even
-    // though other auto memories are relevance-gated. Excludes one-off TASK
-    // requests that merely start with "I like/prefer" ("I like Sonify, can you
-    // check …") — those name a thing to act on now, not a standing rule, and are
-    // what the relevance gate is meant to suppress.
-    const isGlobalBehavioralDirective = (m) => {
-        if (m.type !== 'preference' && m.type !== 'correction') return false;
-        const t = String(m.text || '').toLowerCase();
-        if (/\?|\bcan you\b|\bcould you\b|\bplease (check|find|make sure|look|verify|confirm|see)\b/.test(t)) return false;
-        // Require an explicit STANDING-RULE marker, NOT a bare "I prefer X" /
-        // "I like X" — those are usually topical or one-off ("I prefer Python",
-        // "I like Sonify") and would otherwise inject on every unrelated turn.
-        // A genuine global style pref that lacks such a marker still surfaces
-        // once the model records it (record_learning → curated) or the user adds
-        // it by hand (manual → curated); both bypass relevance unconditionally.
-        // The strong markers are unambiguously about a standing user rule.
-        if (/\b(from now on|going forward|always|never|whenever|every time)\b/.test(t)) return true;
-        // "by default" is the ambiguous one: it far more often describes a
-        // THIRD-PARTY software default ("the server runs on port 3000 by
-        // default", "it installs by default") than a user standing rule. Treat
-        // it as a global directive ONLY when the sentence is explicitly about how
-        // the USER wants things done (a 1st/2nd-person directive cue) AND is NOT
-        // a 3rd-person description of how some tool behaves. Without this, an
-        // auto/assistant-side software-trivia line injected on 100% of turns —
-        // the measured "by default" precision leak (id 096fa323).
-        if (/\bby default\b/.test(t)) {
-            return /\b(i|i'd|i'm|we|you|your|use|prefer|default to|stick to|give me|send me|reply|respond|answer|format|output)\b/.test(t)
-                && !/\b(runs?|installs?|listens?|serves?|exposes?|binds?|starts?|comes?|ships?|defaults? to port|on port)\b/.test(t);
-        }
-        return false;
-    };
-    const scoreOf = (m) => {
-        const ts = Date.parse(m.updatedAt || m.createdAt || '') || now;
-        const ageDays = Math.max(0, (now - ts) / 86400000);
-        const recencyBoost = 0.15 * (1 - Math.min(ageDays, 90) / 90);        // up to +0.15 when fresh
-        const convBoost = (currentConvId && m.sourceConvId === currentConvId) ? 0.2 : 0;
-        const impactBoost = m.impact === 'important' ? 0.5 : (m.impact === 'low' ? -0.05 : 0);
-        return relOf(m) + recencyBoost + convBoost + impactBoost;
-    };
-    // Procedure score: keyword relevance + a strong boost when the procedure's
-    // activity matches THIS turn's likely activity (so the right experience
-    // leads), + experience depth (count) so well-practiced skills surface.
-    const procScoreOf = (m) => {
-        // A carried record with no fresh similarity still ranks above nothing.
-        if (carried && carried.has(m.id) && semOf(m) == null) return 0.25 + Math.min(0.3, 0.1 * ((m.count || 1) - 1));
-        // Task SIMILARITY leads (cosine over the experience's phrasings);
-        // the coarse activity match is a weak tie-breaker; depth (count) and a
-        // converged best run add a little; a legacy tool-list-only record (no
-        // `task`) never outranks a real experience.
-        const semScore = semRank(m);
-        const activityMatch = (activityHint && m.activity === activityHint) ? 0.35 : 0;
-        const legacyPenalty = m.task ? 0 : 0.5;
-        const convergedBoost = (m.outcome && m.outcome.converged === false) ? -0.3 : 0.1;
-        if (m.task) return semScore * 2 + activityMatch + Math.min(0.3, 0.1 * ((m.count || 1) - 1)) + convergedBoost - legacyPenalty;
-        const depthBoost = Math.min(0.4, 0.1 * ((m.count || 1) - 1));
-        // scoreOf already includes relOf(m) once — adding relOf again here
-        // double-counted relevance, letting a coincidentally keyword-heavy
-        // WRONG-activity procedure outrank the activity-matched one. Count
-        // relevance once (via scoreOf) so activityMatch (1.5) strictly dominates
-        // it (max 1.0), restoring "the activity match leads".
-        return activityMatch + depthBoost + scoreOf(m);
-    };
-
-    const PROC_MAX = 3, DIRECTIVE_MAX = 18, FACT_MAX = 8;
-    // Experience is the highest-value thing in the block (it changes what the
-    // model DOES), and one playbook alone can be ~600 tokens — a flat 40% of a
-    // 2500-token budget therefore admitted exactly one and PROC_MAX was dead
-    // letters. Allow the top matches up to 60%, and always let the best one in.
-    const procBudget = Math.floor(tokenBudget * 0.6);
-    const directiveBudget = Math.floor(tokenBudget * 0.85);
-    const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
-
-    // Procedures (experience) inject when they're the RIGHT experience for THIS
-    // turn: the predicted activity matches OR there's genuine keyword overlap.
-    // Procedures are inherently ACTIVITY-specific (a coding recipe, an email
-    // recipe), so they are ALWAYS activity/topic-gated — even a model-curated
-    // one — so a procedure for an unrelated activity (the "reading-emails"
-    // experience during a coding task) never leads. That irrelevant-persona
-    // leakage was the worst offender of the "buses" problem.
-    // An experience injects when the TASK is similar (cosine ≥ RETRIEVE_SEM,
-    // calibrated on the engine: 0.33 separates "another browser game" from
-    // "capital of France"), or — as a weaker path — when the predicted activity
-    // matches AND there is at least faint similarity (≥ 0.2). Legacy records
-    // without a task keep the old activity/keyword gate.
-    const EXP_MIN_SEM = experienceMemory.RETRIEVE_SEM;
-    const procCands = all.filter(isProcedure)
-        // A run that hit the tool-call cap or exhausted the loop guards is not an
-        // approach that worked, and the block's header asserts that every entry
-        // did. Keep it stored (its lessons/pitfalls still merge into better runs)
-        // but never inject it as a playbook to reuse.
-        .filter(m => !(m.outcome && m.outcome.converged === false))
-        .filter(m => {
-            // Already given to THIS thread: the task hasn't changed just because
-            // the follow-up message is short.
-            if (carried && carried.has(m.id)) return true;
-            const sc = semOf(m);
-            if (m.task) {
-                if (sc == null) return (activityHint && m.activity === activityHint) || isRelevant(m); // keyword-only mode
-                return sc >= EXP_MIN_SEM || (activityHint && m.activity === activityHint && sc >= 0.2);
-            }
-            return (activityHint && m.activity === activityHint) || isRelevant(m);
-        })
-        .map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
-    // Directives: only GLOBAL ones apply across topics — a pinned memory or a
-    // genuine standing rule ("from now on, be concise", "I use tabs"). A directive
-    // that is merely curated/important/non-fact but TOPICAL (a coding tip, a tool
-    // preference) must be topically relevant AND non-ephemeral, exactly like
-    // facts — otherwise it surfaces everywhere (the "coding tip on a cyber-news
-    // query" leak). This holds for manual AND model-recorded directives: being
-    // user- or model-authored no longer buys an unconditional inject; only being
-    // global (marker/pinned) does.
-    const directives = all.filter(isDirective)
-        .filter(m => m.pinned || isGlobalBehavioralDirective(m) || (!isEphemeralFact(m.text) && isRelevant(m)))
-        .map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
-    // Facts inject only on a substantive query match (semantic cosine ≥
-    // threshold, or the keyword rule) AND only if not ephemeral — the
-    // ephemeral skip is defense-in-depth for any time-bound fact stored
-    // before extraction-time filtering existed. Ordered by relevance so the
-    // strongest matches fill the remaining budget first.
-    const factCands = all
-        .filter(m => !isDirective(m) && !isProcedure(m))
-        // Retrieval defense for already-stored rows: a passive interest or a
-        // request-shaped fact never injects even if it clears the relevance gate
-        // (extraction-time filters only stop NEW writes; these clean the legacy
-        // store). Directives/procedures are excluded above, so an imperative-
-        // phrased preference is unaffected.
-        .filter(m => !isEphemeralFact(m.text) && !isLowValueInterest(m.text) && !looksLikeRequest(m.text) && isRelevant(m))
-        .map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
-
-    const picked = [];
-    let usedTokens = 0;
-    let linkExpanded = 0;
-    // Pass 0 — experience/procedures: the persona always applies, capped by a
-    // 40% sub-budget. The activity-matched one (if any) leads.
-    let procCount = 0;
-    for (const p of procCands) {
-        if (procCount >= PROC_MAX) break;
-        const tk = tokOf(p.m);
-        if (usedTokens + tk > procBudget && picked.length) continue;
-        if (usedTokens + tk > tokenBudget) continue;
-        picked.push(p.m); usedTokens += tk; procCount++;
-    }
-    // Pass 1 — directives: persona always applies.
-    for (const d of directives) {
-        if (picked.filter(isDirective).length >= DIRECTIVE_MAX) break;
-        const tk = tokOf(d.m);
-        if (usedTokens + tk > directiveBudget && picked.length) continue;
-        if (usedTokens + tk > tokenBudget) continue;
-        picked.push(d.m); usedTokens += tk;
-    }
-    // Pass 2 — facts: already filtered to substantive, non-ephemeral matches;
-    // fill the remainder by overlap strength.
-    let factCount = 0;
-    for (const f of factCands) {
-        if (factCount >= FACT_MAX) break;
-        const tk = tokOf(f.m);
-        if (usedTokens + tk > tokenBudget) continue;
-        picked.push(f.m); usedTokens += tk; factCount++;
-    }
-    if (picked.length === 0) return null;
-
-    // ---- Link-aware expansion (1-hop) -----------------------------------
-    // A memory the user (Memory tab) or the model (record_learning relatesTo /
-    // auto-link on extraction) CONNECTED to one that's already relevant rides
-    // along — even if it wouldn't clear the relevance gate by itself. That's the
-    // point of a link: "when this surfaces, surface what it's tied to." Bounded
-    // by LINK_EXPANSION_MAX + the token budget, 1-hop only (we snapshot `picked`
-    // so an expansion never seeds further expansion), and muted/dangling/
-    // ephemeral targets are skipped. `all` is the non-muted set, so byId can't
-    // resurface a muted memory.
-    if (LINK_EXPANSION_MAX > 0) {
-        const pickedIds = new Set(picked.map(m => m.id));
-        const byId = new Map(all.map(m => [m.id, m]));
-        for (const seed of [...picked]) {
-            if (linkExpanded >= LINK_EXPANSION_MAX) break;
-            const links = Array.isArray(seed.links) ? seed.links : [];
-            for (const lid of links) {
-                if (linkExpanded >= LINK_EXPANSION_MAX) break;
-                if (pickedIds.has(lid)) continue;
-                const lm = byId.get(lid);
-                if (!lm) continue;                              // dangling / muted
-                if (isEphemeralFact(lm.text)) continue;         // never resurface time-bound content
-                if (isLowValueInterest(lm.text)) continue;      // never resurface a passive interest via a link
-                // A linked memory rides along only if it's genuinely on-topic for
-                // THIS turn: it clears the normal relevance gate, OR is a semantic
-                // near-miss in the top-k (relaxed floor), OR always-surfaces anyway
-                // (pinned / global directive / procedure). Without this, link
-                // expansion injected arbitrary similarity-graph neighbors that never
-                // matched the query — the leak this gate closes. Keyword-only mode
-                // (semScores null) → semOf null → the relaxed-floor clause is inert
-                // and gating falls to isRelevant's keyword arm, so memory never
-                // silently breaks.
-                const alwaysSurface = lm.pinned || isProcedure(lm) || isGlobalBehavioralDirective(lm);
-                const linkRelevant = isRelevant(lm) || (semRank(lm) >= MEMORY_SEM_THRESHOLD * 0.7);
-                if (!alwaysSurface && !linkRelevant) continue;
-                const tk = tokOf(lm);
-                if (usedTokens + tk > tokenBudget) continue;
-                picked.push(lm); pickedIds.add(lid); usedTokens += tk; linkExpanded++;
-            }
-        }
-    }
-
-    // Render: experience (persona) FIRST, then directives, then facts.
-    const impactRank = { important: 0, medium: 1, low: 2 };
-    const procedures = picked.filter(isProcedure)
-        .sort((a, b) => (b.count || 1) - (a.count || 1));
-    const learnings = picked.filter(isDirective)
-        .sort((a, b) => (impactRank[a.impact] ?? 1) - (impactRank[b.impact] ?? 1));
-    const facts = picked.filter(m => !isDirective(m) && !isProcedure(m))
-        .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-
-    const handleOf = (m) => `#${String(m.id).replace(/-/g, '').slice(0, 6)}`;
-    const parts = [];
-    if (procedures.length) {
-        // Experience lead-in: similar tasks done before, each with the concrete
-        // approach that worked, its efficiency and pitfalls (experienceMemory).
-        // Legacy tool-list records (pre-2026-08-29) render through the same
-        // block — their text is the old "tools that got it done" line.
-        const ordered = procedures.slice().sort((x, y) => semRank(y) - semRank(x));
-        const block = experienceMemory.renderExperienceBlock(ordered.map(m => ({ m, sem: semOf(m) })));
-        if (block) parts.push(block);
-    }
-    if (learnings.length) {
-        // Each line carries a short [#handle] (first 6 hex of the id) so the
-        // model can REFINE a specific learning via record_learning(replaces).
-        // This is what turns memory from append-only into continual learning:
-        // as it discovers what works best, it updates the lesson in place
-        // instead of stacking near-duplicates.
-        const lines = learnings.map(m => `- [#${String(m.id).replace(/-/g, '').slice(0, 6)}] ${m.text}`).join('\n');
-        // Framed as binding instructions — weak "things you've learned" phrasing
-        // was injected but ignored by smaller models. This wording makes the
-        // model treat preferences/corrections as rules without overriding an
-        // explicit in-turn user request.
-        parts.push(
-            'PERSISTENT USER INSTRUCTIONS & PREFERENCES (learned from past conversations). ' +
-            'Follow EVERY one of these in your response unless the user overrides it in their latest message. ' +
-            'As you learn what works best, REFINE these rather than repeating them: call record_learning with replaces:"<#handle>" to update one in place. ' +
-            'The [#handles] are internal — never show them to the user:\n' +
-            lines
-        );
-    }
-    if (facts.length) {
-        const lines = facts.map(m => `- ${m.text}`).join('\n');
-        parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
-    }
-    noteCarriedExperiences(currentConvId, procedures.map(m => m.id));
-    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts${linkExpanded ? `, +${linkExpanded} via links` : ''}; ${semScores ? 'semantic' : 'keyword'} mode) conv=${currentConvId || '-'}`);
+    let rec = null;
+    try { rec = await coreMemory.recall(userId, { userText: query, attachmentKinds, toolLabels, tokenBudget }); }
+    catch (e) { console.warn('[Memory] recall failed:', e.message); return null; }
+    if (!rec || !rec.block) return null;
+    console.log(`[Memory] Recalling the ${rec.label} core memory (${rec.runs} tasks, ${rec.tokens} tokens) conv=${currentConvId || '-'}`);
     return {
-        block: parts.join('\n\n'),
-        count: picked.length,
-        // The experiences that went in, with the remembered path. The caller
-        // force-advertises those tools (a recalled approach the router hides is
-        // unfollowable) and, at the end of the turn, measures adherence.
-        experiences: procedures.map(m => ({
-            id: m.id,
-            approach: Array.isArray(m.approach) ? m.approach : [],
-            tools: experienceMemory.approachTools(m.approach),
-            bestCalls: (m.outcome && Number.isFinite(m.outcome.calls)) ? m.outcome.calls : (m.bestSteps ?? null),
-            benefit: experienceMemory.experienceBenefit(m),
-        })),
-        procedures: procedures.length,
-        learnings: learnings.length,
-        facts: facts.length,
-        linked: linkExpanded,
-        tokens: usedTokens,
-        previews: picked.slice(0, 5).map(m => (m.text || '').slice(0, 120)),
+        block: rec.block,
+        count: 1,
+        theme: rec.theme,
+        label: rec.label,
+        id: rec.id,
+        runs: rec.runs,
+        bestCalls: rec.bestCalls,
+        steps: rec.steps,
+        tools: rec.tools,
+        tokens: rec.tokens,
+        previews: [`${rec.label} core memory (${rec.runs} task${rec.runs === 1 ? '' : 's'})`],
     };
 }
+
 
 // ============================================================================
 // Pi (/v1 passthrough) memory bridge
@@ -17522,23 +16264,20 @@ async function injectPersonaForV1(req, instance) {
     const cacheKey = `${userId}|${req.apiKeyData?.id || '-'}|${userMsgCount}|${piBudget}|` +
         crypto.createHash('sha1').update(latestUserText).digest('hex');
     let mem = v1PersonaCacheGet(cacheKey);
-    let activityHint = mem ? mem.activityHint : null;
     if (!mem) {
-        activityHint = (classifyTurnActivity({ toolLabels, userText: latestUserText, attachmentKinds: new Set() }) || {}).activity || null;
-        const fresh = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { activityHint });
-        mem = fresh && fresh.block ? { ...fresh, activityHint } : { block: null, activityHint };
+        // The tools the model used BEFORE this task's user message sharpen the
+        // theme (a session deep in code is coding even when the ask is terse).
+        const fresh = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { toolLabels });
+        mem = fresh && fresh.block ? fresh : { block: null };
         v1PersonaCacheSet(cacheKey, mem);
     }
     if (!mem.block) return null;
 
     // Pi runs its OWN tools on the user's machine (and renames the sandbox ones —
     // run_bash → sandbox_bash), so a playbook recorded from a web-chat turn names
-    // tools this agent may not have. The chat surface force-advertises them; here
-    // the honest instruction is to reuse the SHAPE of the approach.
-    const piNote = (mem.procedures || 0) > 0
-        ? '\n(Your tool names may differ from the ones in these notes — reuse the approach and the order, mapping each step to the closest tool you actually have.)'
-        : '';
-    const block = `${PI_PERSONA_MARKER} — account persona and experience for this task; runtime context, not part of the user's message]\n${mem.block}${piNote}`;
+    // tools this agent may not have. The honest instruction is to reuse the SHAPE.
+    const piNote = '\n(Your tool names may differ from the ones in this memory — reuse the approach and the order, mapping each step to the closest tool you actually have.)';
+    const block = `${PI_PERSONA_MARKER} — your core memory for this kind of work; runtime context, not part of the user's message]\n${mem.block}${piNote}`;
     const um = messages[latestUserIdx];
     if (typeof um.content === 'string') {
         messages[latestUserIdx] = { ...um, content: `${um.content}\n\n${block}` };
@@ -17548,9 +16287,9 @@ async function injectPersonaForV1(req, instance) {
         return null;
     }
     // Handed to recordV1TurnActivity so the /v1 surface measures adherence the
-    // same way the chat one does (uses/follows on the record).
-    try { req._v1UsedExperiences = mem.experiences || []; } catch (_) { /* frozen req */ }
-    return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint, experiences: mem.experiences || [] };
+    // same way the chat one does.
+    try { req._v1RecalledCore = mem; } catch (_) { /* frozen req */ }
+    return { count: 1, theme: mem.theme, label: mem.label, runs: mem.runs, tokens: mem.tokens };
 }
 
 // Build the model's persona FROM Pi usage too. /v1 is stateless — Pi resends
@@ -17561,7 +16300,7 @@ async function injectPersonaForV1(req, instance) {
 // recordTurnActivity (synthesized success chips from the tool_calls). Imperfect
 // success-mapping is fine: best-recipe protection keeps the leanest version and
 // the model can refine via record_learning.
-async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperiences = null) {
+async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = null) {
     if (!userId || userId === 'default' || !Array.isArray(messages)) return;
     const convKey = 'pi-' + (apiKeyData?.id || 'key');
     const lockKey = `${userId}:${convKey}`;
@@ -17596,7 +16335,7 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperience
         // the current task's tool usage grew enough to re-reinforce — a geometric
         // throttle so a 100-tool-round task records ~7×, not 100× (visible growth
         // without runaway count inflation).
-        const cursor = await memoryService.getCursor(userId, convKey);
+        const cursor = await coreMemory.getCursor(userId, convKey);
         let lastTask = 0, lastTools = 0;
         if (cursor) { const p = String(cursor).split(':'); lastTask = parseInt(p[0], 10) || 0; lastTools = parseInt(p[1], 10) || 0; }
         const isNewTask = taskId !== lastTask;
@@ -17628,14 +16367,14 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, usedExperience
             // provisional guard). Binding the ask itself makes a collision mean
             // the same task by construction.
             taskKey: `${convKey}:${taskId}:${crypto.createHash('sha1').update(userText).digest('hex').slice(0, 10)}`,
-            usedExperiences,
+            recalled,
             // Pi resolves tools client-side: we see names only, mid-task, with no
             // arguments and no timing. Good enough to keep ONE record for the
             // task in step with the work, never good enough to overwrite a
             // complete, measured playbook.
             provisional: true,
         });
-        await memoryService.setCursor(userId, convKey, `${taskId}:${toolCount}`);
+        await coreMemory.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
         console.warn('[Pi/Memory] activity record failed:', e.message);
     } finally {
@@ -17931,13 +16670,9 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
 // Memory is ACCOUNT-scoped. The store is populated automatically on save
 // (via extractNewMemoriesFromSave) and consumed on the next turn (via
 // retrieveRelevantMemories); /api/memories/* below is the management view,
-// so users can correct facts the heuristic got wrong or prune noise.
-//
-// NOTE: the old per-CONVERSATION memory routes (GET/DELETE/DELETE/PUT
-// /api/conversations/:id/memories[/:memId]) were removed when memory became
-// ACCOUNT-scoped. Management now lives at /api/memories/* (see below) and the
-// webapp Memory tab. Legacy on-disk per-conversation memories are migrated
-// into the account store on first use (memoryService.migrateLegacyForUser).
+// NOTE: the old per-CONVERSATION memory routes were removed when memory became
+// ACCOUNT-scoped; memory is now the per-theme CORE MEMORY managed at
+// /api/memories/* (see below) and the webapp Memory tab.
 
 // Check streaming status for a conversation
 app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
@@ -20460,12 +19195,12 @@ const chatStreamHandlerInner = async (req, res) => {
         // chunking gate just like any other system context, so injection can't
         // blow up the context budget. Honors the chat "disable memory" toggle.
         let pendingMemoryNotice = null;
-        // The EXPERIENCES injected into this turn (id + the remembered tool path).
-        // Two consumers: the catalog build force-advertises the tools a remembered
-        // playbook names (a router that hides them makes the recalled approach
-        // unfollowable — the memory would be read and then ignored), and the
-        // end-of-turn recorder measures whether the path was actually followed.
-        let usedExperiences = [];
+        // The CORE MEMORY recalled for this turn (theme + the proven tool path).
+        // Two consumers: the catalog build force-advertises the tools the proven
+        // approach names (a router that hides them makes the recalled approach
+        // unfollowable), and the end-of-turn recorder measures whether it was
+        // followed and whether the run beat the remembered best.
+        let recalledCore = null;
         // Held until SSE headers are flushed below; emits a chunking_progress
         // event so the UI knows the agentic flow took over.
         let pendingAgenticNotice = null;
@@ -20514,64 +19249,30 @@ const chatStreamHandlerInner = async (req, res) => {
                 // parent turn already had it, the block would differ per worker
                 // (no prefix sharing), and it is pure latency on a sub-task.
                 if (latestUserText && !req.delegate) {
-                    // Predict THIS turn's activity (from the ask + any attachments,
-                    // before any tools run) so the matching experience memory is
-                    // surfaced first — that's what front-loads the proven approach.
-                    const activityHint = (classifyTurnActivity({
-                        toolLabels: [],
-                        userText: memoryQuery,
-                        attachmentKinds: deriveAttachmentKinds(req.body?.attachments),
-                    }) || {}).activity || null;
                     const memoryResult = await retrieveRelevantMemories(
                         chatUserId, chatConvId, memoryQuery,
-                        // Budget scales with the model's window: a small-ctx
-                        // model gets a lean persona block, a big one the full.
-                        // The lead of a two-model turn gets a leaner block: its
-                        // first prompt is processed at ~1k tok/s on the big
-                        // model, standing instructions and the best-matching
-                        // experience always fit, and the legwork runs elsewhere.
+                        // Budget scales with the model's window; the lead of a
+                        // two-model turn gets a leaner block (its first prompt is
+                        // processed at ~1k tok/s on the big model).
                         handoff.engaged ? Math.min(memoryBudgetForCtx(contextSize), HANDOFF_LEAD_MEMORY_TOKENS) : memoryBudgetForCtx(contextSize),
-                        { activityHint }
+                        { attachmentKinds: coreMemory.deriveAttachmentKinds(req.body?.attachments) }
                     );
-                    if (memoryResult && Array.isArray(memoryResult.experiences)) {
-                        usedExperiences = memoryResult.experiences;
-                    }
-                    if (memoryResult && memoryResult.count) {
-                        // Process-log which memories were pulled into THIS turn so
-                        // the user can see what's shaping the response.
-                        const preview = (memoryResult.previews || []).slice(0, 3)
-                            .map(p => `“${p.slice(0, 70)}”`).join('; ');
-                        logUserActivity(chatUserId,
-                            `Memory: referenced ${memoryResult.count} memor${memoryResult.count === 1 ? 'y' : 'ies'} ` +
-                            `(${memoryResult.procedures} experience, ${memoryResult.learnings} learning${memoryResult.learnings === 1 ? '' : 's'}, ` +
-                            `${memoryResult.facts} fact${memoryResult.facts === 1 ? '' : 's'}, ${memoryResult.tokens} tok)` +
-                            (memoryResult.linked ? ` +${memoryResult.linked} via links` : '') +
-                            (activityHint ? ` [activity: ${activityHint}]` : '') +
-                            (preview ? ` — ${preview}` : '')
-                        );
-                    }
                     if (memoryResult && memoryResult.block) {
+                        recalledCore = memoryResult;
+                        logUserActivity(chatUserId,
+                            `Memory: recalled the ${memoryResult.label} core memory (${memoryResult.runs} task${memoryResult.runs === 1 ? '' : 's'}` +
+                            (memoryResult.bestCalls != null ? `, best ${memoryResult.bestCalls} call${memoryResult.bestCalls === 1 ? '' : 's'}` : '') +
+                            `, ${memoryResult.tokens} tok)`);
                         // PLACEMENT (don't regress): prepend the block to the
                         // LATEST USER MESSAGE (same slot as the workspace
                         // pre-flight notes), NOT the leading system message.
                         // The backend reuses its KV cache only for the longest
                         // common PREFIX of consecutive requests, and this block
-                        // differs every turn (it is retrieved against the new
-                        // ask) — appended to the system message it invalidated
-                        // the entire conversation prefix, so every turn of a
-                        // 25k-token chat re-prefilled ~all of it (measured
-                        // f_keep≈0.5 on llama.cpp; tens of seconds of dead
-                        // "Thinking…" per turn). On hybrid/recurrent models
-                        // (Qwen3.5/3.6/3.8) there is no KV-shift fallback at
-                        // all, so a stable prefix is the only thing that works.
-                        // In the user slot the whole history before it stays
-                        // cached and only the new turn is prefilled. A leading
+                        // differs per turn — appended to the system message it
+                        // invalidated the entire conversation prefix. A leading
                         // `/no_think` / `/think` soft switch (added above) is
                         // kept at the very start of the message.
-                        const memoryNote =
-                            '[SYSTEM: Account memory for this user — persona, standing instructions and relevant facts. ' +
-                            'Apply it to the request that follows; it is runtime context, not part of the user\'s message.\n' +
-                            memoryResult.block + ']\n\n';
+                        const memoryNote = '[SYSTEM: ' + memoryResult.block + ']\n\n';
                         const lastUserIdxForMemory = chatMessages.map(m => m.role).lastIndexOf('user');
                         const prependKeepingSwitch = (text) => {
                             const sw = /^\/(?:no_)?think\b[ \t]*\n?/i.exec(text);
@@ -20589,26 +19290,19 @@ const chatStreamHandlerInner = async (req, res) => {
                                 chatMessages[lastUserIdxForMemory] = { ...um, content: parts };
                             }
                         } else if (chatMessages.length > 0 && chatMessages[0].role === 'system' && typeof chatMessages[0].content === 'string') {
-                            // No user message at all (degenerate caller) — fall back to the system slot.
                             chatMessages[0] = { ...chatMessages[0], content: `${chatMessages[0].content}\n\n${memoryResult.block}` };
                         } else {
                             chatMessages.unshift({ role: 'system', content: memoryResult.block });
                         }
-                        // Defer the SSE notice — at this point the response
-                        // is still in pre-stream mode (headers not yet set).
-                        // Stash the payload and emit it once SSE setup runs
-                        // below.
+                        // Defer the SSE notice — the response is still in
+                        // pre-stream mode here; emitted once SSE setup runs.
                         pendingMemoryNotice = {
                             type: 'memory_injected',
-                            count: memoryResult.count,
-                            // Broken out so the UI (and any harness) can say WHAT
-                            // was recalled — an experience shaping the work reads
-                            // very differently from a stored fact.
-                            experiences: memoryResult.procedures,
-                            learnings: memoryResult.learnings,
-                            facts: memoryResult.facts,
+                            count: 1,
+                            theme: memoryResult.theme,
+                            label: memoryResult.label,
+                            runs: memoryResult.runs,
                             tokens: memoryResult.tokens,
-                            linked: memoryResult.linked,
                             previews: memoryResult.previews,
                         };
                     }
@@ -22047,6 +20741,13 @@ const chatStreamHandlerInner = async (req, res) => {
             memoryUserId: memUserId,
             memoryDisabled: toolMemoryDisabled,
             latestUserText,
+            // The tools this turn has already called (for record_learning to
+            // file a lesson under the current task's theme). Lazy: the history
+            // is declared later in this handler and only grows over the turn.
+            get _turnToolLabels() {
+                try { return toolCallHistory.filter(h => h && !h.nudge && h.fp).map(h => String(h.fp).split(':')[0]); }
+                catch (_) { return []; }
+            },
             // Document indexed for THIS turn (large user content stashed via
             // documentIndex). query_document / read_document_chunk force their
             // calls onto this id so a model that fumbles the 32-hex handle
@@ -22189,25 +20890,21 @@ const chatStreamHandlerInner = async (req, res) => {
             preflightForcedTools.add('query_document');
             preflightForcedTools.add('read_document_chunk');
         }
-        // A recalled EXPERIENCE names the tools that worked last time — but the
-        // router advertises ~13 of 133 tools per turn, chosen by semantics on
-        // the ask alone. If the remembered path names a tool the router drops,
-        // the model reads "reuse this approach" and then cannot: it re-explores
-        // with whatever it was given, which is exactly the cost the memory
-        // exists to avoid. Force-include them (bounded, and only names the
-        // registry actually has, so a renamed/removed tool can't be resurrected).
-        if (usedExperiences.length) {
+        // The recalled CORE MEMORY's proven approach names the tools that worked
+        // last time — but the router advertises ~13 of 133 tools per turn, chosen
+        // by semantics on the ask alone. If the remembered path names a tool the
+        // router drops, the model reads "reuse this approach" and then cannot.
+        // Force-include them (bounded, registry names only).
+        if (recalledCore && Array.isArray(recalledCore.tools) && recalledCore.tools.length) {
             const named = [];
-            for (const ux of usedExperiences) {
-                for (const t of (ux.tools || [])) {
-                    if (named.length >= EXPERIENCE_FORCED_TOOL_MAX) break;
-                    if (!fullByName.has(t) || preflightForcedTools.has(t)) continue;
-                    preflightForcedTools.add(t);
-                    named.push(t);
-                }
+            for (const t of recalledCore.tools) {
+                if (named.length >= EXPERIENCE_FORCED_TOOL_MAX) break;
+                if (!fullByName.has(t) || preflightForcedTools.has(t)) continue;
+                preflightForcedTools.add(t);
+                named.push(t);
             }
             if (named.length) {
-                console.log(`[Chat Stream] Experience pre-flight: force-advertising ${named.length} remembered tool(s): ${named.join(', ')}`);
+                console.log(`[Chat Stream] Core memory pre-flight: force-advertising ${named.length} remembered tool(s): ${named.join(', ')}`);
                 logChatActivity(`Memory: kept ${named.length} remembered tool${named.length === 1 ? '' : 's'} in the catalog — ${named.join(', ')}`);
             }
         }
@@ -27499,7 +26196,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 toolChips: persistedToolChips,
                 userText: latestUserText,
                 attachments: req.body?.attachments,
-                usedExperiences,
+                recalled: recalledCore,
                 // How the run went — drives which approach is kept as the best.
                 quality: {
                     ms: Date.now() - streamStartTime,
@@ -30132,7 +28829,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             && req.body.messages.length) {
             // (1) build persona from Pi usage (fire-and-forget). Pass a shallow
             // snapshot so the async walk can't race with (2) mutating the array.
-            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice(), req._v1UsedExperiences || null).catch(() => {});
+            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice(), req._v1RecalledCore || null).catch(() => {});
             // (2) inject persona into THIS request (awaited — must land before
             // forward). Bounded by a timeout so a slow/large memory read can
             // never stall the proxy: on timeout we forward without memory.
@@ -30143,8 +28840,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 ]);
                 if (injected && injected.count) {
                     logUserActivity(piMemId,
-                        `Pi memory: injected ${injected.count} (${injected.procedures} experience, ${injected.learnings} learnings, ${injected.facts} facts, ${injected.tokens} tok)` +
-                        (injected.activityHint ? ` [activity: ${injected.activityHint}]` : ''));
+                        `Pi memory: recalled the ${injected.label} core memory (${injected.runs} task${injected.runs === 1 ? '' : 's'}, ${injected.tokens} tok)`);
                 }
             } catch (e) { console.warn('[Pi/Memory] injection skipped:', e.message); }
         }
@@ -30476,32 +29172,27 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// ACCOUNT MEMORY — CRUD for the webapp Memory tab
+// CORE MEMORY — routes for the webapp Memory tab
 // ============================================================================
-// Memories are account-scoped (one set per user), managed here and surfaced to
-// the chat model via injection + the record_learning tool. Auth + ownership
-// only (no special permission, like conversations); admins see/manage all and
-// the list is decorated with ownerName. Routes sit BEFORE the 404/error
-// middleware.
+// One core memory per THEME of work per account (services/coreMemory.js). The
+// tab shows each theme's living playbook, statistics, proven approach, lessons
+// and recent tasks, and lets the user add their own guidance per theme, pause a
+// theme, reset one, or clear everything. No facts/preferences/limitations —
+// those were removed 2026-09-22. Auth + ownership only; admins see every
+// account's core memories. Routes sit BEFORE the 404/error middleware.
 
 // Account id that memory is keyed by. Resolves to the owning ACCOUNT in every
 // auth mode: a web session uses `req.user.id`; an API-key/Bearer caller uses
 // `req.userId` (= `keyData.userId`, the account that created the key). Only an
-// UNASSOCIATED key (no `userId`) falls back to its own key id, preserving
-// isolation. This mirrors the `/v1` persona bridge (`injectPersonaForV1`), so a
-// key minted in a web session shares ONE persona with the web chat instead of a
-// blank per-key bucket. The chat stream, Memory-tab routes, `record_learning`,
-// and experience recording all resolve memory identity through this helper, so
-// reads and writes never diverge. NOTE: this is deliberately DECOUPLED from
-// conversation ownership (conversations stay keyed by the chat stream's own
-// `userId`) — switching memory to the account must not move or hide an API
-// caller's existing conversations.
+// UNASSOCIATED key (no `userId`) falls back to its own key id. The chat stream,
+// the Pi bridge, `record_learning` and these routes all resolve through this
+// helper, so reads and writes never diverge. Deliberately DECOUPLED from
+// conversation ownership.
 function memAccountId(req) {
     return req.user?.id || req.userId || req.apiKeyData?.id || 'default';
 }
 
-// Attach ownerName to each memory for the admin view (mirrors decorateKbOwners).
-async function decorateMemoryOwners(list) {
+async function decorateCoreMemoryOwners(list) {
     const usersById = new Map();
     try {
         const users = await getAllUsers();
@@ -30509,339 +29200,152 @@ async function decorateMemoryOwners(list) {
     } catch (_) { /* fall back to raw owner id */ }
     return list.map((m) => ({
         ...m,
-        ownerName: m.userId ? (usersById.get(String(m.userId))?.username || 'unknown') : 'global',
+        ownerName: usersById.get(String(m.userId))?.username || (m.userId ? `${String(m.userId).slice(0, 8)}…` : 'unknown'),
     }));
 }
 
-// Load a memory and enforce ownership (admins bypass). Sends the error +
-// returns null on denial so the caller can `if (!mem) return;`.
-async function loadOwnedMemory(req, res) {
-    const mem = await memoryService.getMemory(req.params.id);
-    if (!mem) { res.status(404).json({ error: 'Memory not found' }); return null; }
-    if (!callerIsAdmin(req) && mem.userId !== memAccountId(req)) {
-        res.status(403).json({ error: 'Not authorized for this memory' });
-        return null;
-    }
-    return mem;
+// Public shape of a core memory (drops the internal dirty flag).
+function publicCoreMemory(m) {
+    if (!m) return m;
+    const { dirty, ...rest } = m;
+    void dirty;
+    return rest;
 }
 
-// List memories — own, or all for admins. Triggers legacy migration first so
-// the tab shows imported per-conversation memories immediately.
+// Resolve `:id` to a record the caller may act on (own account, or any when
+// admin). Returns { rec, userId } or null.
+async function resolveOwnedCoreMemory(req) {
+    const id = String(req.params.id || '');
+    const own = memAccountId(req);
+    let rec = await coreMemory.get(own, id);
+    if (rec) return { rec, userId: own };
+    if (callerIsAdmin(req)) {
+        for (const uid of await coreMemory.listAllUsers()) {
+            rec = await coreMemory.get(uid, id);
+            if (rec) return { rec, userId: uid };
+        }
+    }
+    return null;
+}
+
+// List the caller's core memories (+ every theme so the tab can show the
+// ones that have nothing yet). Admins get every account's, with owner names.
 app.get('/api/memories', requireAuth, async (req, res) => {
     try {
-        try { await memoryService.migrateLegacyForUser(memAccountId(req)); } catch (_) { /* best-effort */ }
         const isAdmin = callerIsAdmin(req);
-        const list = await memoryService.listMemories(memAccountId(req), { all: isAdmin });
-        // Newest-updated first for a useful default order in the UI.
-        list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-        res.json({ memories: await decorateMemoryOwners(list), isAdmin });
+        const own = memAccountId(req);
+        let list = await coreMemory.list(own);
+        if (isAdmin) {
+            for (const uid of await coreMemory.listAllUsers()) {
+                if (uid === own) continue;
+                list = list.concat(await coreMemory.list(uid));
+            }
+            list = await decorateCoreMemoryOwners(list);
+        }
+        res.json({
+            memories: list.map(publicCoreMemory),
+            themes: coreMemory.allThemes(),
+            accountId: own,
+            isAdmin,
+            model: 'core-memory',
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Create a memory by hand (source 'manual').
+// Create-or-update a theme's user guidance ("notes"). This is the ONE thing a
+// user writes into memory by hand: standing guidance for how a kind of work
+// should be done, injected with that theme's core memory.
 app.post('/api/memories', requireAuth, async (req, res) => {
     try {
-        const text = String(req.body?.text || '').trim();
-        if (!text) return res.status(400).json({ error: 'text is required' });
-        if (text.length > memoryService.MEMORY_TEXT_MAX) {
-            return res.status(400).json({ error: `text too long (max ${memoryService.MEMORY_TEXT_MAX} chars)` });
+        const theme = String(req.body?.theme || '').trim();
+        if (!coreMemory.allThemes().some(t => t.key === theme)) {
+            return res.status(400).json({ error: `theme must be one of: ${coreMemory.allThemes().map(t => t.key).join(', ')}` });
         }
-        const type = req.body?.type && memoryService.VALID_TYPES.has(req.body.type) ? req.body.type : null;
-        const impact = req.body?.impact && memoryService.VALID_IMPACTS.has(req.body.impact) ? req.body.impact : null;
-        const keywords = extractQueryKeywords(text);
-        const mem = await memoryService.createMemory({
-            userId: memAccountId(req),
-            text,
-            keywords,
-            tokens: Math.ceil(text.length / 3),
-            score: 5,                 // manual entries are deliberately high-value
-            source: 'manual',
-            type,
-            impact,
-        });
-        res.status(201).json({ memory: mem });
+        const notes = String(req.body?.notes ?? req.body?.text ?? '');
+        if (notes.length > coreMemory.NOTES_MAX_CHARS) {
+            return res.status(400).json({ error: `notes too long (max ${coreMemory.NOTES_MAX_CHARS} chars)` });
+        }
+        const rec = await coreMemory.setNotes(memAccountId(req), theme, notes);
+        res.status(201).json({ success: true, memory: publicCoreMemory(rec) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Prune "scratch" facts — auto-extracted FACTS that aren't durable memories
-// about the user but one-off conversation leftovers (task-specific state, "since
-// I don't have the file…", transient context). The local model judges each in
-// batches; only AUTO, non-pinned, non-procedure facts are eligible, so manual
-// entries / preferences / experience are never at risk. Conservative: drops only
-// what the model explicitly flags; no model running → no-op.
-async function pruneScratchFacts(userId, { apply }) {
-    const all = await memoryService.listMemories(userId);
-    const facts = all.filter(m => m.source === 'auto' && (m.type || 'fact') === 'fact' && !m.pinned);
-    if (!facts.length) return { candidates: 0, dropped: 0, sample: [] };
-    let running = false;
-    for (const inst of modelInstances.values()) if (inst.status === 'running') { running = true; break; }
-    if (!running) return { candidates: facts.length, dropped: 0, sample: [], note: 'no model running — skipped' };
-
-    const SYS = 'You audit stored long-term "memories". KEEP durable facts about the USER: identity, life, work, projects, environment, accounts, tools, and the WORK/PROJECT domains they operate in (e.g. they regularly do malware analysis for their job — that is a work fact, keep it). DROP: (a) PASSIVE interests / hobbies / topics they were merely curious about ("the user is interested in <show/game/topic>", "is a fan of X", "enjoys watching Y") — these are not actionable; (b) a ONE-OFF task they asked about once ("looking for streaming sites for movie X", "renting a hand truck"); (c) transient session state / scratch ("since I don\'t have the file…", "the SVG isn\'t on disk", a single past artifact\'s byte size); (d) a specific date/time or live-news item; (e) content the ASSISTANT produced (article quotes, code/templates, citations, news write-ups). When unsure whether something is a durable WORK fact or a passive interest, prefer to DROP passive interests but KEEP work/identity facts. Reply with ONLY a JSON array of the item NUMBERS to DROP. If none, reply [].';
-    const drop = new Set();
-    const CHUNK = 25;
-    for (let i = 0; i < facts.length; i += CHUNK) {
-        const batch = facts.slice(i, i + CHUNK);
-        const numbered = batch.map((m, j) => `${j + 1}. ${m.text}`).join('\n');
-        let raw;
-        try {
-            raw = await Promise.race([
-                runModelCompletion({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: numbered }], temperature: 0, maxTokens: 220, disableThinking: true, preferFree: true }),
-                new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('prune timeout')), 25000); if (t.unref) t.unref(); }),
-            ]);
-        } catch (_) { continue; }                            // batch failed → keep this batch
-        const stripped = String(raw || '').replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '');
-        const m = stripped.match(/\[[\s\S]*?\]/);
-        if (!m) continue;
-        let arr; try { arr = JSON.parse(m[0]); } catch (_) { continue; }
-        if (!Array.isArray(arr)) continue;
-        for (const n of arr) { const idx = Number(n) - 1; if (idx >= 0 && batch[idx]) drop.add(batch[idx].id); }
-    }
-    const dropIds = [...drop];
-    const sample = facts.filter(f => drop.has(f.id)).slice(0, 15).map(f => (f.text || '').slice(0, 85));
-    if (apply) { for (const id of dropIds) { try { await memoryService.deleteMemory(id); } catch (_) { /* continue */ } } }
-    return { candidates: facts.length, dropped: dropIds.length, sample };
-}
-
-// Maintenance: clean junk + consolidate near-duplicates for the CALLER'S OWN
-// account. Dry-run by default (apply:false) → returns what WOULD change so the
-// user can review before committing. apply:true performs it. Owner-scoped via
-// memAccountId — never touches another account's memories.
-//   body: { apply?, llm?, minSem?, mergeProcedures?, pruneScratch? }
-app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
-    try {
-        const userId = memAccountId(req);
-        if (!userId || userId === 'default') return res.status(400).json({ error: 'no account memory context' });
-        const apply = req.body?.apply === true;
-        const useLlm = req.body?.llm !== false;
-        const minSem = (typeof req.body?.minSem === 'number' && req.body.minSem > 0 && req.body.minSem < 1) ? req.body.minSem : undefined;
-
-        const all = await memoryService.listMemories(userId);
-        const before = all.length;
-
-        // 1) JUNK — AUTO-extracted non-procedure lines the (strengthened) junk
-        // filter flags, PLUS passive consumption-interest statements ("user is
-        // interested in X", "is a fan of Y") which the user does not want stored.
-        // Never deletes manual/user-authored or procedures.
-        // Deterministic request-junk detector — runs REGARDLESS of model
-        // availability (pruneScratchFacts needs a loaded model and bails without
-        // one, which is exactly when bare-request facts accrete unaudited). Flags
-        // only an AUTO fact that LEADS with a request to the assistant AND carries
-        // no durable first/second-person predicate or stable identifier — i.e. a
-        // one-off task ask ("Give me all the info for the Diablo 4 patch"), never a
-        // fact about the user. "When unsure, KEEP."
-        const isRequestJunk = (m) => {
-            const t = String(m.text || '');
-            return m.source === 'auto' && m.type === 'fact' && !m.pinned
-                && looksLikeRequest(t)
-                && !/\b(i (am|use|prefer|work|run|need|have|like|want)|i'?m|my )\b/i.test(t)         // no first/second-person durable predicate
-                && !/(\d{1,3}(\.\d{1,3}){3}|cve-\d|\/[\w./-]+|[a-z0-9.-]+\.(com|net|org|io|in|dev|app|gov))\b/i.test(t); // no IP/CVE/path/domain
-        };
-        const junk = all.filter(m => m.source === 'auto' && m.type !== 'procedure'
-            && (isJunkMemoryLine(String(m.text || '')) || isLowValueInterest(String(m.text || '')) || isRequestJunk(m)));
-        const junkSample = junk.slice(0, 15).map(m => ({ id: m.id, type: m.type, text: (m.text || '').slice(0, 90) }));
-        if (apply) {
-            for (const m of junk) { try { await memoryService.deleteMemory(m.id); } catch (_) { /* continue */ } }
-        }
-
-        // 2) CONSOLIDATE near-duplicate clusters. LLM-author the merged text when
-        // a model is running (else keep-strongest). Force the pass (auto:false).
-        const mergeText = useLlm ? (async (members) => {
-            let running = false;
-            for (const inst of modelInstances.values()) if (inst.status === 'running') { running = true; break; }
-            if (!running) return null;                       // → keep strongest member's text
-            const lines = members.map((x, i) => `${i + 1}. ${x.text}`).join('\n');
-            const raw = await Promise.race([
-                runModelCompletion({
-                    messages: [
-                        { role: 'system', content: 'You merge several memory notes that are about the SAME thing into ONE concise note with the same meaning and no duplication. Keep it a single short statement about the user or their preference. Output ONLY the merged note, no preamble, no list.' },
-                        { role: 'user', content: lines },
-                    ], temperature: 0, maxTokens: 160, disableThinking: true, preferFree: true,
-                }),
-                new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('merge timeout')), 20000); if (t.unref) t.unref(); }),
-            ]);
-            const text = String(raw || '').replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
-            return (text && !isJunkMemoryLine(text)) ? text : null;
-        }) : null;
-
-        const consol = await memoryService.consolidateUser(userId, { apply, mergeText, ...(minSem ? { minSem } : {}) });
-
-        // 3) PROCEDURE merge (opt-in) — collapse same-activity duplicate recipes.
-        const procResult = req.body?.mergeProcedures
-            ? await memoryService.consolidateProcedures(userId, { apply, ...(minSem ? { minSem } : {}) })
-            : null;
-
-        // 4) SCRATCH-FACT prune (opt-in, LLM judges durable-vs-one-off).
-        const pruneResult = req.body?.pruneScratch
-            ? await pruneScratchFacts(userId, { apply })
-            : null;
-
-        // 5) LINK related (opt-in) — connect clearly-related EXISTING memories
-        // (cosine ≥ minSem + shared-keyword anchor, bounded per memory) so they
-        // surface together at retrieval (1-hop link expansion). Backfills the
-        // links the auto-linker only creates for memories added going forward.
-        // Needs the embedding engine; engine down → no-op.
-        const linkResult = req.body?.linkRelated
-            ? await memoryService.linkRelatedMemories(userId, { apply, ...(minSem ? { minSem } : {}) })
-            : null;
-
-        const removedCount = junk.length
-            + (consol.merged || consol.merges.reduce((n, x) => n + x.dropped.length, 0))
-            + (procResult ? (procResult.merged || procResult.merges.reduce((n, x) => n + x.dropped.length, 0)) : 0)
-            + (pruneResult ? pruneResult.dropped : 0);
-        const after = apply
-            ? await memoryService.countForUser(userId).catch(() => before - removedCount)
-            : before;                                        // dry-run: store unchanged
-
-        res.json({
-            apply,
-            before,
-            after: apply ? after : undefined,
-            projectedAfter: apply ? undefined : before - removedCount,
-            junk: { count: junk.length, sample: junkSample },
-            consolidation: {
-                clusters: consol.clusters,
-                merged: apply ? consol.merged : consol.merges.reduce((n, x) => n + x.dropped.length, 0),
-                sample: consol.merges.slice(0, 10),
-            },
-            procedures: procResult ? {
-                groups: procResult.groups,
-                merged: apply ? procResult.merged : procResult.merges.reduce((n, x) => n + x.dropped.length, 0),
-                sample: procResult.merges.slice(0, 10),
-            } : undefined,
-            scratchPrune: pruneResult ? {
-                candidates: pruneResult.candidates,
-                dropped: pruneResult.dropped,
-                note: pruneResult.note,
-                sample: pruneResult.sample,
-            } : undefined,
-            linkRelated: linkResult ? {
-                scanned: linkResult.scanned,
-                proposed: linkResult.proposed,
-                linked: apply ? linkResult.linked : 0,
-                sample: linkResult.pairs.slice(0, 12),
-            } : undefined,
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Get one memory.
 app.get('/api/memories/:id', requireAuth, async (req, res) => {
     try {
-        const mem = await loadOwnedMemory(req, res); if (!mem) return;
-        res.json({ memory: mem });
+        const found = await resolveOwnedCoreMemory(req);
+        if (!found) return res.status(404).json({ error: 'memory not found' });
+        res.json({ memory: publicCoreMemory(found.rec) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Edit a memory's text / type / impact. Re-derives keywords + tokens on text
-// change so retrieval scoring stays consistent with the extractor.
+// Edit a core memory: the user's notes, a pause switch, or a hand-added lesson.
 app.patch('/api/memories/:id', requireAuth, async (req, res) => {
     try {
-        const mem = await loadOwnedMemory(req, res); if (!mem) return;
-        const patch = {};
-        if (req.body?.text != null) {
-            const text = String(req.body.text).trim();
-            if (!text) return res.status(400).json({ error: 'text cannot be empty' });
-            if (text.length > memoryService.MEMORY_TEXT_MAX) {
-                return res.status(400).json({ error: `text too long (max ${memoryService.MEMORY_TEXT_MAX} chars)` });
+        const found = await resolveOwnedCoreMemory(req);
+        if (!found) return res.status(404).json({ error: 'memory not found' });
+        const { rec, userId } = found;
+        let out = rec;
+        if (req.body?.notes !== undefined) {
+            const notes = String(req.body.notes ?? '');
+            if (notes.length > coreMemory.NOTES_MAX_CHARS) {
+                return res.status(400).json({ error: `notes too long (max ${coreMemory.NOTES_MAX_CHARS} chars)` });
             }
-            patch.text = text;
-            patch.keywords = extractQueryKeywords(text);
-            patch.tokens = Math.ceil(text.length / 3);
+            out = await coreMemory.setNotes(userId, rec.theme, notes);
         }
-        if (req.body?.type !== undefined) patch.type = req.body.type;
-        if (req.body?.impact !== undefined) patch.impact = req.body.impact;
-        // User flags: pinned = never pruned; muted = stored but never injected.
-        if (req.body?.pinned !== undefined) patch.pinned = req.body.pinned === true;
-        if (req.body?.muted !== undefined) patch.muted = req.body.muted === true;
-        const updated = await memoryService.updateMemory(mem.id, patch);
-        res.json({ memory: updated });
+        if (req.body?.enabled !== undefined) {
+            out = await coreMemory.setEnabled(userId, rec.id, req.body.enabled !== false) || out;
+        }
+        if (typeof req.body?.lesson === 'string' && req.body.lesson.trim()) {
+            await coreMemory.addLesson(userId, { theme: rec.theme, lesson: req.body.lesson, source: 'user' });
+            out = await coreMemory.get(userId, rec.id);
+        }
+        res.json({ success: true, memory: publicCoreMemory(out) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Delete one memory.
+// Reset one theme (its runs, playbook, lessons and notes are gone).
 app.delete('/api/memories/:id', requireAuth, async (req, res) => {
     try {
-        const mem = await loadOwnedMemory(req, res); if (!mem) return;
-        await memoryService.deleteMemory(mem.id);
+        const found = await resolveOwnedCoreMemory(req);
+        if (!found) return res.status(404).json({ error: 'memory not found' });
+        await coreMemory.remove(found.userId, found.rec.id);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Connect / disconnect two memories (bidirectional). Both must belong to the
-// caller's account (admins bypass). body: { targetId, unlink? }.
-app.post('/api/memories/:id/link', requireAuth, async (req, res) => {
-    try {
-        const mem = await loadOwnedMemory(req, res); if (!mem) return;
-        const targetId = String(req.body?.targetId || '').trim();
-        if (!targetId) return res.status(400).json({ error: 'targetId is required' });
-        if (targetId === mem.id) return res.status(400).json({ error: 'cannot link a memory to itself' });
-        const target = await memoryService.getMemory(targetId);
-        if (!target) return res.status(404).json({ error: 'target memory not found' });
-        // Both sides must be owned by the same account so we never weave a
-        // cross-account link (mem is already ownership-checked above).
-        if (target.userId !== mem.userId) {
-            return res.status(403).json({ error: 'memories belong to different accounts' });
-        }
-        const unlink = req.body?.unlink === true;
-        const result = await memoryService.setLink(mem.userId, mem.id, targetId, { unlink });
-        if (!result) return res.status(404).json({ error: 'memory not found' });
-        res.json({ success: true, changed: result.changed, source: result.a, target: result.b });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Clear ALL of the caller's own memories (the tab's "clear all" action).
+// Clear ALL of the caller's own core memories.
 app.delete('/api/memories', requireAuth, async (req, res) => {
     try {
-        const removed = await memoryService.clearMemories(memAccountId(req));
+        const removed = await coreMemory.clearAll(memAccountId(req));
         res.json({ success: true, removed });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Search/test box: score the caller's memories against a query the same way
-// the chat injector does — semantic cosine (memory index) blended with
-// keyword overlap, falling back to keyword-only when the engine is down.
-app.post('/api/memories/search', requireAuth, async (req, res) => {
+// Preview what the model would be handed for a given ask — the test box.
+app.post('/api/memories/recall', requireAuth, async (req, res) => {
     try {
-        const query = String(req.body?.query || '').trim();
-        if (!query) return res.status(400).json({ error: 'query is required' });
-        const k = Math.min(Math.max(parseInt(req.body?.k) || 10, 1), 50);
-        const accountId = memAccountId(req);
-        const all = await memoryService.listMemories(accountId, { all: callerIsAdmin(req) });
-        // Semantic scores cover the caller's OWN index; an admin's view of
-        // other users' memories scores keyword-only (their vectors live in
-        // per-user indexes we don't cross-query).
-        let sem = null;
-        try { sem = await semanticMemoryScores(accountId, query, k * 2); } catch (_) { sem = null; }
-        const qk = extractQueryKeywords(query);
-        const scored = all.map((m) => {
-            const kw = memoryService.jaccardSimilarity(m.keywords || [], qk);
-            const s = sem?.scores?.get(m.id);
-            return { ...m, score: s != null ? Math.max(s, kw) : kw, semantic: s ?? null };
-        });
-        scored.sort((a, b) => b.score - a.score);
-        const results = scored.filter((m) => m.score > 0).slice(0, k);
-        res.json({ query, count: results.length, results, mode: sem ? 'semantic+keyword' : 'keyword' });
+        const text = String(req.body?.text || req.body?.query || '').trim();
+        if (!text) return res.status(400).json({ error: 'text is required' });
+        const cls = coreMemory.classifyTheme({ userText: text, hasTools: false });
+        const rec = await coreMemory.recall(memAccountId(req), { userText: text, tokenBudget: parseInt(req.body?.tokenBudget, 10) || MEMORY_RETRIEVAL_TOKEN_BUDGET });
+        res.json({ theme: cls ? cls.theme : null, label: cls ? cls.label : null, scores: cls ? cls.scores : {}, recalled: rec });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
+
 
 // ============================================================================
 // PROCESS LOG HISTORY
@@ -34465,13 +32969,13 @@ app.use((req, res) => {
     // helper near the auth destructure at the top of this file.
 
     // ----- record_learning -------------------------------------------------
-    // Lets the model proactively persist a durable LEARNING into the user's
-    // account memory — a correction, a stated preference, a mistake to avoid,
-    // a workaround, or an environment limitation it discovered. These are
-    // account-scoped and injected into future turns, so the assistant keeps
-    // getting better and avoids repeating the same misstep ("continuous
-    // improvement"). Recording is autonomous and silent (no confirmation).
-    // Hidden when the user has disabled memory.
+    // Lets the model add ONE lesson to the core memory of a THEME of work
+    // (research, coding, …): what worked, what to do differently next time, a
+    // correction the user gave about how this kind of work should be done.
+    // Lessons land in the theme's living memory and are folded into its
+    // playbook by the next refinement. There are no fact/preference records
+    // any more — a lesson is about HOW the work is done. Hidden when memory is
+    // disabled for the account.
     tools.registerTool({
         name: 'record_learning',
         async build(ctx) {
@@ -34483,41 +32987,24 @@ app.use((req, res) => {
                 function: {
                     name: 'record_learning',
                     description:
-                        // SENTENCE ONE CARRIES THE TRIGGER. Under the tool router the
-                        // model sees only the first sentence (≤150 chars) of a
-                        // description, so a "what it does" opener with the "when to
-                        // call it" buried in sentence two is invisible — the same
-                        // failure that made find_tools unreachable.
-                        'Call this right after an approach worked well or badly, or the user corrects you, so the lesson is reused next time. ' +
-                        'It saves OR refines a durable, experience-based lesson in your long-term memory of THIS user (continual learning). ' +
-                        'Use it when an approach worked well (or poorly) and you found a better one, when the user corrects you or states a preference, or when you hit and worked around a limitation. ' +
-                        'Capture the OUTCOME and the better next move — e.g. "Searched site A first, results were thin; broadening to A+B+C worked better — start broad next time, keep searching if weak." ' +
-                        'Phrase lessons as ADAPTIVE HEURISTICS, never rigid absolutes: prefer "start with X, then try a few alternatives and keep going if results are weak" over "only ever use X". ' +
-                        'CONSOLIDATE rather than pile up near-duplicates: if a related lesson already exists (you may see it tagged like [#a1b2c3] in your context), pass that handle as `replaces` to UPDATE/improve it in place. If you omit `replaces`, a close existing lesson is refined automatically. ' +
-                        'CONNECT related memories: if this lesson is RELATED to other memories you can see (tagged [#handle]) but does NOT replace them — e.g. a preference that pairs with a fact, or two lessons about the same project — pass their handles in `relatesTo` to link them, so they surface together next time. ' +
-                        'Record generalizable lessons, not one-off task facts (those are captured automatically). ' +
-                        'If the lesson is about HOW you performed a kind of task (reading emails, web research, analyzing a file), set `activity` to that high-level label — it consolidates into your EXPERIENCE for that activity (your persona) and is reused to do it faster next time. ' +
-                        'Runs silently — do not announce it, ask permission, or mention the [#handles] to the user.',
+                        // SENTENCE ONE CARRIES THE TRIGGER — under the tool router
+                        // the model sees only the first sentence (≤150 chars).
+                        'Call this when you learn how to do a KIND of work better for this user, or the user corrects how you did it, so the lesson is reused next time. ' +
+                        'It adds one lesson to your core memory for that theme of work (research, coding, data analysis, documents, media, security analysis, automations). ' +
+                        'Capture the OUTCOME and the better next move — e.g. "One broad search then reading the two primary sources beat five narrow searches; start broad." ' +
+                        'Phrase lessons as adaptive heuristics, never rigid absolutes, and never as facts about the user. ' +
+                        'Runs silently — do not announce it or ask permission.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            lesson: { type: 'string', description: 'The concrete, generalizable, outcome-aware lesson (one or two sentences). State what worked best and what to try next time.' },
-                            type: {
+                            lesson: { type: 'string', description: 'The concrete, generalizable lesson about HOW to do this kind of work (one or two sentences): what worked best and what to do next time.' },
+                            theme: {
                                 type: 'string',
-                                enum: ['feedback', 'preference', 'correction', 'workaround', 'issue', 'limitation'],
-                                description: 'What kind of learning this is.',
+                                enum: coreMemory.allThemes().map(t => t.key),
+                                description: 'Which kind of work the lesson is about. Omit to file it under the theme of the current task.',
                             },
-                            impact: {
-                                type: 'string',
-                                enum: ['important', 'medium', 'low'],
-                                description: 'How strongly this should shape future behavior. Set it deliberately: "important" = almost always surface (core preference/correction); "low" = minor/situational. Required.',
-                            },
-                            context: { type: 'string', description: 'Optional: when/why it matters, so future-you applies it correctly.' },
-                            replaces: { type: 'string', description: 'Optional: the [#handle] of an existing learning shown in your context to UPDATE/replace instead of creating a new one. Use this to keep memory consolidated.' },
-                            activity: { type: 'string', description: 'Optional: a high-level ACTIVITY label (e.g. "reading emails", "web research", "binary analysis") if this lesson is about HOW you performed that kind of task. Consolidates into your experience for that activity (your persona) and is reused to go faster next time.' },
-                            relatesTo: { type: 'array', items: { type: 'string' }, description: 'Optional: [#handles] of existing memories this lesson is RELATED to (but does not replace). They will be linked so they surface together next time. Internal — never shown to the user.' },
                         },
-                        required: ['lesson', 'impact'],
+                        required: ['lesson'],
                         additionalProperties: false,
                     },
                 },
@@ -34529,117 +33016,38 @@ app.use((req, res) => {
             if (ctx?.memoryDisabled) return { success: false, note: 'memory is disabled for this user' };
             const lesson = String(args?.lesson || '').trim();
             if (!lesson) return { success: false, error: 'lesson is required' };
-            // Soft per-turn cap so a misbehaving loop can't flood the store.
-            ctx._learningCalls = (ctx._learningCalls || 0) + 1;
-            if (ctx._learningCalls > 6) return { success: false, note: 'learning limit reached for this turn' };
-            const type = memoryService.VALID_TYPES.has(args?.type) ? args.type : 'learning';
-            const impact = memoryService.VALID_IMPACTS.has(args?.impact) ? args.impact : 'medium';
-            const context = String(args?.context || '').trim();
-            const text = context ? `${lesson} — context: ${context}` : lesson;
-            const keywords = extractQueryKeywords(text);
-            // Explicit model-driven LINKING: connect this lesson to the related
-            // memories the model named by [#handle] (resolved to ids), symmetric
-            // and best-effort. Returns how many new links were made. 1-hop
-            // retrieval expansion then surfaces them together next time.
-            const relatesTo = Array.isArray(args?.relatesTo) ? args.relatesTo.slice(0, 5) : [];
-            const linkRelated = async (newId) => {
-                if (!newId || !relatesTo.length) return 0;
-                let linked = 0;
-                for (const h of relatesTo) {
-                    try {
-                        const tgt = await memoryService.resolveHandle(userId, h);
-                        if (tgt && tgt.id !== newId) {
-                            const r = await memoryService.setLink(userId, newId, tgt.id);
-                            if (r && r.changed) linked++;
-                        }
-                    } catch (_) { /* best-effort */ }
-                }
-                return linked;
-            };
+            if (lesson.length > 400) return { success: false, error: 'lesson too long — one or two sentences (≤400 chars)' };
             try {
-                // Experience path: when the model labels an ACTIVITY, this lesson
-                // is about HOW it did that kind of task — store it as a procedure
-                // (persona), consolidated by activity key and reused to go faster.
-                // BUT a behavioral preference/correction is NOT a tool-path: the
-                // model sometimes tags one with an activity ("activity:coding,
-                // always use type hints"), which would OVERWRITE the activity's
-                // lean tool-recipe with a style rule. Route those to the learning
-                // store instead, where they become a curated directive that
-                // applies across every activity (and always injects).
-                // Note: type 'learning'/'workaround'/'issue' WITH an activity is
-                // genuinely procedural (how a task was done) and correctly takes
-                // the experience path; only preference/correction/feedback bypass
-                // it to become cross-topic directives.
-                const activityLabel = String(args?.activity || '').trim();
-                const isBehavioralLesson = type === 'preference' || type === 'correction' || type === 'feedback';
-                if (activityLabel && !isBehavioralLesson) {
-                    // Attach the lesson to the experience it is about: an explicit
-                    // replaces:"#handle" wins; otherwise the closest experience by
-                    // task similarity (lesson text + activity); else a new one.
-                    let matchId = null;
-                    const replHandle = String(args?.replaces || '').trim();
-                    if (replHandle) {
-                        try { const t = await memoryService.resolveHandle(userId, replHandle); if (t && t.type === 'procedure') matchId = t.id; } catch (_) {}
-                    }
-                    if (!matchId) {
-                        try {
-                            const probe = `${activityLabel}: ${lesson}${ctx.latestUserText ? ` — ${String(ctx.latestUserText).slice(0, 200)}` : ''}`;
-                            const sem = await semanticMemoryScores(userId, probe, 16);
-                            if (sem && sem.scores.size) {
-                                const all = await memoryService.listMemories(userId);
-                                const procs = new Map(all.filter(m => m.type === 'procedure').map(m => [m.id, m]));
-                                let best = null;
-                                for (const [id, sc] of sem.scores) {
-                                    if (!procs.has(id) || sc < experienceMemory.RETRIEVE_SEM) continue;
-                                    if (!best || sc > best.sc) best = { id, sc };
-                                }
-                                if (best) matchId = best.id;
-                            }
-                        } catch (_) { /* no match → new experience */ }
-                    }
-                    const ar = await memoryService.attachExperienceLesson(userId, {
-                        matchId, lesson: text, activity: activityLabel, impact,
-                        sourceConvId: ctx.conversationId || null,
-                    });
-                    const arLinked = await linkRelated(ar.id);
-                    logUserActivity(userId,
-                        `Memory: ${ar.updated ? 'updated existing experience (refined)' : 'created new experience'} [${memoryService.normalizeActivity(activityLabel)}] (×${ar.count}, ${ar.impact})${arLinked ? ` +${arLinked} link${arLinked === 1 ? '' : 's'}` : ''} — “${lesson.slice(0, 70)}”`);
-                    return {
-                        success: true, id: ar.id, updated: ar.updated, linked: arLinked,
-                        recorded: { activity: memoryService.normalizeActivity(activityLabel), impact: ar.impact, count: ar.count },
-                        note: ar.updated ? 'Refined your experience for this activity.' : 'Recorded experience for this activity; it will guide similar tasks.',
-                    };
+                let theme = String(args?.theme || '').trim();
+                if (!coreMemory.allThemes().some(t => t.key === theme)) {
+                    // File it under the current task's theme: the tools this turn
+                    // has already called + the ask.
+                    const used = Array.isArray(ctx?._turnToolLabels) ? ctx._turnToolLabels : [];
+                    const cls = coreMemory.classifyTheme({
+                        toolLabels: used,
+                        userText: experienceMemory.summarizeTask(ctx?.latestUserText || '') || String(ctx?.latestUserText || ''),
+                        hasTools: used.length > 0,
+                    }) || coreMemory.classifyTheme({ userText: lesson, hasTools: false });
+                    theme = cls ? cls.theme : 'general';
                 }
-                // CONSOLIDATION lives in the service (race-safe, atomic): refine an
-                // existing learning instead of appending a near-duplicate, so the
-                // store self-improves rather than sprawls. An explicit [#handle]
-                // (replaces) can refine ANY of the user's memories; otherwise the
-                // closest prior MODEL learning is merged automatically.
-                const res = await memoryService.upsertModelLearning(userId, {
-                    text, keywords, type, impact,
-                    tokens: Math.ceil(text.length / 3),
-                    sourceConvId: ctx.conversationId || null,
-                }, { replaces: args?.replaces || null });
-                const resLinked = await linkRelated(res.id);
-                // Process-log the model-recorded learning so the user sees the
-                // assistant's self-improvement happening, not just a silent tool call.
+                const res = await coreMemory.addLesson(userId, { theme, lesson, source: 'model', convId: ctx.conversationId || null });
+                if (!res) return { success: false, error: 'could not record the lesson' };
                 logUserActivity(userId,
-                    `Memory: ${res.updated ? 'updated existing learning (refined)' : 'created new learning'} [${type}/${res.impact}]${resLinked ? ` +${resLinked} link${resLinked === 1 ? '' : 's'}` : ''} — “${lesson.slice(0, 80)}”`);
+                    `Memory: the model ${res.reinforced ? 'reinforced a lesson in' : 'added a lesson to'} the ${res.label} core memory — “${lesson.slice(0, 80)}”`);
+                refineCoreMemory(userId, res.id).catch(() => {});
                 return {
                     success: true,
-                    id: res.id,
-                    updated: res.updated,
-                    linked: resLinked,
-                    recorded: { type, impact: res.impact },
-                    note: res.updated
-                        ? 'Refined an existing learning (consolidated, not duplicated).'
-                        : 'Learning recorded; it will inform future responses.',
+                    theme: res.theme,
+                    label: res.label,
+                    reinforced: res.reinforced,
+                    note: `Lesson filed under your ${res.label} core memory; it will shape the next task of that kind.`,
                 };
             } catch (e) {
                 return { success: false, error: e.message };
             }
         },
     });
+
 
     // find_tools — the router's discovery meta-tool. build()->null so it's HIDDEN
     // from the normal catalog (routing-OFF stays byte-identical), but registered

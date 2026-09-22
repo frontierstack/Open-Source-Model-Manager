@@ -5899,8 +5899,9 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
             // CONVERSATION MEMORIES
             // ============================================================================
             '/api/memories': {
-                curl: `# List ACCOUNT memory (persona): preferences, learnings, and per-activity
-# EXPERIENCE. Account-scoped, so it's shared across the web chat and Pi.
+                curl: `# List CORE MEMORY: one living memory per theme of work (research, coding,
+# data analysis, documents, media, security, automations) with its playbook,
+# stats, proven approach, lessons and your guidance. Shared by web chat and Pi.
 curl -k -X GET "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -5971,7 +5972,7 @@ fetch(\`${baseUrl}/api/memories\`, {
 .catch(err => console.error(err));`
             },
             '/api/memories/clear': {
-                curl: `# Clear ALL account memory (wipes the persona — cannot be undone)
+                curl: `# Clear ALL core memories (every theme — cannot be undone)
 curl -k -X DELETE "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -6024,7 +6025,7 @@ fetch(\`${baseUrl}/api/memories\`, {
 .catch(err => console.error(err));`
             },
             '/api/memories/:id': {
-                curl: `# Delete a single memory by id
+                curl: `# Reset one theme's core memory by id
 curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
   -H "Authorization: Bearer your_bearer_token"
 

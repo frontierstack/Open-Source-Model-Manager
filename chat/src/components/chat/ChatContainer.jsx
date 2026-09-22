@@ -2426,10 +2426,10 @@ export default function ChatContainer({
                             // relevant memories from earlier in this convo as
                             // context for this turn).
                             if (parsed.type === 'memory_injected') {
-                                const count = parsed.count || 0;
                                 const tokens = parsed.tokens || 0;
-                                const noun = count === 1 ? 'memory' : 'memories';
-                                const msg = `Referenced ${count} ${noun} from this conversation (${tokens} tokens)`;
+                                const msg = parsed.label
+                                    ? `Recalled the ${parsed.label} core memory (${parsed.runs || 0} past task${parsed.runs === 1 ? '' : 's'}, ${tokens} tokens)`
+                                    : `Recalled core memory (${tokens} tokens)`;
                                 showSnackbar(msg, 'info');
                                 continue;
                             }
