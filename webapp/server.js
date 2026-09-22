@@ -15992,6 +15992,7 @@ const LLM_EXTRACT_SYSTEM_PROMPT =
     '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
     '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
     '- NEVER add names, places, organizations or expansions of abbreviations that do not appear verbatim in the exchange (a domain like "xyschools.us" is NOT evidence of which district it is — keep the domain, do not guess the name). Invented specifics poison future answers.\n' +
+    '- NEVER turn a conditional or hypothetical the assistant posed into a fact about the user ("if you are 50 or older you can add $8,000" is NOT evidence that the user is 50 or older; "if this is a 401(k)" is not evidence that it is one). Only the user\'s own statements establish facts about the user.\n' +
     '- If the assistant reply ends unfinished, was cut off, or admits it could not complete the task, do NOT turn its excuse into a "limitation" — a failed attempt is not evidence that something is impossible.\n' +
     '- 0 to 5 items. If nothing qualifies, return [].';
 
@@ -23106,6 +23107,19 @@ const chatStreamHandlerInner = async (req, res) => {
         let reasoningLoopRetries = 0;
         let reasoningLoopExhausted = false;
         let lastReasoningLoopReason = '';
+        // Cross-TURN repeat: the reply is a near-verbatim copy of an EARLIER
+        // assistant message of this conversation (loopGuard.makePriorAnswerDetector
+        // — live 2026-09-22: three follow-up questions in a row were answered
+        // with the previous turn's whole message). Built right before the tool
+        // loop from the history the client sent; consulted per delta on the
+        // main round and once more at the no-tool-calls exit. A hit rewinds the
+        // copy, restates the user's question in a nudge and re-streams (shares
+        // REASONING_LOOP_MAX_RETRIES); when that is spent the turn goes to
+        // forced synthesis with the question, never out the door as the copy.
+        let priorAnswerDetector = null;
+        let priorAnswerAsk = '';
+        let priorAnswerHits = 0;
+        let priorAnswerExhausted = false;
         // Set by streamOneRequest when a tool call's ARGUMENTS degenerated
         // (tool_args_loop sentinel): { name, chars, reason }.
         let toolArgsLoopInfo = null;
@@ -23867,6 +23881,38 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                                             settle(true, loopSentinel);
                                                             return;
                                                         }
+                                                        // Cross-turn twin: the reply is copying an EARLIER
+                                                        // assistant message of the conversation. Drop the whole
+                                                        // round's text (it is a copy the user has already read),
+                                                        // abort with 'prior_answer' and let the outer loop nudge.
+                                                        if (options.priorAnswerGuard && priorAnswerDetector && priorAnswerDetector.enabled) {
+                                                            const pa = priorAnswerDetector.check(fullResponse.slice(roundContentStart));
+                                                            if (pa) {
+                                                                loopDetectedThisRound = true;
+                                                                loopSentinel = 'prior_answer';
+                                                                lastReasoningLoopReason = pa.reason;
+                                                                const dropped = fullResponse.length - roundContentStart;
+                                                                fullResponse = fullResponse.slice(0, roundContentStart);
+                                                                if (streamingConversationId) {
+                                                                    const job = activeStreamingJobs.get(streamingConversationId);
+                                                                    if (job) job.content = holdClientContent && heldJobContent != null ? heldJobContent : fullResponse;
+                                                                }
+                                                                console.warn(`[Chat Stream] Prior-answer repeat detected — ${pa.reason}; dropped ${dropped} chars, aborting round to recover`);
+                                                                if (clientConnected) {
+                                                                    try {
+                                                                        res.write(`data: ${JSON.stringify({
+                                                                            type: 'content_rewind',
+                                                                            content: fullResponse,
+                                                                            dropped,
+                                                                            reason: 'prior_answer',
+                                                                        })}\n\n`);
+                                                                    } catch (_) { clientConnected = false; }
+                                                                }
+                                                                roundAbortController.abort();
+                                                                settle(true, loopSentinel);
+                                                                return;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -24032,6 +24078,55 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             //   3. otherwise, break
             let currentMessages = chatMessages;
             let finishReason = 'stop';
+            {
+                const priorTexts = [];
+                let latestUserRaw = '';
+                for (const m of chatMessages) {
+                    if (m.role === 'assistant' && typeof m.content === 'string' && !m.tool_calls) priorTexts.push(m.content);
+                    if (m.role === 'user') {
+                        latestUserRaw = typeof m.content === 'string' ? m.content
+                            : (Array.isArray(m.content) ? (m.content.find(pp => pp.type === 'text')?.text || '') : '');
+                    }
+                }
+                priorAnswerAsk = leadHandoff.cleanAsk(latestUserRaw).slice(0, 600);
+                priorAnswerDetector = loopGuard.makePriorAnswerDetector(priorTexts, {
+                    exempt: !!req.delegate || loopGuard.userAsksForRepeat(priorAnswerAsk),
+                });
+            }
+            // Shared recovery for a prior-answer repeat (streaming hit or the
+            // final check): the copy has already been rewound out of
+            // fullResponse by the caller. Returns true when the caller should
+            // re-stream (nudge appended), false when the retry budget is spent
+            // (flags set; caller breaks to forced synthesis).
+            const priorAnswerRecover = () => {
+                priorAnswerHits++;
+                priorAnswerDetector.reset(); // the re-streamed round starts from 0 chars
+                if (reasoningLoopRetries < REASONING_LOOP_MAX_RETRIES) {
+                    reasoningLoopRetries++;
+                    logChatActivity(`Repeated an earlier answer (${lastReasoningLoopReason}) — discarded it and asking the model to answer the new question (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`, 'warn');
+                    if (clientConnected) {
+                        try {
+                            res.write(`data: ${JSON.stringify({
+                                type: 'status',
+                                message: 'Model started repeating its earlier answer — discarded it and nudging it to answer the new question',
+                            })}\n\n`);
+                        } catch (_) { clientConnected = false; }
+                    }
+                    currentMessages = [
+                        ...currentMessages,
+                        {
+                            role: 'system',
+                            content: 'STOP. Your last message repeated an EARLIER answer from this conversation almost word for word, so it was discarded — the user has already read that answer. They are now asking something NEW:\n\n"' + priorAnswerAsk + '"\n\nAnswer THAT question directly, in your own words. Build on the facts already established above instead of redoing or restating the earlier work; do not narrate steps you are not taking; do not repeat any paragraph, table or "bottom line" from an earlier message. If the question can be answered in a few sentences, answer it in a few sentences.',
+                        },
+                    ];
+                    console.warn(`[Chat Stream] Prior-answer repeat — ${lastReasoningLoopReason}; re-streaming with the user's question restated (retry ${reasoningLoopRetries}/${REASONING_LOOP_MAX_RETRIES})`);
+                    return true;
+                }
+                priorAnswerExhausted = true;
+                reasoningLoopExhausted = true;
+                console.warn(`[Chat Stream] Prior-answer repeat persisted after ${REASONING_LOOP_MAX_RETRIES} nudge(s) — forcing synthesis with the question restated`);
+                return false;
+            };
             // Don't gate this loop on clientConnected — when the user
             // refreshes the page or switches conversations, the request
             // closes and clientConnected flips false, but the streaming
@@ -24458,7 +24553,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     console.warn(`[Chat Stream] Context saturated (round ${toolCallRound + 1}, streak ${ctxSaturatedStreak}): headroom=${roundHeadroom}, trimmed=${trimmedThisRound}`);
                 }
 
-                finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
+                finishReason = await streamOneRequest(currentMessages, roundMaxTokens, { priorAnswerGuard: true });
 
                 // --- Reasoning-loop recovery -------------------------------
                 // The model spun in its reasoning stream this round (phrase /
@@ -24553,6 +24648,21 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     }
                     reasoningLoopExhausted = true;
                     console.warn(`[Chat Stream] Content loop persisted after ${REASONING_LOOP_MAX_RETRIES} nudge(s) with nothing usable kept — forcing synthesis`);
+                    break; // exit the tool loop → forced-synthesis block below
+                }
+
+                // --- Prior-answer repeat recovery --------------------------
+                // streamOneRequest dropped the round's text (a copy of an
+                // earlier assistant message) and returned 'prior_answer'.
+                // Nudge with the user's question restated and re-stream;
+                // when the budget is spent, forced synthesis carries the
+                // question (see the synthesis prompt) so the copy never ships.
+                if (finishReason === 'prior_answer') {
+                    if (streamAbortController.signal.aborted) break;
+                    if (priorAnswerRecover()) {
+                        continuationCount = 0;
+                        continue; // re-stream WITHOUT incrementing toolCallRound
+                    }
                     break; // exit the tool loop → forced-synthesis block below
                 }
 
@@ -26363,6 +26473,35 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     continue;
                 }
 
+                // Final cross-turn check on the finished round (covers a copy
+                // shorter than the streaming detector's step, and any path that
+                // reached here without the per-delta guard). Runs BEFORE the
+                // drain/revision so late job results are never merged into a
+                // copy of an earlier answer.
+                if (accumulatedToolCalls.length === 0 && !pendingRevision && priorAnswerDetector && priorAnswerDetector.enabled) {
+                    const pa = priorAnswerDetector.check(fullResponse.slice(roundStart), true);
+                    if (pa) {
+                        lastReasoningLoopReason = pa.reason;
+                        const dropped = fullResponse.length - roundStart;
+                        fullResponse = fullResponse.slice(0, roundStart);
+                        if (streamingConversationId) {
+                            const job = activeStreamingJobs.get(streamingConversationId);
+                            if (job) job.content = holdClientContent && heldJobContent != null ? heldJobContent : fullResponse;
+                        }
+                        console.warn(`[Chat Stream] Prior-answer repeat detected at the end of the round — ${pa.reason}; dropped ${dropped} chars`);
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'prior_answer' })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                        if (priorAnswerRecover()) {
+                            continuationCount = 0;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+
                 // The lead answered late results with edits to its draft:
                 // apply them to the draft (still on screen), or fall back to
                 // a full rewrite when they do not apply.
@@ -26768,6 +26907,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                       '(it was too large to paste inline). Do NOT paste the file contents and do NOT call any tools. ' +
                                       'In 2-4 short sentences, tell the user the updated file is available as a download below and ' +
                                       'summarize the specific edits you applied.'
+                                    : priorAnswerExhausted
+                                    ? loopSynthPrefix +
+                                      'Twice now your reply repeated an EARLIER answer from this conversation word for word, and both copies were discarded. ' +
+                                      'The user is asking something NEW: "' + priorAnswerAsk + '". ' +
+                                      'Answer THAT question now, directly and in your own words, using the facts already established above. ' +
+                                      'Do not call any tools, do not restate the earlier answer, and do not describe steps — just answer.'
                                     : reasoningLoopExhausted
                                     ? loopSynthPrefix +
                                       'You kept repeating your reasoning without ever answering. Stop deliberating completely. ' +
@@ -26931,7 +27076,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // gate only the SSE on clientConnected.
                     const synthAddedContent = fullResponse.length > preSynthLen;
                     if (!synthAddedContent) {
-                        const soft = reasoningLoopExhausted
+                        const soft = priorAnswerExhausted
+                            ? '_[I kept repeating my earlier answer instead of addressing this question. Please rephrase it — or start a new chat and paste just the facts that matter.]_'
+                            : reasoningLoopExhausted
                             ? '_[I got stuck repeating my reasoning and could not converge on an answer. Try rephrasing the request, breaking it into smaller steps, or switching to a different model.]_'
                             : loopNudgeExhausted
                             ? '_[I got stuck repeating the same tool call and could not turn what I gathered into an answer. Ask me to "summarize what you found so far" — the results from this turn are still in context — or break the request into smaller steps.]_'
@@ -27282,6 +27429,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // A turn the loop guard had to cut off is a failed attempt:
                         // memory extraction must not learn "limitations" from it.
                         loopExhausted: (reasoningLoopExhausted || loopNudgeExhausted || toolCallCapHit) ? true : undefined,
+                        // The model produced (and we discarded) a copy of an earlier
+                        // answer before this text — telemetry for the incident class.
+                        answerRepeated: priorAnswerHits ? priorAnswerHits : undefined,
                     };
                     conversationMsgs.push(assistantMessage);
                     await saveConversationMessages(userId, streamingConversationId, conversationMsgs, { memoryUserId: chatMemId });

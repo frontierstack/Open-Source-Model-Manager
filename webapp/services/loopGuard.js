@@ -327,6 +327,88 @@ function makeNarrationTracker(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Prior-answer repeat (cross-TURN)
+// ---------------------------------------------------------------------------
+// Every detector above compares the model with itself WITHIN a turn. Live
+// (2026-09-22): a follow-up question ("should I lower it to 5%?") was answered
+// with the PREVIOUS turn's whole message — narration and all — regenerated
+// nearly verbatim, three turns in a row (turns 3 and 4 byte-identical 694-token
+// samples at temperature 0.7: once the model is copying from its own context
+// the distribution is peaked enough to be deterministic). Nothing looked at
+// the earlier assistant messages, so the copy streamed to the end, the drain
+// asked for revisions ("NO CHANGES"), and it was saved and re-sent as history,
+// making the next turn's copy MORE likely. This detector compares the text the
+// model is producing now with every earlier assistant message of the
+// conversation: the new text is split into consecutive PRIOR_ANSWER_WINDOW-char
+// windows (after markdown/punctuation normalization) and a window is "copied"
+// when it appears verbatim inside one earlier message. Two or more windows with
+// PRIOR_ANSWER_COVERAGE of them copied from ONE message is a repeat. A
+// legitimately re-quoted table plus new prose stays below the coverage bar,
+// and the caller exempts asks that literally request a repeat
+// (userAsksForRepeat). `check` throttles itself to every
+// PRIOR_ANSWER_STEP normalized chars of growth so it is cheap to call per delta.
+const PRIOR_ANSWER_WINDOW = envInt('PRIOR_ANSWER_WINDOW', 240);
+const PRIOR_ANSWER_MIN_CHARS = envInt('PRIOR_ANSWER_MIN_CHARS', 520);
+const PRIOR_ANSWER_COVERAGE = envFloat('PRIOR_ANSWER_COVERAGE', 0.66);
+const PRIOR_ANSWER_STEP = envInt('PRIOR_ANSWER_STEP', 160);
+const REPEAT_ASK_RE = /\b(again|repeat|re-?send|re-?post|re-?print|once more|verbatim|word for word|same (?:answer|table|reply|response|thing|text)|show (?:me )?(?:that|it|this|the [\w\s-]{0,24}) again|copy (?:that|it|this|the))\b/i;
+
+function userAsksForRepeat(text) {
+    return REPEAT_ASK_RE.test(String(text || ''));
+}
+
+function priorAnswerRepeat(text, priorNorms, opts = {}) {
+    const window = opts.window ?? PRIOR_ANSWER_WINDOW;
+    const minChars = opts.minChars ?? PRIOR_ANSWER_MIN_CHARS;
+    const coverage = opts.coverage ?? PRIOR_ANSWER_COVERAGE;
+    const norm = normalizeNarration(text);
+    if (norm.length < minChars) return null;
+    const windows = [];
+    for (let i = 0; i + window <= norm.length; i += window) windows.push(norm.slice(i, i + window));
+    if (windows.length < 2) return null;
+    let best = null;
+    (priorNorms || []).forEach((p, idx) => {
+        if (!p || p.length < window * 2) return;
+        let hits = 0, trailing = 0;
+        for (const w of windows) {
+            if (p.includes(w)) { hits++; trailing++; } else trailing = 0;
+        }
+        const cov = hits / windows.length;
+        // The opener usually varies ("I have the full CSV…" vs "I have the full
+        // CSV in front of me…"), so the first window misses; require the copy
+        // to be CURRENT (the last two windows both copied) plus overall
+        // coverage, and the detector fires around the third window instead
+        // of waiting for the whole reply.
+        if (cov >= coverage && trailing >= 2 && (!best || cov > best.coverage)) best = { priorIndex: idx, coverage: cov, windows: windows.length, hits };
+    });
+    if (!best) return null;
+    return {
+        ...best,
+        chars: text.length,
+        reason: `${Math.round(best.coverage * 100)}% of the reply so far (${best.hits}/${best.windows} ${window}-char windows) is copied verbatim from an earlier assistant message`,
+    };
+}
+
+function makePriorAnswerDetector(priorTexts, opts = {}) {
+    const priorNorms = (priorTexts || []).map(t => normalizeNarration(t)).filter(Boolean);
+    const step = opts.step ?? PRIOR_ANSWER_STEP;
+    const exempt = !!opts.exempt;
+    let lastCheckedLen = 0;
+    return {
+        get enabled() { return !exempt && priorNorms.length > 0; },
+        /** Feed the round's content so far. Returns a hit object or null. `final` bypasses the growth throttle. */
+        check(text, final = false) {
+            if (exempt || !priorNorms.length) return null;
+            const len = String(text || '').length;
+            if (!final && len - lastCheckedLen < step) return null;
+            lastCheckedLen = len;
+            return priorAnswerRepeat(text, priorNorms, opts);
+        },
+        reset() { lastCheckedLen = 0; },
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Search novelty
 // ---------------------------------------------------------------------------
 // Eight consecutive searches in the same incident each returned five results —
@@ -1023,6 +1105,10 @@ module.exports = {
     makeErrorStreakTracker,
     normalizeNarration,
     makeNarrationTracker,
+    priorAnswerRepeat,
+    makePriorAnswerDetector,
+    userAsksForRepeat,
+    PRIOR_ANSWER_MIN_CHARS,
     NARRATION_REPEAT_ADVISE,
     NARRATION_REPEAT_CHECKPOINT,
     normalizeSearchUrl,
