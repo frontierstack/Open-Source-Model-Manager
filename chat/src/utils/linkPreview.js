@@ -24,7 +24,7 @@ export function shotUrl(url, attempt = 0) {
 }
 
 function view(e) {
-    return { status: e.status, src: e.src };
+    return { status: e.status, src: e.src, img: e.img || null };
 }
 
 function notify(e) {
@@ -78,6 +78,10 @@ function attempt(e) {
         if (img.naturalWidth === SHOT_W && img.naturalHeight === SHOT_H) {
             e.status = 'ready';
             e.src = src;
+            // Keep the DECODED element: the popup shows this exact node, so a
+            // hover needs no network request (measured: a freshly generated
+            // screenshot was re-downloaded on every hover, ~0.3 s each).
+            e.img = img;
             notify(e);
         } else {
             e.attempt = n + 1;
@@ -131,7 +135,7 @@ export function warmPreview(url, { urgent = false } = {}) {
 
 export function getPreview(url) {
     const e = entries.get(url);
-    return e ? view(e) : { status: 'idle', src: null };
+    return e ? view(e) : { status: 'idle', src: null, img: null };
 }
 
 export function subscribePreview(url, fn) {

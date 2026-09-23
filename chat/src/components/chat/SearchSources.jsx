@@ -267,14 +267,19 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
                             )}
                         </div>
                     )}
-                    {preview.status === 'ready' && preview.src && (
-                        <img
-                            src={preview.src}
-                            alt=""
-                            referrerPolicy="no-referrer"
-                            className={`w-full h-full object-cover transition-opacity duration-150 ${imgShown ? 'opacity-100' : 'opacity-0'}`}
-                            onLoad={() => setImgShown(true)}
-                            ref={(el) => { if (el && el.complete && el.naturalWidth) setImgShown(true); }}
+                    {preview.status === 'ready' && preview.img && (
+                        <span
+                            className="absolute inset-0"
+                            ref={(el) => {
+                                if (!el) return;
+                                const img = preview.img;
+                                if (img.parentNode !== el) {
+                                    img.alt = '';
+                                    img.className = 'w-full h-full object-cover';
+                                    el.replaceChildren(img);
+                                }
+                                if (!imgShown) setImgShown(true);
+                            }}
                         />
                     )}
                 </div>

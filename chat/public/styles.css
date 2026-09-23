@@ -1663,9 +1663,6 @@ body.font-size-large .markdown-content h3  { font-size: 1.5rem !important; }
 .underline{
   text-decoration-line: underline;
 }
-.opacity-0{
-  opacity: 0;
-}
 .opacity-100{
   opacity: 1;
 }
