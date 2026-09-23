@@ -1708,6 +1708,7 @@ async function fetchMultipleUrls(urls, options = {}, concurrency = 3) {
 // {op:"press", key:"Enter"}, {type:"click", text:"Search"}); normalize them
 // instead of silently ignoring the ones the switch did not know.
 const ACTION_ALIASES = {
+    text: 'set', value: 'set', setvalue: 'set', fillin: 'set', enter: 'set',
     fill: 'type', input: 'type', typetext: 'type', entertext: 'type', settext: 'type', write: 'type',
     key: 'press', presskey: 'press', keypress: 'press', keyboard: 'press',
     selectoption: 'select', choose: 'select', dropdown: 'select',
@@ -1721,25 +1722,35 @@ const ACTION_ALIASES = {
     waitfornavigation: 'waitfornavigation', waitfornav: 'waitfornavigation',
     submitform: 'submit', check: 'check', uncheck: 'uncheck', back: 'back', goback: 'back',
 };
-const ACTION_TYPES = ['click', 'dblclick', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'scroll', 'wait', 'waitfornavigation', 'submit', 'nextpage', 'loadmore', 'snapshot', 'back'];
+const ACTION_TYPES = ['set', 'click', 'dblclick', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'scroll', 'wait', 'waitfornavigation', 'submit', 'nextpage', 'loadmore', 'snapshot', 'back'];
 
 function normalizeAction(raw) {
     const src = typeof raw === 'string' ? { type: raw } : { ...(raw || {}) };
     const rawType = String(src.type || src.action || src.op || src.kind || src.command || '').toLowerCase().replace(/[\s_-]+/g, '');
-    const type = ACTION_ALIASES[rawType] || rawType;
+    let type = ACTION_ALIASES[rawType] || rawType;
+    // No verb at all ({selector:"#author", value:"Albert Einstein"} is common):
+    // infer it from the fields. A value means "set this field" (resolved
+    // against the real element — a <select> gets an option chosen, a text box
+    // gets filled), a key means press, a bare target means click.
+    if (!type) {
+        if ([src.waitMs, src.ms, src.wait, src.delay, src.duration, src.sleep, src.pause].some(v => v != null && Number.isFinite(Number(v))) && !src.selector && src.value == null) type = 'wait';
+        else if (src.value != null || (src.text != null && (src.selector || src.placeholder || src.label))) type = 'set';
+        else if (src.key || src.keys) type = 'press';
+        else if (src.selector || src.target || src.text || src.label) type = 'click';
+    }
     const a = { ...src, type, rawType };
     a.selector = src.selector || src.target || src.css || src.element || src.locator || null;
-    if (type === 'type') a.text = src.text ?? src.value ?? src.input ?? src.content ?? src.query ?? '';
-    if (type === 'select') a.value = src.value ?? src.option ?? src.label ?? src.text;
+    if (type === 'type' || type === 'set') a.text = src.text ?? src.value ?? src.input ?? src.content ?? src.query ?? '';
+    if (type === 'select' || type === 'set') a.value = src.value ?? src.option ?? src.label ?? src.text;
     if (type === 'press') a.key = src.key ?? src.keys ?? src.value ?? (src.selector ? null : src.text) ?? 'Enter';
     if (type === 'scroll' && rawType === 'scrolltobottom') a.to = 'bottom';
     // Click / hover / wait by VISIBLE TEXT when no selector was given — models
     // know the label they see ("Search", "Next", "Accept") far better than the
     // page's CSS.
-    a.byText = !a.selector && type !== 'type' && type !== 'press'
+    a.byText = !a.selector && type !== 'type' && type !== 'set' && type !== 'press'
         ? (src.text || src.label || src.name || src.buttonText || src.linkText || null)
         : null;
-    if (type === 'type' && !a.selector) { a.placeholder = src.placeholder || null; a.label = src.label || src.field || src.name || null; }
+    if ((type === 'type' || type === 'set') && !a.selector) { a.placeholder = src.placeholder || null; a.label = src.label || src.field || src.name || null; }
     a.times = Math.max(1, Math.min(10, parseInt(src.times ?? src.count ?? src.repeat ?? src.pages ?? 1, 10) || 1));
     return a;
 }
@@ -1756,7 +1767,7 @@ async function resolveTarget(page, a, timeout) {
     if (!text) return null;
     const t = String(text).trim();
     const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const candidates = a.type === 'type' || a.type === 'select'
+    const candidates = a.type === 'type' || a.type === 'select' || a.type === 'set'
         ? [page.getByPlaceholder(t), page.getByLabel(t), page.getByRole('textbox', { name: t }), page.getByRole('searchbox', { name: t }), page.getByRole('combobox', { name: t })]
         : [
             page.locator('a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], summary, label').filter({ hasText: new RegExp(`^\\s*${esc}\\s*$`, 'i') }),
@@ -1820,6 +1831,67 @@ async function listControls(page, limit = 30) {
     } catch (_) { return []; }
 }
 
+// A native <select>'s options are not clickable elements, but "click the
+// dropdown, click the option" is how a person describes it — so a click aimed
+// at an <option> (by selector, or by text matching an option) chooses it.
+async function optionTarget(page, a) {
+    try {
+        if (a.selector) {
+            const loc = page.locator(a.selector).first();
+            if (await loc.count() && await loc.evaluate(el => el.tagName === 'OPTION')) return loc;
+            return null;
+        }
+        if (a.byText) {
+            const t = String(a.byText).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const loc = page.locator('select option').filter({ hasText: new RegExp(`^\\s*${t}\\s*$`, 'i') }).first();
+            if (await loc.count()) return loc;
+        }
+    } catch (_) { /* not an option */ }
+    return null;
+}
+
+async function chooseOption(optLoc, timeout) {
+    const value = await optLoc.evaluate(el => el.value);
+    await optLoc.locator('xpath=ancestor::select[1]').selectOption(value, { timeout });
+}
+
+// ---- Interact sessions ----------------------------------------------------
+// Models drive a page one step per call ("pick the author" … "now pick the
+// tag" … "now click Search"), assuming the page carries over. It used to be
+// thrown away after every call, so each follow-up started from an empty form
+// and the model burned 15-25 calls. A session keeps the page (context) open for
+// the rest of the turn; the browser SLOT goes back to the pool between calls
+// (contexts are isolated, other fetches share the browser meanwhile).
+const INTERACT_SESSION_IDLE_MS = Math.max(15000, parseInt(process.env.INTERACT_SESSION_IDLE_MS, 10) || 120000);
+const INTERACT_SESSION_MAX = Math.max(1, parseInt(process.env.INTERACT_SESSION_MAX, 10) || 4);
+const interactSessions = new Map();   // key -> { context, page, poolEntry, startUrl, timer }
+
+function closeInteractSession(key) {
+    const s = interactSessions.get(key);
+    if (!s) return;
+    interactSessions.delete(key);
+    clearTimeout(s.timer);
+    s.context.close().catch(() => {});
+}
+
+function keepInteractSession(key, sess) {
+    clearTimeout(sess.timer);
+    sess.timer = setTimeout(() => closeInteractSession(key), INTERACT_SESSION_IDLE_MS);
+    if (sess.timer.unref) sess.timer.unref();
+    interactSessions.set(key, sess);
+    while (interactSessions.size > INTERACT_SESSION_MAX) closeInteractSession(interactSessions.keys().next().value);
+}
+
+function sessionAlive(sess) {
+    try { return !!(sess && sess.page && !sess.page.isClosed() && sess.poolEntry && sess.poolEntry.browser && sess.poolEntry.browser.isConnected()); }
+    catch (_) { return false; }
+}
+
+function sameDocUrl(a, b) {
+    const n = (u) => String(u || '').split('#')[0].replace(/\/+$/, '').replace(/^https?:\/\/(www\.)?/i, '').toLowerCase();
+    return !!a && !!b && n(a) === n(b);
+}
+
 /**
  * Drive a page through ordered steps, then read it.
  *
@@ -1861,22 +1933,42 @@ async function interactAndFetch(url, actions = [], options = {}) {
         return true;
     };
 
+    const sessionKey = options.session ? String(options.session) : null;
+    let continued = false;
+    let keep = false;
+    let startUrl = url;
+
     try {
-        poolEntry = await getBrowser(lease);
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
-        lease.context = context;
-        await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
-        page = await context.newPage();
-        await applyStealthPatches(page);
+        let sess = sessionKey ? interactSessions.get(sessionKey) : null;
+        if (sess && !sessionAlive(sess)) { closeInteractSession(sessionKey); sess = null; }
+        if (sess && !options._fresh && (!url || sameDocUrl(url, sess.page.url()) || sameDocUrl(url, sess.startUrl))) {
+            clearTimeout(sess.timer);
+            interactSessions.delete(sessionKey);
+            ({ context, page } = sess);
+            startUrl = sess.startUrl;
+            sess.poolEntry.lastUsed = Date.now();
+            continued = true;
+            lease.context = context;
+        } else {
+            if (sess) closeInteractSession(sessionKey);
+            if (!url) throw new Error('no url given and no page is open from an earlier interact call this turn');
+            poolEntry = await getBrowser(lease);
+            context = await poolEntry.browser.newContext(getStealthContextOptions());
+            lease.context = context;
+            await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
+            page = await context.newPage();
+            await applyStealthPatches(page);
 
-        await page.goto(url, { timeout, waitUntil: 'load' });
+            await page.goto(url, { timeout, waitUntil: 'load' });
 
-        // Give a Cloudflare/Turnstile interstitial a chance to auto-clear before we
-        // start clicking/typing against what would otherwise be the challenge page.
-        if (await pageLooksLikeChallenge(page)) {
-            await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
+            // Give a Cloudflare/Turnstile interstitial a chance to auto-clear before we
+            // start clicking/typing against what would otherwise be the challenge page.
+            if (await pageLooksLikeChallenge(page)) {
+                await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
+            }
+            if (options.dismissOverlays !== false) await dismissOverlays(page).catch(() => []);
         }
-        if (options.dismissOverlays !== false) await dismissOverlays(page).catch(() => []);
+        const sessionPoolEntry = continued ? sess.poolEntry : poolEntry;
 
         let failure = null;
         for (let idx = 0; idx < steps.length; idx++) {
@@ -1907,7 +1999,20 @@ async function interactAndFetch(url, actions = [], options = {}) {
                 switch (a.type) {
                     case 'click':
                     case 'dblclick': {
+                        const opt = await optionTarget(page, a);
+                        if (opt) {
+                            await chooseOption(opt, actTimeout);
+                            entry.as = 'select option';
+                            entry.changed = await waitForChange(page, before, 4000);
+                            break;
+                        }
                         const loc = await needTarget();
+                        // Clicking a native <select> only opens its menu — nothing to wait for.
+                        if (await loc.evaluate(el => el.tagName === 'SELECT').catch(() => false)) {
+                            await loc.focus().catch(() => {});
+                            entry.as = 'focus dropdown';
+                            break;
+                        }
                         await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
                         if (a.type === 'dblclick') await loc.dblclick({ timeout: actTimeout });
                         else await loc.click({ timeout: actTimeout });
@@ -1920,8 +2025,37 @@ async function interactAndFetch(url, actions = [], options = {}) {
                         entry.changed = await waitForChange(page, before, 1500);
                         break;
                     }
-                    case 'type': {
+                    case 'set':
+                    case 'type':
+                    case 'select': {
                         const loc = await needTarget();
+                        const tag = await loc.evaluate(el => el.tagName.toLowerCase()).catch(() => '');
+                        if (tag === 'select' || a.type === 'select') {
+                            const v = String(a.value ?? a.text ?? '');
+                            if (tag === 'select') {
+                                try { await loc.selectOption(v, { timeout: actTimeout }); }
+                                catch (_) { await loc.selectOption({ label: v }, { timeout: actTimeout }); }
+                                entry.changed = await waitForChange(page, before, 4000);
+                                lastTyped = null;
+                                break;
+                            }
+                            // A custom dropdown (div/button): open it, then pick the option by text.
+                            await loc.click({ timeout: actTimeout });
+                            const opt = await resolveTarget(page, { type: 'click', byText: v }, actTimeout);
+                            if (!opt) throw new Error(`option "${v}" not found in the dropdown`);
+                            await opt.click({ timeout: actTimeout });
+                            entry.changed = await waitForChange(page, before, 4000);
+                            break;
+                        }
+                        if (tag === 'input' || tag === 'textarea' || a.type !== 'set') {
+                            const inputType = (await loc.getAttribute('type').catch(() => '') || '').toLowerCase();
+                            if (inputType === 'checkbox' || inputType === 'radio') {
+                                const want = !/^(false|0|off|no|unchecked)$/i.test(String(a.value ?? a.text ?? 'true'));
+                                if (want) await loc.check({ timeout: actTimeout }); else await loc.uncheck({ timeout: actTimeout });
+                                entry.changed = await waitForChange(page, before, 3000);
+                                break;
+                            }
+                        }
                         const text = String(a.text ?? '');
                         await loc.click({ timeout: actTimeout }).catch(() => {});
                         await loc.fill('', { timeout: actTimeout }).catch(() => {});
@@ -1946,14 +2080,6 @@ async function interactAndFetch(url, actions = [], options = {}) {
                         if (!loc) throw new Error('submit needs a selector, or a preceding type step');
                         await loc.press('Enter', { timeout: actTimeout });
                         entry.changed = await waitForChange(page, before, 8000);
-                        break;
-                    }
-                    case 'select': {
-                        const loc = await needTarget();
-                        const v = String(a.value ?? '');
-                        try { await loc.selectOption(v, { timeout: actTimeout }); }
-                        catch (_) { await loc.selectOption({ label: v }, { timeout: actTimeout }); }
-                        entry.changed = await waitForChange(page, before, 4000);
                         break;
                     }
                     case 'check':
@@ -1981,7 +2107,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
                     case 'wait': {
                         if (a.selector) await page.waitForSelector(a.selector, { timeout: actTimeout });
                         else if (a.byText) await page.getByText(String(a.byText)).first().waitFor({ timeout: actTimeout });
-                        else await page.waitForTimeout(Math.min(15000, parseInt(a.ms ?? a.duration ?? a.timeout ?? 1000, 10) || 1000));
+                        else await page.waitForTimeout(Math.min(15000, parseInt(a.ms ?? a.waitMs ?? a.wait ?? a.delay ?? a.duration ?? a.sleep ?? a.pause ?? a.timeout ?? 1000, 10) || 1000));
                         break;
                     }
                     case 'waitfornavigation': {
@@ -2041,6 +2167,29 @@ async function interactAndFetch(url, actions = [], options = {}) {
             }
         }
 
+        // Continuing on the open page, but its FIRST step already fails: the
+        // model is most likely re-sending its whole flow from the top. Run it
+        // again on a fresh load of the start page.
+        if (continued && failure && failure.index === 0) {
+            await context.close().catch(() => {});
+            context = null; page = null;
+            lease.clear();
+            keep = true;   // nothing left to clean up here; the rerun owns the session
+            return await interactAndFetch(startUrl, actions, { ...options, _fresh: true });
+        }
+
+        // Unrecognized steps were skipped (not fatal — a trailing pause with no
+        // type must not throw away a run that worked); report them.
+        const skippedSteps = log.filter(e => e.ok === false && /^unknown step type/.test(e.error || '')).map(e => e.step);
+        // Fields were filled but nothing submitted after the last fill. The
+        // browser session ENDS with this call, so a follow-up call to "click
+        // Search" opens a fresh page with an empty form — the model split one
+        // form flow across calls and lost the input every time.
+        const FILL = new Set(['set', 'type', 'select', 'check', 'uncheck']);
+        const isFill = (e) => e.ok && (FILL.has(e.type) || e.as === 'select option');
+        const lastFill = log.reduce((k, e, i) => (isFill(e) ? i : k), -1);
+        const submittedAfter = lastFill >= 0 && log.slice(lastFill + 1).some(e => e.ok && !e.as && ['click', 'dblclick', 'press', 'submit', 'nextpage'].includes(e.type));
+        const unsubmitted = lastFill >= 0 && !submittedAfter && !(steps[lastFill] && (steps[lastFill].submit || steps[lastFill].enter || steps[lastFill].pressEnter)) && !log[lastFill].changed;
         await page.waitForTimeout(randomDelay(150, 300));
         const title = await page.title().catch(() => '');
         const pagination = await domPagination(page);
@@ -2059,12 +2208,20 @@ async function interactAndFetch(url, actions = [], options = {}) {
             content = await extractContent(page, options);
         }
 
+        if (sessionKey) {
+            keep = true;
+            keepInteractSession(sessionKey, { context, page, poolEntry: sessionPoolEntry, startUrl, timer: null });
+        }
         const base = {
             content,
             title,
             url,
             finalUrl: page.url(),
             steps: log,
+            ...(skippedSteps.length ? { skippedSteps } : {}),
+            ...(unsubmitted ? { formNotSubmitted: true } : {}),
+            ...(continued ? { continuedFrom: startUrl } : {}),
+            ...(sessionKey ? { pageKeptOpen: true } : {}),
             ...(snapshots.length > 1 ? { pagesCaptured: snapshots.length } : {}),
             ...(pagination ? { pagination } : {}),
         };
@@ -2088,8 +2245,11 @@ async function interactAndFetch(url, actions = [], options = {}) {
         };
     } finally {
         lease.clear();
-        if (page) await page.close().catch(() => {});
-        if (context) await context.close().catch(() => {});
+        if (!keep) {
+            if (sessionKey) interactSessions.delete(sessionKey);
+            if (page) await page.close().catch(() => {});
+            if (context) await context.close().catch(() => {});
+        }
         if (poolEntry) releaseBrowser(poolEntry);
     }
 }

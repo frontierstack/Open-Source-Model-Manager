@@ -29900,7 +29900,7 @@ app.use((req, res) => {
                         'To find ONE entry on a long index/directory/listing/policy page, read that page with find:"<its name or number>" — you get the matching lines plus the matching links, i.e. the entry\'s real URL, in one call. NEVER guess or re-type a URL from an entry\'s name/number: a URL that already returned HTTP 404 this turn is refused on re-read, and the result names the pages actually seen that resemble it. ' +
                         'A search whose results are pages that earlier searches ALREADY returned carries noNewResults:true and `unread` — the engine has nothing more on that phrasing; read one of the unread pages (copy its url exactly) or answer, do not rephrase again (after 3 such searches, further ones are refused). ' +
                         'A read of a paginated listing carries `pagination` {current, last, next, howToContinue} — follow `next` exactly (never build page URLs yourself), or use mode:"crawl" with maxPages to collect several pages in one call (it follows the real next links, strips repeated header/footer, and handles "load more" buttons and infinite scroll). ' +
-                        'For a page that needs interaction first (search box, filters, cookie wall, "load more") use mode:"interact" with ordered `actions`: click/type/press/select/check/hover/scroll/wait/submit/back, target by CSS `selector` OR by visible `text` (e.g. {type:"type", placeholder:"Search", text:"red shoes", submit:true}, {type:"click", text:"Filters"}), plus {type:"nextPage", times:N} to page through results and {type:"loadMore", times:N}; a failed step returns the page\'s real `controls` to retry against. ' +
+                        'For a page that needs interaction first (search box, filters, cookie wall, "load more") use mode:"interact" with ordered `actions`: click/type/press/select/check/hover/scroll/wait/submit/back, target by CSS `selector` OR by visible `text` (e.g. {type:"type", placeholder:"Search", text:"red shoes", submit:true}, {type:"click", text:"Filters"}), plus {type:"nextPage", times:N} to page through results and {type:"loadMore", times:N}; a failed step returns the page\'s real `controls` to retry against. The page stays open for the rest of the turn: a later interact call with the same url or no url continues where the last one left off (a different url opens a fresh page). ' +
                         'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. A search result carries `relevance` (which query terms the results never matched) and, when the results are generic, a `hint` telling you how to reformulate — follow it rather than repeating the query. ' +
                         'Trust fetched/searched content over training when they conflict, and cite the URL(s). ' +
                         'When a read hits an obstacle the result carries `obstacle` (kind: bot_challenge/consent/login/paywall/age_gate/geo/js_required/thin, plus `tried` = the layers already used) and a `hint` naming the ONE next step — do exactly that: mode:"browser" only when the hint says so (the browser waits out challenges and dismisses consent/age overlays), mode:"interact" with actions for an overlay it could not clear, otherwise switch source (search for the subject) — never re-read the same URL in a mode already listed in `tried`. ' +
@@ -29972,7 +29972,19 @@ app.use((req, res) => {
             }
             const seenUrls = ctx._webSeenUrls;
             const noteSeen = (u) => { if (u && typeof u === 'string') seenUrls.add(u); };
-            const mode = a.mode || 'auto';
+            // `actions` only mean something in interact mode — sent with
+            // mode:"browser"/"read"/auto they were silently ignored, so the
+            // page was read without the steps the model asked for.
+            const hasActions = (Array.isArray(a.actions) && a.actions.length > 0) || (a.actions && typeof a.actions === 'object') || (typeof a.actions === 'string' && a.actions.trim().length > 2);
+            // Steps with no url mean "on the page I am working on" — the model
+            // re-sent correct form steps without the url twice in one turn and
+            // they ran against nothing. Use the page it last opened.
+            let reusedUrl = null;
+            if (hasActions && !a.url && !(Array.isArray(a.urls) && a.urls.length) && !a.query && ctx._webLastPageUrl) {
+                a.url = reusedUrl = ctx._webLastPageUrl;
+            }
+            if (a.url && typeof a.url === 'string' && (hasActions || !a.query)) ctx._webLastPageUrl = a.url;
+            const mode = (hasActions && a.url && a.mode !== 'crawl' && a.mode !== 'search') ? 'interact' : (a.mode || 'auto');
             const hasUrl = !!(a.url || (Array.isArray(a.urls) && a.urls.length));
             const wantSearch = mode === 'search' || (mode === 'auto' && a.query && !hasUrl);
 
@@ -30114,7 +30126,17 @@ app.use((req, res) => {
                     const top = fresh.slice(0, readN);   // every result already read → nothing to fetch
                     const reads = await Promise.all(top.map(r =>
                         run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
-                    top.forEach((r, i) => { const c = reads[i] && reads[i].content; if (c) r.content = String(c).slice(0, 2500); });
+                    top.forEach((r, i) => {
+                        const c = reads[i] && reads[i].content;
+                        if (!c) return;
+                        r.content = String(c).slice(0, 2500);
+                        // Say when the page was cut, and pass its pagination on —
+                        // a listing read this way looked complete while missing
+                        // items (29 of 32 books), and its next page was invisible.
+                        if (String(c).length > 2500) r.contentTruncated = `${String(c).length} chars; only the first 2500 are here — read this url for the full page`;
+                        const pg = reads[i].pagination;
+                        if (pg && pg.next) { r.pagination = { next: pg.next, current: pg.current, last: pg.last }; noteSeen(pg.next); }
+                    });
                     copied.forEach(r => noteSeen(r && r.url));
                     top.forEach(r => { if (r && r.content) noteRead(r.url); });
                     return { mode: 'search', ...sr, results: copied, ...(staleExtra || {}) };
@@ -30309,12 +30331,12 @@ app.use((req, res) => {
                 return { mode: 'read', ...(await readOne(a.url)) };
             }
             if (mode === 'interact') {
-                if (!a.url) return { error: 'web mode:"interact" requires a url and an actions[] array' };
+                if (!a.url && !ctx._interactSession) return { error: 'web mode:"interact" requires a url and an actions[] array' };
                 const ir = await run('playwright_interact', { url: a.url, actions: a.actions || [], timeout: a.timeout, maxLength: a.maxLength });
                 noteSeen(a.url);
                 if (ir && ir.finalUrl) noteSeen(ir.finalUrl);
                 if (ir && ir.pagination) { noteSeen(ir.pagination.next); noteSeen(ir.pagination.prev); }
-                return { mode: 'interact', ...ir };
+                return { mode: 'interact', ...ir, ...(reusedUrl ? { note: `No url was given, so the steps ran on the page you last opened this turn: ${reusedUrl}.` } : {}) };
             }
             if (mode === 'crawl') {
                 if (!a.url) return { error: 'web mode:"crawl" requires a url' };
@@ -32150,11 +32172,19 @@ app.use((req, res) => {
         build() {
             return null; // consolidated into the `web` tool (mode:"interact") — hidden from chat catalog, still registered
         },
-        async execute(args) {
+        async execute(args, ctx) {
             const url = String(args?.url || '').trim();
-            if (!url) return { error: 'url is required' };
-            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
-            { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
+            // One open page per chat turn: a follow-up interact call continues on
+            // it (see playwrightService interact sessions). Automations and other
+            // ctx-less callers keep the one-shot behaviour.
+            const session = ctx && typeof ctx === 'object'
+                ? (ctx._interactSession || (ctx._interactSession = `turn-${crypto.randomBytes(6).toString('hex')}`))
+                : null;
+            if (!url && !session) return { error: 'url is required' };
+            if (url) {
+                { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+                { const _bot = hostBlockReason(url); if (_bot) return { url, success: false, error: 'bot_protected', message: _bot }; }
+            }
             if (!playwrightEnabled || !playwrightService) {
                 return { success: false, error: 'Playwright not available — interaction requires browser automation' };
             }
@@ -32167,7 +32197,7 @@ app.use((req, res) => {
             const multiPage = actions.some(x => /next|paginat|load.?more|show.?more|snapshot|capture|extract/i.test(String((x && (x.type || x.action || x.op)) || x || '')));
             const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || (multiPage ? 24000 : 8000), 10)));
             try {
-                const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
+                const result = await playwrightService.interactAndFetch(url || null, actions, { timeout, maxLength, ...(session ? { session } : {}) });
                 if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'interact-challenge');
                 const ob = result?.success ? detectBotChallenge({ title: result.title, content: result.content, layer: 'interact', url }) : null;
                 let hint = result?.success ? (ob ? ob.hint : productPageHint(result.content)) : null;
@@ -32176,6 +32206,12 @@ app.use((req, res) => {
                         (Array.isArray(result.controls) && result.controls.length
                             ? 'The page\'s real controls are listed in `controls` — retry with one of those selectors, or target the element by its visible text ({type:"click", text:"<label>"}, {type:"type", placeholder:"<placeholder>", text:"..."}). Do not retry the same selector.'
                             : 'Do not retry the same selector; if the data you need is already in `content`, use it.');
+                } else if (result?.success && result.formNotSubmitted) {
+                    hint = result.pageKeptOpen
+                        ? 'The fields are filled but the form has NOT been submitted yet. The page is still open with your input: next, send only the submit step (e.g. {type:"click", text:"Search"}) with mode:"interact" and the same url or no url — do not open a different URL, that loses the form.'
+                        : 'The fields were filled but the form was never submitted, and the page is discarded when this call ends. Resend ALL the steps in ONE call: fill the fields AND submit.';
+                } else if (result?.success && Array.isArray(result.skippedSteps) && result.skippedSteps.length) {
+                    hint = `Step(s) ${result.skippedSteps.join(', ')} had no recognizable type and were skipped; every other step ran and \`content\` is the resulting page. If a skipped step mattered, resend it with a type (click/type/select/press/wait/scroll/nextPage).`;
                 } else if (result?.success && !hint && result.pagination && result.pagination.next) {
                     hint = `The page has a next page (${result.pagination.next}). To collect several pages in one call, add {type:"nextPage", times:N} to the actions.`;
                 }
