@@ -145,6 +145,28 @@ def _html_stats(raw):
     }
 
 
+_PAGER_LINK_RE = re.compile(r'<link\b[^>]*\brel\s*=\s*["\']?(?:next|prev|previous)\b[^>]*>', re.I)
+_PAGER_A_RE = re.compile(r'<a\b[^>]*>[\s\S]{0,600}?</a\s*>', re.I)
+
+
+def _anchors_html(raw, cap=150000):
+    """Every <a>...</a> plus <link rel=next/prev>, concatenated — what Node's
+    pagination detector needs (services/pagination.js). bodyHead stops at 6k,
+    and a pager is usually at the BOTTOM of a listing."""
+    raw = raw or ''
+    parts, total = [], 0
+    for m in _PAGER_LINK_RE.finditer(raw[:400000]):
+        parts.append(m.group(0))
+        total += len(m.group(0))
+    for m in _PAGER_A_RE.finditer(raw):
+        g = m.group(0)
+        total += len(g)
+        if total > cap:
+            break
+        parts.append(g)
+    return '\n'.join(parts)
+
+
 def _title_of(page):
     try:
         t = page.css('title::text').get()
@@ -201,6 +223,7 @@ def _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length):
     raw = _body_text(page)
     res['bodyHead'] = raw[:6000]
     res.update(_html_stats(raw))
+    res['anchorsHtml'] = _anchors_html(raw)
     ct = res['headers'].get('content-type', '')
     if not _content_type_is_html(ct):
         res['error'] = 'Not HTML content'
@@ -348,6 +371,7 @@ class StealthWorker(threading.Thread):
         raw = _body_text(page)
         res['bodyHead'] = raw[:6000]
         res.update(_html_stats(raw))
+        res['anchorsHtml'] = _anchors_html(raw)
         res['title'] = _title_of(page)
         if status is not None and status >= 400:
             res['error'] = f'HTTP {status}'

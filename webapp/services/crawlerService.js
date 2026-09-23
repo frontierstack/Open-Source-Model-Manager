@@ -15,6 +15,7 @@
 // loads the first page with Playwright and inspects the DOM.
 
 const playwrightService = require('./playwrightService');
+const paginationSvc = require('./pagination');
 
 let scraplingService = null;
 try { scraplingService = require('./scraplingService'); } catch (_) { /* optional */ }
@@ -86,70 +87,82 @@ async function fetchWithFallback(url, { timeout, includeLinks, maxLength, prefer
     return { success: false, url, error: 'all fetch engines failed' };
 }
 
-async function crawlUrlPattern(baseUrl, options = {}) {
+// Stateless multi-page walk: fetch a page, follow ITS real next-page link
+// (services/pagination.js), repeat. Falls back to incrementing a ?page=N-style
+// URL marker only when the page offers no next link. Each later page has page
+// 1's header/footer lines stripped, so the pages carry the ITEMS, not the same
+// nav chrome N times.
+async function crawlLinks(baseUrl, options = {}) {
     const {
         maxPages = 5,
         timeout = 20000,
         maxLength = 30000,
         includeLinks = false,
         stealth = false,
+        first = null,
+        explicitPattern = false,
+        guard = null,
     } = options;
-
     const capped = Math.min(20, Math.max(1, parseInt(maxPages, 10) || 5));
     const perPageCap = Math.max(500, Math.floor(maxLength / capped));
+    const fetchPage = options.fetchPage || ((u) => fetchWithFallback(u, { timeout, includeLinks, maxLength: perPageCap * 2, preferStealth: stealth }));
+    const norm = (u) => String(u || '').split('#')[0].replace(/\/+$/, '');
 
-    const detected = detectUrlPattern(baseUrl);
-    const pages = [];
-    let total = 0;
-    let currentUrl = baseUrl;
-    let prevHash = '';
+    const r0 = first || await fetchPage(baseUrl);
+    if (!r0 || !r0.success) return { success: false, url: baseUrl, error: (r0 && r0.error) || 'first page failed' };
 
-    const hash = (s) => {
-        let h = 0;
-        for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-        return h;
-    };
+    const pages = [{ index: 0, url: baseUrl, title: r0.title || '', content: String(r0.content || '').slice(0, perPageCap) }];
+    const firstLines = String(r0.content || '').split('\n');
+    const visited = new Set([norm(baseUrl)]);
+    let total = pages[0].content.length;
+    let cur = r0;
+    let curUrl = baseUrl;
+    let prevContent = null;
+    let stoppedBecause = null;
+    let usedPattern = false;
 
-    for (let i = 0; i < capped; i++) {
-        const result = await fetchWithFallback(currentUrl, {
-            timeout,
-            includeLinks,
-            maxLength: perPageCap,
-            preferStealth: stealth,
-        });
-        if (!result.success) {
-            if (i === 0) return { success: false, url: baseUrl, error: result.error };
-            break;
+    for (let i = 1; i < capped; i++) {
+        if (total >= maxLength) { stoppedBecause = 'length budget reached'; break; }
+        const pg = cur.pagination || null;
+        let next = pg && pg.next ? pg.next : null;
+        if (!next) {
+            const detected = detectUrlPattern(curUrl);
+            if (detected && pg && pg.last && detected.current >= pg.last) { stoppedBecause = 'reached the last page'; break; }
+            if (detected) { next = advanceUrl(curUrl, options.offsetStep); usedPattern = true; }
+            else if (explicitPattern) { next = appendPageParam(baseUrl, i + 1); usedPattern = true; }
         }
-        const content = result.content || '';
-        const thisHash = `${hash(content)}|${content.length}`;
-        if (i > 0 && thisHash === prevHash) break; // same page repeated — exhausted
-        prevHash = thisHash;
-
-        pages.push({
-            index: i,
-            url: currentUrl,
-            title: result.title || '',
-            content: content.slice(0, perPageCap),
-        });
-        total += content.length;
-        if (total >= maxLength) break;
-        if (i === capped - 1) break;
-
-        const advanced = detected ? advanceUrl(currentUrl, options.offsetStep) : null;
-        currentUrl = advanced || appendPageParam(baseUrl, i + 2);
+        if (!next) { stoppedBecause = pg && pg.current && pg.last && pg.current >= pg.last ? 'reached the last page' : 'no next page link'; break; }
+        if (visited.has(norm(next))) { stoppedBecause = 'pagination loops back to a page already read'; break; }
+        if (guard) { const why = guard(next); if (why) { stoppedBecause = `next page refused: ${why}`; break; } }
+        visited.add(norm(next));
+        const r = await fetchPage(next);
+        if (!r || !r.success) { stoppedBecause = `page ${i + 1} failed (${(r && r.error) || 'fetch failed'})`; break; }
+        const content = paginationSvc.stripRepeatedChrome(r.content || '', firstLines);
+        if (paginationSvc.meaningfulLength(content) < 40) { stoppedBecause = 'no new content on the next page'; break; }
+        if (prevContent !== null && content === prevContent) { stoppedBecause = 'the next page repeated the previous one'; break; }
+        prevContent = content;
+        pages.push({ index: i, url: next, title: r.title || '', content: content.slice(0, perPageCap) });
+        total += Math.min(content.length, perPageCap);
+        cur = r;
+        curUrl = next;
+        if (i === capped - 1) stoppedBecause = 'maxPages reached';
     }
 
-    if (pages.length === 0) {
-        return { success: false, url: baseUrl, error: 'no pages extracted' };
-    }
     return {
         success: true,
         url: baseUrl,
-        mode: 'url-pattern',
+        finalUrl: curUrl,
+        mode: usedPattern ? 'url-pattern' : 'link-follow',
         pagesVisited: pages.length,
         pages,
+        ...(stoppedBecause ? { stoppedBecause } : {}),
+        ...(cur.pagination ? { pagination: cur.pagination } : {}),
     };
+}
+
+// Back-compat name.
+function crawlUrlPattern(baseUrl, options = {}) {
+    return crawlLinks(baseUrl, { ...options, explicitPattern: true });
 }
 
 async function crawl(url, options = {}) {
@@ -163,23 +176,28 @@ async function crawl(url, options = {}) {
         loadMoreSelector,
         waitForSelector,
         stealth = false,
+        fetchPage,
+        guard,
     } = options;
 
-    // Auto mode: prefer the fast URL-pattern path when the URL already has
-    // a pagination marker. Otherwise hand off to Playwright so it can
-    // inspect the DOM for next links / load-more / infinite scroll.
-    let resolvedMode = mode;
-    if (mode === 'auto') {
-        if (detectUrlPattern(url)) resolvedMode = 'url-pattern';
+    const common = { maxPages, timeout, maxLength, includeLinks, stealth, fetchPage, guard };
+    if (mode === 'url-pattern') return crawlUrlPattern(url, common);
+
+    // auto: read page 1 through the fast cascade first. When it has a real
+    // next-page link (or a ?page=N marker), walk the listing WITHOUT a browser
+    // session — seconds instead of a browser click per page. Only a JS pager
+    // (no href), a load-more button or infinite scroll needs the stateful path.
+    if (mode === 'auto' && !nextSelector && !loadMoreSelector && !waitForSelector && fetchPage) {
+        const first = await fetchPage(url).catch(() => null);
+        if (first && first.success && ((first.pagination && first.pagination.next) || detectUrlPattern(url))) {
+            return crawlLinks(url, { ...common, first });
+        }
+    } else if (mode === 'auto' && detectUrlPattern(url) && !nextSelector && !loadMoreSelector) {
+        return crawlLinks(url, common);
     }
 
-    if (resolvedMode === 'url-pattern') {
-        return crawlUrlPattern(url, { maxPages, timeout, maxLength, includeLinks, stealth });
-    }
-
-    // Everything else is stateful — delegate to playwrightService.crawlPages.
     return playwrightService.crawlPages(url, {
-        mode: resolvedMode === 'auto' ? 'auto' : resolvedMode,
+        mode: mode === 'auto' ? 'auto' : mode,
         maxPages,
         timeout,
         maxLength,
@@ -193,4 +211,5 @@ async function crawl(url, options = {}) {
 module.exports = {
     crawl,
     detectUrlPattern, // exposed for tests
+    crawlLinks,
 };

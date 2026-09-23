@@ -13,6 +13,7 @@
 
 const { isNonContentUrl, isPlumbingPayload, unusableContentReason, looksOpaque } = require('./contentQuality');
 const adBlock = require('./adBlock');
+const paginationSvc = require('./pagination');
 
 // Bot-protection / captcha vendors whose requests must pass UNTOUCHED — never
 // aborted (a blocked challenge script is a wall) and never replayed through
@@ -703,6 +704,24 @@ async function extractContent(page, options = {}) {
     const { includeLinks = false, maxLength = 8000, linkFilter = null, find = null } = options;
 
     const adArgs = { tokenSrc: adBlock.AD_TOKEN_RE.source, idPrefixSrc: adBlock.AD_ID_PREFIX_RE.source, attrSelectors: adBlock.AD_ATTR_SELECTORS };
+    try {
+        return await extractContentInner(page, { includeLinks, maxLength, adArgs, linkFilter, find });
+    } finally {
+        // Put back what the extractor detached (not iframes — re-inserting one
+        // reloads it; they were never restored before either).
+        await page.evaluate(() => {
+            const list = window.__msDetached || [];
+            for (let i = list.length - 1; i >= 0; i--) {
+                const [marker, el] = list[i];
+                if (!marker.isConnected) continue;
+                if (el.tagName === 'IFRAME') marker.remove(); else marker.replaceWith(el);
+            }
+            window.__msDetached = [];
+        }).catch(() => {});
+    }
+}
+
+async function extractContentInner(page, { includeLinks, maxLength, adArgs, linkFilter, find }) {
     return await page.evaluate(({ includeLinks, maxLength, adArgs, linkFilter, find }) => {
         // Ad slots first — only elements that DECLARE themselves ads (id/class
         // TOKENS, data-ad-* attributes), and never one holding a large share of
@@ -749,8 +768,17 @@ async function extractContent(page, options = {}) {
             '.social-share', '.comments', '.related-posts'
         ];
 
+        // Detach REVERSIBLY: the caller restores these after reading, so the
+        // page stays usable — a crawl or an interact run that reads a page and
+        // then clicks "Next" used to find the pager (a <nav>) deleted.
+        window.__msDetached = [];
         removeSelectors.forEach(sel => {
-            document.querySelectorAll(sel).forEach(el => el.remove());
+            document.querySelectorAll(sel).forEach(el => {
+                if (!el.isConnected) return;
+                const marker = document.createComment('ms-detached');
+                el.replaceWith(marker);
+                window.__msDetached.push([marker, el]);
+            });
         });
 
         // Get title
@@ -1610,6 +1638,7 @@ async function fetchUrlContent(url, options = {}) {
             });
             if (published) { const d = new Date(published); published = /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : (isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)); }
         } catch (_) { published = null; }
+        const pagination = await domPagination(page);
         return {
             success: true,
             content,
@@ -1617,6 +1646,7 @@ async function fetchUrlContent(url, options = {}) {
             url,
             finalUrl: page.url(),
             httpStatus: navStatusOut,
+            ...(pagination ? { pagination } : {}),
             ...(published ? { published } : {}),
             ...(dismissed.length ? { dismissed } : {}),
             ...(reqStats.adsBlocked ? { adsBlocked: reqStats.adsBlocked } : {}),
@@ -1673,16 +1703,163 @@ async function fetchMultipleUrls(urls, options = {}, concurrency = 3) {
     return results;
 }
 
+// ---- Page interaction ------------------------------------------------------
+// Models describe steps in many shapes ({action:"click"}, {type:"fill"},
+// {op:"press", key:"Enter"}, {type:"click", text:"Search"}); normalize them
+// instead of silently ignoring the ones the switch did not know.
+const ACTION_ALIASES = {
+    fill: 'type', input: 'type', typetext: 'type', entertext: 'type', settext: 'type', write: 'type',
+    key: 'press', presskey: 'press', keypress: 'press', keyboard: 'press',
+    selectoption: 'select', choose: 'select', dropdown: 'select',
+    tap: 'click', clickon: 'click', clickbutton: 'click', clicklink: 'click', doubleclick: 'dblclick',
+    mouseover: 'hover',
+    waitfor: 'wait', sleep: 'wait', pause: 'wait', waitforselector: 'wait', delay: 'wait', waitfortext: 'wait',
+    scrolldown: 'scroll', scrolltobottom: 'scroll', scrollto: 'scroll', scrollintoview: 'scroll',
+    next: 'nextpage', nextpage: 'nextpage', paginate: 'nextpage', gotonextpage: 'nextpage', clicknext: 'nextpage',
+    loadmore: 'loadmore', showmore: 'loadmore', clickloadmore: 'loadmore',
+    capture: 'snapshot', extract: 'snapshot', snapshot: 'snapshot', read: 'snapshot',
+    waitfornavigation: 'waitfornavigation', waitfornav: 'waitfornavigation',
+    submitform: 'submit', check: 'check', uncheck: 'uncheck', back: 'back', goback: 'back',
+};
+const ACTION_TYPES = ['click', 'dblclick', 'type', 'press', 'select', 'check', 'uncheck', 'hover', 'scroll', 'wait', 'waitfornavigation', 'submit', 'nextpage', 'loadmore', 'snapshot', 'back'];
+
+function normalizeAction(raw) {
+    const src = typeof raw === 'string' ? { type: raw } : { ...(raw || {}) };
+    const rawType = String(src.type || src.action || src.op || src.kind || src.command || '').toLowerCase().replace(/[\s_-]+/g, '');
+    const type = ACTION_ALIASES[rawType] || rawType;
+    const a = { ...src, type, rawType };
+    a.selector = src.selector || src.target || src.css || src.element || src.locator || null;
+    if (type === 'type') a.text = src.text ?? src.value ?? src.input ?? src.content ?? src.query ?? '';
+    if (type === 'select') a.value = src.value ?? src.option ?? src.label ?? src.text;
+    if (type === 'press') a.key = src.key ?? src.keys ?? src.value ?? (src.selector ? null : src.text) ?? 'Enter';
+    if (type === 'scroll' && rawType === 'scrolltobottom') a.to = 'bottom';
+    // Click / hover / wait by VISIBLE TEXT when no selector was given — models
+    // know the label they see ("Search", "Next", "Accept") far better than the
+    // page's CSS.
+    a.byText = !a.selector && type !== 'type' && type !== 'press'
+        ? (src.text || src.label || src.name || src.buttonText || src.linkText || null)
+        : null;
+    if (type === 'type' && !a.selector) { a.placeholder = src.placeholder || null; a.label = src.label || src.field || src.name || null; }
+    a.times = Math.max(1, Math.min(10, parseInt(src.times ?? src.count ?? src.repeat ?? src.pages ?? 1, 10) || 1));
+    return a;
+}
+
+// Resolve an action's target to a locator: a CSS selector, or the visible
+// text / placeholder / label the model named.
+async function resolveTarget(page, a, timeout) {
+    if (a.selector) {
+        const loc = page.locator(a.selector).first();
+        await loc.waitFor({ state: 'attached', timeout }).catch(() => {});
+        return (await loc.count().catch(() => 0)) ? loc : null;
+    }
+    const text = a.byText || a.placeholder || a.label;
+    if (!text) return null;
+    const t = String(text).trim();
+    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candidates = a.type === 'type' || a.type === 'select'
+        ? [page.getByPlaceholder(t), page.getByLabel(t), page.getByRole('textbox', { name: t }), page.getByRole('searchbox', { name: t }), page.getByRole('combobox', { name: t })]
+        : [
+            page.locator('a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], summary, label').filter({ hasText: new RegExp(`^\\s*${esc}\\s*$`, 'i') }),
+            page.getByRole('button', { name: t }),
+            page.getByRole('link', { name: t }),
+            page.locator('input[type="submit"], input[type="button"]').and(page.locator(`[value="${t.replace(/"/g, '\\"')}" i]`)),
+            page.getByText(t, { exact: false }),
+        ];
+    const deadline = Date.now() + Math.min(timeout, 6000);
+    do {
+        for (const c of candidates) {
+            try {
+                const n = Math.min(await c.count(), 6);
+                for (let i = 0; i < n; i++) {
+                    const loc = c.nth(i);
+                    if (await loc.isVisible().catch(() => false)) return loc;
+                }
+            } catch (_) { /* next strategy */ }
+        }
+        await page.waitForTimeout(300);
+    } while (Date.now() < deadline);
+    return null;
+}
+
+// Visible form fields, buttons and links with a selector that will work —
+// returned when a step fails so the model retries against the page's REAL
+// controls instead of inventing another selector.
+async function listControls(page, limit = 30) {
+    try {
+        return await page.evaluate((limit) => {
+            const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
+            const q = (s) => String(s).replace(/"/g, '\\"');
+            const visible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+            const selectorOf = (el) => {
+                const tag = el.tagName.toLowerCase();
+                if (el.id && !/\d{5,}|^[a-f0-9-]{16,}$/i.test(el.id)) return `#${esc(el.id)}`;
+                const name = el.getAttribute('name'); if (name) return `${tag}[name="${q(name)}"]`;
+                const al = el.getAttribute('aria-label'); if (al) return `${tag}[aria-label="${q(al)}"]`;
+                const ph = el.getAttribute('placeholder'); if (ph) return `${tag}[placeholder="${q(ph)}"]`;
+                const type = el.getAttribute('type'); if (tag === 'input' && type) return `input[type="${q(type)}"]`;
+                return null;
+            };
+            const rows = [];
+            for (const el of document.querySelectorAll('input:not([type=hidden]), textarea, select, button, [role=button], [role=tab], summary, a[href]')) {
+                if (rows.length > 400) break;
+                if (!visible(el)) continue;
+                const tag = el.tagName.toLowerCase();
+                const kind = tag === 'a' ? 'link' : (tag === 'input' || tag === 'textarea') ? 'field' : tag === 'select' ? 'select' : 'button';
+                const text = ((tag === 'input' ? (el.value || '') : (el.innerText || '')) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+                if (kind === 'link' && !text) continue;
+                const row = { kind };
+                if (text) row.text = text;
+                const sel = selectorOf(el); if (sel) row.selector = sel;
+                const ph = el.getAttribute('placeholder'); if (ph) row.placeholder = ph.slice(0, 60);
+                if (kind === 'select') row.options = [...el.options].slice(0, 8).map(o => o.text.trim()).filter(Boolean);
+                rows.push(row);
+            }
+            const order = { field: 0, select: 1, button: 2, link: 3 };
+            return rows.sort((x, y) => order[x.kind] - order[y.kind]).slice(0, limit);
+        }, limit);
+    } catch (_) { return []; }
+}
+
 /**
- * Advanced page interaction for complex sites
+ * Drive a page through ordered steps, then read it.
+ *
+ * Steps: click / dblclick / hover (selector or visible `text`), type (selector,
+ * placeholder or label; `submit:true` presses Enter), press (key), select,
+ * check / uncheck, scroll ({to:"bottom"} loads lazy content; {selector}; or one
+ * viewport), wait ({selector} | {text} | {ms}), waitForNavigation, submit,
+ * nextPage ({times:N} — captures each page), loadMore ({times:N}), snapshot
+ * (capture the page as it is now), back.
+ *
+ * Every step waits for the page to actually CHANGE (navigation or re-render)
+ * instead of a fixed pause. A failing step stops the run but still returns the
+ * page as it is, the steps that ran, and the page's real controls.
  */
 async function interactAndFetch(url, actions = [], options = {}) {
     const { timeout = 30000 } = options;
+    const maxLength = options.maxLength || 8000;
+    const steps = (Array.isArray(actions) ? actions : []).slice(0, 30).map(normalizeAction);
+    const extraMs = steps.reduce((sum, s) => sum + (s.type === 'nextpage' || s.type === 'loadmore' ? s.times * 15000 : 8000), 0);
 
     let poolEntry = null;
     let context = null;
     let page = null;
-    const lease = armDeadline('interactAndFetch', url, hardDeadlineFor(timeout, (Array.isArray(actions) ? actions.length : 0) * 8000));
+    const lease = armDeadline('interactAndFetch', url, hardDeadlineFor(timeout, extraMs));
+    const log = [];
+    const snapshots = [];
+    let firstLines = null;
+    let lastTyped = null;
+
+    const snapshot = async (label) => {
+        const raw = await extractContent(page, { ...options, maxLength: Math.max(4000, maxLength) });
+        const title = await page.title().catch(() => '');
+        let content = raw;
+        if (!firstLines) firstLines = raw.split('\n');
+        else content = paginationSvc.stripRepeatedChrome(raw, firstLines);
+        const prev = snapshots[snapshots.length - 1];
+        if (prev && prev.content === content) return false;
+        snapshots.push({ url: page.url(), title, content, label });
+        return true;
+    };
 
     try {
         poolEntry = await getBrowser(lease);
@@ -1701,81 +1878,213 @@ async function interactAndFetch(url, actions = [], options = {}) {
         }
         if (options.dismissOverlays !== false) await dismissOverlays(page).catch(() => []);
 
-        // Execute actions
-        for (const action of actions) {
-            await page.waitForTimeout(randomDelay(100, 300));
-
-            // Per-action timeout with sensible defaults; the model can pass
-            // action.timeout to widen it for slow / lazy-loaded sites.
-            const actTimeout = Math.max(500, parseInt(action.timeout || 8000, 10));
+        let failure = null;
+        for (let idx = 0; idx < steps.length; idx++) {
+            const a = steps[idx];
+            const entry = { step: idx + 1, type: a.type };
+            if (a.selector) entry.target = String(a.selector).slice(0, 80);
+            else if (a.byText) entry.target = `text "${String(a.byText).slice(0, 60)}"`;
+            log.push(entry);
+            if (!ACTION_TYPES.includes(a.type)) {
+                entry.ok = false;
+                entry.error = `unknown step type "${a.rawType || ''}" — skipped (supported: ${ACTION_TYPES.join(', ')})`;
+                continue;
+            }
+            // Per-action timeout; the model can widen it for slow sites.
+            const actTimeout = Math.max(500, Math.min(60000, parseInt(a.timeout || 8000, 10) || 8000));
+            await page.waitForTimeout(randomDelay(80, 200));
             try {
-                switch (action.type) {
+                const before = await pageSignature(page);
+                const needTarget = async () => {
+                    const loc = await resolveTarget(page, a, actTimeout);
+                    if (!loc) throw new Error(a.selector
+                        ? `selector '${a.selector}' matched nothing visible within ${actTimeout}ms`
+                        : (a.byText || a.placeholder || a.label)
+                            ? `nothing visible labelled "${a.byText || a.placeholder || a.label}"`
+                            : `${a.type} needs a selector or the visible text of the element`);
+                    return loc;
+                };
+                switch (a.type) {
                     case 'click':
-                        await page.click(action.selector, { timeout: actTimeout });
+                    case 'dblclick': {
+                        const loc = await needTarget();
+                        await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                        if (a.type === 'dblclick') await loc.dblclick({ timeout: actTimeout });
+                        else await loc.click({ timeout: actTimeout });
+                        entry.changed = await waitForChange(page, before, Math.min(actTimeout, 5000));
                         break;
-                    case 'type':
-                        await page.type(action.selector, action.text, { delay: randomDelay(30, 80), timeout: actTimeout });
+                    }
+                    case 'hover': {
+                        const loc = await needTarget();
+                        await loc.hover({ timeout: actTimeout });
+                        entry.changed = await waitForChange(page, before, 1500);
                         break;
-                    case 'wait':
-                        // Support both selector-based wait and simple timeout
-                        if (action.selector) {
-                            await page.waitForSelector(action.selector, { timeout: actTimeout });
+                    }
+                    case 'type': {
+                        const loc = await needTarget();
+                        const text = String(a.text ?? '');
+                        await loc.click({ timeout: actTimeout }).catch(() => {});
+                        await loc.fill('', { timeout: actTimeout }).catch(() => {});
+                        if (text.length <= 80) await loc.pressSequentially(text, { delay: randomDelay(20, 50), timeout: actTimeout });
+                        else await loc.fill(text, { timeout: actTimeout });
+                        lastTyped = loc;
+                        if (a.submit || a.enter || a.pressEnter) {
+                            await loc.press('Enter', { timeout: actTimeout });
+                            entry.changed = await waitForChange(page, before, 8000);
+                        }
+                        break;
+                    }
+                    case 'press': {
+                        const key = String(a.key || 'Enter');
+                        if (a.selector || a.byText) await (await needTarget()).press(key, { timeout: actTimeout });
+                        else await page.keyboard.press(key);
+                        entry.changed = await waitForChange(page, before, /^enter$/i.test(key) ? 8000 : 1500);
+                        break;
+                    }
+                    case 'submit': {
+                        const loc = a.selector || a.byText ? await needTarget() : lastTyped;
+                        if (!loc) throw new Error('submit needs a selector, or a preceding type step');
+                        await loc.press('Enter', { timeout: actTimeout });
+                        entry.changed = await waitForChange(page, before, 8000);
+                        break;
+                    }
+                    case 'select': {
+                        const loc = await needTarget();
+                        const v = String(a.value ?? '');
+                        try { await loc.selectOption(v, { timeout: actTimeout }); }
+                        catch (_) { await loc.selectOption({ label: v }, { timeout: actTimeout }); }
+                        entry.changed = await waitForChange(page, before, 4000);
+                        break;
+                    }
+                    case 'check':
+                    case 'uncheck': {
+                        const loc = await needTarget();
+                        if (a.type === 'check') await loc.check({ timeout: actTimeout }); else await loc.uncheck({ timeout: actTimeout });
+                        entry.changed = await waitForChange(page, before, 3000);
+                        break;
+                    }
+                    case 'scroll': {
+                        if (a.selector || a.byText) {
+                            await (await needTarget()).scrollIntoViewIfNeeded({ timeout: actTimeout });
+                        } else if (a.to === 'bottom' || a.to === 'end' || a.times > 1) {
+                            let grew = false;
+                            for (let k = 0; k < a.times; k++) { if (await scrollForMore(page, 4000)) grew = true; else break; }
+                            entry.changed = grew;
+                        } else if (a.to === 'top') {
+                            await page.evaluate(() => window.scrollTo(0, 0));
                         } else {
-                            await page.waitForTimeout(action.timeout || 1000);
+                            await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+                            entry.changed = await waitForChange(page, before, 1500);
                         }
                         break;
-                    case 'scroll':
-                        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+                    }
+                    case 'wait': {
+                        if (a.selector) await page.waitForSelector(a.selector, { timeout: actTimeout });
+                        else if (a.byText) await page.getByText(String(a.byText)).first().waitFor({ timeout: actTimeout });
+                        else await page.waitForTimeout(Math.min(15000, parseInt(a.ms ?? a.duration ?? a.timeout ?? 1000, 10) || 1000));
                         break;
-                    case 'waitForNavigation':
-                        // Best-effort: a preceding click very often FINISHES
-                        // navigating before this line starts listening (the
-                        // classic page.click → waitForNavigation race), so a
-                        // timeout here normally means "already navigated", not a
-                        // failure. Don't hard-fail — fall back to a short
-                        // load-state settle and continue so pagination works.
-                        try {
-                            await page.waitForNavigation({ timeout: actTimeout, waitUntil: 'load' });
-                        } catch (navErr) {
-                            try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (e) {}
+                    }
+                    case 'waitfornavigation': {
+                        // A preceding click has very often ALREADY navigated before
+                        // this step starts listening; a change-wait covers both.
+                        entry.changed = await waitForChange(page, before, actTimeout);
+                        if (!entry.changed) await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+                        break;
+                    }
+                    case 'back': {
+                        await page.goBack({ timeout: actTimeout, waitUntil: 'load' });
+                        break;
+                    }
+                    case 'snapshot': {
+                        entry.captured = await snapshot(a.label || null);
+                        break;
+                    }
+                    case 'nextpage': {
+                        if (!snapshots.length) await snapshot('page 1');
+                        const visited = new Set(snapshots.map(s => stripHashUrl(s.url)));
+                        let moved = 0;
+                        for (let k = 0; k < a.times; k++) {
+                            const adv = await advanceToNext(page, { nextSelector: a.selector || undefined, timeout, visited });
+                            if (!adv.ok) { entry.stoppedBecause = adv.reason; break; }
+                            visited.add(stripHashUrl(page.url()));
+                            moved++;
+                            if (!(await snapshot(`page ${snapshots.length + 1}`))) { entry.stoppedBecause = 'the next page repeated the previous one'; break; }
                         }
+                        entry.pagesAdvanced = moved;
+                        if (!moved && !entry.stoppedBecause) entry.stoppedBecause = 'no next page';
                         break;
+                    }
+                    case 'loadmore': {
+                        let clicks = 0;
+                        for (let k = 0; k < a.times; k++) {
+                            const loc = await findLoadMore(page, a.selector || null);
+                            if (!loc) { entry.stoppedBecause = 'no load-more control'; break; }
+                            const b = await pageSignature(page);
+                            await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                            await loc.click({ timeout: actTimeout });
+                            if (!(await waitForChange(page, b, 8000))) { entry.stoppedBecause = 'load-more added nothing'; break; }
+                            clicks++;
+                        }
+                        entry.clicks = clicks;
+                        break;
+                    }
                 }
+                entry.ok = true;
             } catch (actionErr) {
-                // Rewrap selector-timeout errors with an actionable hint so
-                // the model doesn't keep retrying the same bad selector.
-                // Playwright's raw message is terse ("page.click: Timeout
-                // 5000ms exceeded. Call log: - waiting for locator('X')")
-                // and reads as "network was slow" rather than "selector
-                // did not match". Make the failure mode explicit.
-                const raw = actionErr?.message || String(actionErr);
-                const isTimeout = /timeout .* exceeded/i.test(raw);
-                const sel = action.selector ? ` '${action.selector}'` : '';
-                const msg = isTimeout
-                    ? `${action.type} action timed out — selector${sel} not found / not visible within ${actTimeout}ms. Inspect the page with scrapling_fetch or playwright_fetch to find the real selector before retrying, or consider whether the data is already available without interaction. Raw: ${raw}`
-                    : raw;
-                throw new Error(msg);
+                const raw = String(actionErr?.message || actionErr).split('\n')[0];
+                entry.ok = false;
+                entry.error = /timeout .* exceeded/i.test(raw)
+                    ? `timed out after ${actTimeout}ms — the element is missing, hidden or covered`
+                    : raw.slice(0, 240);
+                failure = { index: idx, error: entry.error };
+                break;
             }
         }
 
-        await page.waitForTimeout(randomDelay(300, 600));
+        await page.waitForTimeout(randomDelay(150, 300));
+        const title = await page.title().catch(() => '');
+        const pagination = await domPagination(page);
 
-        const content = await extractContent(page, options);
-        const title = await page.title();
+        let content;
+        if (snapshots.length) {
+            // Anything done after the last capture (a click, a scroll) is part
+            // of the answer too.
+            const lastWasCapture = ['snapshot', 'nextpage'].includes(steps[steps.length - 1]?.type);
+            if (!lastWasCapture || failure) await snapshot('final');
+            const per = Math.max(1500, Math.floor(Math.max(maxLength, 6000 * Math.min(snapshots.length, 5)) / snapshots.length));
+            content = snapshots
+                .map((sn, i) => `=== ${sn.label || `Capture ${i + 1}`}: ${sn.title || '(no title)'} — ${sn.url} ===\n${sn.content.slice(0, per)}`)
+                .join('\n\n');
+        } else {
+            content = await extractContent(page, options);
+        }
 
-        return {
-            success: true,
+        const base = {
             content,
             title,
             url,
-            finalUrl: page.url()
+            finalUrl: page.url(),
+            steps: log,
+            ...(snapshots.length > 1 ? { pagesCaptured: snapshots.length } : {}),
+            ...(pagination ? { pagination } : {}),
         };
+        if (failure) {
+            return {
+                success: false,
+                error: `step ${failure.index + 1} (${steps[failure.index].type}) failed: ${failure.error}`,
+                failedStep: failure.index + 1,
+                controls: await listControls(page),
+                ...base,
+            };
+        }
+        return { success: true, ...base };
 
     } catch (error) {
         return {
             success: false,
             error: lease.errorOf(error),
-            url
+            url,
+            ...(log.length ? { steps: log } : {}),
         };
     } finally {
         lease.clear();
@@ -1919,7 +2228,7 @@ const NEXT_SELECTORS = [
     'nav a[rel="next"]',
     '[aria-label="Next page"]',
     '[aria-label*="next page" i]',
-    '[aria-label*="Next" i]:not([aria-label*="previous" i])',
+    '[aria-label*="Next" i]:not([aria-label*="previous" i]):not([aria-label*="slide" i]):not([aria-label*="image" i]):not([aria-label*="photo" i]):not([aria-label*="video" i]):not([aria-label*="article" i]):not([aria-label*="story" i]):not([aria-label*="month" i])',
     '.pagination-next a',
     '.pagination-next',
     '.pagination .next a',
@@ -1939,25 +2248,204 @@ const LOAD_MORE_SELECTORS = [
     'a[class*="loadmore" i]',
 ];
 
+// "Next page" as visible text, for controls with no rel/aria/class signal.
+// Anchored so "Next article" / "Next slide" never match.
+const NEXT_CONTROL_TEXT = /^\s*(?:next(?:\s+page|\s+results?)?|older(?:\s+(?:posts|entries|articles|results))?|more\s+results)?\s*[›»→>❯]?\s*$/i;
+const LOAD_MORE_TEXT = /^\s*(?:load|show|see|view)\s+more(?:\s+\w+){0,2}\s*$|^\s*more\s+results\s*$/i;
+
 async function findFirstVisible(page, selectors) {
     for (const sel of selectors) {
         try {
             const loc = page.locator(sel).first();
             if (await loc.count() === 0) continue;
             if (!(await loc.isVisible().catch(() => false))) continue;
+            if (await isDisabledControl(loc)) continue;
             return loc;
         } catch (_) { /* try next */ }
     }
     return null;
 }
 
+async function isDisabledControl(loc) {
+    try {
+        return await loc.evaluate((el) => el.hasAttribute('disabled')
+            || el.getAttribute('aria-disabled') === 'true'
+            || /\bdisabled\b/i.test(el.className && el.className.baseVal !== undefined ? el.className.baseVal : (el.className || '')));
+    } catch (_) { return false; }
+}
+
+// First visible, enabled control whose WHOLE visible text matches `re`.
+async function findByText(page, re, roles = 'a, button, [role="button"], [role="link"], input[type="submit"], input[type="button"]') {
+    try {
+        const matches = page.locator(roles).filter({ hasText: re });
+        const n = Math.min(await matches.count(), 8);
+        for (let i = 0; i < n; i++) {
+            const loc = matches.nth(i);
+            const text = ((await loc.innerText().catch(() => '')) || '').trim();
+            if (!text || !re.test(text)) continue;   // filter() is a substring test; require the whole label
+            if (!(await loc.isVisible().catch(() => false))) continue;
+            if (await isDisabledControl(loc)) continue;
+            return loc;
+        }
+    } catch (_) { /* no match */ }
+    return null;
+}
+
+// Normalized anchor list from the rendered DOM (same shape as
+// pagination.anchorsFromHtml), with a pager-context marker the regex path
+// cannot see.
+async function domAnchors(page) {
+    try {
+        return await page.evaluate(() => {
+            const out = [];
+            for (const el of document.querySelectorAll('link[rel][href], a[href]')) {
+                if (out.length >= 2000) break;
+                let href = el.getAttribute('href') || '';
+                if (!href || href[0] === '#' || /^(javascript|mailto|tel):/i.test(href)) continue;
+                try { href = new URL(href, document.baseURI).href; } catch (_) { continue; }
+                const isA = el.tagName === 'A';
+                const cls = typeof el.className === 'string' ? el.className : '';
+                const ctx = isA && el.closest('nav, [role="navigation"], [class*="pagin" i], [class*="pager" i], .page-numbers, .nav-links') ? ' pagerctx' : '';
+                out.push({
+                    href,
+                    rel: (el.getAttribute('rel') || '').toLowerCase(),
+                    text: isA ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '',
+                    label: (el.getAttribute('aria-label') || el.getAttribute('title') || '').slice(0, 80),
+                    cls: `${cls} ${el.id || ''}${ctx}`.slice(0, 200),
+                    disabled: el.getAttribute('aria-disabled') === 'true' || /\bdisabled\b/i.test(cls),
+                });
+            }
+            return out;
+        });
+    } catch (_) { return []; }
+}
+
+async function domPagination(page) {
+    try { return paginationSvc.detectPagination(await domAnchors(page), page.url()); } catch (_) { return null; }
+}
+
+// Cheap fingerprint of what is on screen — tells whether an action DID
+// something (navigated, re-rendered results, appended items).
+async function pageSignature(page) {
+    try {
+        return await page.evaluate(() => {
+            const t = (document.body && document.body.innerText) || '';
+            let h = 0;
+            for (let i = 0; i < t.length; i += 5) h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+            return `${location.href}|${t.length}|${h}`;
+        });
+    } catch (_) { return ''; }   // mid-navigation: the context is being replaced
+}
+
+// Wait until the URL or the page text changes (navigation, an XHR re-render,
+// appended items), then until it stops changing. The old code slept a fixed
+// 300 ms after a click — a search-results page that re-rendered 800 ms later
+// was extracted BEFORE the new results, and the crawler compared page 2 with
+// page 1, found them identical and stopped ("pagination exhausted").
+async function waitForChange(page, before, maxMs = 6000) {
+    const start = Date.now();
+    let changed = false;
+    while (Date.now() - start < maxMs) {
+        await page.waitForTimeout(200);
+        const now = await pageSignature(page);
+        if (now && now !== before) { changed = true; break; }
+    }
+    if (!changed) return false;
+    await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+    let last = await pageSignature(page);
+    const settleStart = Date.now();
+    while (Date.now() - settleStart < 3000) {
+        await page.waitForTimeout(350);
+        const cur = await pageSignature(page);
+        if (cur === last) break;
+        last = cur;
+    }
+    return true;
+}
+
+// Scroll down in viewport steps (so lazy observers along the way fire) and
+// wait for the document to grow.
+async function scrollForMore(page, maxWaitMs = 5000) {
+    const heightOf = () => page.evaluate(() => document.body ? document.body.scrollHeight : 0).catch(() => 0);
+    const before = await heightOf();
+    await page.evaluate(async () => {
+        let y = window.scrollY;
+        for (let k = 0; k < 40 && y < document.body.scrollHeight; k++) {
+            y += Math.round(window.innerHeight * 0.9);
+            window.scrollTo(0, y);
+            await new Promise((r) => setTimeout(r, 120));
+        }
+    }).catch(() => {});
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+        await page.waitForTimeout(300);
+        if ((await heightOf()) > before) { await page.waitForTimeout(600); return true; }
+    }
+    return false;
+}
+
+function stripHashUrl(u) { return String(u || '').split('#')[0]; }
+
+// Advance a stateful browser session to the next page of a listing.
+//   1. explicit nextSelector → click it
+//   2. a real next-page href on the page → navigate to it (robust: no
+//      click/navigation race, no overlay stealing the click)
+//   3. a next control without a usable href (JS pager) → click + wait for change
+async function advanceToNext(page, { nextSelector, timeout = 20000, visited } = {}) {
+    const before = await pageSignature(page);
+    const click = async (loc, how) => {
+        try { await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {}); await loc.click({ timeout: Math.min(timeout, 8000) }); }
+        catch (e) { return { ok: false, reason: `could not click the next control (${String(e.message || e).split('\n')[0].slice(0, 120)})` }; }
+        const changed = await waitForChange(page, before, 8000);
+        return changed ? { ok: true, how } : { ok: false, reason: 'clicking the next control did not change the page' };
+    };
+    if (nextSelector) {
+        const loc = page.locator(nextSelector).first();
+        if (!(await loc.count().catch(() => 0))) return { ok: false, reason: `nextSelector ${nextSelector} matched nothing` };
+        if (await isDisabledControl(loc)) return { ok: false, reason: 'the next control is disabled (last page)' };
+        return click(loc, 'selector');
+    }
+    const p = await domPagination(page);
+    if (p && p.next) {
+        if (visited && visited.has(stripHashUrl(p.next))) return { ok: false, reason: 'pagination loops back to a page already read' };
+        try {
+            await page.goto(p.next, { timeout, waitUntil: 'load' });
+            await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+            return { ok: true, how: `link (${p.via || 'detected'})` };
+        } catch (e) { return { ok: false, reason: `next page ${p.next} failed to load (${String(e.message || e).split('\n')[0].slice(0, 100)})` }; }
+    }
+    const loc = (await findFirstVisible(page, NEXT_SELECTORS)) || (await findByText(page, NEXT_CONTROL_TEXT));
+    if (!loc) return { ok: false, reason: p && p.current && p.last && p.current >= p.last ? 'this is the last page' : 'no next-page control found' };
+    const href = await loc.getAttribute('href').catch(() => null);
+    if (href && !/^\s*(#|javascript:)/i.test(href)) {
+        try {
+            const abs = new URL(href, page.url()).href;
+            if (paginationSvc.sameSite(abs, page.url()) && !(visited && visited.has(stripHashUrl(abs)))) {
+                await page.goto(abs, { timeout, waitUntil: 'load' });
+                await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+                return { ok: true, how: 'link' };
+            }
+        } catch (_) { /* fall through to a click */ }
+    }
+    return click(loc, 'click');
+}
+
+async function findLoadMore(page, loadMoreSelector) {
+    if (loadMoreSelector) {
+        const loc = page.locator(loadMoreSelector).first();
+        return (await loc.count().catch(() => 0)) ? loc : null;
+    }
+    return (await findFirstVisible(page, LOAD_MORE_SELECTORS)) || (await findByText(page, LOAD_MORE_TEXT));
+}
+
 async function detectPaginationMode(page, opts = {}) {
     if (opts.nextSelector) return 'link-follow';
     if (opts.loadMoreSelector) return 'load-more';
-    const nextLoc = await findFirstVisible(page, NEXT_SELECTORS);
-    if (nextLoc) return 'link-follow';
-    const moreLoc = await findFirstVisible(page, LOAD_MORE_SELECTORS);
-    if (moreLoc) return 'load-more';
+    const p = await domPagination(page);
+    if (p && p.next) return 'link-follow';
+    if (await findFirstVisible(page, NEXT_SELECTORS)) return 'link-follow';
+    if (await findLoadMore(page, null)) return 'load-more';
+    if (await findByText(page, NEXT_CONTROL_TEXT)) return 'link-follow';
     return 'infinite-scroll';
 }
 
@@ -1990,6 +2478,8 @@ async function crawlPages(url, options = {}) {
         await applyStealthPatches(page);
 
         await page.goto(url, { timeout, waitUntil: 'load' });
+        if (await pageLooksLikeChallenge(page)) await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
+        await dismissOverlays(page).catch(() => []);
         if (waitForSelector) {
             await page.waitForSelector(waitForSelector, { timeout }).catch(() => {});
         }
@@ -1997,75 +2487,63 @@ async function crawlPages(url, options = {}) {
         const resolvedMode = mode === 'auto'
             ? await detectPaginationMode(page, { nextSelector, loadMoreSelector })
             : mode;
+        // load-more / infinite-scroll pages ACCUMULATE: each extraction holds
+        // every earlier item again, and the old per-page cap then cut exactly
+        // the new items off the end. Diff them against what was already seen.
+        const accumulating = resolvedMode === 'load-more' || resolvedMode === 'infinite-scroll';
 
         const pages = [];
         let total = 0;
-        let prevContentHash = '';
-
-        const hash = (s) => {
-            let h = 0;
-            for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-            return h;
-        };
+        let firstLines = null;
+        const seen = new Set();
+        const visited = new Set();
+        let stoppedBecause = null;
 
         for (let i = 0; i < cappedMaxPages; i++) {
-            await page.waitForTimeout(randomDelay(150, 400));
-            const content = await extractContent(page, { includeLinks, maxLength: perPageCap });
+            await page.waitForTimeout(randomDelay(120, 300));
+            const raw = await extractContent(page, {
+                includeLinks,
+                maxLength: accumulating ? Math.min(200000, Math.max(maxLength * 2, 60000)) : perPageCap * 2,
+            });
             const title = await page.title().catch(() => '');
             const currentUrl = page.url();
+            visited.add(stripHashUrl(currentUrl));
 
-            const thisHash = `${hash(content)}|${content.length}`;
-            if (i > 0 && thisHash === prevContentHash) break; // pagination exhausted
-            prevContentHash = thisHash;
-
-            pages.push({
-                index: i,
-                url: currentUrl,
-                title,
-                content: content.slice(0, perPageCap),
-            });
-            total += content.length;
-            if (total >= maxLength) break;
-            if (i === cappedMaxPages - 1) break;
-
-            // Advance to the next "page".
-            if (resolvedMode === 'link-follow') {
-                const nextLoc = nextSelector
-                    ? page.locator(nextSelector).first()
-                    : await findFirstVisible(page, NEXT_SELECTORS);
-                if (!nextLoc) break;
-                const isDisabled = await nextLoc.getAttribute('aria-disabled').catch(() => null);
-                const classList = await nextLoc.getAttribute('class').catch(() => '') || '';
-                if (isDisabled === 'true' || /\bdisabled\b/i.test(classList)) break;
-                try {
-                    await Promise.all([
-                        page.waitForLoadState('load', { timeout }).catch(() => {}),
-                        nextLoc.click({ timeout: Math.min(timeout, 8000) }),
-                    ]);
-                } catch (e) {
-                    break;
-                }
-            } else if (resolvedMode === 'load-more') {
-                const moreLoc = loadMoreSelector
-                    ? page.locator(loadMoreSelector).first()
-                    : await findFirstVisible(page, LOAD_MORE_SELECTORS);
-                if (!moreLoc) break;
-                try {
-                    await moreLoc.click({ timeout: Math.min(timeout, 8000) });
-                    await page.waitForTimeout(1500);
-                } catch (e) {
-                    break;
-                }
+            let content;
+            if (i === 0) {
+                content = raw;
+                firstLines = raw.split('\n');
+                paginationSvc.rememberLines(raw, seen);
+            } else if (accumulating) {
+                content = paginationSvc.newLinesOnly(raw, seen);
             } else {
-                // infinite-scroll
-                const prevH = await page.evaluate(() => document.body.scrollHeight);
-                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await page.waitForTimeout(1500);
-                const newH = await page.evaluate(() => document.body.scrollHeight);
-                if (newH === prevH) break;
+                content = paginationSvc.stripRepeatedChrome(raw, firstLines);
+            }
+            if (i > 0 && paginationSvc.meaningfulLength(content) < 40) { stoppedBecause = 'no new content on the next page'; break; }
+
+            pages.push({ index: i, url: currentUrl, title, content: content.slice(0, perPageCap) });
+            total += Math.min(content.length, perPageCap);
+            if (total >= maxLength) { stoppedBecause = 'length budget reached'; break; }
+            if (i === cappedMaxPages - 1) { stoppedBecause = 'maxPages reached'; break; }
+
+            if (resolvedMode === 'link-follow') {
+                const adv = await advanceToNext(page, { nextSelector, timeout, visited });
+                if (!adv.ok) { stoppedBecause = adv.reason; break; }
+            } else if (resolvedMode === 'load-more') {
+                const moreLoc = await findLoadMore(page, loadMoreSelector);
+                if (!moreLoc) { stoppedBecause = 'no load-more control left'; break; }
+                const before = await pageSignature(page);
+                try {
+                    await moreLoc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                    await moreLoc.click({ timeout: Math.min(timeout, 8000) });
+                } catch (e) { stoppedBecause = 'could not click the load-more control'; break; }
+                if (!(await waitForChange(page, before, 8000))) { stoppedBecause = 'load-more did not add anything'; break; }
+            } else {
+                if (!(await scrollForMore(page))) { stoppedBecause = 'scrolling loaded nothing more'; break; }
             }
         }
 
+        const pagination = await domPagination(page);
         return {
             success: true,
             url,
@@ -2073,6 +2551,8 @@ async function crawlPages(url, options = {}) {
             mode: resolvedMode,
             pagesVisited: pages.length,
             pages,
+            ...(stoppedBecause ? { stoppedBecause } : {}),
+            ...(pagination ? { pagination } : {}),
         };
     } catch (error) {
         return { success: false, error: lease.errorOf(error), url };
@@ -2874,6 +3354,7 @@ module.exports = {
     getPoolStatus,
     // test hooks
     _armDeadline: armDeadline,
+    _domAnchors: domAnchors,
     _hardDeadlineFor: hardDeadlineFor,
     _HARD_DEADLINE_MS: PLAYWRIGHT_HARD_DEADLINE_MS,
 };

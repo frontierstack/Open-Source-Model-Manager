@@ -235,7 +235,7 @@ export default function ToolCallBlock({ tool }) {
                         <VideoBlock spec={videoSpec} />
                     )}
                     {hasArtifacts && (
-                        <ArtifactList artifacts={artifacts} />
+                        <ArtifactList artifacts={artifacts} previews={false} />
                     )}
                     {hasArgs && (
                         argEntries && argEntries.length > 0 ? (

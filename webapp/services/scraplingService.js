@@ -140,6 +140,18 @@ async function engineHealth() {
     return engineRequest('/health', null, { method: 'GET', timeoutMs: 5000 });
 }
 
+// The engine returns every <a> tag as `anchorsHtml` (up to 150 KB) for
+// pagination detection. Keep it readable but NON-enumerable so no caller that
+// spreads or JSON-serializes an engine result can ship it to a model.
+function hideAnchors(r) {
+    if (r && typeof r === 'object' && typeof r.anchorsHtml === 'string') {
+        const v = r.anchorsHtml;
+        delete r.anchorsHtml;
+        Object.defineProperty(r, 'anchorsHtml', { value: v, enumerable: false, writable: true, configurable: true });
+    }
+    return r;
+}
+
 /**
  * curl_cffi browser-impersonating HTTP fetch — NO browser, ~0.3-0.6 s. Beats
  * TLS/JA3-fingerprint walls that 403 Node's axios (Cloudflare basic, Akamai,
@@ -153,7 +165,7 @@ async function fetchImpersonated(url, options = {}) {
             url, layer: 'impersonate', timeout, extractLinks, maxLength,
             ...(profile ? { impersonate: profile } : {}),
         }, { timeoutMs: timeout + 15000 });
-        return r;
+        return hideAnchors(r);
     } catch (e) {
         return { success: false, url, layer: 'impersonate', content: '', error: `engine: ${e.message}`, engineDown: true };
     }
@@ -194,7 +206,7 @@ async function fetchUrl(url, options = {}) {
                 url, layer: 'stealth', timeout, extractLinks,
                 maxLength: options.maxLength || 50000, networkIdle: !!options.networkIdle,
             }, { timeoutMs: timeout + 60000 });
-            return r;
+            return hideAnchors(r);
         } catch (e) {
             elog(`stealth via engine failed (${e.message}); using cold subprocess for ${url}`);
         }

@@ -234,6 +234,7 @@ const attachmentStore = require('./services/attachmentStore');
 // automation engine so every layer draws the line in the same place.
 const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
 const pageObstacles = require('./services/pageObstacles');
+const paginationSvc = require('./services/pagination');
 const urlRecovery = require('./services/urlRecovery');
 const logHistory = require('./services/logHistory');
 
@@ -14872,6 +14873,7 @@ async function fetchUrlContent(url, options = {}) {
                     clearHostBotWall(url);    // a clean serve clears not-yet-blocking strikes
                     mark('axios-fast', obs ? obs.kind : 'ok');
                     const published = extractPublishedDate(ax.rawHtml);
+                    const pagination = paginationSvc.paginationFromHtml(ax.rawHtml, ax.finalUrl || url);
                     return finish({
                         success: true,
                         url,
@@ -14880,6 +14882,7 @@ async function fetchUrlContent(url, options = {}) {
                         links: [],
                         source: 'axios-fast',
                         ...(published ? { published } : {}),
+                        ...(pagination ? { pagination } : {}),
                         ...(obs ? { obstacle: obs } : {}),
                     });
                 }
@@ -14954,6 +14957,7 @@ async function fetchUrlContent(url, options = {}) {
                 clearHostBotWall(url);
                 mark('impersonate', `${obs ? obs.kind : 'ok'}${imp.rotated ? '/rotated:' + imp.profile : ''}`);
                 const published = extractPublishedDate(imp.bodyHead);
+                const pagination = paginationSvc.paginationFromHtml(imp.anchorsHtml || imp.bodyHead, imp.finalUrl || url);
                 return finish({
                     success: true, url,
                     content: smartTruncate(impText, maxLength),
@@ -14961,6 +14965,7 @@ async function fetchUrlContent(url, options = {}) {
                     links: Array.isArray(imp.links) ? imp.links : [],
                     source: 'impersonate',
                     ...(published ? { published } : {}),
+                    ...(pagination ? { pagination } : {}),
                     ...(obs ? { obstacle: obs } : {}),
                 });
             }
@@ -15006,6 +15011,7 @@ async function fetchUrlContent(url, options = {}) {
                 setHostMemo(url, 'scrapling');   // skip the axios probe for this host next time
                 clearHostBotWall(url);
                 mark('scrapling', obs ? obs.kind : 'ok');
+                const pagination = scraplingResult.anchorsHtml ? paginationSvc.paginationFromHtml(scraplingResult.anchorsHtml, scraplingResult.finalUrl || url) : null;
                 return finish({
                     success: true,
                     url,
@@ -15013,6 +15019,7 @@ async function fetchUrlContent(url, options = {}) {
                     title: scraplingResult.title || '',
                     links: scraplingResult.links || [],
                     source: 'scrapling',
+                    ...(pagination ? { pagination } : {}),
                     ...(obs ? { obstacle: obs } : {}),
                 });
             }
@@ -29860,6 +29867,7 @@ app.use((req, res) => {
                     ...(result.dismissed ? { dismissed: result.dismissed } : {}),
                     ...(result.published ? { published: result.published } : {}),
                     content,
+                    ...(result.pagination ? { pagination: result.pagination } : {}),
                     ...(obs ? { obstacle: publicObstacle(obs) } : {}),
                     ...(hint ? { hint } : {}),
                 };
@@ -29891,7 +29899,8 @@ app.use((req, res) => {
                         'For an image-heavy or dynamic page (social feed, gallery, product/listing grid), or when you want the pictures with their captions, add want:"images" (real browser, scrolls for lazy media, returns each image URL + alt-caption + permalink alongside the text); want:"links" to collect the page\'s links. ' +
                         'To find ONE entry on a long index/directory/listing/policy page, read that page with find:"<its name or number>" — you get the matching lines plus the matching links, i.e. the entry\'s real URL, in one call. NEVER guess or re-type a URL from an entry\'s name/number: a URL that already returned HTTP 404 this turn is refused on re-read, and the result names the pages actually seen that resemble it. ' +
                         'A search whose results are pages that earlier searches ALREADY returned carries noNewResults:true and `unread` — the engine has nothing more on that phrasing; read one of the unread pages (copy its url exactly) or answer, do not rephrase again (after 3 such searches, further ones are refused). ' +
-                        'For a page that needs interaction first (accept a cookie wall, submit a form, click "load more", scroll for lazy content) use mode:"interact" with an ordered `actions` array. For "top N / most recent N" across a paginated listing use mode:"crawl". ' +
+                        'A read of a paginated listing carries `pagination` {current, last, next, howToContinue} — follow `next` exactly (never build page URLs yourself), or use mode:"crawl" with maxPages to collect several pages in one call (it follows the real next links, strips repeated header/footer, and handles "load more" buttons and infinite scroll). ' +
+                        'For a page that needs interaction first (search box, filters, cookie wall, "load more") use mode:"interact" with ordered `actions`: click/type/press/select/check/hover/scroll/wait/submit/back, target by CSS `selector` OR by visible `text` (e.g. {type:"type", placeholder:"Search", text:"red shoes", submit:true}, {type:"click", text:"Filters"}), plus {type:"nextPage", times:N} to page through results and {type:"loadMore", times:N}; a failed step returns the page\'s real `controls` to retry against. ' +
                         'On a search, set read:1-3 to auto-fetch the top results\' full text in the SAME call and skip a follow-up. A search result carries `relevance` (which query terms the results never matched) and, when the results are generic, a `hint` telling you how to reformulate — follow it rather than repeating the query. ' +
                         'Trust fetched/searched content over training when they conflict, and cite the URL(s). ' +
                         'When a read hits an obstacle the result carries `obstacle` (kind: bot_challenge/consent/login/paywall/age_gate/geo/js_required/thin, plus `tried` = the layers already used) and a `hint` naming the ONE next step — do exactly that: mode:"browser" only when the hint says so (the browser waits out challenges and dismisses consent/age overlays), mode:"interact" with actions for an overlay it could not clear, otherwise switch source (search for the subject) — never re-read the same URL in a mode already listed in `tried`. ' +
@@ -29905,11 +29914,13 @@ app.use((req, res) => {
                             mode: { type: 'string', enum: ['auto', 'search', 'read', 'stealth', 'browser', 'interact', 'crawl'], description: 'Default auto (query→search, url→read). stealth/browser force anti-bot/real-browser; interact runs `actions` first; crawl walks pagination.' },
                             want: { type: 'string', enum: ['text', 'images', 'links'], description: 'When reading: text (default), images (with captions), or links (every link on the page, content links first, with a count).' },
                             find: { type: 'string', description: 'Read: locate ONE item on a long index/directory/listing page — returns only the lines of text that mention this term (case-insensitive; alternatives separated by |) plus every link whose text or URL contains it, i.e. the item\'s REAL link. Use it instead of guessing or re-typing a URL from an item\'s name/number, e.g. {url:"https://site/policies", find:"524.0G"}.' },
-                            actions: { type: 'array', items: { type: 'object' }, description: 'For mode:"interact" — ordered steps (click/type/wait/scroll/waitForNavigation).' },
+                            actions: { type: 'array', items: { type: 'object' }, description: 'For mode:"interact" — ordered steps: {type:"click"|"type"|"press"|"select"|"check"|"hover"|"scroll"|"wait"|"submit"|"back"|"nextPage"|"loadMore"|"snapshot", selector? | text?/placeholder?, value?/key?/times?}. Target by visible text when you do not know the CSS.' },
+                            nextSelector: { type: 'string', description: 'crawl: CSS selector of the next-page control, only if auto-detection stopped early.' },
                             read: { type: 'integer', minimum: 0, maximum: 3, description: 'On a search, also fetch the top N results\' full text (default 0).' },
                             limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Search: max results (default 5).' },
                             maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Read: truncate content (default 15000).' },
                             maxPages: { type: 'integer', minimum: 1, maximum: 20, description: 'crawl: max pages (default 5).' },
+                            loadMoreSelector: { type: 'string', description: 'crawl: CSS selector of a "load more" button, only if auto-detection missed it.' },
                             timeout: { type: 'integer', description: 'Per-request timeout (ms).' },
                         },
                         additionalProperties: false,
@@ -30175,6 +30186,13 @@ app.use((req, res) => {
             // want:"links"/find read makes the real URL of an entry known.
             const harvestLinks = (r) => {
                 try {
+                    // A detected next/previous page is a URL the model has now
+                    // SEEN (never a guess), and the result says how to continue.
+                    if (r && r.pagination && typeof r.pagination === 'object') {
+                        noteSeen(r.pagination.next); noteSeen(r.pagination.prev);
+                        const how = paginationSvc.describePagination(r.pagination, r.url || a.url);
+                        if (how) r.pagination = { ...r.pagination, howToContinue: how };
+                    }
                     if (!r || typeof r.content !== 'string' || seenUrls.size > 3000) return;
                     for (const u of urlRecovery.extractUrls(r.content).slice(0, 600)) noteSeen(u);
                 } catch (_) { /* best effort */ }
@@ -30292,11 +30310,19 @@ app.use((req, res) => {
             }
             if (mode === 'interact') {
                 if (!a.url) return { error: 'web mode:"interact" requires a url and an actions[] array' };
-                return { mode: 'interact', ...(await run('playwright_interact', { url: a.url, actions: a.actions || [], timeout: a.timeout, maxLength: a.maxLength })) };
+                const ir = await run('playwright_interact', { url: a.url, actions: a.actions || [], timeout: a.timeout, maxLength: a.maxLength });
+                noteSeen(a.url);
+                if (ir && ir.finalUrl) noteSeen(ir.finalUrl);
+                if (ir && ir.pagination) { noteSeen(ir.pagination.next); noteSeen(ir.pagination.prev); }
+                return { mode: 'interact', ...ir };
             }
             if (mode === 'crawl') {
                 if (!a.url) return { error: 'web mode:"crawl" requires a url' };
-                return { mode: 'crawl', ...(await run('crawl_pages', { url: a.url, maxPages: a.maxPages, maxLength: a.maxLength, timeout: a.timeout })) };
+                const cr = await run('crawl_pages', { url: a.url, maxPages: a.maxPages, maxLength: a.maxLength, timeout: a.timeout, nextSelector: a.nextSelector, loadMoreSelector: a.loadMoreSelector });
+                noteSeen(a.url);
+                if (cr && Array.isArray(cr.pages)) cr.pages.forEach(pg => { noteSeen(pg.url); noteRead(pg.url); });
+                if (cr && cr.pagination) noteSeen(cr.pagination.next);
+                return { mode: 'crawl', ...cr };
             }
             if (Array.isArray(a.urls) && a.urls.length) {
                 const list = a.urls.slice(0, 3);
@@ -32133,13 +32159,26 @@ app.use((req, res) => {
                 return { success: false, error: 'Playwright not available — interaction requires browser automation' };
             }
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 30000, 10)));
-            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
-            const actions = Array.isArray(args?.actions) ? args.actions : [];
+            // A string (JSON) or a single object is a common shape for `actions`.
+            let actions = args?.actions;
+            if (typeof actions === 'string') { try { actions = JSON.parse(actions); } catch (_) { actions = []; } }
+            if (actions && !Array.isArray(actions) && typeof actions === 'object') actions = [actions];
+            if (!Array.isArray(actions)) actions = [];
+            const multiPage = actions.some(x => /next|paginat|load.?more|show.?more|snapshot|capture|extract/i.test(String((x && (x.type || x.action || x.op)) || x || '')));
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || (multiPage ? 24000 : 8000), 10)));
             try {
                 const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
                 if (result?.success && looksLikeChallenge(`${result.title || ''}\n${result.content || ''}`, { strongOnly: true })) noteHostBotWall(url, 'interact-challenge');
                 const ob = result?.success ? detectBotChallenge({ title: result.title, content: result.content, layer: 'interact', url }) : null;
-                const hint = result?.success ? (ob ? ob.hint : productPageHint(result.content)) : null;
+                let hint = result?.success ? (ob ? ob.hint : productPageHint(result.content)) : null;
+                if (result && result.success === false && result.failedStep) {
+                    hint = `Step ${result.failedStep} failed, so the steps after it did not run; \`content\` is the page as it stood at that point. ` +
+                        (Array.isArray(result.controls) && result.controls.length
+                            ? 'The page\'s real controls are listed in `controls` — retry with one of those selectors, or target the element by its visible text ({type:"click", text:"<label>"}, {type:"type", placeholder:"<placeholder>", text:"..."}). Do not retry the same selector.'
+                            : 'Do not retry the same selector; if the data you need is already in `content`, use it.');
+                } else if (result?.success && !hint && result.pagination && result.pagination.next) {
+                    hint = `The page has a next page (${result.pagination.next}). To collect several pages in one call, add {type:"nextPage", times:N} to the actions.`;
+                }
                 return { ...result, engine: 'playwright', ...(ob ? { obstacle: ob.obstacle } : {}), ...(hint ? { hint } : {}) };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
@@ -32224,11 +32263,17 @@ app.use((req, res) => {
             const includeLinks = args?.includeLinks === true;
             const stealth = args?.stealth === true;
             try {
+                const perPage = Math.max(2000, Math.floor(maxLength / maxPages) * 2);
                 const result = await crawlerService.crawl(url, {
                     mode, maxPages, timeout, maxLength, includeLinks, stealth,
                     nextSelector: args?.nextSelector,
                     loadMoreSelector: args?.loadMoreSelector,
                     waitForSelector: args?.waitForSelector,
+                    // Each page through the SAME cascade a single read uses
+                    // (axios → impersonate → stealth → browser), which also
+                    // reports the page's real next link.
+                    fetchPage: (u) => fetchUrlContent(u, { timeout: Math.min(timeout, 20000), maxLength: perPage, waitForJS: true }),
+                    guard: (u) => urlBlockReason(u) || hostBlockReason(u),
                 });
                 if (!result?.success) {
                     return { url, success: false, error: result?.error || 'crawl failed', mode: result?.mode };
@@ -32241,14 +32286,20 @@ app.use((req, res) => {
                     .join('\n\n');
                 if (looksLikeChallenge(combinedContent, { strongOnly: true })) noteHostBotWall(url, 'crawl-challenge');
                 const hint = (() => { const ob = detectBotChallenge({ content: combinedContent, layer: 'crawl', url }); return ob ? ob.hint : null; })();
+                const pg = result.pagination || null;
+                const more = pg && pg.next
+                    ? `Stopped after ${result.pagesVisited} page(s)${result.stoppedBecause ? ` (${result.stoppedBecause})` : ''}; the listing continues at ${pg.next} — to read further, crawl again from that exact URL.`
+                    : null;
                 return {
                     url,
                     success: true,
                     mode: result.mode,
                     pagesVisited: result.pagesVisited,
+                    ...(result.stoppedBecause ? { stoppedBecause: result.stoppedBecause } : {}),
+                    ...(pg ? { pagination: pg } : {}),
                     pages: result.pages,
                     combinedContent,
-                    ...(hint ? { hint } : {}),
+                    ...(hint ? { hint } : (more ? { hint: more } : {})),
                 };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e) };

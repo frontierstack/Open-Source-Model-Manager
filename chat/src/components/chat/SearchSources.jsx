@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Globe, ExternalLink, Loader2 } from 'lucide-react';
+import { warmPreview, getPreview, subscribePreview } from '../../utils/linkPreview';
 
 /**
  * Safely parse a URL and return a cleaned hostname (www. stripped).
@@ -16,29 +17,19 @@ function getHostname(url) {
 }
 
 /**
- * WordPress mshots is a free, no-auth public link-preview service. The FIRST
- * request for an uncached target returns a "generating…" placeholder and kicks
- * off the real screenshot in the background; only a later request gets the real
- * image. That is why the preview used to look blank until you hovered a few
- * times. We (1) PRE-WARM the screenshot the moment the sources render so mshots
- * starts generating immediately, and (2) RETRY with a cache-buster while the
- * popup is open so a placeholder gets swapped for the real screenshot as soon as
- * it is ready — no more "hover repeatedly to make it appear".
+ * Screenshot previews come from WordPress mshots through utils/linkPreview,
+ * which keeps polling a VISIBLE chip's page until the real screenshot has been
+ * rendered and cached — mshots answers the first requests with a "generating"
+ * placeholder — so a hover shows it immediately instead of waiting it out.
  */
-function mshotsUrl(url, retry = 0) {
-    const base = `https://s.wordpress.com/mshots/v1/${encodeURIComponent(url)}?w=640&h=400`;
-    return retry ? `${base}&r=${retry}` : base;
-}
-
-const warmedPreviews = new Set();
-function prewarmPreview(url) {
-    if (!url || warmedPreviews.has(url)) return;
-    warmedPreviews.add(url);
-    try {
-        const img = new Image();
-        img.referrerPolicy = 'no-referrer';
-        img.src = mshotsUrl(url);
-    } catch (_) { /* best-effort */ }
+function usePreview(url, enabled) {
+    const [state, setState] = useState(() => (enabled ? getPreview(url) : { status: 'idle', src: null }));
+    useEffect(() => {
+        if (!enabled) return undefined;
+        setState(getPreview(url));
+        return subscribePreview(url, setState);
+    }, [url, enabled]);
+    return state;
 }
 
 /**
@@ -109,20 +100,24 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
     const hoverTimerRef = useRef(null);
     const chipRef = useRef(null);
     const [popupPos, setPopupPos] = useState(null);
-    // Per-chip preview state (was shared across all chips, which let one chip's
-    // load state leak onto another). 'loading' | 'loaded' | 'error'.
-    const [previewStatus, setPreviewStatus] = useState('loading');
-    const [retry, setRetry] = useState(0);
-    const retryTimersRef = useRef([]);
-
     const hostname = getHostname(source?.url);
     const isValidUrl = !!hostname;
     const isHovered = hoveredIdx === index;
+    const preview = usePreview(source?.url, isValidUrl);
+    const [imgShown, setImgShown] = useState(false);
 
-    // Pre-warm this source's screenshot as soon as the chip mounts so mshots is
-    // generating it well before the user hovers.
+    // Start the screenshot as soon as the chip is on (or near) the screen, so it
+    // has finished rendering by the time the user hovers. Chips in old messages
+    // far up the conversation do not fire requests until scrolled to.
     useEffect(() => {
-        if (isValidUrl) prewarmPreview(source.url);
+        if (!isValidUrl) return undefined;
+        const el = chipRef.current;
+        if (!el || typeof IntersectionObserver === 'undefined') { warmPreview(source.url); return undefined; }
+        const io = new IntersectionObserver((items) => {
+            if (items.some((it) => it.isIntersecting)) { warmPreview(source.url); io.disconnect(); }
+        }, { rootMargin: '300px 0px' });
+        io.observe(el);
+        return () => io.disconnect();
     }, [source?.url, isValidUrl]);
 
     const computePopupPos = () => {
@@ -154,6 +149,7 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
 
     const handleMouseEnter = () => {
         if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+        if (isValidUrl) warmPreview(source.url, { urgent: true });
         hoverTimerRef.current = setTimeout(() => {
             setPopupPos(computePopupPos());
             setHoveredIdx(index);
@@ -173,6 +169,7 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
         e.preventDefault();
         e.stopPropagation();
         if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+        if (isValidUrl) warmPreview(source.url, { urgent: true });
         setPopupPos(computePopupPos());
         setHoveredIdx(index);
     };
@@ -217,29 +214,9 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
         };
     }, [isHovered]);
 
-    // While the popup is open, retry the screenshot a couple of times so an
-    // initial mshots placeholder is replaced by the real screenshot the moment
-    // it finishes generating, instead of sitting on a blank/placeholder frame.
-    useEffect(() => {
-        retryTimersRef.current.forEach(clearTimeout);
-        retryTimersRef.current = [];
-        if (!isHovered || !isValidUrl) return;
-        // Don't reset to 'loading' if we already have a real image cached.
-        setPreviewStatus((s) => (s === 'loaded' ? 'loaded' : 'loading'));
-        // Cache-busted reloads at 2.5s and 5s upgrade a placeholder → real.
-        retryTimersRef.current.push(setTimeout(() => setRetry((r) => r + 1), 2500));
-        retryTimersRef.current.push(setTimeout(() => setRetry((r) => r + 1), 5000));
-        // Safety: if nothing has loaded after 9s, show the text-only card.
-        retryTimersRef.current.push(setTimeout(() => {
-            setPreviewStatus((prev) => (prev === 'loading' ? 'error' : prev));
-        }, 9000));
-        return () => { retryTimersRef.current.forEach(clearTimeout); retryTimersRef.current = []; };
-    }, [isHovered, isValidUrl]);
-
     useEffect(() => {
         return () => {
             if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-            retryTimersRef.current.forEach(clearTimeout);
         };
     }, []);
 
@@ -280,24 +257,26 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
                 zIndex: 9999,
             }}
         >
-            {isValidUrl && previewStatus !== 'error' && (
+            {isValidUrl && preview.status !== 'failed' && (
                 <div className="src-popup-shot">
-                    {previewStatus === 'loading' && (
-                        <div className="absolute inset-0 flex items-center justify-center">
+                    {!(preview.status === 'ready' && imgShown) && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
                             <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--ink-4)' }} />
+                            {preview.status === 'pending' && (
+                                <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>Rendering preview…</span>
+                            )}
                         </div>
                     )}
-                    <img
-                        key={retry}
-                        src={mshotsUrl(source.url, retry)}
-                        alt=""
-                        referrerPolicy="no-referrer"
-                        className={`w-full h-full object-cover transition-opacity duration-200 ${
-                            previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
-                        }`}
-                        onLoad={() => setPreviewStatus('loaded')}
-                        onError={() => setPreviewStatus((p) => (p === 'loaded' ? 'loaded' : 'error'))}
-                    />
+                    {preview.status === 'ready' && preview.src && (
+                        <img
+                            src={preview.src}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            className={`w-full h-full object-cover transition-opacity duration-150 ${imgShown ? 'opacity-100' : 'opacity-0'}`}
+                            onLoad={() => setImgShown(true)}
+                            ref={(el) => { if (el && el.complete && el.naturalWidth) setImgShown(true); }}
+                        />
+                    )}
                 </div>
             )}
             {source?.title && (
@@ -357,13 +336,6 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
  */
 export default function SearchSources({ sources, maxVisible = 8 }) {
     const [hoveredIdx, setHoveredIdx] = useState(null);
-
-    // Pre-warm every visible source's screenshot as soon as the row renders, so
-    // mshots has finished generating by the time the user hovers a chip.
-    useEffect(() => {
-        if (!Array.isArray(sources)) return;
-        sources.slice(0, maxVisible).forEach((s) => { if (s?.url) prewarmPreview(s.url); });
-    }, [sources, maxVisible]);
 
     if (!Array.isArray(sources) || sources.length === 0) {
         return null;

@@ -1724,9 +1724,6 @@ body.font-size-large .markdown-content h3  { font-size: 1.5rem !important; }
 .duration-150{
   transition-duration: 150ms;
 }
-.duration-200{
-  transition-duration: 200ms;
-}
 .duration-300{
   transition-duration: 300ms;
 }

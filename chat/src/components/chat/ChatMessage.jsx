@@ -1134,9 +1134,14 @@ export default React.memo(function ChatMessage({
                             }
                         }
                         if (all.length === 0) return null;
+                        // Images the reply already embeds as markdown are not
+                        // previewed a second time.
+                        const embeddedImgs = typeof displayContent === 'string'
+                            ? (displayContent.match(/!\[[^\]]*\]\(([^)\s]+)/g) || []).map(m => m.replace(/^!\[[^\]]*\]\(/, ''))
+                            : [];
                         return (
                             <div style={{ marginTop: displayContent ? 12 : 0 }}>
-                                <ArtifactList artifacts={all} />
+                                <ArtifactList artifacts={all} skipPreviewUrls={embeddedImgs} />
                             </div>
                         );
                     })()}
