@@ -18917,6 +18917,28 @@ function latestUserAskFromBody(inputMessages, message) {
     return typeof message === 'string' ? message : '';
 }
 
+// Does this llama.cpp instance's chat template wrap past assistant turns only
+// when `preserve_thinking` is explicitly true (the 14B's Unsloth template)?
+// Only those need the flag; a template that already defaults to preserving
+// (the 27B's) gains nothing, and there the flag measurably raised stray
+// "</think>" + restated answers from ~2/8 to 6/8. Read once from /props;
+// unknown until then (the flag is simply not sent).
+const preserveThinkingByInstance = new Map();
+function templateOptsIntoPreserveThinking(inst) {
+    if (!inst || inst.backend !== 'llamacpp') return false;
+    const key = inst.containerId || inst.containerName;
+    if (preserveThinkingByInstance.has(key)) return preserveThinkingByInstance.get(key) === true;
+    preserveThinkingByInstance.set(key, 'pending');
+    const host = inst.containerName || 'host.docker.internal';
+    axios.get(`http://${host}:${inst.internalPort || inst.port}/props`, { timeout: 5000 })
+        .then((r) => {
+            const t = String((r.data && r.data.chat_template) || '');
+            preserveThinkingByInstance.set(key, /preserve_thinking is defined and preserve_thinking is true/.test(t));
+        })
+        .catch(() => preserveThinkingByInstance.delete(key));
+    return false;
+}
+
 // Re-point the busy accounting after the turn's model changes.
 function retargetBusy(req, model) {
     const busy = req && req._busy;
@@ -22486,10 +22508,16 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 // 533 with this flag. Templates that do not read it
                                 // ignore it; the history never carries reasoning, so
                                 // the wrapper is empty either way.
-                                ...(targetInstance && targetInstance.backend === 'llamacpp' ? { preserve_thinking: true } : {}),
+                                ...(templateOptsIntoPreserveThinking(targetInstance) ? { preserve_thinking: true } : {}),
                                 ...(effortActive && !effortFieldsRejected ? effortDirectives.templateKwargs : {}),
                                 ...(options.forceNoThink ? { enable_thinking: false } : {}),
                             };
+                            // Sending ANY chat_template_kwargs replaces llama.cpp's
+                            // own defaults, including the enable_thinking=false that
+                            // `--reasoning off` sets — without this the 27B's template
+                            // opened a <think> block and the "thought" leaked into the
+                            // answer (it wrote short answers twice).
+                            if (Object.keys(kw).length && kw.enable_thinking === undefined && targetInstance && targetInstance.config && targetInstance.config.disableThinking) kw.enable_thinking = false;
                             return Object.keys(kw).length ? { chat_template_kwargs: kw } : {};
                         })(),
                     };
@@ -22533,8 +22561,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         delete stripped.chat_template_kwargs;
                         {
                             const keep = {
-                                ...(targetInstance && targetInstance.backend === 'llamacpp' ? { preserve_thinking: true } : {}),
-                                ...(options.forceNoThink ? { enable_thinking: false } : {}),
+                                ...(templateOptsIntoPreserveThinking(targetInstance) ? { preserve_thinking: true } : {}),
+                                ...((options.forceNoThink || (targetInstance && targetInstance.config && targetInstance.config.disableThinking)) ? { enable_thinking: false } : {}),
                             };
                             if (Object.keys(keep).length) stripped.chat_template_kwargs = keep;
                         }
