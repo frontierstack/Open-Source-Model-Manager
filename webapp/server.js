@@ -22276,6 +22276,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // Buffer state resets between rounds so a stray open tag in
             // round N doesn't bleed into round N+1.
             const textualToolCallExtractor = makeTextualToolCallExtractor();
+            let trimAfterThought = false;
             // Per-round reasoning-loop detector (granularity cursor resets each
             // round) + a per-round AbortController. On a detected loop we abort
             // ONLY this round's backend generation (sparing the completion
@@ -22623,7 +22624,38 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                             if (hideReasoning) {
                                                 reasoning = '';
                                                 if (rawContent) {
+                                                    // A CLOSING think tag in a thinking-off round means
+                                                    // everything before it was a thought the model wrote
+                                                    // into the answer — keep only what follows. Stripping
+                                                    // the tag alone showed both: the 27B answered short
+                                                    // questions twice ("Canberra. …\n\n\nThe capital of
+                                                    // Australia is Canberra. …").
+                                                    const closeRe = /<\/(?:think|thinking|reasoning)\s*>/gi;
+                                                    let lastClose = -1, m;
+                                                    while ((m = closeRe.exec(rawContent)) !== null) lastClose = m.index + m[0].length;
+                                                    if (lastClose >= 0 && !accumulatedToolCalls.length && !holdClientContent
+                                                        && !/<(?:think|thinking|reasoning)\b/i.test(fullResponse.slice(roundContentStart) + rawContent.slice(0, lastClose))) {
+                                                        // The tool-call extractor holds a short tail back (a split
+                                                        // "<tool_call>" guard) — that tail is part of the thought too.
+                                                        const heldTail = textualToolCallExtractor.pending() ? '' : (textualToolCallExtractor.flush().passthrough || '');
+                                                        const dropped = (fullResponse.length - roundContentStart) + heldTail.length + lastClose;
+                                                        fullResponse = fullResponse.slice(0, roundContentStart);
+                                                        rawContent = rawContent.slice(lastClose).replace(/^\s+/, '');
+                                                        trimAfterThought = true;
+                                                        if (streamingConversationId) {
+                                                            const job = activeStreamingJobs.get(streamingConversationId);
+                                                            if (job) job.content = fullResponse;
+                                                        }
+                                                        if (dropped > 0 && clientConnected) {
+                                                            try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'leaked_thinking' })}\n\n`); } catch (_) { clientConnected = false; }
+                                                        }
+                                                    }
                                                     rawContent = rawContent.replace(/<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi, '');
+                                                    // The blank line after a dropped thought arrives as its own chunk.
+                                                    if (trimAfterThought) {
+                                                        rawContent = rawContent.replace(/^\s+/, '');
+                                                        if (rawContent) trimAfterThought = false;
+                                                    }
                                                 }
                                             }
 
