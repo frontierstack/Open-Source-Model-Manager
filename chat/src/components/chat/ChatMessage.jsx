@@ -81,7 +81,7 @@ const TOOL_VERBS = {
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
     delegate: 'Running worker agents',
-    first_pass: 'Preparing a brief',
+    first_pass: 'Planning lookups',
     ask_assistant: 'Handing work to the other model',
     await_assistant: 'Waiting on the other model',
 };
@@ -183,7 +183,7 @@ function describeHandoff(handoff, now = Date.now(), startsRef = null) {
             const secs = Math.max(0, Math.round((now - starts.first_pass) / 1000));
             if (secs >= 4) clock = ` (${secs}s)`;
         }
-        return `${assistant || 'The primary'} is preparing a brief…${clock}`;
+        return `${assistant || 'The primary'} is planning background lookups…${clock}`;
     }
     if (handoff.reviewing) return `${reviewer || assistant || lead} is reviewing the answer`;
     if (phase === 'revising') {
@@ -239,7 +239,7 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
     if (assistant) {
         const running = runningJobsOf(handoff);
         if (phase === 'first_pass') {
-            rows.push({ key: 'assistant', model: assistant, parts: ['preparing a brief'], seconds: since('first_pass') });
+            rows.push({ key: 'assistant', model: assistant, parts: ['planning background lookups'], seconds: since('first_pass') });
         } else if (allJobs.length) {
             const done = allJobs.filter(j => j && j.status && j.status !== 'running' && j.status !== 'queued').length;
             rows.push({
@@ -359,7 +359,10 @@ function exchangeSteps(toolCalls, review) {
             // `result`, so the brief's subject is recovered from the purpose
             // sentence ("Prepared a brief for X: <subject>") after a reload.
             const fromPurpose = String(tc.purpose || '').match(/^(?:Prepared a brief for|Briefed)\s+\S+?(?::|\son)\s+(.+)$/i);
-            const subject = r.brief ? briefSubject(r.brief) : (fromPurpose ? clipSentence(fromPurpose[1]) : '');
+            // Newer turns plan LOOKUPS rather than a brief (the purpose starts
+            // "Planned"); older saved turns keep their brief wording.
+            const planned = /^Planned\b/i.test(String(tc.purpose || ''));
+            const subject = planned ? '' : (r.brief ? briefSubject(r.brief) : (fromPurpose ? clipSentence(fromPurpose[1]) : ''));
             const extras = [];
             if (r.toolCalls) extras.push(`${r.toolCalls} tool call${r.toolCalls === 1 ? '' : 's'}`);
             if (Array.isArray(r.proposedJobs) && r.proposedJobs.length) extras.push(`proposed ${r.proposedJobs.length} task${r.proposedJobs.length === 1 ? '' : 's'}`);
@@ -368,7 +371,14 @@ function exchangeSteps(toolCalls, review) {
                 kind: 'brief',
                 from: tc.model || r.model,
                 to,
-                text: tc.status === 'failed' ? 'could not prepare a brief' : `prepared a brief${to ? ` for ${shortModel(to)}` : ''}`,
+                text: tc.status === 'failed'
+                    ? (planned ? 'could not plan lookups' : 'could not prepare a brief')
+                    : planned
+                        ? (() => {
+                            const n = (Array.isArray(r.proposedJobs) && r.proposedJobs.length) || Number((String(tc.purpose || '').match(/^Planned (\d+)/i) || [])[1]) || 0;
+                            return `planned ${n ? `${n} background lookup${n === 1 ? '' : 's'}` : 'background lookups'}${to ? ` for ${shortModel(to)}` : ''}`;
+                        })()
+                        : `prepared a brief${to ? ` for ${shortModel(to)}` : ''}`,
                 detail: subject,
                 meta: extras.join(' \u00b7 '),
                 seconds: typeof r.seconds === 'number' ? r.seconds : (typeof tc.durationMs === 'number' ? tc.durationMs / 1000 : undefined),

@@ -18,7 +18,11 @@ const PENDING = new Set(['queued', 'running']);
 function isPending(job) { return !!job && PENDING.has(job.status); }
 function isSettled(job) { return !!job && !PENDING.has(job.status); }
 
-function createAssistantQueue({ maxParallel = 3, maxJobs = 12, run, onChange, jobs: existing } = {}) {
+// `canStart` (optional): asked before a queued job starts — the caller checks
+// the model's REAL free slots, which other turns' jobs also use. It is never
+// consulted for a queue's first running job, so a miscounted slot can delay
+// work but never stall it; the caller re-pumps while it says no.
+function createAssistantQueue({ maxParallel = 3, maxJobs = 12, run, onChange, jobs: existing, canStart = null } = {}) {
     if (typeof run !== 'function') throw new Error('createAssistantQueue: run(job) is required');
     // The caller may hand in the Map its other consumers already read (the
     // chat turn's `_assistantJobs`); otherwise the queue owns a fresh one.
@@ -38,6 +42,11 @@ function createAssistantQueue({ maxParallel = 3, maxJobs = 12, run, onChange, jo
         let started = 0;
         for (const j of queuedList()) {
             if (runningCount() >= parallel) break;
+            if (runningCount() > 0 && typeof canStart === 'function') {
+                let ok = true;
+                try { ok = !!canStart(); } catch (_) { ok = true; }
+                if (!ok) break;
+            }
             j.status = 'running';
             j.startedAt = Date.now();
             started++;
@@ -90,8 +99,10 @@ function createAssistantQueue({ maxParallel = 3, maxJobs = 12, run, onChange, jo
 
     // Abort everything still pending. Queued jobs never start; running ones get
     // `abort()` if the runner attached one.
-    function cancelPending(reason) {
-        const hit = pending();
+    // `filter` (optional) narrows it: the chat drain cancels only the
+    // follow-up jobs nobody asked for when the lead has finished its answer.
+    function cancelPending(reason, filter = null) {
+        const hit = pending().filter(j => (typeof filter === 'function' ? filter(j) : true));
         for (const j of hit) {
             j.status = 'cancelled';
             j.error = reason || 'cancelled';

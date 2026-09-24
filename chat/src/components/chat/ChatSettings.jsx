@@ -674,15 +674,15 @@ export default function ChatSettings({
                                     const hasSecondary = !!(settings?.roleSecondaryModel || sr.secondary);
                                     const mode = typeof settings?.roleMode === 'string' ? settings.roleMode : '';
                                     const serverMode = sr.mode || 'auto';
-                                    const MODE_WORDS = { off: 'never', auto: 'only on substantial work', always: 'on every turn' };
+                                    const MODE_WORDS = { off: 'never', auto: 'only on substantial work', always: 'on every turn except easy ones' };
                                     return (
                                         <div style={{ marginTop: 12, opacity: hasSecondary ? 1 : 0.55 }}>
                                             <div className="set-row-title">When the secondary takes over</div>
                                             <div className="set-row-help" style={{ marginBottom: 6 }}>
-                                                <strong>Only on substantial work</strong> hands over for building, analysing, and anything multi-step, and leaves a quick question as a single turn on the primary. <strong>Every turn</strong> always hands over; <strong>Never</strong> keeps the primary answering alone.{!mode ? ` Server default: ${MODE_WORDS[serverMode] || serverMode}.` : ''}
+                                                <strong>Only on substantial work</strong> hands over for building, analysing, and anything multi-step, and leaves a quick question as a single turn on the primary. <strong>All but easy turns</strong> hands over everything except greetings, summaries or rewrites of the last answer, arithmetic and small code snippets, which stay on the faster primary; <strong>Never</strong> keeps the primary answering alone.{!mode ? ` Server default: ${MODE_WORDS[serverMode] || serverMode}.` : ''}
                                             </div>
                                             <div className="set-seg" role="radiogroup" aria-label="When the secondary model takes over">
-                                                {[['', 'Server default'], ['off', 'Never'], ['auto', 'Only on substantial work'], ['always', 'Every turn']].map(([v, label]) => (
+                                                {[['', 'Server default'], ['off', 'Never'], ['auto', 'Only on substantial work'], ['always', 'All but easy turns']].map(([v, label]) => (
                                                     <button
                                                         key={v || 'default'}
                                                         type="button"
@@ -807,9 +807,10 @@ export default function ChatSettings({
                                     const steps = [];
                                     if (!solo) {
                                         if (mode === 'always') {
+                                            steps.push(`${primary} answers easy turns itself`);
                                             steps.push(firstPass
-                                                ? `${primary} writes a brief and hands every turn over`
-                                                : `${primary} hands every turn straight over`);
+                                                ? 'every other turn it hands over, after planning any background lookups'
+                                                : 'every other turn it hands straight over');
                                         } else {
                                             steps.push(`${primary} answers the turn`);
                                             steps.push(firstPass

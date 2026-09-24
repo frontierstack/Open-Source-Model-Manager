@@ -201,6 +201,59 @@ function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new S
 // Store
 // ---------------------------------------------------------------------------
 
+// The two-model hand-off's own chips. They are the pair's plumbing (a brief,
+// jobs handed to the other model), never a step of the task, and first_pass is
+// not a tool any model can call. Older records learned them as method ("first
+// use first_pass to prepare a brief"); scrubPairTools removes that on read.
+const PAIR_TOOLS = ['first_pass', 'ask_assistant', 'await_assistant'];
+const PAIR_TOOL_RE = /\b(?:first_pass|ask_assistant|await_assistant)\b/;
+
+function scrubApproachText(text) {
+    return String(text || '')
+        .split(/\s*→\s*/)
+        .filter(seg => seg && !/^(?:first_pass|ask_assistant|await_assistant)\b/.test(seg.trim()))
+        .join(' → ');
+}
+
+// Returns true when the record changed. The playbook loses only the sentences
+// that name a pair tool; a changed playbook is marked dirty so the next
+// recorded task re-refines it from clean evidence.
+function scrubPairTools(rec) {
+    if (!rec || typeof rec !== 'object') return false;
+    let changed = false;
+    if (rec.bestApproach && Array.isArray(rec.bestApproach.steps)) {
+        const steps = rec.bestApproach.steps.filter(s => !(s && PAIR_TOOLS.includes(s.tool)));
+        if (steps.length !== rec.bestApproach.steps.length) {
+            changed = true;
+            if (steps.length) rec.bestApproach.steps = steps;
+            else rec.bestApproach = null;
+        }
+    }
+    if (Array.isArray(rec.episodes)) {
+        for (const e of rec.episodes) {
+            if (e && typeof e.approach === 'string' && PAIR_TOOL_RE.test(e.approach)) {
+                e.approach = scrubApproachText(e.approach);
+                changed = true;
+            }
+        }
+    }
+    if (Array.isArray(rec.lessons)) {
+        const kept = rec.lessons.filter(l => !(l && PAIR_TOOL_RE.test(String(l.text || ''))));
+        if (kept.length !== rec.lessons.length) { rec.lessons = kept; changed = true; }
+    }
+    if (typeof rec.playbook === 'string' && PAIR_TOOL_RE.test(rec.playbook)) {
+        rec.playbook = rec.playbook
+            .split(/(?<=[.!?])\s+|\n+/)
+            .filter(s => s.trim() && !PAIR_TOOL_RE.test(s))
+            .join(' ')
+            .trim()
+            .replace(/^(?:then|next|after that),?\s+(\w)/i, (_m, c) => c.toUpperCase());
+        rec.dirty = true;
+        changed = true;
+    }
+    return changed;
+}
+
 function shardPath(userId) { return path.join(STORE_DIR, `${userIdSafe(userId)}.json`); }
 
 function emptyShard(userId) { return { userId: String(userId), memories: [], cursors: {}, updatedAt: nowIso() }; }
@@ -212,6 +265,7 @@ async function readShard(userId) {
         if (!parsed || typeof parsed !== 'object') return emptyShard(userId);
         if (!Array.isArray(parsed.memories)) parsed.memories = [];
         if (!parsed.cursors || typeof parsed.cursors !== 'object') parsed.cursors = {};
+        for (const rec of parsed.memories) scrubPairTools(rec);
         return parsed;
     } catch (e) {
         if (e.code !== 'ENOENT') log(`read failed for ${userIdSafe(userId)}: ${e.message} — starting empty`);
@@ -644,6 +698,6 @@ module.exports = {
     getCursor, setCursor,
     REFINE_PROMPT, refinementInput, parseRefinement, applyRefinement,
     recall, renderBlock,
-    estimateTokens, userIdSafe, STORE_DIR,
+    estimateTokens, userIdSafe, STORE_DIR, PAIR_TOOLS, scrubPairTools,
     PLAYBOOK_MAX_CHARS, NOTES_MAX_CHARS, MAX_LESSONS, MIN_REFINE_RUNS,
 };

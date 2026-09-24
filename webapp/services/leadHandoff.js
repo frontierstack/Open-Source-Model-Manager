@@ -101,7 +101,7 @@ const CODE_FENCE_RE = /```|\bfunction\s+\w+\s*\(|\bclass\s+\w+|\bdef\s+\w+\s*\(|
 // attachment (repo, capture, spreadsheet) from a snapshot someone pasted.
 const EXT_KIND = [
     [/\.(zip|zipx|tar|tgz|gz|bz2|xz|zst|lz4|lzma|7z|rar|cab|msu|msi|deb|rpm|cpio|iso|dmg|wim|arj|lzh)$/i, 'archive'],
-    [/\.(pcap|pcapng|cap)$/i, 'capture'],
+    [/\.(pcap|pcapng|cap|evtx)$/i, 'capture'],
     [/\.(csv|tsv|xlsx?|ods)$/i, 'spreadsheet'],
     [/\.(pdf|docx?|odt|rtf|pptx?)$/i, 'document'],
     [/\.(log|txt|md|json|ya?ml|xml|ini|conf|toml)$/i, 'log'],
@@ -111,12 +111,25 @@ const EXT_KIND = [
 ];
 function attachmentKindsFromText(text) {
     const kinds = new Set();
-    const re = /===\s*FILE\s+\d+\s*:\s*([^=\n(]+?)\s*(?:\([^)]*\))?\s*===/gi;
+    // The filename is the first `name.ext` token: the size header nests
+    // parentheses — "(23,198 bytes (22.7 KB); 22,926 chars)" — and the old
+    // `\([^)]*\)` group stopped at the inner `)`, so every upload of 1 KB or
+    // more came back with no kind at all.
+    const re = /===\s*FILE\s+\d+\s*:\s*(.+?\.[A-Za-z0-9]{1,10})(?=\s*(?:\(|===))/gi;
     let m;
-    while ((m = re.exec(String(text || ''))) !== null) {
+    const src = String(text || '');
+    while ((m = re.exec(src)) !== null) {
         const name = m[1].trim();
         const hit = EXT_KIND.find(([rx]) => rx.test(name));
-        kinds.add(hit ? hit[1] : 'file');
+        let kind = hit ? hit[1] : 'file';
+        // A pasted log or text file is heavy only when it is big — a 500-char
+        // paste is a question with context, a 20k-char one is data to analyse.
+        if (kind === 'log') {
+            const header = src.slice(m.index, src.indexOf('===', m.index + m[0].length) + 3);
+            const chars = header.match(/([\d,]+)\s*chars/i);
+            if (chars && parseInt(chars[1].replace(/,/g, ''), 10) >= 20000) kind = 'log-large';
+        }
+        kinds.add(kind);
     }
     return [...kinds];
 }
@@ -126,54 +139,243 @@ function askLength(text) {
     return cleanAsk(text).split(/\s+/).filter(Boolean).length;
 }
 
+// ── Refinements measured on 86 real asks (2026-09-23 audit) ───────────────
+// A build is a build VERB whose OBJECT is an artifact — two independent tests
+// fired on one token ("what is a swift CODE?" was "builds an artifact") and on
+// the page being READ ("read the release page, then write a summary").
+const BUILD_VERB2 = new RegExp(BUILD_VERB.source.replace('build|', 'build|enhance|upgrade|harden|'), 'i');
+const BUILD_OBJ = new RegExp(BUILD_VERB2.source + '(?:\\W+\\w+){0,5}?\\W+' + ARTIFACT.source.replace(/^\\b/, ''), 'i');
+// A small thing to write is light work, not a two-model job ("a python script
+// that prints the first 20 primes" took 9 s on the fast model alone).
+const SMALL_ARTIFACT = /\b(?:function|script|snippet|regex|query|command|one-?liner|formula|config|table|headings?|list|paragraph|bullets?|email|message|readme|test)\b/i;
+const SMALL_MOD = /\b(?:short|small|quick|simple|tiny|brief|single|one-?line|basic|little|minimal)\b/i;
+const SMALL_CREATE_VERB = /^(?:write|create|make|generate|code|draft|compose|produce|give me|add (?:a|an|the))\b/i;
+// "no web searches", "without tools", "no file" — negated clauses are not
+// signals (ARTIFACT matched the "file" in "no file"), and a negated tool
+// clause means the user ruled out legwork.
+const NEG_TOOLISH = /\b(?:no|without|never|don'?t|do not|not)\s+(?:(?:use|using|perform|performing|do|doing|run|running|make|making|create|creating|write|writing|include|need|any|a|an|the|more|other)\s+){0,3}(?:web[- ]?|internet |online |file |local |external )?(?:search(?:es|ing)?|tools?|files?|browsing|lookups?|look-?ups?|internet|web)\b/gi;
+// "summarize" is a rework of text unless it is aimed at something to fetch or
+// read, so it is not in the analysis verbs here (see HEAVY_ARTIFACT below).
+const ANALYSIS_VERB2 = new RegExp(ANALYSIS_VERB.source.replace('summari[sz]e|', ''), 'i');
+// "Perform analysis on the file served by this url" — the noun form.
+const ANALYSIS_NOUN = /\b(analysis|audit|investigation|assessment|deep[- ]dive|teardown|triage|post[- ]?mortem|root[- ]cause|code review|security review)\b/i;
+const HEAVY_ARTIFACT = /\b(repo|repository|codebase|archive|binary|executable|package|dataset|dump|logs?|capture|project|source(?: code)?|jar|apk|installer|msi|exe)\b/i;
+// MULTI_STEP without a bare "complete" ("can't complete the registration").
+const MULTI_STEP2 = new RegExp(MULTI_STEP.source.replace('complete(?:ly)?|', 'complete (?:app|application|game|implementation|solution|rewrite|overhaul|project|website)|'), 'i');
+// A bare repo or file link IS the task ("audit it"): the heaviest real turns
+// in the corpus (80-1,419 s) were a GitHub link and nothing else.
+const CODE_HOST_OR_FILE = /(?:github|gitlab|bitbucket|npmjs|pypi|codeberg)\.(?:com|org)\/|\.(?:zip|tgz|tar\.gz|jar|exe|msi|apk|pdf|docx?|xlsx?|pcapng?|evtx)\b/i;
+// "ok, do the cabinet decompressions then" continues the previous task.
+const CONTINUE_RE = /^(?:ok(?:ay)?|yes|yeah|yep|sure|alright|go ahead|do it|do that|continue|proceed|now|then|also|and|please do|keep going|sounds good)\b/i;
+const OFFER_RE = /\b(?:want me to|should i|shall i|would you like me to|do you want me to|i can (?:also )?\w+ (?:it|that|this|them)|let me know if you(?:'d| would) like me to)\b[^?]{0,200}\?\s*$/i;
+
+function stripNegatedTools(ask) {
+    const hits = ask.match(NEG_TOOLISH) || [];
+    return {
+        ask: hits.length ? ask.replace(NEG_TOOLISH, ' ').replace(/\s+/g, ' ').trim() : ask,
+        toolsForbidden: /\b(?:search|tools?|browsing|lookups?|look-?ups?|internet|web)\b/i.test(hits.join(' ')),
+    };
+}
+
 /**
  * Is this turn substantial enough that two models should work it together?
  * Conservative on purpose — a false positive costs the user real seconds.
+ * `previousText` (the previous user message) and `lastAssistantText` let a
+ * short go-ahead inherit the verdict of the work it resumes.
  *
- * @returns {{substantial:boolean, reason:string, explicit:boolean}}
+ * @returns {{substantial:boolean, reason:string, explicit:boolean, toolsForbidden:boolean}}
  */
-function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [], minWords = 6 } = {}) {
-    const ask = cleanAsk(text);
-    if (!ask) return { substantial: false, reason: 'empty', explicit: false };
+function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [], minWords = 6, previousText = null, lastAssistantText = null } = {}) {
+    const raw = cleanAsk(text);
+    if (!raw) return { substantial: false, reason: 'empty', explicit: false, toolsForbidden: false };
 
-    if (EXPLICIT_OFF_RE.test(ask)) return { substantial: false, reason: 'user asked for a quick single-model answer', explicit: true };
-    if (EXPLICIT_RE.test(ask)) return { substantial: true, reason: 'user asked for the models to work together', explicit: true };
+    if (EXPLICIT_OFF_RE.test(raw)) return { substantial: false, reason: 'user asked for a quick single-model answer', explicit: true, toolsForbidden: false };
+    if (EXPLICIT_RE.test(raw)) return { substantial: true, reason: 'user asked for the models to work together', explicit: true, toolsForbidden: false };
 
+    const { ask, toolsForbidden } = stripNegatedTools(raw);
+    let smallBuild = false;
+    const out = (substantial, reason) => ({ substantial, reason, explicit: false, toolsForbidden, smallBuild });
     const words = ask.split(/\s+/).filter(Boolean).length;
-    const build = BUILD_VERB.test(ask) && ARTIFACT.test(ask);
-    const analysis = ANALYSIS_VERB.test(ask);
-    const multi = MULTI_STEP.test(ask);
+    const url = URL_RE.test(ask);
     const code = CODE_FENCE_RE.test(ask);
+    const multi = MULTI_STEP2.test(ask);
 
     // A file/repo/archive to work through is substantial on its own; a plain
     // image usually is not (OCR, "what is this") unless the ask says otherwise.
-    const heavyAttachment = hasAttachments && attachmentKinds.some(k => /archive|repo|code|pdf|spreadsheet|csv|document|data|capture|log/i.test(String(k)));
+    const heavyAttachment = hasAttachments && attachmentKinds.some(k => /archive|repo|code|pdf|spreadsheet|csv|document|data|capture|log-large/i.test(String(k)));
 
-    if (build) return { substantial: true, reason: 'builds an artifact', explicit: false };
-    if (heavyAttachment) return { substantial: true, reason: 'works through an attached file', explicit: false };
+    const buildHit = BUILD_OBJ.exec(ask);
+    let build = !!buildHit;
+    if (build) {
+        // Only WRITING a small new thing is light; debugging, fixing or
+        // optimising one is real work whatever its size, and so is a small
+        // thing over heavy input ("a script that parses these logs").
+        const obj = buildHit[0];
+        const lastWord = obj.split(/\s+/).slice(-1)[0];
+        const creates = SMALL_CREATE_VERB.test(obj);
+        const artifacts = (ask.match(new RegExp(ARTIFACT.source, 'gi')) || []).length;
+        const small = creates && !HEAVY_ARTIFACT.test(ask) && artifacts <= 1
+            && (SMALL_MOD.test(obj) || (SMALL_ARTIFACT.test(lastWord) && words <= 20));
+        if (small && words < 40 && !multi && !code) { build = false; smallBuild = true; }
+    }
+    if (build) return out(true, 'builds an artifact');
+    if (heavyAttachment) return out(true, 'works through an attached file');
     // Security work is never a quick lookup — reading files, greping for
     // indicators and judging intent is exactly what the stronger model is for.
-    if (SECURITY_RE.test(ask)) return { substantial: true, reason: 'security or forensics work', explicit: false };
-    // Something to fetch AND something to do with it.
-    if (URL_RE.test(ask) && (FETCH_VERB.test(ask) || BUILD_VERB.test(ask) || ANALYSIS_VERB.test(ask))) {
-        return { substantial: true, reason: 'works through a linked page or repo', explicit: false };
+    if (SECURITY_RE.test(ask)) return out(true, 'security or forensics work');
+    if (url) {
+        const rest = ask.replace(/\S*(?:https?|hxxps?):\/\/\S+|\S*(?:github|gitlab|bitbucket|codeberg)\.(?:com|org)\/\S+/gi, ' ').split(/\s+/).filter(Boolean).length;
+        if (rest <= 3 && CODE_HOST_OR_FILE.test(ask)) return out(true, 'a bare repo or file link');
+        // Something to fetch AND something to do with it.
+        if (FETCH_VERB.test(ask) || BUILD_VERB.test(ask) || ANALYSIS_VERB2.test(ask) || ANALYSIS_NOUN.test(ask)) return out(true, 'works through a linked page or repo');
     }
+    const analysis = ANALYSIS_VERB2.test(ask) || ANALYSIS_NOUN.test(ask);
     // An analysis verb aimed at a concrete THING needs no length test — "scan
     // the extracted files" is four words and is real work.
-    if (analysis && ARTIFACT.test(ask)) return { substantial: true, reason: 'analysis or investigation', explicit: false };
+    if (analysis && ARTIFACT.test(ask)) return out(true, 'analysis or investigation');
+    // Summarising something heavy (logs, a repo, a dataset) is analysis.
+    if (/\bsummari[sz]e\b/i.test(ask) && (HEAVY_ARTIFACT.test(ask) || hasAttachments)) return out(true, 'analysis or investigation');
     // Same for fetching one: "download this repo and tell me if it is safe".
-    if (FETCH_VERB.test(ask) && ARTIFACT.test(ask) && words >= 5) {
-        return { substantial: true, reason: 'fetches and works through something', explicit: false };
+    if (FETCH_VERB.test(ask) && HEAVY_ARTIFACT.test(ask) && words >= 5) return out(true, 'fetches and works through something');
+    if (RESEARCH_RE.test(ask) && words >= 5) return out(true, 'multi-source research');
+    if (analysis && (words >= minWords || hasAttachments)) return out(true, 'analysis or investigation');
+    if (multi && words >= minWords) return out(true, 'multi-step request');
+    if (code && words >= 12) return out(true, 'works on supplied code');
+
+    // A short go-ahead resumes the work it answers: the previous request, or
+    // the assistant's own offer ("want me to write the script?" → "yes").
+    if (CONTINUE_RE.test(ask) && !/\?\s*$/.test(ask) && words <= 25) {
+        if (previousText && isSubstantialWork({ text: previousText }).substantial) return out(true, 'continues the previous task');
+        const offer = lastAssistantText ? String(lastAssistantText).trim().slice(-400).match(OFFER_RE) : null;
+        if (offer && isSubstantialWork({ text: offer[0].replace(/^(?:want me to|should i|shall i|would you like me to|do you want me to)\s*/i, '') }).substantial) {
+            return out(true, 'accepts an offer to do real work');
+        }
     }
-    if (RESEARCH_RE.test(ask) && words >= 5) return { substantial: true, reason: 'multi-source research', explicit: false };
-    if (analysis && (words >= minWords || hasAttachments)) return { substantial: true, reason: 'analysis or investigation', explicit: false };
-    if (multi && words >= minWords) return { substantial: true, reason: 'multi-step request', explicit: false };
-    if (code && words >= 12) return { substantial: true, reason: 'works on supplied code', explicit: false };
 
     // Everything else — including a long-winded factual question — stays on one
     // fast model.
-    if (LOOKUP_RE.test(ask)) return { substantial: false, reason: 'lookup question', explicit: false };
-    return { substantial: false, reason: 'no substantial-work signal', explicit: false };
+    if (LOOKUP_RE.test(ask)) return out(false, 'lookup question');
+    return out(false, 'no substantial-work signal');
+}
+
+// ── Easy turns stay on the fast model ───────────────────────────────────────
+// "Easy" = work whose quality does not depend on the model's size: a greeting
+// or thanks, arithmetic, reworking text that is ALREADY in the conversation
+// (summarise, shorten, reformat), a small code snippet, tool-free formatting.
+// Deliberately NOT easy: questions that need world knowledge, translation and
+// creative writing — that is exactly where a smaller model falls down.
+// Measured on the 14B/27B pair: the 14B answered "who wrote Dune?" with
+// "Sandfield" and the capital of Australia with "Australia itself" (3/3 with
+// thinking off, Melbourne/Sydney with it on), left a paragraph half in
+// English when asked to translate, and wrote a limerick that did not rhyme;
+// the 27B got all of them right. Measured on the same pair with mode=always:
+// "hi" took 6.3 s to first text (brief on the 14B, then the 27B's cold
+// prefill) where the 14B alone answers in ~1 s; "write a haiku" got a brief
+// AND a web search for the haiku syllable rule; "summarize that in 3 bullets,
+// no web searches" took 9.4 s. An easy turn runs on the primary in EVERY mode;
+// only an explicit request for both models or picking the secondary in the
+// composer overrides it.
+const GREETING_RE = /^(?:hi+|hello|hey+|hiya|howdy|yo|sup|greetings|thanks|thank you|thx|ty|cheers|cool|great|nice|awesome|perfect|got it|good (?:morning|afternoon|evening|night)|bye|goodbye|see (?:you|ya)|lol|haha)\b/i;
+// (Bare affirmatives — "yes", "ok", "sure" — are NOT here: after an offer
+// like "want me to write the script?" they are a go-ahead for real work.)
+// Work on text that is ALREADY in the conversation.
+const TRANSFORM_VERB = /\b(summari[sz]e|tl;?dr|shorten|condense|trim|rephrase|reword|rewrite|simplify|reformat|format|bullet(?:s|ize)?|turn (?:it|this|that) into|make (?:it|this|that) (?:shorter|longer|simpler|clearer|more \w+|less \w+|formal|casual|friendlier)|expand on|elaborate on|explain (?:that|this|it)|proofread|fix the (?:grammar|typos?|spelling))\b/i;
+const ANAPHORA = /\b(that|this|it|them|those|above|previous|earlier|your (?:answer|reply|response|summary|list|draft|last (?:answer|reply|message))|what you (?:said|wrote|just)|the (?:article|text|answer|reply|response|summary|list|table|paragraph|email|message|story|poem|essay|post|explanation|draft|above)|the (?:first|second|third|fourth|last|next|previous|opening|final|closing|intro(?:duction)?|\d+(?:st|nd|rd|th)) (?:paragraph|section|line|sentence|bullet|point|item|step|part))\b/i;
+const CODEISH = /\b(code|function|script|class|method|program|query|regex|bug|tests?|app|repo|file|files)\b/i;
+// Short creative pieces the fast model writes as well as the strong one.
+const SHORT_CREATIVE = /\b(haiku|limerick|poem|joke|pun|riddle|tongue[- ]twister|slogan|tagline|motto|toast|caption|tweet|one[- ]liner|rhyme|acrostic|sonnet|name ideas|names? for|nicknames?|pickup line|fun fact|story|lyrics|song)\b/i;
+const SINGLE_COMMAND_RE = /^(?:please\s+|can you\s+|could you\s+)?(?:start|stop|restart|reload|kill|launch|open|close|turn (?:on|off)|turn (?:the |my )?\w+ (?:on|off)|shut ?down|reboot|power off|mute|unmute|pause|resume|list|show|print|cd|mkdir|delete|remove|rename|move|copy|clear|empty|lock|unlock|mount|unmount)\b/i;
+const TRANSLATE_RE = /\b(translat\w*|in (?:spanish|french|german|italian|portuguese|chinese|japanese|korean|russian|arabic|hindi|dutch|polish|turkish|vietnamese|thai|indonesian|swedish|greek|hebrew))\b/i;
+const LONG_DEMAND = /\b(\d{3,}[- ]?words?|long|detailed|in[- ]depth|comprehensive|thorough|essay|article|chapter|report|story)\b/i;
+// Current / changing facts need retrieval — worth the pair's legwork.
+const FRESH_RE = /\b(latest|newest|new|recent|recently|current(?:ly)?|today|tonight|yesterday|tomorrow|this (?:week|month|year)|right now|news|update[sd]?|released?|announced|upcoming|next|price|prices|stock|weather|score|standings|election|race|polls?|polling|odds|forecast|predict\w*|likely to|20[2-9]\d)\b/i;
+// A forecast or a judgement over current facts is research, not one fact.
+const FORECAST_RE = /\b(most likely|likely to|chances?|odds|forecast|predict\w*|who (?:will|would) win|which .{0,30} will|polls?|polling|projected)\b/i;
+const SUMMARY_OF_MANY = /\b(what'?s new|what is new|what(?:'s| has| have)? changed|changes|changelog|features?|differences?|improvements?|highlights|vs\.?|versus|and (?:what|why|how)|explain|overview|summar\w*)\b/i;
+const ARITH_RE = /^[\s\d+\-*/().,^%x×÷=?]+$/;
+// A short go-ahead ("can you do it?", "go ahead", "try again") resumes the
+// WORK of the previous turn — it is not a one-hop question.
+const GO_AHEAD_RE = /\b(do it|go ahead|proceed|continue|carry on|keep going|try again|retry|redo|implement (?:it|that|this)|build (?:it|that|this)|fix (?:it|that|this)|run (?:it|that|this)|finish (?:it|that|this)|make (?:it|that|this) work|start (?:it|that|this|on (?:it|that|this))|start over)\b/i;
+// The user said not to use tools / the web on this turn.
+const NO_TOOLS_RE = /\b(?:no|without|don'?t (?:use|do|run|perform)|do not (?:use|do|run|perform)|never use|avoid)\s+(?:any\s+)?(?:the\s+)?(?:tools?|web(?:\s*search(?:es|ing)?)?|search(?:es|ing)?|internet|browsing|looking (?:it |this |that )?up|lookups?|online (?:search(?:es)?|sources?))\b/i;
+
+function forbidsTools(text) {
+    const ask = cleanAsk(text);
+    return NO_TOOLS_RE.test(ask) || stripNegatedTools(ask).toolsForbidden;
+}
+
+// Does answering need anything LOOKED UP — current facts, research, a
+// comparison, a linked page? Decides whether the brief (which exists to plan
+// background lookups) is worth a call at all: building, writing and coding
+// turns skip it, lookup turns get a brief that is asked for its jobs.
+const LOOKUP_NEED_RE = /\b(research|look (?:it |this |that )?up|find out|search (?:for|the web|online)|sources?|citations?|compare|comparison|vs\.?|versus|alternatives?|best|reviews?|recommend\w*|options for|what'?s new|changelog)\b/i;
+function needsLookup(text) {
+    const raw = cleanAsk(text);
+    if (!raw) return false;
+    const { ask, toolsForbidden } = stripNegatedTools(raw);
+    if (toolsForbidden) return false;
+    if (URL_RE.test(ask)) return true;
+    if (BUILD_OBJ.test(ask) && !RESEARCH_RE.test(ask) && !LOOKUP_NEED_RE.test(ask)) return false;
+    // One current fact (a score, a price, the weather, a date) is one search
+    // for the lead — a background job would only add its start-up time.
+    const words = ask.split(/\s+/).filter(Boolean).length;
+    if (words <= 10 && LOOKUP_RE.test(ask) && FRESH_RE.test(ask) && !SUMMARY_OF_MANY.test(ask) && !RESEARCH_RE.test(ask) && !LOOKUP_NEED_RE.test(ask) && !FORECAST_RE.test(ask)) return false;
+    return FRESH_RE.test(ask) || RESEARCH_RE.test(ask) || LOOKUP_NEED_RE.test(ask) || FORECAST_RE.test(ask);
+}
+
+// Does the answer mainly depend on facts that have to be LOOKED UP (research,
+// current facts, comparing sources) rather than on something the lead BUILDS?
+// Decides whether the lead should outline-then-await its jobs or keep working.
+function isRetrievalShaped(text) {
+    const ask = cleanAsk(text);
+    if (!ask) return false;
+    if (BUILD_VERB.test(ask) && ARTIFACT.test(ask)) return false;
+    return RESEARCH_RE.test(ask) || FRESH_RE.test(ask) || (ANALYSIS_VERB.test(ask) && !CODEISH.test(ask)) || LOOKUP_RE.test(ask);
+}
+
+/**
+ * Is this an EASY turn — one the fast primary should answer alone?
+ * @returns {{easy:boolean, reason:string}}
+ */
+function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHistory = false, previousText = null, lastAssistantText = null } = {}) {
+    const ask = cleanAsk(text);
+    if (!ask) return { easy: true, reason: 'empty ask' };
+    if (EXPLICIT_RE.test(ask)) return { easy: false, reason: 'user asked for the models to work together' };
+    if (hasAttachments || (attachmentKinds && attachmentKinds.length)) return { easy: false, reason: 'has an attachment' };
+    if (URL_RE.test(ask)) return { easy: false, reason: 'names a link' };
+    if (SECURITY_RE.test(ask)) return { easy: false, reason: 'security work' };
+    const words = ask.split(/\s+/).filter(Boolean).length;
+    if (ARITH_RE.test(ask) && /\d/.test(ask)) return { easy: true, reason: 'arithmetic' };
+    if (GO_AHEAD_RE.test(ask)) return { easy: false, reason: 'resumes earlier work' };
+    if (words <= 10 && GREETING_RE.test(ask) && !BUILD_VERB.test(ask) && !ANALYSIS_VERB.test(ask) && !FORECAST_RE.test(ask)) {
+        return { easy: true, reason: 'greeting or acknowledgement' };
+    }
+    // A rewrite of what the conversation already holds: no tools needed.
+    // (Translation is a language skill, and creative writing a craft — both
+    // stay with the stronger model.)
+    if (hasHistory && words <= 40 && TRANSFORM_VERB.test(ask) && ANAPHORA.test(ask) && !CODEISH.test(ask) && !TRANSLATE_RE.test(ask) && !SHORT_CREATIVE.test(ask)) {
+        return { easy: true, reason: 'reworks text already in the conversation' };
+    }
+    if (words <= 8 && /\bsay (?:hello|hi|goodbye)\b/i.test(ask)) return { easy: true, reason: 'a greeting' };
+    // One operational command ("restart nginx", "turn the computer off",
+    // "list the files here") — what it needs is the tool call, not capability.
+    if (words <= 12 && SINGLE_COMMAND_RE.test(ask) && (ask.match(/\band\b/gi) || []).length === 0
+        && !ANALYSIS_VERB.test(ask) && !MULTI_STEP2.test(ask) && !SECURITY_RE.test(ask) && !/\bthen\b/i.test(ask)) {
+        return { easy: true, reason: 'a single command' };
+    }
+    const verdict = isSubstantialWork({ text, hasAttachments, attachmentKinds, previousText, lastAssistantText });
+    if (verdict.substantial) return { easy: false, reason: verdict.reason };
+    // A small new piece of code or text ("a python script that prints the
+    // first 20 primes and run it" — 9 s on the fast model alone).
+    if (verdict.smallBuild) return { easy: true, reason: 'a small piece of code or text' };
+    // The user ruled out tools: nothing to delegate, so the pair adds only
+    // latency — unless it is a long piece of writing.
+    if (verdict.toolsForbidden && words <= 40 && !LONG_DEMAND.test(ask) && !MULTI_STEP2.test(ask)) {
+        return { easy: true, reason: 'tools ruled out and nothing long to write' };
+    }
+    // Questions — one-hop or not — need world knowledge or a lookup, and a
+    // wrong fact is worse than a slower right one (see the measurements above).
+    return { easy: false, reason: verdict.reason };
 }
 
 /**
@@ -197,7 +399,7 @@ function isSubstantialWork({ text, hasAttachments = false, attachmentKinds = [],
  *   reason: string, substantial: boolean
  * }}
  */
-function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds } = {}) {
+function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds, hasHistory = false, previousText = null, lastAssistantText = null, secondaryBusy = false } = {}) {
     const r = roles || {};
     const m = MODES.includes(mode) ? mode : (MODES.includes(r.mode) ? r.mode : 'auto');
     const loaded = running instanceof Set ? running : new Set(Array.isArray(running) ? running : []);
@@ -206,7 +408,8 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     const primary = r.primary || null;
     const secondary = r.secondary || null;
     const requested = targetModel || null;
-    const verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds });
+    const verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds, previousText, lastAssistantText });
+    const easy = isEasyTurn({ text: userText, hasAttachments, attachmentKinds, hasHistory, previousText, lastAssistantText });
 
     // Picking the strong model in the composer is a deliberate choice — honour
     // it even when the turn is trivial.
@@ -228,8 +431,8 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
             runOn: on,
             switched: !!(on && on !== requested),
             engaged: false, firstPass: false, legwork: false,
-            primary, secondary: null, reason, substantial: verdict.substantial,
-            partner, partnerLegwork: !!partner && r.legwork !== false,
+            primary, secondary: null, reason, substantial: verdict.substantial, easy: easy.easy,
+            partner, partnerLegwork: !!partner && r.legwork !== false && !verdict.toolsForbidden,
             secondaryLoaded: (secondary && secondary !== primary && isLoaded(secondary)) ? secondary : null,
         };
     };
@@ -247,20 +450,30 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     if (!secondary || secondary === primary) return alone('no secondary model configured', soloOn);
     if (!isLoaded(secondary)) return alone('the secondary model is not loaded', soloOn);
     if (m === 'off') return alone('the secondary is switched off', soloOn);
-    // THE fast path: a quick question never reaches the slower model.
+    // THE fast path: an easy turn never reaches the slower model — in 'always'
+    // too. "Every turn" means every turn with real work in it; a greeting, a
+    // one-hop question or a rewrite of the last answer is faster AND as good
+    // on the primary.
+    if (easy.easy) return alone(`easy turn: ${easy.reason}`, soloOn);
     if (m === 'auto' && !verdict.substantial) return alone(verdict.reason, soloOn);
+    // The secondary has one slot and something else holds it: light work
+    // starts now on the primary instead of queueing behind that generation.
+    if (secondaryBusy && !verdict.substantial && !verdict.explicit && !wantsSecondary) return alone('the secondary is busy — light work stays on the primary', soloOn);
 
     return {
         runOn: secondary,
         switched: secondary !== requested,
         engaged: true,
-        firstPass: r.firstPass !== false,
-        legwork: r.legwork !== false,
+        // The user ruled out searching / tools: legwork is off the table, so
+        // there is nothing for a brief to plan either.
+        firstPass: r.firstPass !== false && !verdict.toolsForbidden,
+        legwork: r.legwork !== false && !verdict.toolsForbidden,
+        toolsForbidden: !!verdict.toolsForbidden,
         primary,
         secondary,
-        reason: m === 'always' ? 'the secondary takes every turn' : verdict.reason,
-        substantial: verdict.substantial,
-        partner: primary, partnerLegwork: r.legwork !== false, secondaryLoaded: secondary,
+        reason: m === 'always' ? (verdict.substantial ? verdict.reason : 'the secondary takes every turn with real work') : verdict.reason,
+        substantial: verdict.substantial, easy: false,
+        partner: primary, partnerLegwork: r.legwork !== false && !verdict.toolsForbidden, secondaryLoaded: secondary,
     };
 }
 
@@ -325,48 +538,90 @@ function buildFirstPassTask({ userText, leadModel, toolBudget = 3 }) {
 // needs the primary's read of the task: one no-tools completion, thinking off,
 // a few hundred tokens. The workspace inventory the pre-flight already
 // computed is handed in as text so the brief can point legwork at real files.
-function buildQuickBriefTask({ userText, leadModel, workspaceLines = null }) {
-    const ws = Array.isArray(workspaceLines) && workspaceLines.length
-        ? ['', 'FILES ALREADY IN /workspace FROM EARLIER TURNS (you may name them in a legwork job):', ...workspaceLines.slice(0, 20)]
-        : [];
+// The conversation the ask belongs to, for the brief and the legwork prompts.
+// They used to see ONLY the latest user message, so on a follow-up ("is getting
+// a D.U.N.S free?") the 14B guessed the subject — two different wrong
+// expansions on two turns — and started jobs researching a thing that does not
+// exist while the lead answered correctly from the history. The previous ask
+// plus the head of the last reply is enough to pin the subject.
+function buildConversationContext(messages, { maxChars = 1200 } = {}) {
+    if (!Array.isArray(messages) || messages.length < 2) return '';
+    const text = (m) => {
+        if (!m) return '';
+        if (typeof m.content === 'string') return m.content;
+        if (Array.isArray(m.content)) return m.content.filter(p => p && p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
+        return '';
+    };
+    let lastUser = -1;
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i] && messages[i].role === 'user') { lastUser = i; break; }
+    if (lastUser <= 0) return '';
+    let prevAssistant = null, prevUser = null;
+    for (let i = lastUser - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!m) continue;
+        if (!prevAssistant && m.role === 'assistant' && text(m).trim()) prevAssistant = m;
+        else if (prevAssistant && m.role === 'user') { prevUser = m; break; }
+    }
+    if (!prevAssistant) return '';
+    const u = prevUser ? cleanAsk(text(prevUser)).slice(0, 400) : '';
+    const aBudget = Math.max(200, maxChars - u.length - 40);
+    const a = String(text(prevAssistant)).replace(/\s+/g, ' ').trim();
+    const aHead = a.length > aBudget ? a.slice(0, aBudget).replace(/\s+\S*$/, '') + ' …' : a;
+    return [u ? `Previous request: ${u}` : null, `Previous answer (start): ${aHead}`].filter(Boolean).join('\n');
+}
+
+// What a background job is FOR. Measured before this rule: jobs that read one
+// file, listed the workspace or "verified" code the lead had not written yet
+// each cost 15-60 s of a delegated turn for something the lead does in one call,
+// and landed after the lead had done it; the old "list 1 to 3 jobs" prompt made
+// the model copy its own example categories ("check version", "find
+// examples") on asks that needed no lookup at all.
+const LEGWORK_RULE = [
+    'A background job is worth it only when it takes SEVERAL tool calls on the server: a web search AND reading the pages that answer it, comparing several sources, checking CURRENT facts (versions, prices, dates, news, benchmarks, adoption or job-market data), or running a long script over a large file the user supplied. One job per independent question, at most 3.',
+    'Write `- none` when the whole request can be answered well from general knowledge or from the conversation, when it is mainly writing or coding that the main model will do itself, or when the user ruled out searching or tools.',
+    'NOT legwork: a single file read, a directory listing, a grep, one command, testing or verifying code the main model has not written yet, reviewing its draft, or the whole task.',
+].join(' ');
+
+// The ONE first-pass call, made only when the request needs something looked
+// up (needsLookup): the fast model lists the lookups to run in the background
+// while the lead writes. Asked for jobs alone it lists them well; asked for a
+// brief with a LEGWORK section it wrote "- none" under a plan full of searches
+// on every ask tried — and the lead no longer reads a brief, so the only thing
+// this call has to produce is the jobs.
+function buildLegworkTask({ userText, leadModel, context = '', hostNote = '' }) {
     return [
-        `${leadModel || 'The main model'} is about to work on the request below. You are the faster model of the pair: give it a brief so it can start immediately, and line up work that YOU will run in the background while it writes.`,
-        'You have NO tools in this step and must not answer the request itself.',
+        `${leadModel || 'The main model'} is about to answer the request below. You are the faster model of the pair and will run background LOOKUPS for it while it writes.`,
+        'You have NO tools in this step and must not answer the request.',
+        ...(context ? ['', 'THE CONVERSATION SO FAR (context only — the request is the LAST message):', context] : []),
         '',
-        'THE USER ASKED:',
-        askForFirstPass(userText, 4000),
-        ...ws,
+        'THE REQUEST:',
+        askForFirstPass(userText, 3000),
         '',
-        'Your brief must be under 200 words (that limit is on YOUR reply, not on the answer). Use exactly these sections and nothing else:',
-        'TASK — one or two sentences restating exactly what is wanted, with every constraint the USER gave (language, framework, file, format, length).',
-        'PLAN — the 3-5 steps the main model should take, in order.',
-        'LEGWORK — 0 to 3 jobs to hand to you to run in the background, each on its own line as `- <short name>: <one-line brief saying exactly what to find or do and what to report back>`. Every lookup, benchmark, version check or file read that your PLAN needs belongs here — you will run it while the main model writes.',
-        '   Good: looking up an API, a spec, a version or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; listing what is in the workspace; running an EXISTING script or test.',
-        '   Bad: anything that depends on output the main model has not written yet, or the task itself. If nothing would help, write `- none`.',
-        '   ' + JOB_RULE,
-        'OPEN QUESTIONS — anything genuinely ambiguous, or `none`.',
-        'Never invent a fact — the sections describe the task, not its answer.',
+        'List 1 to 3 background jobs, one for each independent question the answer needs LOOKED UP on the web now: current facts, versions, releases, prices, news, benchmarks, or what several sources say. Each job is a web search plus reading the pages that answer it, and must be about the user\'s request itself — not a side topic, not the writing, not code the main model will write.',
+        JOB_RULE,
+        ...(hostNote ? [hostNote] : []),
+        'Reply with ONLY this section, nothing else:',
+        'LEGWORK',
+        '- <short name>: <what to find and what to report back>',
+        'If nothing needs looking up, reply exactly: LEGWORK\n- none',
     ].join('\n');
 }
 
-// A second, cheaper ask when the brief came back with NO legwork: the small
-// first-pass model sometimes answers the WHAT I FOUND section ("workspace is
-// empty") and stops, leaving the lead to run every lookup itself (measured:
-// a 37-char brief, then ten retrieval calls on the lead, zero hand-offs).
-// One focused question, no tools, a few seconds.
-function buildLegworkOnlyTask({ userText, leadModel }) {
+// Rescue for a background job that did its lookups but wrote no report: a
+// fresh, tools-free prompt holding only the job and what its tools returned,
+// so the model has no tool-call history to imitate.
+function buildReportSalvageTask({ task, evidence, partial = '' }) {
     return [
-        `${leadModel || 'The main model'} is about to work on the request below and you will run background jobs for it while it writes.`,
+        'You ran a background lookup job for another model. Your tools are finished — write the REPORT now, from the tool results below only.',
         '',
-        'THE USER ASKED:',
-        askForFirstPass(userText, 3000),
+        'THE JOB:',
+        String(task || '').slice(-2500),
         '',
-        'List 1 to 3 background jobs you can do IN PARALLEL that would genuinely help — each independent of anything the main model has not written yet: a lookup of current facts, a spec, a version or an API; gathering reference material or examples; reading or summarising a file the user supplied; running an existing script.',
-        JOB_RULE,
-        'Reply with ONLY this section, nothing else:',
-        'LEGWORK',
-        '- <short name>: <one-line brief saying exactly what to find or do and what to report back>',
-        'If nothing would help, reply exactly: LEGWORK\n- none',
+        'WHAT YOUR TOOLS RETURNED:',
+        String(evidence || '').slice(0, 16000),
+        ...(partial ? ['', 'WHAT YOU HAD WRITTEN SO FAR:', String(partial).slice(0, 800)] : []),
+        '',
+        'Report format: 3-10 bullets of facts relevant to the job, each with its source (URL or file path), then one line on anything you could not confirm. Only facts that appear in the tool results. No tool calls, no introduction.',
     ].join('\n');
 }
 
@@ -375,7 +630,7 @@ function buildLegworkOnlyTask({ userText, leadModel }) {
 // called ask_assistant again (it even blocked on await_assistant for 188 s),
 // so "delegation is continuous" was only ever true in the prompt. Each time a
 // batch lands, the ASSISTANT reads what came back and proposes the next jobs.
-function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = [], plan = [], maxJobs = 3 }) {
+function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = [], plan = [], maxJobs = 3, context = '' }) {
     const done = jobs.slice(-12).map((j) => {
         const head = String(j.answer || '').replace(/\s+/g, ' ').trim().slice(0, 420);
         return `- ${j.name}: ${String(j.task || '').slice(0, 200)} → ${j.status}${head ? ` — result: ${head}` : ''}`;
@@ -384,9 +639,11 @@ function buildFollowUpLegworkTask({ userText, leadModel, jobs = [], leadSteps = 
     const planLines = plan.slice(0, 6).map((st, i) => `${i + 1}. ${String(st).slice(0, 200)}`);
     return [
         `${leadModel || 'The main model'} is still working on the request below. You have been running background jobs for it; their results are summarised underneath.`,
-        `Propose the NEXT background jobs (at most ${maxJobs}) that would genuinely help it finish: a gap those results left open, a claim worth checking against a second independent source, a detail the final answer will need. Each job must be independent of anything the main model has not written yet, and must NOT repeat a job already done or a step the main model already took.`,
-        'If nothing more would help, say so — do not invent work.',
+        `Propose the NEXT background jobs (at most ${maxJobs}) ONLY if the answer to the user's question still has a gap: a fact the results left open, or two results that contradict each other and need a third source. Each job must answer part of THE USER'S question — never a side topic the results happened to mention (a tool, a library or a product one report named in passing), never a check of code or text the main model is writing, and never a repeat of a job already done or a step the main model already took.`,
+        'Most of the time the answer is `- none`: say so rather than inventing work.',
+        LEGWORK_RULE,
         JOB_RULE,
+        ...(context ? ['', 'THE CONVERSATION SO FAR (context only):', context] : []),
         '',
         'THE USER ASKED:',
         askForFirstPass(userText, 2500),
@@ -471,10 +728,37 @@ const USER_STEP_START = /^(?:please\s+)?(?:connect|plug|unplug|press|hold|tap|cl
 const HARD_USER_STEP_NAME = /^(?:please\s+)?(?:connect|plug|unplug|press|hold|tap|click|reboot|restart|power|insert|pair|attach|disconnect|swipe|factory\s+reset)\b/i;
 const RESEARCH_VERB = /\b(?:find|look\s*up|search|research|compare|summari[sz]e|document|investigate|determine|identify|gather|collect|extract|read|fetch|list|report|check\s+whether|verify\s+whether|confirm\s+whether|find\s+out)\b/i;
 const USER_DEVICE = /\b(?:your|the\s+user'?s)\s+(?:tv|pc|computer|laptop|phone|device|router|console|remote|screen|cable|machine)\b/i;
+// One URL, one file or one listing with nothing to search for: 1-3 s for the
+// model doing the work, a 15-40 s delegated turn for the assistant (measured:
+// "read-file" 18.8 s for a 530-char paste already in the message; a workspace
+// listing 25.8 s while the lead listed it itself). A long script over a big
+// file ("run", two paths) is still legwork.
+const SINGLE_READ_VERB = /\b(read|open|fetch|extract|summari[sz]e|list|view|show|get|load|print|download|look at|check the contents of|inspect)\b/i;
+const MULTI_STEP_VERB = /\b(search|find|look\s*up|research|compare|gather|collect|investigate|identify|determine|survey|cross[- ]check|verify against|which|latest|current|versions?|releases?|prices?)\b/i;
+function isSingleReadJob(task) {
+    const t = String(task || '');
+    const refs = (t.match(/https?:\/\/\S+/g) || []).length + (t.match(/\/workspace\/[A-Za-z0-9._\/-]+/g) || []).length;
+    if (refs !== 1) return false;
+    const words = t.replace(/https?:\/\/\S+|\/workspace\/[A-Za-z0-9._\/-]+/g, ' ');
+    return SINGLE_READ_VERB.test(words) && !MULTI_STEP_VERB.test(words);
+}
+
+// A Pi agent works on the USER'S machine; its background jobs run on the
+// server. A job about a bare local file ("read pi.md", "check webserver.py")
+// cannot be done there — it would web-search for a file that only exists on
+// the user's disk.
+function isHostFileJob(task) {
+    const t = String(task || '');
+    if (/https?:\/\/|\/workspace\//i.test(t)) return false;
+    if (/\b(search|look\s*up|research|find (?:out|online|docs?|documentation)|documentation|docs for|release notes|changelog)\b/i.test(t)) return false;
+    return /(?:^|[\s'"`(])(?:~?\/?[\w.-]+\/)*[\w-]+\.(?:md|txt|py|js|ts|json|ya?ml|toml|ini|cfg|conf|sh|ps1|bat|log|csv|html?|css|env|lock|xml|sql|rb|go|rs|java|c|h|cpp)\b/i.test(t);
+}
+
 function isWorkableJob(job) {
     const name = String(job && job.name || '').trim();
     const task = String(job && job.task || '').trim();
     if (task.length < 15) return false;
+    if (isSingleReadJob(task)) return false;
     // The proposal prompt's own template echoed back ("<short name>: <one-line
     // brief…>", "If nothing would help, reply exactly: …") is not a job. Seen
     // live: both lines started as jobs and ran 34 s and 61 s each.
@@ -528,12 +812,13 @@ function parsePlan(brief) {
 // it did not know the user's goal, the lead's plan, what its sibling jobs
 // cover (so two jobs researched the same thing) or what was already found
 // (so it re-found it). This frames the task as ONE part of shared work.
-function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], leadModel, budgetLine }) {
+function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], leadModel, budgetLine, context = '' }) {
     const L = [];
     if (budgetLine) L.push(budgetLine);
     L.push(`You are running ONE background job for ${leadModel || 'the main model'}, which is writing the answer to the user's request while you work. Your report is the only thing it will see from you.`);
     // Sections are capped so the brief stays small next to a job's own tool
     // results in a per-slot context window.
+    if (context) L.push('', 'THE CONVERSATION SO FAR (context only):', String(context).trim().slice(0, 700));
     if (goal) L.push('', 'THE USER\'S GOAL:', String(goal).trim().slice(0, 1200));
     if (plan.length) L.push('', 'THE MAIN MODEL\'S PLAN:', ...plan.slice(0, 6).map((st, i) => `${i + 1}. ${String(st).slice(0, 200)}`));
     // Other jobs by identity (two jobs may share a derived name); a failed or
@@ -583,30 +868,39 @@ function parseLegwork(brief) {
 // The note the primary sees. Goes in the LATEST USER MESSAGE (never a trailing
 // system message — templates that require alternating roles 500 on those, and
 // the user slot is prefix-cache friendly).
-function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null, quick = false }) {
+// The note the LEAD gets. It used to carry the whole brief — the faster
+// model's restatement of a request the lead can read for itself — and the lead
+// followed its mistakes: it read stale files the plan named, listed a
+// directory the plan invented, and opened answers by correcting the brief's
+// misreading of the subject. The brief now feeds the JOBS (goal + plan in
+// buildJobBrief); the lead is only told what is running for it. With nothing
+// running there is no note at all (the lead prelude already explains
+// ask_assistant).
+function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null, quick = false, retrieval = false }) {
     const body = String(brief || '').trim();
     if (!body) return '';
-    const meta = [
-        assistantModel ? `by ${assistantModel}` : null,
-        typeof firstPassSeconds === 'number' ? `${firstPassSeconds}s` : null,
-        quick ? 'quick brief, no tools' : (typeof toolCalls === 'number' ? `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` : null),
-    ].filter(Boolean).join(', ');
     const who = assistantModel || 'the primary model';
-    const jobs = legworkAvailable ? parseLegwork(body) : [];
     const started = Array.isArray(startedJobs) ? startedJobs.filter(Boolean) : [];
-    const tail = !legworkAvailable
-        ? 'You are working alone on this one.'
-        : started.length
-            ? `${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING on ${who} right now:\n${started.map(j => (typeof j === 'string' ? `- "${j}"` : `- "${j.name}": ${String(j.task || '').slice(0, 220)}`)).join('\n')}\nDo NOT redo that work yourself and do NOT dispatch it again under another name — each of those results is delivered to you when it lands. Do not sit and wait for them: start writing NOW — the structure of the answer, every step or fact you already know, the parts only you can do. Never put a placeholder, "pending" marker or "results to follow" note in the answer: write around the missing piece and fill it in when its result is delivered to you (each one is, as it lands). Call \`await_assistant\` only when you have nothing left to write without it. ${who} may propose further jobs as results come in; hand over more yourself with \`ask_assistant\` whenever your work reveals another independent lookup (it queues past the parallel limit) — and if nothing more is needed, just carry on.`
-            : jobs.length
-            ? `${who} is idle and waiting for work. Your FIRST action should be a single \`ask_assistant\` call dispatching the LEGWORK jobs above (${jobs.map(j => `"${j.name}"`).join(', ')}) — it returns immediately and they run on ${who}'s own GPU while you write. Then start writing without waiting; each result is delivered to you as it lands.`
-            : `${who} is standing by — hand it any lookup, file read or script run you would otherwise stop to do yourself with \`ask_assistant\`, and keep working while it runs.`;
+    if (!legworkAvailable || !started.length) return '';
+    const meta = [
+        assistantModel ? `on ${assistantModel}` : null,
+        typeof firstPassSeconds === 'number' ? `planned in ${firstPassSeconds}s` : null,
+    ].filter(Boolean).join(', ');
+    const list = started.map(j => (typeof j === 'string' ? `- "${j}"` : `- "${j.name}": ${String(j.task || '').slice(0, 220)}`)).join('\n');
+    const open = (() => {
+        const q = String(briefSection(body, 'OPEN QUESTIONS') || '').replace(/^[\s:—–-]+/, '').trim();
+        return q && !/^[`'"*\s-]*none\b/i.test(q) ? q.split('\n')[0].slice(0, 240) : '';
+    })();
+    // Research-shaped work: the jobs ARE the lookups the answer depends on —
+    // writing first means writing around holes, searching yourself repeats
+    // them (measured: the lead ran the same searches its jobs were running).
+    const howToWork = retrieval
+        ? `These jobs are fetching the facts this answer depends on. Outline the answer now (structure, what you already know for certain), then call \`await_assistant\` for the reports; search yourself only for what their reports leave open.`
+        : `Do not sit and wait for them: start the work now — the parts only you can do. Call \`await_assistant\` only when you have nothing left to do without a result.`;
     return [
-        `[SYSTEM: FIRST-PASS BRIEF${meta ? ` (${meta})` : ''} — you are the main model on this task and you write the final answer.`,
-        '',
-        body,
-        '',
-        `Treat the brief as a starting point, not as truth: re-check anything it asserts that matters, and ignore its plan if you have a better one. Do the substantive work — the design, the code, the writing — yourself. ${tail}]`,
+        `[SYSTEM: TWO MODELS — you are the main model on this task and you write the final answer. ${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING${meta ? ` (${meta})` : ''}:`,
+        list,
+        `Do NOT redo that work yourself and do NOT dispatch it again under another name — each result is delivered to you when it lands. ${howToWork} Never put a placeholder, "pending" marker or "results to follow" note in the answer: write around a missing piece and fill it in when its result arrives.${open ? ` Open question noted by ${who}: ${open}` : ''} Hand over more with \`ask_assistant\` only for another lookup that takes several steps.]`,
     ].join('\n');
 }
 
@@ -690,12 +984,12 @@ function buildLeadPrelude({ assistantModel, maxParallel }) {
     const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
     return [
         'YOU ARE THE LEAD ON THIS TASK.',
-        `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} has already done a first pass and is now standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
-        `\`ask_assistant\` hands it a job and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands.`,
-        'HAND OFF things that are independent of what you are writing and that you would otherwise stop to do: looking up an API, a version, a spec or current facts; gathering reference material or examples; reading or summarising a file the USER supplied; running an existing script or test and reporting what it printed; checking an external claim.',
-        'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet — it cannot read a file you have not written, and asking it to "verify /workspace/x" before you create x just wastes it; or a step so small you would finish it before the reply came back.',
-        'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write, and then keep going without waiting. `await_assistant` blocks and is only for when you genuinely cannot continue.',
-        'DELEGATION IS CONTINUOUS, not a one-off: whenever your own progress or a delivered result reveals another independent lookup, read, run or check, hand it over right then and carry on — jobs past the parallel limit queue and start on their own. When a batch lands and nothing more is needed, simply carry on; never invent work to keep the assistant busy.',
+        `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} is standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
+        `\`ask_assistant\` hands it jobs ({name, task} each) and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands. Fan-out on this turn goes through ask_assistant.`,
+        'HAND OFF questions that need SEVERAL steps and are independent of what you are writing: a web search plus reading the pages that answer it, comparing several sources, checking current versions, prices, dates or docs, or a long script run over a big file the user supplied.',
+        'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet (it cannot read a file you have not written); or a single read, listing or command — reading one known URL or file is one call for you and a much slower background job for the assistant.',
+        'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write. `await_assistant` blocks and is only for when you genuinely cannot continue.',
+        'Delegation continues only while it is needed: when a delivered result leaves a gap the answer cannot do without (something the user asked for), hand it over and carry on. Do not dispatch more jobs just to add depth or detail the user did not ask for — answer from what you have. Never invent work to keep the assistant busy.',
     ].join(' ');
 }
 
@@ -731,12 +1025,13 @@ module.exports = {
     buildDuplicateJudgeTask,
     parseDuplicateVerdict,
     MODES,
-    buildLegworkOnlyTask,
     buildFollowUpLegworkTask,
     buildJobBrief,
     parsePlan,
     isDuplicateJob,
     isWorkableJob,
+    isSingleReadJob,
+    isHostFileJob,
     buildPartnerPrelude,
     buildJobPartnerLine,
     cleanAsk,
@@ -745,9 +1040,17 @@ module.exports = {
     attachmentKindsFromText,
     askLength,
     isSubstantialWork,
+    isEasyTurn,
+    stripNegatedToolClauses: (text) => stripNegatedTools(String(text || '')).ask,
+    isRetrievalShaped,
+    needsLookup,
+    forbidsTools,
     planHandoff,
     buildFirstPassTask,
-    buildQuickBriefTask,
+    buildLegworkTask,
+    buildReportSalvageTask,
+    buildConversationContext,
+    LEGWORK_RULE,
     renderBriefNote,
     buildLeadPrelude,
 };

@@ -23,7 +23,7 @@ function describeMode(mode, primaryName, secondaryName) {
     const p = primaryName || 'the primary';
     const sec = secondaryName || 'the secondary';
     if (mode === 'off') return `${p} answers every turn on its own. ${sec} is never brought in.`;
-    if (mode === 'always') return `Every turn goes to ${sec}, including one-line questions — those get slower.`;
+    if (mode === 'always') return `Every turn with real work goes to ${sec}. Easy turns — a greeting, a summary or rewrite of the last answer, arithmetic, a small code snippet — stay on ${p}. Questions that need knowledge, translation and creative writing still go to ${sec}.`;
     return `Short factual questions stay on ${p}. ${sec} takes over only when the ask is substantial — building something, analysing a file, a multi-step request.`;
 }
 
@@ -55,7 +55,7 @@ function describeReview(review, primaryName, secondaryName) {
     const p = primaryName || 'the primary';
     const sec = secondaryName || 'the secondary';
     if (review === 'note') return `${sec} reads the answer and appends its verdict underneath as a second block. The answer itself is left alone.`;
-    if (review === 'edit') return `${p} does the work, ${sec} checks it and corrects it behind the scenes — you get one polished answer, with nothing appended to it. What it changed is recorded beside the message, not inside it. Only answers ${p} wrote alone are polished: on a turn ${sec} leads itself ("always", or a substantial ask in "auto") there is nothing for it to check.`;
+    if (review === 'edit') return `${p} does the work, ${sec} checks it and corrects it behind the scenes — you get one polished answer, with nothing appended to it. What it changed is recorded beside the message, not inside it. Only answers ${p} wrote alone are polished: on a turn ${sec} leads itself (real work in "All but easy turns", or a substantial ask in "auto") there is nothing for it to check.`;
     return `Answers ${p} wrote alone are sent straight through, unread by ${sec}.`;
 }
 
@@ -154,10 +154,13 @@ export function buildTurnPlan(roles, running = []) {
     if (!always) {
         steps.push(`${primary} answers the turn — quick questions never leave it`);
         steps.push(roles.firstPass !== false
-            ? 'On substantial work it hands over instead: a few seconds sizing up the task, then a brief'
+            ? 'On substantial work it hands over instead, after a second or two planning any background lookups'
             : 'On substantial work it hands the turn over instead');
-    } else if (roles.firstPass !== false) {
-        steps.push(`${primary} spends a few seconds sizing up the task, then hands ${secondary} a brief`);
+    } else {
+        steps.push(`${primary} answers easy turns itself — greetings, summaries or rewrites of the last answer, arithmetic, small code snippets`);
+        steps.push(roles.firstPass !== false
+            ? `Every other turn it hands to ${secondary}, after a second or two planning any background lookups`
+            : `Every other turn it hands straight to ${secondary}`);
     }
 
     steps.push(`${secondary} takes the lead and writes the answer`);
@@ -172,21 +175,19 @@ export function buildTurnPlan(roles, running = []) {
     // The review is of an answer the PRIMARY wrote alone — on "every turn" the
     // secondary writes them all, so there is nothing left for it to review.
     const review = roles.review || 'off';
-    let caveat = null;
-    if (review !== 'off' && always) {
-        caveat = `Review is on, but on every turn ${secondary} writes the answer itself — there is never a primary-only answer left to review.`;
-    } else if (review === 'note') {
+    const caveat = null;
+    if (review === 'note') {
         steps.push(`On the turns ${primary} answered alone, ${secondary} reads the answer afterwards and adds a note underneath it`);
     } else if (review === 'edit') {
         steps.push(`On the turns ${primary} answered alone, ${secondary} reads the answer afterwards and hands back a corrected version in its place`);
     }
 
     const when = always
-        ? `On every turn — even a one-line question goes to ${secondary}.`
+        ? `On every turn with real work. Easy turns stay a single fast turn on ${primary}.`
         : `Only on substantial work — building something, analysing a file, a multi-step request. A quick question stays a single fast turn on ${primary}.`;
 
     const speeds = { primary: speedOf(running, roles.primary), secondary: speedOf(running, secondary) };
-    const summary = `${primary} \u2192 ${secondary} ${always ? 'on every turn' : 'on substantial work'}`;
+    const summary = `${primary} \u2192 ${secondary} ${always ? 'on every turn except easy ones' : 'on substantial work'}`;
 
     return { solo: false, primary, secondary, steps, when, caveat, speeds, summary, reason: null, line: null };
 }
@@ -540,7 +541,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                             >
                                 <ToggleButton value="off">Off</ToggleButton>
                                 <ToggleButton value="auto">Only on substantial work</ToggleButton>
-                                <ToggleButton value="always">Every turn</ToggleButton>
+                                <ToggleButton value="always">All but easy turns</ToggleButton>
                             </ToggleButtonGroup>
                         )}
                     />

@@ -1150,9 +1150,19 @@ export default async function (pi: ExtensionAPI) {
     // when results land after the lead already answered, and SHOW the user
     // both models working (status line + widget).
     try {
-        const pr = await authedFetch("/api/pi/pair");
-        if (!pr.ok) throw new Error(`GET /api/pi/pair -> HTTP ${pr.status}`);
-        const pair: any = await pr.json();
+        // A failed lookup at load (server restarting, network blip) must not
+        // leave delegation dead for the whole session: register the handover
+        // tools anyway — the server answers them with pair_not_active until a
+        // pair is actually running.
+        let pair: any = null;
+        try {
+            const pr = await authedFetch("/api/pi/pair", { signal: AbortSignal.timeout(8000) });
+            if (!pr.ok) throw new Error(`GET /api/pi/pair -> HTTP ${pr.status}`);
+            pair = await pr.json();
+        } catch (e: any) {
+            console.error(`[modelserver] could not read the two-model setup at load (${e && e.message ? e.message : e}) — registering the handover tools anyway`);
+            pair = { enabled: false, fetchFailed: true, legwork: true };
+        }
         // Register whenever the account has CONFIGURED a pair, not only when both
         // models happen to be loaded this second. Tools can only be registered at
         // extension load, so gating on "enabled" meant that loading the second
@@ -1166,7 +1176,7 @@ export default async function (pi: ExtensionAPI) {
             console.error(`[modelserver] two models NOT active: ${pair.detail || "pairing is off"}`
                 + (configuredPair ? " (handover tools are registered and start working as soon as it is)" : ""));
         }
-        if (pair && (pair.enabled || configuredPair) && pair.legwork !== false) {
+        if (pair && (pair.enabled || configuredPair || pair.fetchFailed) && pair.legwork !== false) {
             const short = (name: string) => {
                 const base = String(name || "").split("/").pop() || "";
                 const segs = base.split(/[-_]/).filter(Boolean);
@@ -1234,9 +1244,9 @@ export default async function (pi: ExtensionAPI) {
             (pi as any).registerTool({
                 name: "ask_assistant",
                 label: "ask_assistant",
-                description: "Hand independent legwork to the other loaded model; it runs in the background and results come back on your next tool result. "
-                    + "Good jobs: look up an API, version, spec or current facts; read or summarise a file in the SERVER sandbox; run an existing script there and report. "
-                    + "Never hand over the whole task or anything that depends on output you have not written yet. Delegation is continuous: hand over more whenever your work reveals it.",
+                description: "Start background web research on the other loaded model: a question that needs a search plus reading several pages. It runs on the SERVER and returns at once; results come back on your next tool result. "
+                    + "Good jobs: current versions, docs, release notes, prices or news; comparing several sources. It CANNOT see files or run commands on this machine — do those yourself, and read a single known page yourself too. "
+                    + "Never hand over the whole task or anything that depends on output you have not written yet. Each request is {name, task}.",
                 parameters: Type.Object({
                     requests: Type.Array(Type.Object({
                         name: Type.String({ description: "Short label for the job" }),
@@ -1285,7 +1295,11 @@ export default async function (pi: ExtensionAPI) {
                 try {
                     if (ctx) uiCtx = ctx;
                     if (event.toolName === "ask_assistant" || event.toolName === "await_assistant") { dispatchedThisRun = true; return; }
-                    ownCallsThisRun++;
+                    // Only WEB lookups count toward the nudge: host reads, edits
+                    // and shell commands are this agent's own work — the server-
+                    // side assistant cannot do them — and a single lookup is
+                    // faster done here than as a background job.
+                    if (/^(?:web|web_search|fetch_url|http_request|scrapling_fetch|playwright_fetch|crawl_pages)$/.test(String(event.toolName || ""))) ownCallsThisRun++;
                     let extra = "";
                     if (outstanding > 0 || Date.now() - lastPoll >= 5000) {
                         const data = await poll(true);
@@ -1298,7 +1312,7 @@ export default async function (pi: ExtensionAPI) {
                     // what "I don't see the two models working" looks like.
                     if (!extra && !nudgedThisRun && !dispatchedThisRun && ownCallsThisRun >= 3) {
                         nudgedThisRun = true;
-                        extra = `\n\n[TWO MODELS — ${short(pair.primary)} is idle while you have made ${ownCallsThisRun} calls yourself. Hand the remaining independent lookups, reads or checks to it with ONE ask_assistant call (they run in parallel) and keep working on what only you can do. If nothing independent is left, carry on.]`;
+                        extra = `\n\n[TWO MODELS — ${short(pair.primary || "the other model")} is idle while you have made ${ownCallsThisRun} web lookups yourself. If questions are still open that each need a search plus several pages, hand them over with ONE ask_assistant call (they run in parallel) and keep working on this machine. If nothing like that is left, carry on.]`;
                     }
                     if (!extra) return;
                     return { content: [...(event.content || []), { type: "text", text: extra }] };

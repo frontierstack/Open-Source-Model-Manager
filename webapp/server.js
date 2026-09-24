@@ -1419,6 +1419,12 @@ function buildChatRuntimePrelude() {
 // System framing for a delegated WORKER turn (see runDelegatedTurn). The
 // worker's whole output is one tool result the parent reads, so it must come
 // back as a self-contained, evidence-dense report — not a chat reply.
+// A background legwork job's framing: byte-identical for every job (its name
+// and siblings are in its brief), so jobs share one prompt prefix, and ONE
+// report spec — the worker prelude's "150-300 words + a data table" contradicted
+// the brief's bullet format.
+const LEGWORK_PRELUDE = 'You are a BACKGROUND JOB for the main model, which is writing the answer to the user while you work. Do the ONE job in your brief with your tools — no questions, no waiting, never address the user, never attempt the whole request. Look things up rather than answering from memory. Your FINAL message is the only thing the main model sees: write it in the report format your brief gives, with every URL, path, identifier and number written out in full. Do not create documents or deliverables and never use make_downloadable.';
+
 function buildDelegatePrelude(delegate) {
     const label = String((delegate && delegate.label) || 'worker').slice(0, 80);
     const siblings = Array.isArray(delegate && delegate.siblings) ? delegate.siblings.filter(Boolean) : [];
@@ -5142,6 +5148,16 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                         `Prompt-cache budgets now total ${committedCacheMiB + config.cacheRam} MiB across ${config._instanceCount} llama.cpp instances ` +
                         `(host tier ${tier} MiB) — set "Host prompt cache" explicitly in the load dialog, or reload the larger instance, to bring it back under.` });
                 }
+            }
+            // A single-slot, long-context model floored by a sibling that loaded
+            // first cannot save any long conversation, so every switch between
+            // two conversations (chat ⇄ Pi) re-prefills from scratch — measured
+            // on a 27B lead: 53 discarded 2-7 GB states and ~1,900 s of re-prefill
+            // in 72 h while the 2-slot model loaded before it held 16 GiB.
+            if (config.cacheRam && config.cacheRam < 4096 && Number(config.parallelSlots || 1) === 1 && Number(config.contextSize || 0) >= 65536 && committedCacheMiB > 0) {
+                broadcast({ type: 'log', level: 'warn', message:
+                    `${modelName} gets only ${config.cacheRam} MiB of host prompt cache (other instances hold ${committedCacheMiB} MiB) — too little to keep a long conversation between turns. ` +
+                    `Reload the other llama.cpp instance(s) with a smaller "Host prompt cache", or set this one explicitly (e.g. 8192 MiB).` });
             }
             delete config._instanceCount;
 
@@ -15762,8 +15778,14 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     // One task is an anecdote, not a pattern — the deterministic parts (proven
     // approach, observed lessons) carry the theme until a second task lands.
     if ((rec.stats?.runs || 0) < coreMemory.MIN_REFINE_RUNS) return null;
+    // Every model busy (a paired turn holds the lead and the assistant's job
+    // slots): come back later rather than squeeze in beside a generation —
+    // the old in-call wait outlived the refine's own timeout and then posted
+    // onto the busy model anyway.
+    if (!chatCapacity().models.some(m => m.free > 0)) return defer(30000);
     coreRefineLast.set(key, Date.now());
     coreRefineInFlight++;
+    let coreRefineInFlightReleased = false;
     try {
         const raw = await Promise.race([
             runModelCompletion({
@@ -15771,7 +15793,7 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
                     { role: 'system', content: coreMemory.REFINE_PROMPT },
                     { role: 'user', content: coreMemory.refinementInput(rec) },
                 ],
-                temperature: 0, maxTokens: 800, disableThinking: true, preferFree: true,
+                temperature: 0, maxTokens: 800, disableThinking: true, preferFree: true, waitMs: 0, failIfBusy: true,
             }),
             new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('refine timed out')), CORE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
         ]);
@@ -15784,10 +15806,11 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
         }
         return updated;
     } catch (e) {
+        if (e && e.code === 'NO_FREE_SLOT') { coreRefineLast.delete(key); coreRefineInFlight--; coreRefineInFlightReleased = true; return defer(30000); }
         console.warn(`[coreMemory] refinement failed for ${rec.label}: ${e.message}`);
         return null;
     } finally {
-        coreRefineInFlight--;
+        if (!coreRefineInFlightReleased) coreRefineInFlight--;
     }
 }
 
@@ -15803,7 +15826,12 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
         // META tools act on the assistant's own memory/catalog, not on the task.
-        const META_TOOLS = new Set(['record_learning', 'find_tools']);
+        // The two-model hand-off chips (first_pass, ask_assistant,
+        // await_assistant) are the PAIR's plumbing, not a method for the task:
+        // recorded, every paired "hi" became a tool-using episode and the
+        // refiner wrote "first use first_pass to prepare a brief" into the
+        // playbooks — a tool no model can call.
+        const META_TOOLS = new Set(['record_learning', 'find_tools', ...coreMemory.PAIR_TOOLS]);
         const chips = (Array.isArray(toolChips) ? toolChips : []).filter(c => !(c && META_TOOLS.has(c.label)));
         const okChips = chips.filter(c => c && c.status === 'success' && !c.refusal && c.label);
         // Only a turn that actually DID something procedural teaches anything.
@@ -15845,6 +15873,10 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
 async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { attachmentKinds = new Set(), toolLabels = [] } = {}) {
     if (!query || typeof query !== 'string') return null;
     query = query.replace(/^\/(no_)?think\b\s*/i, '');
+    // "no web searches" names the web only to rule it out — it must not pick
+    // the Research theme (and its web playbook) for a rewrite or a piece of
+    // writing.
+    try { query = leadHandoff.stripNegatedToolClauses(query) || query; } catch (_) { /* keep the raw query */ }
     if (!query.trim()) return null;
     let rec = null;
     try { rec = await coreMemory.recall(userId, { userText: query, attachmentKinds, toolLabels, tokenBudget }); }
@@ -16064,7 +16096,7 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
         const lastAsk = piLastAskByKey.get(keyId);
         const userText = v1LatestUserText(req.body?.messages || []) || (lastAsk && lastAsk.text) || '';
         entry = { taskKey, lead, assistant, keyId, userId: req.userId || keyId, userText, lastSeenAt: Date.now(), activeWaits: 0, ctx: newPiAssistantCtx(req, keyId, lead) };
-        entry.ctx._handoffGoal = { userText: leadHandoff.askForFirstPass(entry.userText, 1500), plan: (lastAsk && lastAsk.text === userText && lastAsk.plan) || [] };
+        entry.ctx._handoffGoal = { userText: leadHandoff.askForFirstPass(entry.userText, 1500), context: leadHandoff.buildConversationContext(req.body?.messages || []), plan: (lastAsk && lastAsk.text === userText && lastAsk.plan) || [] };
         entry.ctx._onAssistantSettled = (job) => { if (job && job.status !== 'cancelled' && job.status !== 'failed') piFollowUpLegwork(entry); };
         piAssistantByKey.set(keyId, entry);
     }
@@ -16080,33 +16112,79 @@ function piFollowUpLegwork(entry) {
         if (!entry.activeWaits && Date.now() - (entry.lastSeenAt || 0) > PI_FOLLOWUP_IDLE_MS) return;
         const jobs = entry.ctx._assistantJobs;
         const all = [...jobs.values()];
-        if (all.length >= ASSISTANT_MAX_JOBS || all.filter(j => j.status === 'running').length >= ASSISTANT_MAX_PARALLEL) return;
+        const pq = jobs._queue;
+        if (all.length >= ASSISTANT_MAX_JOBS || (pq ? (pq.freeSlots() <= 0 || all.some(j => j.status === 'queued')) : all.filter(j => j.status === 'running').length >= effectiveAssistantParallel(entry.assistant))) return;
         entry.followUpInFlight = true;
         Promise.race([
             requestModelCompletion({
-                messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: entry.userText, leadModel: entry.lead, jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer })), leadSteps: [], plan: (entry.ctx._handoffGoal && entry.ctx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: entry.userText, leadModel: entry.lead, jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer })), leadSteps: [], plan: (entry.ctx._handoffGoal && entry.ctx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS, context: (entry.ctx._handoffGoal && entry.ctx._handoffGoal.context) || '' }) }],
                 model: entry.assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
             }),
             new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
         ]).then((r) => {
             entry.followUpInFlight = false;
             if (piAssistantByKey.get(entry.keyId) !== entry) return;
-            const proposed = leadHandoff.parseLegwork(r && r.content).filter(j => !leadHandoff.isDuplicateJob(j, [...jobs.values()])).slice(0, HANDOFF_FOLLOWUP_JOBS);
+            const proposed = leadHandoff.parseLegwork(r && r.content).filter(j => !leadHandoff.isHostFileJob(j.task) && !leadHandoff.isDuplicateJob(j, [...jobs.values()])).slice(0, HANDOFF_FOLLOWUP_JOBS);
             if (!proposed.length) return;
             entry.followUps = (entry.followUps || 0) + 1;
-            const started = startAssistantJobs(entry.ctx, proposed, entry.assistant);
+            const started = startAssistantJobs(entry.ctx, proposed, entry.assistant, { origin: 'followup' });
             logUserActivity(entry.userId, `Pi two models: follow-up batch ${entry.followUps} — ${entry.assistant} took ${started.length} more job(s): ${started.map(d => `"${d.name}"`).join(', ')}`);
             console.log(`[Pi/Pair] follow-up batch ${entry.followUps}: ${started.map(d => d.name).join(' | ')}`);
         }).catch(() => { entry.followUpInFlight = false; });
     } catch (_) { entry.followUpInFlight = false; }
 }
 
+// Which pair model each Pi session (one bearer key = one agent) is running on.
+// Pi's context runs 24k-87k tokens, so switching a live session to the OTHER
+// model is a cold re-prefill of all of it (~20 s on the 14B, ~60 s on the 27B).
+const piSessionModel = new Map();
+const PI_STICKY_DOWN_TOKENS = Math.max(0, parseInt(process.env.PI_STICKY_DOWN_TOKENS || '12000', 10) || 0);
+
+function piPreviousTexts(messages) {
+    // The previous USER message (the task before this one) and the last
+    // assistant text before the latest user message — for continuations.
+    let latest = -1;
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i] && messages[i].role === 'user') { latest = i; break; }
+    const text = (m) => (typeof m?.content === 'string' ? m.content : Array.isArray(m?.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
+    let previousText = null, lastAssistantText = null;
+    for (let i = latest - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!lastAssistantText && m?.role === 'assistant' && text(m).trim()) lastAssistantText = text(m);
+        if (m?.role === 'user') { previousText = text(m); break; }
+    }
+    return { previousText, lastAssistantText };
+}
+
 async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair }) {
     const { roles, running } = pair;
-    const targetModel = piInstanceName(requestedInstance);
-    const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running });
+    const requested = piInstanceName(requestedInstance);
+    // Pi's model is a SESSION default — the first entry of /v1/models, not a
+    // per-message choice — so a request naming either pair model is planned
+    // as if aimed at the primary. Before this, Pi requested the 27B on every
+    // request (22 of 22), planHandoff honoured that as a deliberate pick, and
+    // no easy Pi task ever reached the fast model.
+    const pairRequested = requested === roles.primary || requested === roles.secondary;
+    const targetModel = pairRequested ? roles.primary : requested;
+    const piMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const prev = piPreviousTexts(piMessages);
+    const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running, hasHistory: piMessages.some(m => m && m.role === 'assistant'), previousText: prev.previousText, lastAssistantText: prev.lastAssistantText });
+    // Sticky per session: moving DOWN to the primary re-prefills the whole
+    // session there, which only pays when the context is still small; moving
+    // UP for real work always happens (one cold prefill, then warm).
+    const keyIdForSession = req.apiKeyData?.id;
+    if (pairRequested && keyIdForSession) {
+        const was = piSessionModel.get(keyIdForSession);
+        const estTokens = Math.round(JSON.stringify(piMessages).length / 3.6);
+        if (was && was.model === roles.secondary && plan.runOn === roles.primary && estTokens > PI_STICKY_DOWN_TOKENS) {
+            plan.runOn = roles.secondary;
+            plan.reason = `${plan.reason}; kept on ${roles.secondary} (session context ~${Math.round(estTokens / 1000)}k tokens — moving would re-prefill it)`;
+        }
+        piSessionModel.set(keyIdForSession, { model: plan.runOn, at: Date.now() });
+    }
     const offered = piOfferedToolNames(req.body);
     const toolsOffered = offered.has('ask_assistant');
+    const piContext = leadHandoff.buildConversationContext(piMessages);
+    if (!plan.engaged && plan.partner && plan.runOn === plan.partner) plan.partner = plan.runOn === roles.secondary ? roles.primary : roles.secondary;
     const out = { taskKey, runOn: plan.runOn || targetModel, engaged: !!plan.engaged, lead: null, assistant: null, note: null, reason: plan.reason, jobs: [] };
     const userId = req.userId || req.apiKeyData?.id;
     if (plan.engaged) {
@@ -16114,11 +16192,20 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
         out.assistant = plan.primary;
         const t0 = Date.now();
         let brief = '';
-        if (plan.firstPass) {
+        // The brief only plans JOBS, so it is skipped when no job can run:
+        // Pi offered no ask_assistant tool (measured: 3 of 4 tasks paid a
+        // 1-1.5 s brief that nothing could use), legwork is off, or the user
+        // ruled out searching.
+        const piFirstPassSkip = !plan.firstPass ? 'first pass off'
+            : !toolsOffered ? 'Pi offered no ask_assistant tool'
+            : !plan.legwork ? 'legwork off'
+            : leadHandoff.forbidsTools(latestUserText) ? 'the user ruled out tools or searching'
+            : !leadHandoff.needsLookup(latestUserText) ? 'nothing to look up' : null;
+        if (!piFirstPassSkip) {
             try {
                 const r = await Promise.race([
                     requestModelCompletion({
-                        messages: [{ role: 'user', content: leadHandoff.buildQuickBriefTask({ userText: latestUserText, leadModel: out.lead }) }],
+                        messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: latestUserText, leadModel: out.lead, context: piContext, hostNote: 'The main model is a terminal agent working on the USER\'S OWN MACHINE: files and commands there are NOT reachable by your background jobs — a job can only search the web or read web pages.' }) }],
                         model: out.assistant, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
                     }),
                     new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
@@ -16127,19 +16214,7 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
             } catch (e) { console.warn('[Pi/Pair] brief failed:', e.message); }
         }
         const secs = Math.round((Date.now() - t0) / 100) / 10;
-        let proposed = (brief && plan.legwork && toolsOffered) ? leadHandoff.parseLegwork(brief) : [];
-        if (!proposed.length && plan.legwork && toolsOffered) {
-            try {
-                const r = await Promise.race([
-                    requestModelCompletion({
-                        messages: [{ role: 'user', content: leadHandoff.buildLegworkOnlyTask({ userText: latestUserText, leadModel: out.lead }) }],
-                        model: out.assistant, temperature: 0.2, maxTokens: 400, disableThinking: true,
-                    }),
-                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
-                ]);
-                proposed = leadHandoff.parseLegwork(r && r.content);
-            } catch (_) { /* the lead can still dispatch its own */ }
-        }
+        const proposed = (brief && plan.legwork && toolsOffered) ? leadHandoff.parseLegwork(brief).filter(j => !leadHandoff.isHostFileJob(j.task)) : [];
         let started = [];
         let briefPlan = [];
         try { briefPlan = leadHandoff.parsePlan(brief); } catch (_) { /* optional */ }
@@ -16148,29 +16223,32 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
             const entry = piAssistantEntry(req, taskKey, out.lead, out.assistant);
             entry.ctx._handoffGoal.plan = briefPlan;
             if (proposed.length) {
-                started = startAssistantJobs(entry.ctx, proposed.slice(0, HANDOFF_AUTO_JOBS), out.assistant);
+                started = startAssistantJobs(entry.ctx, proposed.slice(0, Math.min(HANDOFF_AUTO_JOBS, effectiveAssistantParallel(out.assistant))), out.assistant, { origin: 'brief' });
                 out.jobs = started.map(d => d.name);
             }
         }
         const briefNote = brief ? leadHandoff.renderBriefNote({
             brief, assistantModel: out.assistant, firstPassSeconds: secs, toolCalls: 0,
             legworkAvailable: toolsOffered && plan.legwork, startedJobs: started.map(d => ({ name: d.name, task: (proposed.find(p => p.name === d.name) || {}).task || '' })), quick: true,
+            retrieval: leadHandoff.isRetrievalShaped(latestUserText),
         }) : '';
         const toolsLine = (toolsOffered && plan.legwork)
-            ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it independent legwork (a lookup, reading a server-side file, running a script and reporting) and returns immediately; finished results are appended to your next tool result. Hand over more whenever your work reveals it. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
-            : `You lead this task on ${out.lead}${brief ? `; ${out.assistant} prepared the brief above` : ''}.`;
+            ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it a lookup that takes several steps (a web search plus reading the pages that answer it, comparing sources, checking current versions or docs) and returns immediately; finished results are appended to your next tool result. It works on the SERVER: it cannot see files or run commands on this machine, so do those yourself. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
+            : `You lead this task on ${out.lead}.`;
         out.note = `${PI_PAIR_MARKER} — two models on this task; runtime context, not part of the user's message]\n${briefNote ? briefNote + '\n\n' : ''}${toolsLine}`;
-        logUserActivity(userId, `Pi two models: ${out.lead} leads, ${out.assistant} prepared a brief in ${secs}s` + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
-        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${brief.length}ch ${secs}s jobs=${out.jobs.length} tools=${toolsOffered}`);
+        logUserActivity(userId, `Pi two models: ${out.lead} leads` + (brief ? `, ${out.assistant} planned in ${secs}s` : '') + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
+        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${piFirstPassSkip ? `skipped (${piFirstPassSkip})` : `${brief.length}ch ${secs}s`} jobs=${out.jobs.length} ask_assistant=${toolsOffered ? 'offered' : 'NOT offered by the Pi extension'}`);
     } else if (plan.partner && plan.partnerLegwork && toolsOffered) {
-        out.lead = targetModel;
+        out.lead = out.runOn;
         out.assistant = plan.partner;
         { const keyId = req.apiKeyData?.id; if (keyId) piLastAskByKey.set(keyId, { text: latestUserText, plan: [], at: Date.now() }); }
         piAssistantEntry(req, taskKey, out.lead, out.assistant);
         out.note = `${PI_PAIR_MARKER} — two models loaded; runtime context, not part of the user's message]\n`
-            + leadHandoff.buildPartnerPrelude({ partnerModel: out.assistant, partnerIsStronger: out.assistant === roles.secondary, maxParallel: ASSISTANT_MAX_PARALLEL })
+            + leadHandoff.buildPartnerPrelude({ partnerModel: out.assistant, partnerIsStronger: out.assistant === roles.secondary, maxParallel: effectiveAssistantParallel(out.assistant) })
             + ' Results of ask_assistant are appended to your next tool result; call await_assistant before your final answer if a job is still running.';
         console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: solo on ${out.lead}, partner ${out.assistant} (${plan.reason})`);
+    } else {
+        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: solo on ${out.runOn} (${plan.reason})`);
     }
     return out;
 }
@@ -16181,7 +16259,16 @@ async function planPiPair(req, requestedInstance) {
     if (!keyId || !Array.isArray(messages) || !messages.length) return null;
     const sys0 = messages[0]?.role === 'system' ? messages[0].content : '';
     const sysText = typeof sys0 === 'string' ? sys0 : (Array.isArray(sys0) ? sys0.map(p => p?.text || '').join('\n') : '');
-    if (/^You are a (?:context )?summarization assistant/i.test(sysText.trim())) return null;
+    if (/^You are a (?:context )?summarization assistant/i.test(sysText.trim())) {
+        // Pi's compaction summarizer: a brand-new prompt (the serialized
+        // conversation), so it is a cold prefill wherever it runs — ~3x faster
+        // on the fast primary. No pair note, no memory (both skip it anyway).
+        const sp = await resolvePiPairRoles(req);
+        if (sp.enabled && sp.roles.primary && modelInstances.has(sp.roles.primary) && piInstanceName(requestedInstance) === sp.roles.secondary) {
+            return { taskKey: null, runOn: sp.roles.primary, engaged: false, lead: null, assistant: null, note: null, reason: 'Pi summarizer on the fast model', jobs: [] };
+        }
+        return null;
+    }
     const latestUserText = v1LatestUserText(messages);
     if (!latestUserText.trim()) return null;
     // The extension's follow-up turn (results that landed after the answer)
@@ -18574,6 +18661,8 @@ function modelContextFor(name) {
 // enough to rank them; llama.cpp returns `timings.predicted_per_second`
 // directly, sglang gets tokens/elapsed.
 const modelSpeed = new Map();          // name -> { decode, at }
+// When real traffic last reported a speed for a model (llama.cpp timings).
+const modelRealSampleAt = new Map();
 const modelSpeedInFlight = new Set();
 const MODEL_SPEED_TTL_MS = 30 * 60 * 1000;
 // A wall-clock figure (no backend timings) is re-taken far sooner: the first
@@ -18592,6 +18681,7 @@ function noteSpeedFromTimings(model, data) {
         const n = t && Number(t.predicted_n);
         // Too few tokens and the per-second figure is dominated by warm-up.
         if (!Number.isFinite(decode) || decode <= 0 || !(n >= 24)) return;
+        modelRealSampleAt.set(model, Date.now());
         noteModelSpeedSample(model, decode, hostIdleExcept(model) && (modelBusy.get(model) || 0) <= 1);
     } catch (_) { /* telemetry only */ }
 }
@@ -18675,8 +18765,18 @@ function noteModelSpeedSample(name, decode, trusted, derived = false) {
 }
 
 // Is the host quiet enough for a meaningful measurement?
+// Only a busy model sharing a GPU with `name` disturbs its measurement: two
+// models pinned to separate cards (config.gpuDevices; null = every card) do
+// not slow each other down, and counting them made every real-traffic sample
+// of a paired turn "contended".
 function hostIdleExcept(name) {
-    for (const [k, n] of modelBusy.entries()) { if (k !== name && n > 0) return false; }
+    const cards = (n) => { const inst = modelInstances.get(n); const g = inst && inst.config && inst.config.gpuDevices; return Array.isArray(g) && g.length ? g : null; };
+    const mine = cards(name);
+    for (const [k, n] of modelBusy.entries()) {
+        if (k === name || !(n > 0)) continue;
+        const theirs = cards(k);
+        if (!mine || !theirs || theirs.some(d => mine.includes(d))) return false;
+    }
     return true;
 }
 
@@ -18714,6 +18814,11 @@ function startModelSpeedSweep() {
                 const ttl = (rec && rec.derived) ? MODEL_SPEED_DERIVED_TTL_MS : MODEL_SPEED_TTL_MS;
                 const stale = !rec || !rec.trusted || (Date.now() - rec.at > ttl);
                 if (!stale) continue;
+                // A llama.cpp model serving real work reports its own speed on
+                // every response; probing it would take its slot and evict the
+                // cached context of whoever is using it (measured on a 1-slot
+                // lead: a probe every ~32 min, 29-104 s stalls after each).
+                if (rec && inst.backend === 'llamacpp' && Date.now() - (modelRealSampleAt.get(name) || 0) < MODEL_SPEED_TTL_MS) continue;
                 if (modelBusy.get(name) > 0 || !hostIdleExcept(name)) continue;
                 await probeModelSpeed(name).catch(() => {});
                 return;   // one per tick — never a burst of probes
@@ -18894,15 +18999,31 @@ const chatStreamHandlerInner = async (req, res) => {
                     running: runningNames,
                 });
                 const askText = latestUserAskFromBody(inputMessages, message);
+                // An image part or an upload the client passed by id counts as
+                // an attachment too: it keeps the turn off the easy path.
+                const lastUserMsg = Array.isArray(inputMessages) ? [...inputMessages].reverse().find(m => m && m.role === 'user') : null;
+                const hasImagePart = !!(lastUserMsg && Array.isArray(lastUserMsg.content) && lastUserMsg.content.some(p => p && (p.type === 'image_url' || p.type === 'input_image')));
+                const hasBodyAttachments = Array.isArray(req.body?.attachments) && req.body.attachments.length > 0;
                 handoff = leadHandoff.planHandoff({
                     roles: pairRoles,
                     targetModel,
                     userText: askText,
                     mode: pairRoles.mode,
                     running: runningNames,
-                    hasAttachments: /===\s*FILE\s+\d+/i.test(askText),
+                    hasAttachments: /===\s*FILE\s+\d+/i.test(askText) || hasImagePart || hasBodyAttachments,
                     attachmentKinds: leadHandoff.attachmentKindsFromText(askText),
+                    hasHistory: Array.isArray(inputMessages) && inputMessages.some(m => m && m.role === 'assistant'),
+                    // A short go-ahead ("ok, do it", "yes") inherits the work
+                    // it resumes: the previous request or the assistant's offer.
+                    ...(Array.isArray(inputMessages) ? piPreviousTexts(inputMessages) : {}),
+                    secondaryBusy: (() => {
+                        try { const row = pairRoles.secondary && chatCapacity().models.find(x => x.name === pairRoles.secondary); return !!(row && row.free <= 0); }
+                        catch (_) { return false; }
+                    })(),
                 });
+                if (handoff.easy && pairRoles.secondary && pairRoles.mode !== 'off') {
+                    console.log(`[Chat Stream] Hand-off: ${handoff.reason} — ${handoff.runOn} answers alone`);
+                }
                 // The PRIMARY answers by default; the SECONDARY takes the
                 // lead only when the ask is substantial (that gate is what
                 // keeps a quick question on the fast model).
@@ -19086,8 +19207,14 @@ const chatStreamHandlerInner = async (req, res) => {
         // Reasoning-effort directives, computed once per turn and merged into
         // EVERY round's request body (streamOneRequest). `effortNoThink`
         // makes effort=off ride the same /no_think path as disableThinking.
+        // An EASY turn the pair kept on the primary runs with thinking off
+        // unless the user chose an effort: it needs no reasoning pass, and the
+        // primary may be loaded with thinking on (measured: "write a haiku" on
+        // the 14B spun 7,000 tokens of repetitive reasoning — 72 s — before a
+        // loop guard cut it; the 27B that used to take the turn is loaded off).
+        const turnEffort = requestedEffort || (handoff && handoff.easy && !req.delegate ? 'off' : null);
         const effortDirectives = reasoningEffort.buildEffortDirectives({
-            effort: requestedEffort, modelName: targetModel, backend: targetInstance.backend,
+            effort: turnEffort, modelName: targetModel, backend: targetInstance.backend,
             loadedThinkingOff: disableThinking, supportsNoThinkPrefix: modelSupportsNoThinkPrefix,
         });
         const effortActive = !!effortDirectives.effort;
@@ -19255,7 +19382,11 @@ const chatStreamHandlerInner = async (req, res) => {
                 // A delegated worker skips the memory/experience lookup: the
                 // parent turn already had it, the block would differ per worker
                 // (no prefix sharing), and it is pure latency on a sub-task.
-                if (latestUserText && !req.delegate) {
+                // An easy turn the pair kept on the primary (a greeting, a rewrite
+                // of the last answer) has no use for a working playbook: measured,
+                // "summarize that, no web searches" pulled in the Research memory
+                // and the model spent a call recording a "learning" instead.
+                if (latestUserText && !req.delegate && !(handoff && handoff.easy)) {
                     const memoryResult = await retrieveRelevantMemories(
                         chatUserId, chatConvId, memoryQuery,
                         // Budget scales with the model's window; the lead of a
@@ -19343,15 +19474,15 @@ const chatStreamHandlerInner = async (req, res) => {
             // Worker framing goes AFTER the shared prelude so a worker's system
             // prompt starts with the same bytes as the parent's — the backend's
             // prompt cache then skips re-prefilling those tokens.
-            if (req.delegate) prelude = `${prelude}\n\n${buildDelegatePrelude(req.delegate)}`;
+            if (req.delegate) prelude = `${prelude}\n\n${req.delegate.kind === 'legwork' ? LEGWORK_PRELUDE : buildDelegatePrelude(req.delegate)}`;
             // Lead framing goes after the shared prelude for the same
             // prompt-cache reason the worker framing does.
             if (handoff.engaged && handoff.legwork) {
-                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
+                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: effectiveAssistantParallel(handoff.primary) })}`;
             } else if (assistantModelForTurn && req.delegate) {
                 prelude = `${prelude}\n${leadHandoff.buildJobPartnerLine({ partnerModel: assistantModelForTurn, maxJobs: req.delegate.assistantMaxJobs || ASSISTANT_JOB_MAX_JOBS })}`;
             } else if (assistantModelForTurn) {
-                prelude = `${prelude}\n\n${leadHandoff.buildPartnerPrelude({ partnerModel: assistantModelForTurn, partnerIsStronger: assistantModelForTurn === handoff.secondaryLoaded, maxParallel: ASSISTANT_MAX_PARALLEL })}`;
+                prelude = `${prelude}\n\n${leadHandoff.buildPartnerPrelude({ partnerModel: assistantModelForTurn, partnerIsStronger: assistantModelForTurn === handoff.secondaryLoaded, maxParallel: effectiveAssistantParallel(assistantModelForTurn) })}`;
             }
             // With thinking ON the model does its "I found X, now checking Y"
             // narration inside the reasoning trace — which the chat collapses
@@ -20902,11 +21033,17 @@ const chatStreamHandlerInner = async (req, res) => {
         // by semantics on the ask alone. If the remembered path names a tool the
         // router drops, the model reads "reuse this approach" and then cannot.
         // Force-include them (bounded, registry names only).
+        // Never the web family when the user ruled out searching on this turn:
+        // "summarize the article, no web searches" had `web` force-added from
+        // the Research memory, and the lead then searched four times.
+        const askForbidsTools = leadHandoff.forbidsTools(latestUserText);
+        const WEB_FAMILY = new Set(['web', 'web_search', 'fetch_url', 'scrapling_fetch', 'playwright_fetch', 'playwright_interact', 'crawl_pages', 'http_request', 'find_image', 'find_video']);
         if (recalledCore && Array.isArray(recalledCore.tools) && recalledCore.tools.length) {
             const named = [];
             for (const t of recalledCore.tools) {
                 if (named.length >= EXPERIENCE_FORCED_TOOL_MAX) break;
                 if (!fullByName.has(t) || preflightForcedTools.has(t)) continue;
+                if (askForbidsTools && WEB_FAMILY.has(t)) continue;
                 preflightForcedTools.add(t);
                 named.push(t);
             }
@@ -21338,9 +21475,11 @@ const chatStreamHandlerInner = async (req, res) => {
                 if (streamAbortController.signal.aborted) return;
                 const all = [...toolCtx._assistantJobs.values()];
                 if (all.length >= (toolCtx.assistantMaxJobs || ASSISTANT_MAX_JOBS)) return;
-                // Only while the assistant has room: a follow-up queued behind
-                // three running jobs would just wait.
-                if (all.filter(j => j.status === 'running').length >= (toolCtx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL)) return;
+                // Only while the assistant has a FREE slot and nothing queued: a
+                // follow-up behind running jobs just waits (measured 22-34 s),
+                // and its proposal call itself would take a job's slot.
+                const fq = toolCtx._assistantJobs._queue;
+                if (fq ? (fq.freeSlots() <= 0 || all.some(j => j.status === 'queued')) : all.filter(j => j.status === 'running').length >= effectiveAssistantParallel(toolCtx.assistantModel)) return;
                 const assistant = toolCtx.assistantModel;
                 const lead = targetModel;
                 followUpInFlight = true;
@@ -21351,7 +21490,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 const t0 = Date.now();
                 Promise.race([
                     requestModelCompletion({
-                        messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: latestUserText, leadModel: lead, jobs: jobsForPrompt, leadSteps, plan: (toolCtx._handoffGoal && toolCtx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS }) }],
+                        messages: [{ role: 'user', content: leadHandoff.buildFollowUpLegworkTask({ userText: latestUserText, leadModel: lead, jobs: jobsForPrompt, leadSteps, plan: (toolCtx._handoffGoal && toolCtx._handoffGoal.plan) || [], maxJobs: HANDOFF_FOLLOWUP_JOBS, context: (toolCtx._handoffGoal && toolCtx._handoffGoal.context) || '' }) }],
                         model: assistant, temperature: 0.3, maxTokens: 450, disableThinking: true,
                     }),
                     new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
@@ -21381,7 +21520,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     });
                     const view = Object.create(toolCtx);
                     view._assistantChipId = chip.toolCallId;
-                    const started = startAssistantJobs(view, proposed, assistant);
+                    const started = startAssistantJobs(view, proposed, assistant, { origin: 'followup' });
                     logChatActivity(`Two models: follow-up batch ${followUpBatches} — ${assistant} took ${started.length} more job(s) after ${reason}: ${started.map(d => `"${d.name}"`).join(', ')}`);
                     console.log(`[Chat Stream] Hand-off: follow-up batch ${followUpBatches} (${secs}s to propose) started ${started.length} job(s): ${started.map(d => d.name).join(' | ')}`);
                     const promises = started.map(d => (toolCtx._assistantJobs.get(d.id) || {}).promise).filter(Boolean);
@@ -21414,9 +21553,13 @@ const chatStreamHandlerInner = async (req, res) => {
         // filled in once the brief exists; the goal alone for a solo turn).
         // A delegated turn's own "ask" is its job brief; the real goal is the
         // parent's, passed down with the delegation.
+        // The conversation the ask belongs to — a follow-up ("is it free?")
+        // means nothing without it, and the brief, every job and every
+        // follow-up proposal used to see only the latest message.
+        const handoffContext = req.delegate ? '' : leadHandoff.buildConversationContext(inputMessages);
         toolCtx._handoffGoal = req.delegate
             ? (req.delegate.handoffGoal || null)
-            : { userText: leadHandoff.askForFirstPass(latestUserText, 1500), plan: [] };
+            : { userText: leadHandoff.askForFirstPass(latestUserText, 1500), context: handoffContext, plan: [] };
 
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
@@ -21424,7 +21567,27 @@ const chatStreamHandlerInner = async (req, res) => {
         // brief goes in the LATEST USER MESSAGE, like every other pre-flight:
         // a trailing system message 500s on templates that require alternating
         // roles, and the user slot is the prefix-cache-friendly one.
-        if (handoff.engaged && handoff.firstPass && latestUserMsgIdx >= 0) {
+        // The brief exists to plan the JOBS (the lead no longer reads it), so it
+        // is skipped when there can be none: legwork switched off, or the user
+        // ruled out tools / searching for this turn.
+        // The first pass now only plans background LOOKUPS, so a turn with
+        // nothing to look up (building, writing, coding, a supplied file) skips
+        // it and the lead starts at once — measured 1-3 s saved on those turns.
+        const firstPassSkip = handoff.engaged
+            ? (handoff.toolsForbidden ? 'the user ruled out tools or searching'
+                : !handoff.legwork ? 'legwork is switched off'
+                : !handoff.firstPass ? 'first pass is switched off'
+                : (HANDOFF_FIRST_PASS_MODE !== 'full' && !leadHandoff.needsLookup(latestUserText)) ? 'nothing to look up' : null)
+            : null;
+        if (firstPassSkip) {
+            console.log(`[Chat Stream] Hand-off: first pass skipped (${firstPassSkip}) — ${handoff.secondary} starts at once`);
+            const leadFrame = { type: 'handoff', phase: 'lead', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, firstPassSeconds: 0, briefChars: 0, reason: handoff.reason };
+            recordHandoffFrame(leadFrame);
+            if (clientConnected) {
+                try { res.write(`data: ${JSON.stringify(leadFrame)}\n\n`); if (res.flush) res.flush(); } catch (_) { clientConnected = false; }
+            }
+        }
+        if (handoff.engaged && !firstPassSkip && latestUserMsgIdx >= 0) {
             const fpStart = Date.now();
             try {
                 recordHandoffFrame({ type: 'handoff', phase: 'first_pass', helper: handoff.primary, primary: handoff.secondary, assistant: handoff.primary, lead: handoff.secondary, reason: handoff.reason });
@@ -21442,7 +21605,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     type: 'native_tool_call',
                     label: 'first_pass',
                     model: handoff.primary,
-                    purpose: `Preparing a brief for ${handoff.secondary}`,
+                    purpose: `Planning background lookups for ${handoff.secondary}`,
                     args: { task: leadHandoff.askForFirstPass(latestUserText, 400).slice(0, 200), brief_for: handoff.secondary },
                     _startedAt: fpStart,
                 });
@@ -21463,7 +21626,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     try {
                         const r = await Promise.race([
                             requestModelCompletion({
-                                messages: [{ role: 'user', content: leadHandoff.buildQuickBriefTask({ userText: latestUserText, leadModel: handoff.secondary, workspaceLines: handoffWorkspaceLines }) }],
+                                messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: latestUserText, leadModel: handoff.secondary, context: handoffContext }) }],
                                 model: handoff.primary, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
                             }),
                             new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
@@ -21496,42 +21659,13 @@ const chatStreamHandlerInner = async (req, res) => {
                     });
                 }
                 const fpSecs = Math.round((Date.now() - fpStart) / 100) / 10;
-                const note = (fp && fp.status === 'ok')
-                    ? leadHandoff.renderBriefNote({
-                        brief: fp.answer,
-                        assistantModel: handoff.primary,
-                        firstPassSeconds: fpSecs,
-                        toolCalls: fp.toolCalls,
-                        legworkAvailable: handoff.legwork,
-                        quick: quickBrief,
-                    })
-                    : '';
-                let proposed = (note && handoff.legwork) ? leadHandoff.parseLegwork(fp.answer) : [];
-                // No legwork in the brief → one focused retry (no tools, a
-                // few seconds) before the lead is left to do every lookup
-                // itself. Bounded by HANDOFF_LEGWORK_RETRY_MS; a miss costs
-                // nothing but that wait.
-                // Quick mode too: measured, the small primary writes "LEGWORK — none"
-                // under a PLAN that lists several fetches, and then the lead does
-                // every lookup itself. One focused no-tools ask costs 1-2 s.
-                if (handoff.legwork && !proposed.length && toolCtx._assistantJobs && fp && fp.status === 'ok') {
-                    try {
-                        const r = await Promise.race([
-                            requestModelCompletion({
-                                messages: [{ role: 'user', content: leadHandoff.buildLegworkOnlyTask({ userText: latestUserText, leadModel: handoff.secondary }) }],
-                                model: handoff.primary, temperature: 0.2, maxTokens: 400, disableThinking: true,
-                            }),
-                            new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
-                        ]);
-                        const again = leadHandoff.parseLegwork(r && r.content);
-                        if (again.length) {
-                            proposed = again;
-                            console.log(`[Chat Stream] Hand-off: brief proposed no legwork — legwork-only retry proposed ${again.length}: ${again.map(j => j.name).join(' | ')}`);
-                        } else {
-                            console.log('[Chat Stream] Hand-off: brief proposed no legwork — legwork-only retry proposed none');
-                        }
-                    } catch (e) { console.warn('[Chat Stream] Hand-off: legwork-only retry failed:', e.message); }
-                }
+                const briefOk = !!(fp && fp.status === 'ok');
+                // ONE legwork decision, made by the brief. The old follow-up
+                // "legwork-only retry" (run whenever the brief said none) asked
+                // for "1 to 3 jobs" and got generic ones copied from its own
+                // examples — measured: 9 of 11 auto-dispatches, ~1,100 s of 14B
+                // time, much of it re-fetching what the lead fetched itself.
+                const proposed = (fp && fp.status === 'ok' && handoff.legwork) ? leadHandoff.parseLegwork(fp.answer) : [];
                     // START the proposed jobs ourselves rather than hoping the
                     // lead calls ask_assistant. Measured: the first pass named
                     // three good background jobs and the lead still did every
@@ -21542,7 +21676,10 @@ const chatStreamHandlerInner = async (req, res) => {
                     // them now and let the results land mid-turn.
                     if (handoff.legwork && proposed.length && toolCtx._assistantJobs) {
                         try { toolCtx._handoffGoal.plan = leadHandoff.parsePlan(fp.answer); } catch (_) { /* optional */ }
-                        const items = proposed.slice(0, HANDOFF_AUTO_JOBS);
+                        // Only as many as truly start now: a 3rd job on a 2-slot
+                        // assistant queued 22-31 s, the lead awaited it anyway,
+                        // and it was the usual straggler the cleanup threw away.
+                        const items = proposed.slice(0, Math.min(HANDOFF_AUTO_JOBS, effectiveAssistantParallel(handoff.primary)));
                         try {
                             // Open the queue chip FIRST so the jobs' own
                             // `assistant_progress` frames can patch it live —
@@ -21559,7 +21696,7 @@ const chatStreamHandlerInner = async (req, res) => {
                                 _startedAt: qStart,
                             });
                             toolCtx._assistantChipId = queueChip.toolCallId;
-                            const started = startAssistantJobs(toolCtx, items, handoff.primary);
+                            const started = startAssistantJobs(toolCtx, items, handoff.primary, { origin: 'brief' });
                             handoff.autoJobs = started.map(d => d.name);
                             handoff.autoJobBriefs = started.map(d => ({ name: d.name, task: (items.find(i => i.name === d.name) || {}).task || '' }));
                             logChatActivity(`Two models: started ${started.length} background job(s) on ${handoff.primary} — ${started.map(d => `"${d.name}"`).join(', ')}`);
@@ -21595,11 +21732,10 @@ const chatStreamHandlerInner = async (req, res) => {
                             console.warn('[Chat Stream] Hand-off: auto-dispatch failed:', e.message);
                         }
                     }
-                if (note) {
+                if (briefOk) {
                     const um = chatMessages[latestUserMsgIdx];
-                    // Re-render once the jobs are actually running so the note
-                    // tells the lead they are in flight rather than asking it
-                    // to start them.
+                    // The lead is told only what is RUNNING for it (no note at
+                    // all when nothing is) — never the brief itself.
                     const finalNote = (handoff.autoJobs && handoff.autoJobs.length)
                         ? leadHandoff.renderBriefNote({
                             brief: fp.answer,
@@ -21609,41 +21745,29 @@ const chatStreamHandlerInner = async (req, res) => {
                             legworkAvailable: handoff.legwork,
                             startedJobs: handoff.autoJobBriefs || handoff.autoJobs,
                             quick: quickBrief,
+                            retrieval: leadHandoff.isRetrievalShaped(latestUserText),
                         })
-                        : note;
-                    const block = finalNote + '\n\n';
-                    if (typeof um.content === 'string') um.content = block + um.content;
-                    else if (Array.isArray(um.content)) {
-                        const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
-                        if (tIdx >= 0) um.content[tIdx].text = block + um.content[tIdx].text;
-                        else um.content.unshift({ type: 'text', text: block });
+                        : '';
+                    if (finalNote) {
+                        const block = finalNote + '\n\n';
+                        if (typeof um.content === 'string') um.content = block + um.content;
+                        else if (Array.isArray(um.content)) {
+                            const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                            if (tIdx >= 0) um.content[tIdx].text = block + um.content[tIdx].text;
+                            else um.content.unshift({ type: 'text', text: block });
+                        }
                     }
                     handoff.brief = fp.answer;
                     try { toolCtx._handoffGoal.plan = leadHandoff.parsePlan(fp.answer); } catch (_) { /* optional */ }
                     handoff.firstPassSeconds = fpSecs;
                     handoff.firstPassCalls = fp.toolCalls || 0;
-                    // Make the hand-over VISIBLE in the transcript. Without
-                    // this the first pass exists only as a live SSE frame, so
-                    // after the turn there is no sign the other model did
-                    // anything — the user's report was exactly "I'm not seeing
-                    // any queue jobs ... it should be a back and forth thing".
-                    // The chip's `purpose` is the ONLY rich field the client
-                    // persists (full tool `result`s are deliberately dropped to
-                    // keep messages small), so the SUBJECT of the brief has to
-                    // ride here or the saved transcript can only say "handed
-                    // over a brief" with no hint of what about.
-                    const briefSubject = (() => {
-                        const t = String(fp.answer || '');
-                        const m = t.match(/^[ \t]*(?:\*+[ \t]*)?(?:\d[.)][ \t]*)?(?:TASK|PLAN)\b[^\n:]*:?[ \t]*(.+)$/im);
-                        const line = m ? m[1]
-                            : (t.split('\n').map(l => l.replace(/^[\s*#\d.)-]+/, '').trim()).find(l => l.length > 20) || '');
-                        const one = line.replace(/\s+/g, ' ').trim().split(/(?<=[.;:])\s/)[0].replace(/[.;:,]$/, '');
-                        return one.length > 120 ? one.slice(0, 119).replace(/\s+\S*$/, '') + '\u2026' : one;
-                    })();
+                    // Make the hand-over VISIBLE in the transcript: the chip's
+                    // `purpose` is the only rich field the client persists, so
+                    // it names the lookups that were planned.
                     closeHandoffChip(fpChip, {
-                        purpose: briefSubject
-                            ? `Prepared a brief for ${handoff.secondary}: ${briefSubject}`
-                            : `Prepared a brief for ${handoff.secondary}`,
+                        purpose: proposed.length
+                            ? `Planned ${proposed.length} background lookup${proposed.length === 1 ? '' : 's'} for ${handoff.secondary}: ${proposed.map(j => j.name).join(', ').slice(0, 110)}`
+                            : `Planned background lookups for ${handoff.secondary}: none needed`,
                         query: (fp.answer || '').slice(0, 60),
                         result: {
                             model: handoff.primary,
@@ -21657,7 +21781,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     logChatActivity(`Two models: first pass done in ${fpSecs}s (${fp.toolCalls || 0} tool calls)`
                         + (proposed.length ? ` — proposed ${proposed.length} background job(s): ${proposed.map(j => `"${j.name}"`).join(', ')}` : '')
                         + ` — ${handoff.secondary} is now writing`);
-                    console.log(`[Chat Stream] Hand-off first pass (${quickBrief ? 'quick brief' : 'full'}): ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars of brief, `
+                    console.log(`[Chat Stream] Hand-off first pass (${quickBrief ? 'lookup plan' : 'full'}): ${fpSecs}s, ${fp.toolCalls || 0} tool call(s), ${String(fp.answer || '').length} chars, `
                         + (proposed.length ? `legwork proposed: ${proposed.map(j => j.name).join(' | ')}` : 'no legwork proposed'));
                     // When the brief names no background jobs the secondary has
                     // nothing to hand back, which looks to the user like the two
@@ -21746,6 +21870,22 @@ const chatStreamHandlerInner = async (req, res) => {
                 fullCatalogTokens: toolCatalogTokens,
                 reqOverride: req.body?.toolRouter,
             });
+            // A background LEGWORK job gets one fixed, fixed-order tool set.
+            // Routed on its whole brief it got 21-36 tools (~4-7k tokens) that
+            // differed per job — so no two jobs shared a prompt prefix — and
+            // used ~96% of its calls on web/read/grep/run_python anyway (the
+            // rest were noise like make_downloadable from a background job).
+            // find_tools and name dispatch still reach anything else.
+            if (req.delegate && req.delegate.kind === 'legwork' && fullToolCatalog.length) {
+                const picked = LEGWORK_TOOLS.filter(n => fullByName.has(n));
+                toolCatalog = picked.map(n => toolRouter.compactSchema(fullByName.get(n), 'light'));
+                toolCatalog.push(toolRouter.compactSchema(toolRouter.findToolsDef, 'light'));
+                advertisedNames = new Set([...picked, 'find_tools']);
+                routeCompactLevel = 'light';
+                toolCatalogJson = JSON.stringify(toolCatalog);
+                toolCatalogTokens = estimateTokens(toolCatalogJson);
+                console.log(`[Chat Stream] Legwork job "${req.delegate.label || ''}": fixed catalog of ${toolCatalog.length} tools (~${toolCatalogTokens} tok)`);
+            } else
             if (routeProfile !== 'off' && fullToolCatalog.length) {
                 // Feed the user's system prompt into intent matching (not the
                 // semantic embedding) so a persona's standing capabilities
@@ -22308,6 +22448,16 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // catalog has something. Empty arrays confuse some
                         // backends; omitting the key is the safer default.
                         ...(toolCatalog.length ? { tools: toolCatalog } : {}),
+                        // A background job's REPORT round: the tools stay in the
+                        // request (they render at the top of the prompt, so
+                        // dropping them re-processed the job's whole context —
+                        // measured 568 vs 4 prompt tokens) but tool_choice
+                        // "none" means it writes the report instead of calling
+                        // yet another tool. The text-only "do not call tools"
+                        // note alone was ignored on nearly every job, which then
+                        // paid forced synthesis (and some reports came back 0-50
+                        // characters).
+                        ...(toolCatalog.length && options.noToolCalls ? { tool_choice: 'none' } : {}),
                         // forceNoThink: actually disable the model's reasoning
                         // pass on the backend for this request (not just hide it
                         // client-side as `disableThinking` does). On a reasoning-
@@ -22325,6 +22475,18 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         ...(effortActive && !effortFieldsRejected ? effortDirectives.requestFields : {}),
                         ...(() => {
                             const kw = {
+                                // Keep earlier assistant turns rendered the same way
+                                // on every round. Qwen3.x templates wrap a past
+                                // assistant turn in <think></think> only when it
+                                // comes after the LAST user message — so a note
+                                // appended mid-turn (demoted to user role) re-rendered
+                                // every earlier turn and the prompt diverged at the
+                                // first assistant message: measured, a job's report
+                                // round re-processed 2,544 of 2,544 prompt tokens,
+                                // 533 with this flag. Templates that do not read it
+                                // ignore it; the history never carries reasoning, so
+                                // the wrapper is empty either way.
+                                ...(targetInstance && targetInstance.backend === 'llamacpp' ? { preserve_thinking: true } : {}),
                                 ...(effortActive && !effortFieldsRejected ? effortDirectives.templateKwargs : {}),
                                 ...(options.forceNoThink ? { enable_thinking: false } : {}),
                             };
@@ -22369,7 +22531,13 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         const stripped = { ...requestBody };
                         for (const k of reasoningEffort.EFFORT_REQUEST_KEYS) delete stripped[k];
                         delete stripped.chat_template_kwargs;
-                        if (options.forceNoThink) stripped.chat_template_kwargs = { enable_thinking: false };
+                        {
+                            const keep = {
+                                ...(targetInstance && targetInstance.backend === 'llamacpp' ? { preserve_thinking: true } : {}),
+                                ...(options.forceNoThink ? { enable_thinking: false } : {}),
+                            };
+                            if (Object.keys(keep).length) stripped.chat_template_kwargs = keep;
+                        }
                         console.warn(`[Chat Stream] Effort fields rejected by backend (${status}) — retrying this round without them`);
                         response = await postRound(stripped);
                         effortFieldsRejected = true;
@@ -22629,6 +22797,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                         if (parsed.timings) {
                                             promptTokens = (parsed.timings.prompt_n || 0) + (parsed.timings.cache_n || 0);
                                             completionTokens = parsed.timings.predicted_n || 0;
+                                            // Free speed telemetry from real work — so the
+                                            // probe sweep never has to take a single-slot
+                                            // model's only slot (and evict its context) to
+                                            // re-measure it.
+                                            noteSpeedFromTimings(targetModel, { timings: parsed.timings });
                                         }
                                     } catch (e) {
                                         // Skip invalid JSON chunks
@@ -23016,40 +23189,59 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             let assistantDrains = 0;
             // Set while the lead answers a drain with edits to its draft.
             let pendingRevision = null;
+            // The next round is a revision of the finished draft: text only.
+            // With tools still callable the lead went back to work instead
+            // (measured on a script turn: run_python, search_replace ×3 and a
+            // re-publish during "revision", 106 s → 268 s, and its edit-format
+            // reply failed twice).
+            let revisionNoTools = false;
             // One-shot: the lead ran the legwork itself while its assistant
             // sat idle with no job at all this turn (the real-model check:
             // ten retrieval calls on the lead, zero hand-offs).
             let idleAssistantNudged = 0;
-            let leadLookupStreak = 0;
-            const RETRIEVAL_TOOL_NAMES = new Set(['web', 'web_search', 'fetch_url', 'scrapling_fetch', 'playwright_fetch', 'crawl_pages', 'http_request', 'read_file', 'grep_code', 'scan_source_files', 'list_directory', 'outline_file', 'read_pdf']);
+            const userForbidsTools = !req.delegate && leadHandoff.forbidsTools(latestUserText);
+            // Measured on this pair: handing ONE lookup to the fast model costs
+            // more than the lead doing it (14-19 s of the lead writing a brief,
+            // then a ~30 s job) — the nudge converted 0 of 4 times and stretched
+            // two turns to 178 s and 216 s. It now fires only for real BREADTH:
+            // a research ask where the lead has run several DIFFERENT searches
+            // itself while a free assistant sat idle with nothing pending.
+            const leadSearchQueries = [];
+            let askTokensForNudge = null;
             const idleAssistantNudge = (calls) => {
-                // "Idle" = no job pending, not "no job was ever given": measured,
-                // after one job came back the lead ran five serial web calls
-                // itself (200 s) with the assistant idle and this never fired.
-                if (idleAssistantNudged >= IDLE_ASSISTANT_NUDGE_MAX || req.delegate || !toolCtx.assistantModel || !toolCtx._assistantJobs) return null;
+                if (idleAssistantNudged >= IDLE_ASSISTANT_NUDGE_MAX || req.delegate || userForbidsTools || !toolCtx.assistantModel || !toolCtx._assistantJobs) return null;
                 if ([...toolCtx._assistantJobs.values()].some(assistantQueue.isPending)) return null;
                 // Only when the idle assistant is the FASTER model: pushing
                 // plain lookups onto the slower, stronger partner of a solo
                 // primary turn would cost time, not save it.
                 if (!handoff.engaged && toolCtx.assistantModel === handoff.secondaryLoaded) return null;
-                let n = 0;
+                if (!leadHandoff.isRetrievalShaped(latestUserText) || effectiveAssistantParallel(toolCtx.assistantModel) < 2) return null;
+                if (!askTokensForNudge) { try { askTokensForNudge = loopGuard.queryTokens(latestUserText || ''); } catch (_) { askTokensForNudge = new Set(); } }
+                let searched = 0;
                 for (const c of (calls || [])) {
-                    try { if (RETRIEVAL_TOOL_NAMES.has(webEffectiveName(c.function.name, c.function.arguments))) n++; } catch (_) { /* */ }
+                    try {
+                        if (webEffectiveName(c.function.name, c.function.arguments) !== 'web_search') continue;
+                        const a = typeof c.function.arguments === 'string' ? JSON.parse(c.function.arguments) : (c.function.arguments || {});
+                        const toks = new Set([...loopGuard.queryTokens(a.query || '')].filter(t => !askTokensForNudge.has(t)));
+                        // A re-issued or reworded search is the arg-repeat / stale-
+                        // search guards' business, not breadth.
+                        const distinct = !leadSearchQueries.some(prev => {
+                            const inter = [...toks].filter(t => prev.has(t)).length;
+                            const union = new Set([...toks, ...prev]).size || 1;
+                            return inter / union >= 0.5;
+                        });
+                        if (distinct && toks.size) { leadSearchQueries.push(toks); searched++; }
+                    } catch (_) { /* */ }
                 }
-                // One lookup per round, round after round, is the same waste as
-                // several in one round — count the streak across rounds.
-                leadLookupStreak = n > 0 ? leadLookupStreak + n : 0;
-                if (n < 2 && leadLookupStreak < 2) return null;
-                n = Math.max(n, leadLookupStreak);
-                leadLookupStreak = 0;
+                if (!searched) return null;
+                if (leadSearchQueries.length < 3) return null;
+                const n = leadSearchQueries.length;
+                leadSearchQueries.length = 0;
                 idleAssistantNudged += 1;
-                console.log(`[Chat Stream] Hand-off: ${targetModel} ran ${n} lookups itself with ${toolCtx.assistantModel} idle — nudging (${idleAssistantNudged}/${IDLE_ASSISTANT_NUDGE_MAX})`);
-                // And do not leave it to the lead alone: the assistant proposes
-                // its own next batch from the lead's steps so far.
-                scheduleFollowUpLegwork('the lead running lookups itself');
+                console.log(`[Chat Stream] Hand-off: ${targetModel} ran ${n} different searches itself with ${toolCtx.assistantModel} idle — nudging (${idleAssistantNudged}/${IDLE_ASSISTANT_NUDGE_MAX})`);
                 return {
                     role: 'system',
-                    content: `[Your assistant ${toolCtx.assistantModel} is IDLE while you just ran ${n} lookups yourself. That is exactly the legwork to hand over: call ask_assistant NOW with ALL the remaining lookups, page reads, file reads or checks you still need, in one call (they run in parallel; it returns immediately; each result is delivered to you as it lands), and keep the design and the writing for yourself. If there is genuinely nothing left to look up, carry on.]`,
+                    content: `[Your assistant ${toolCtx.assistantModel} is IDLE while you have run ${n} different searches yourself. If the answer still has OPEN QUESTIONS that each need a search plus reading the pages that answer it, hand them over NOW in ONE ask_assistant call ({name, task} each — they run in parallel and are delivered as they land) and keep writing. Read pages you already have URLs for yourself (web reads up to 3 URLs at once). If nothing is left to look up, carry on.]`,
                 };
             };
             const deliverAssistantResults = () => {
@@ -23070,7 +23262,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     return `• "${j.name}" (${j.id}, ${j.seconds}s)${files.length ? ` — wrote ${files.join(', ')}` : ''}:\n${body}`;
                 });
                 const stillRunning = [...jobs.values()].filter(assistantQueue.isPending);
-                const freeSlots = Math.max(0, (toolCtx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL) - stillRunning.filter(j => j.status === 'running').length);
+                const freeSlots = jobs._queue ? jobs._queue.freeSlots() : Math.max(0, effectiveAssistantParallel(toolCtx.assistantModel) - stillRunning.filter(j => j.status === 'running').length);
                 const budgetLeft = Math.max(0, (toolCtx.assistantMaxJobs || ASSISTANT_MAX_JOBS) - jobs.size);
                 logChatActivity(`Assistant: delivered ${ready.length} finished job(s) to ${targetModel}${stillRunning.length ? `, ${stillRunning.length} still running` : ''}`);
                 console.log(`[Chat Stream] Hand-off: delivered ${ready.length} assistant result(s) to ${targetModel} — ${ready.map(j => `"${j.name}" (${j.status})`).join(', ')}${stillRunning.length ? `; ${stillRunning.length} still running` : ''}`);
@@ -23085,8 +23277,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // treated the first batch as the only batch (measured:
                         // zero ask_assistant calls after the auto-started jobs,
                         // on every hand-off turn in the logs).
-                        + (budgetLeft > 0
-                            ? `\n\nYour assistant ${stillRunning.length ? `has ${freeSlots} free slot${freeSlots === 1 ? '' : 's'}` : 'is now IDLE'}. If these results or your own progress reveal MORE independent legwork — another lookup, a file to read, a script to run, a claim to check — hand it over NOW with ask_assistant and keep working. If nothing more is needed, just carry on; do not invent work for it.`
+                        + (budgetLeft > 0 && !followUpInFlight && freeSlots > 0
+                            ? `\n\nYour assistant ${stillRunning.length ? `has ${freeSlots} free slot${freeSlots === 1 ? '' : 's'}` : 'is now IDLE'}. Hand it more only if the answer would be WRONG or MISSING something the user asked for without it — not for extra depth or detail the user did not ask for. Otherwise carry on and write; do not invent work for it.`
                             : ''),
                 };
             };
@@ -23257,7 +23449,26 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     console.warn(`[Chat Stream] Context saturated (round ${toolCallRound + 1}, streak ${ctxSaturatedStreak}): headroom=${roundHeadroom}, trimmed=${trimmedThisRound}`);
                 }
 
-                finishReason = await streamOneRequest(currentMessages, roundMaxTokens, { priorAnswerGuard: true });
+                const textOnlyRound = finalReportAsked || revisionNoTools;
+                revisionNoTools = false;
+                // A job's report is a few hundred words of bullets; an uncapped
+                // report round once ran 2,048 tokens to finish=length for a job
+                // that was only checking one detail.
+                const reportRound = !!(finalReportAsked && req.delegate);
+                finishReason = await streamOneRequest(currentMessages, reportRound ? Math.min(roundMaxTokens, JOB_REPORT_MAX_TOKENS) : roundMaxTokens, { priorAnswerGuard: true, noToolCalls: textOnlyRound });
+                // A report / revision round cannot dispatch: a tool call that
+                // still came back (a textual <tool_call> the extractor caught)
+                // is dropped, and an empty report falls through to forced
+                // synthesis.
+                if (textOnlyRound && accumulatedToolCalls.length) {
+                    console.log(`[Chat Stream] ${req.delegate ? `Delegated turn "${req.delegate.label || ''}"` : 'Lead'}: dropped ${accumulatedToolCalls.length} tool call(s) on a text-only ${finalReportAsked ? 'report' : 'revision'} round`);
+                    accumulatedToolCalls = [];
+                    if (finishReason === 'tool_calls') finishReason = 'stop';
+                }
+                // An empty report is not retried here: measured, the fast model
+                // emitted another (dropped) tool call on the re-ask and again in
+                // forced synthesis. runDelegatedTurn salvages it instead from the
+                // job's own tool results with a short tools-free prompt.
 
                 // --- Reasoning-loop recovery -------------------------------
                 // The model spun in its reasoning stream this round (phrase /
@@ -25234,6 +25445,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         console.warn(`[Chat Stream] Hand-off: revision reply not in edit format (${r.applied} applied, ${r.failed} unmatched) after ${secs}s — asking once more: ${JSON.stringify(out.slice(0, 300))}`);
                         fullResponse = prefix;
                         pendingRevision = { ...rev, retried: true };
+                        revisionNoTools = true;
                         currentMessages = [
                             ...rev.base,
                             { role: 'system', content: leadHandoff.REVISION_EDITS_PROMPT },
@@ -25244,6 +25456,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     } else {
                         console.warn(`[Chat Stream] Hand-off: revision edits did not apply (${r.applied} applied, ${r.failed} unmatched, ${out.length} chars) after ${secs}s — rewriting in full: ${JSON.stringify(out.slice(0, 400))}`);
                         fullResponse = prefix;
+                        revisionNoTools = true;
                         currentMessages = [...rev.base, { role: 'system', content: FULL_REVISION_PROMPT }];
                         continue;
                     }
@@ -25350,7 +25563,24 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // the turn itself asked for is strictly better than answering
                 // around it.
                 if (!req.delegate && assistantDrains < ASSISTANT_DRAIN_MAX && toolCtx._assistantJobs) {
-                    const pending = [...toolCtx._assistantJobs.values()].filter(assistantQueue.isPending);
+                    // Follow-up jobs the assistant proposed on its own are not
+                    // worth holding a finished answer for: measured, waiting on
+                    // them and revising around them took 144 of 268 s (b5) and
+                    // 23 of 54 s (b6). The lead is done — cancel them; wait only
+                    // for work the brief or the lead itself asked for.
+                    {
+                        const q = toolCtx._assistantJobs._queue;
+                        // ...and any job that never started: it costs nothing to
+                        // drop, while waiting for it means waiting for a slot AND
+                        // the whole job.
+                        const drop = (j) => assistantQueue.isPending(j) && (j.origin === 'followup' || j.status === 'queued');
+                        const unrequested = [...toolCtx._assistantJobs.values()].filter(drop);
+                        if (q && unrequested.length) {
+                            q.cancelPending('the answer was already written', drop);
+                            console.log(`[Chat Stream] Hand-off: lead finished — cancelled ${unrequested.length} unrequested or not-yet-started job(s): ${unrequested.map(j => `"${j.name}"`).join(', ')}`);
+                        }
+                    }
+                    const pending = [...toolCtx._assistantJobs.values()].filter(j => assistantQueue.isPending(j) && j.origin !== 'followup');
                     // Results are folded in at the top of a TOOL round, so a job
                     // that finished after the last delivery and before this
                     // final text has landed nowhere — and the old drain only
@@ -25358,7 +25588,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // were dropped on the floor (a job finishing seconds before
                     // the lead's last sentence lost its whole report). Deliver
                     // them now, waiting first only if something is still running.
-                    const undelivered = [...toolCtx._assistantJobs.values()].filter(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
+                    // A settled follow-up rides along with a requested result but
+                    // never triggers a revision on its own.
+                    const undelivered = [...toolCtx._assistantJobs.values()].filter(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled' && j.origin !== 'followup');
                     if (pending.length || undelivered.length) {
                         assistantDrains += 1;
                         // A job settling during this wait must not start a new
@@ -25397,6 +25629,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // rewrite stays as the fallback.
                             const useEdits = HANDOFF_REVISION_MODE === 'edits' && draft.trim().length >= 200;
                             pendingRevision = useEdits ? { draft, base: revisionBase, startedAt: Date.now() } : null;
+                            revisionNoTools = true;
                             currentMessages = [
                                 ...revisionBase,
                                 { role: 'system', content: useEdits ? leadHandoff.REVISION_EDITS_PROMPT : FULL_REVISION_PROMPT },
@@ -25500,7 +25733,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 && /[:;—–]\s*$/.test(trailing.slice(-4));
             const exitedMidThought = toolCallRound > 1 && endsMidThought
                 && accumulatedToolCalls.length === 0 && !contentLoopTruncated;
-            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted || loopNudgeExhausted) {
+            // A legwork job that reached its report round goes straight back to
+            // runDelegatedTurn, which salvages an empty report from the job's
+            // own tool results — forced synthesis re-reads the whole job without
+            // its tools and, on the fast model, came back empty the same way.
+            const legworkSalvage = !!(req.delegate && req.delegate.kind === 'legwork' && finalReportAsked);
+            if (!legworkSalvage && (hitIterationCap || exitedEmptyAfterTools || exitedMidThought || reasoningLoopExhausted || toolCallArgsTruncated || largeEditTruncationExhausted || loopNudgeExhausted)) {
                 if (loopNudgeExhausted) {
                     console.warn(`[Chat Stream] Loop guard exhausted (nudge cap / dead rounds / stagnation / redundancy; ${loopNudgeCount} nudges since the last checkpoint) — forcing synthesis from what the model has`);
                 } else if (reasoningLoopExhausted) {
@@ -25510,7 +25748,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 } else if (toolCallArgsTruncated) {
                     console.warn(`[Chat Stream] Tool-call arguments truncated (could not finalize/dispatch) — forcing synthesis so the model writes the result directly`);
                 } else if (hitIterationCap) {
-                    console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached — forcing synthesis`);
+                    console.warn(req.delegate && Number(req.delegate.maxRounds) > 0
+                        ? `[Chat Stream] Delegated turn "${req.delegate.label || ''}" used its ${roundCap}-round budget — forcing synthesis`
+                        : `[Chat Stream] Max tool iterations (${roundCap}) reached — forcing synthesis`);
                 } else if (exitedMidThought) {
                     console.warn(`[Chat Stream] Tool loop exited mid-thought after ${toolCallRound} tool call(s) — forcing synthesis (trail: ${JSON.stringify(trailing.slice(-60))})`);
                 } else {
@@ -25601,6 +25841,12 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // synthesis must produce a direct answer, not think again.
                         // Belt-and-braces with the forceNoThink kwarg below.
                         const loopSynthPrefix = modelSupportsNoThinkPrefix(targetModel) ? '/no_think\n' : '';
+                        // Background results that already landed go INTO the
+                        // synthesis — measured, a forced synthesis answered from
+                        // the lead's own looping searches while a finished 56 s
+                        // job report sat undelivered, then the cleanup dropped it.
+                        const settledForSynth = (!req.delegate && typeof deliverAssistantResults === 'function') ? deliverAssistantResults() : null;
+                        if (settledForSynth) currentMessages = [...currentMessages, settledForSynth];
                         const synthesisMessages = [
                             ...currentMessages,
                             {
@@ -25714,7 +25960,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // failure mode is what makes the retry land: the model
                             // is told its tool call was discarded and that prose is
                             // the only accepted output.
-                            if (fullResponse.length <= preSynthLen) {
+                            // A background job's report under ~200 chars is as
+                            // useless as none (measured: 48/181/273-char reports
+                            // were delivered as-is).
+                            if (fullResponse.length <= preSynthLen || (req.delegate && fullResponse.length - preSynthLen < 200)) {
                                 const retryMsgs = [
                                     ...currentMessages,
                                     {
@@ -26475,7 +26724,7 @@ const HANDOFF_LEAD_MEMORY_TOKENS = Math.max(300, parseInt(process.env.HANDOFF_LE
 // How the lead revises a draft when late job results land: 'edits' (reply
 // NO CHANGES or SEARCH/REPLACE blocks applied to the draft) or 'full' (rewrite).
 const HANDOFF_REVISION_MODE = (process.env.HANDOFF_REVISION_MODE || 'edits').toLowerCase() === 'full' ? 'full' : 'edits';
-const FULL_REVISION_PROMPT = 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. If they reveal one more piece of legwork you genuinely need, you may dispatch it with ask_assistant first; otherwise reply with the COMPLETE final answer as if writing it for the first time — not a diff, not a comment on the change, and never a mention of the brief, the background results, the assistant or the revision itself. The user sees only this text, in place of the draft.';
+const FULL_REVISION_PROMPT = 'The background results above arrived after you had drafted your reply. Revise it now so it uses them — correct anything they contradict, fill in anything you had to leave out, and do not say information was unavailable if it is in those results. Do not call tools now: reply with the COMPLETE final answer as if writing it for the first time — not a diff, not a comment on the change, and never a mention of the brief, the background results, the assistant or the revision itself. The user sees only this text, in place of the draft.';
 // A tool call still running this long past a job's soft deadline is abandoned
 // so the job can write its report before the hard limit.
 const ASSISTANT_JOB_TOOL_GRACE_MS = Number(process.env.ASSISTANT_JOB_TOOL_GRACE_MS) || 15000;
@@ -26487,6 +26736,7 @@ const JOB_DUP_JUDGE_MS = Number(process.env.JOB_DUP_JUDGE_MS) || 12000;
 const ASSISTANT_JOB_SYNTH_RESERVE_MS = Math.max(10000, parseInt(process.env.ASSISTANT_JOB_SYNTH_RESERVE_MS || '60000', 10) || 60000);
 const IDLE_ASSISTANT_NUDGE_MAX = Math.max(0, parseInt(process.env.IDLE_ASSISTANT_NUDGE_MAX || '2', 10) || 0);
 const ASSISTANT_AWAIT_WINDOW_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_WINDOW_MS || '45000', 10) || 0);
+const ASSISTANT_AWAIT_AFTER_FIRST_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_FIRST_MS || '12000', 10) || 0);
 const ASSISTANT_AWAIT_MAX_MS = Math.max(10000, parseInt(process.env.ASSISTANT_AWAIT_MAX_MS || '240000', 10) || 240000);
 
 // Wait for assistant jobs in BATCHES: return when all are done, or once at
@@ -26494,17 +26744,25 @@ const ASSISTANT_AWAIT_MAX_MS = Math.max(10000, parseInt(process.env.ASSISTANT_AW
 // Returning on the very first finish made a lead that had nothing else to do
 // spend one slow round per job (measured: 8 await calls in one Pi task);
 // waiting for all of them left it idle behind the slowest.
+// The window runs from the FIRST ready result, not from the start of the wait:
+// measured, the 27B lead sat idle 45 s on one await, ~31 s of it with a result
+// already in hand. A short window after the first finish still collects the
+// ones that land close together (why the window exists: 8 awaits in one Pi task).
 async function awaitJobsWindow(wanted, { windowMs = ASSISTANT_AWAIT_WINDOW_MS, maxMs = ASSISTANT_AWAIT_MAX_MS, isClosed = null } = {}) {
     const start = Date.now();
     const ready = () => wanted.some(j => assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled');
+    const afterFirst = Math.min(windowMs, ASSISTANT_AWAIT_AFTER_FIRST_MS);
+    let firstReadyAt = null;
     for (;;) {
         const pending = wanted.filter(assistantQueue.isPending);
         if (!pending.length) return;
         if (isClosed && isClosed()) return;
-        const elapsed = Date.now() - start;
+        const now = Date.now();
+        const elapsed = now - start;
         const haveOne = ready();
-        if (elapsed >= maxMs || (haveOne && elapsed >= windowMs)) return;
-        const until = haveOne ? windowMs - elapsed : maxMs - elapsed;
+        if (haveOne && firstReadyAt == null) firstReadyAt = now;
+        if (elapsed >= maxMs || (firstReadyAt != null && now - firstReadyAt >= afterFirst)) return;
+        const until = firstReadyAt != null ? afterFirst - (now - firstReadyAt) : maxMs - elapsed;
         await Promise.race([
             ...pending.map(j => (j.promise ? j.promise.then(() => true, () => true) : Promise.resolve(true))),
             new Promise(r => setTimeout(r, Math.max(50, until))),
@@ -26512,6 +26770,11 @@ async function awaitJobsWindow(wanted, { windowMs = ASSISTANT_AWAIT_WINDOW_MS, m
     }
 }
 // Cap on an await_assistant once the lead already has results this turn.
+// The tools a background legwork job is given (see the router block).
+const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWORK_SALVAGE_EVIDENCE_CHARS || '14000', 10) || 14000);
+const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file'];
+// Output cap for a background job's report round.
+const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
 const HANDOFF_FOLLOWUP_JOBS = Math.max(1, parseInt(process.env.HANDOFF_FOLLOWUP_JOBS || '3', 10) || 3);
 // Background legwork the lead can have running at once (ask_assistant).
@@ -26616,7 +26879,22 @@ async function screenDuplicateJob(jobs, job, model) {
     }
 }
 
-function startAssistantJobs(ctx, items, model) {
+// How many of the assistant's jobs truly run at once: never more than its
+// slots (a 3rd job on a 2-slot llama.cpp model only queues inside the server).
+// Every room check, the delivery note and the lead's prelude use THIS number —
+// they used ASSISTANT_MAX_PARALLEL=3 while the queue ran 2, so follow-ups were
+// proposed with no slot free and waited 22-34 s, and the lead was told it had
+// "1 free slot" when it had none.
+function effectiveAssistantParallel(model, want = ASSISTANT_MAX_PARALLEL) {
+    let slots = 0;
+    try { slots = modelSlotCount(modelInstances.get(model)) || 0; } catch (_) { slots = 0; }
+    return slots > 0 ? Math.max(1, Math.min(want, slots)) : want;
+}
+
+// origin: 'brief' (auto-started from the first pass), 'lead' (ask_assistant),
+// 'followup' (proposed by the assistant itself). The end-of-turn drain waits
+// only for the first two.
+function startAssistantJobs(ctx, items, model, { origin = null } = {}) {
     const jobs = ctx._assistantJobs;
     if (!jobs || !Array.isArray(items) || !items.length) return [];
     // One queue per turn, created lazily around the turn's job Map so every
@@ -26630,10 +26908,11 @@ function startAssistantJobs(ctx, items, model) {
         // Never more parallel jobs than the assistant model has slots: a 3rd job
         // on a 2-slot llama.cpp model only queues inside llama-server, where it
         // looks "running" while doing nothing and slows the other two.
-        const assistantSlots = (() => { try { return modelSlotCount(modelInstances.get(model)) || 0; } catch (_) { return 0; } })();
-        const wantParallel = ctx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL;
         jobs._queue = assistantQueue.createAssistantQueue({
-            maxParallel: assistantSlots > 0 ? Math.max(1, Math.min(wantParallel, assistantSlots)) : wantParallel,
+            maxParallel: effectiveAssistantParallel(model, ctx.assistantMaxParallel || ASSISTANT_MAX_PARALLEL),
+            // Other turns' jobs (a second conversation, a Pi task) use the same
+            // slots: start a queued job only when the model really has one free.
+            canStart: () => ((chatCapacity().models.find(m => m.name === model) || {}).free || 0) > 0,
             maxJobs: ctx.assistantMaxJobs || ASSISTANT_MAX_JOBS,
             jobs,
             onChange: () => { if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId)); },
@@ -26641,6 +26920,11 @@ function startAssistantJobs(ctx, items, model) {
                 if (job.status === 'cancelled') return null;
                 if (dup) {
                     job.duplicateOf = dup.id;
+                    // Nothing to deliver: the original's report reaches the lead
+                    // on its own. Delivering "not run, repeats X" cost the lead a
+                    // round reading a non-result — and the delivery text invited
+                    // it to hand over MORE work.
+                    job.delivered = true;
                     logUserActivity(ctx.userId, `Assistant: skipped "${job.name}" — it repeats "${dup.name}" (${dup.status})`);
                     return {
                         name: job.name, status: 'ok', toolCalls: 0, tools: [], filesWritten: [],
@@ -26672,6 +26956,7 @@ function startAssistantJobs(ctx, items, model) {
                     task: leadHandoff.buildJobBrief({
                         job,
                         goal: ctx._handoffGoal && ctx._handoffGoal.userText,
+                        context: (ctx._handoffGoal && ctx._handoffGoal.context) || '',
                         plan: (ctx._handoffGoal && ctx._handoffGoal.plan) || [],
                         leadModel: ctx.model,
                         siblings: [...jobs.values()].map(j => ({ id: j.id, name: j.name, task: j.task, status: j.status })),
@@ -26679,6 +26964,7 @@ function startAssistantJobs(ctx, items, model) {
                         budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} rounds, about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s); aim for 2-4 tool calls in all (one search plus the one or two pages that answer it). Then reply with your report. Do not attempt the user's whole request.]`,
                     }),
                     label: job.name,
+                    kind: 'legwork',
                     // The loop runs rounds 0..maxRounds, i.e. maxRounds + 1.
                     maxRounds: Math.max(1, ASSISTANT_JOB_MAX_ROUNDS - 1),
                     timeoutMs: ASSISTANT_JOB_TIMEOUT_MS,
@@ -26744,14 +27030,22 @@ function startAssistantJobs(ctx, items, model) {
     // chipId so each chip shows ITS batch — patching the whole list onto
     // whichever chip was current showed only the first batch ("just 3 tasks").
     jobs._batchSeq = (jobs._batchSeq || 0) + 1;
-    const { accepted, rejected } = q.add(items, { batch: jobs._batchSeq, model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null, chipId: ctx._assistantChipId || ctx._toolCallId || null });
+    const { accepted, rejected } = q.add(items, { batch: jobs._batchSeq, model, from: ctx.model || null, dispatchCallId: ctx._toolCallId || null, chipId: ctx._assistantChipId || ctx._toolCallId || null, origin: origin || (ctx._toolCallId ? 'lead' : 'brief') });
     if (rejected.length) console.warn(`[Chat Stream] Hand-off: ${rejected.length} job(s) refused — per-turn budget of ${ASSISTANT_MAX_JOBS} reached`);
     const dispatched = accepted.map(a => ({ id: a.id, name: a.name, status: a.status }));
     dispatched.rejected = rejected;
+    // Re-pump while jobs wait on another turn's slots (canStart said no).
+    if (!jobs._repump && [...jobs.values()].some(j => j.status === 'queued')) {
+        jobs._repump = setInterval(() => {
+            if (![...jobs.values()].some(j => j.status === 'queued')) { clearInterval(jobs._repump); jobs._repump = null; return; }
+            try { q.pump(); } catch (_) { /* best effort */ }
+        }, 1500);
+        if (jobs._repump.unref) jobs._repump.unref();
+    }
     return dispatched;
 }
 
-async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null, handoffGoal = null }) {
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null, handoffGoal = null, kind = null }) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
     if (signal) {
@@ -26783,6 +27077,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
         once() {},
         delegate: {
             label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, maxRounds: maxRounds || null, signal: controller.signal,
+            kind: kind || null,
             handoffGoal: handoffGoal || null,
             // With an explicit time limit (background jobs), stop tools early
             // enough to write the report before the hard cutoff.
@@ -26799,6 +27094,8 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
     let httpError = null;
     let finished = false;
     const toolTrace = [];
+    const evidence = [];
+    let evidenceChars = 0;
     const filesWritten = new Set();
     const pending = new Map();
     let buffer = '';
@@ -26836,6 +27133,16 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
             const p = pending.get(ev.tool_call_id);
             pending.delete(ev.tool_call_id);
             const r = ev.result;
+            if (kind === 'legwork' && r != null) {
+                try {
+                    const txt = typeof r === 'string' ? r : JSON.stringify(r);
+                    if (evidenceChars < LEGWORK_SALVAGE_EVIDENCE_CHARS) {
+                        const piece = txt.slice(0, Math.min(5000, LEGWORK_SALVAGE_EVIDENCE_CHARS - evidenceChars));
+                        evidence.push(`[${ev.name}${p && p.purpose ? ` — ${p.purpose}` : ''}]\n${piece}`);
+                        evidenceChars += piece.length;
+                    }
+                } catch (_) { /* evidence is best-effort */ }
+            }
             const failed = !!(r && typeof r === 'object' && (r.error || r.success === false));
             const ms = p ? Date.now() - p.at : undefined;
             toolTrace.push({ name: ev.name, purpose: (p && p.purpose) || undefined, ok: !failed, ms });
@@ -26888,6 +27195,26 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
     const aborted = controller.signal.aborted;
     const timedOut = aborted && !(signal && signal.aborted) && Date.now() - startedAt >= turnTimeoutMs - 1000;
     let answer = String(content || '').trim();
+    // A legwork job that did its lookups but wrote (almost) no report: one
+    // short tools-free call over what its tools returned. Measured on the fast
+    // model: with its own tool-call history in the prompt it answered the
+    // report request with yet another tool call, 2 of 5 jobs in one turn.
+    let salvaged = false;
+    if (kind === 'legwork' && answer.length < 200 && evidence.length && !(signal && signal.aborted) && !httpError) {
+        try {
+            const r = await Promise.race([
+                requestModelCompletion({
+                    model,
+                    messages: [{ role: 'user', content: leadHandoff.buildReportSalvageTask({ task, evidence: evidence.join('\n\n'), partial: answer }) }],
+                    temperature: 0.2, maxTokens: JOB_REPORT_MAX_TOKENS, disableThinking: true,
+                }),
+                new Promise(resolve => setTimeout(() => resolve(null), 30000)),
+            ]);
+            const text = r && typeof r.content === 'string' ? r.content.trim() : '';
+            if (text.length > answer.length) { answer = text; salvaged = true; }
+            console.log(`[Assistant] "${label}": empty report salvaged from ${evidence.length} tool result(s) — ${text.length} chars`);
+        } catch (e) { console.warn(`[Assistant] "${label}": report salvage failed: ${e.message}`); }
+    }
     let truncated = false;
     if (answer.length > DELEGATE_ANSWER_CHARS) { answer = answer.slice(0, DELEGATE_ANSWER_CHARS); truncated = true; }
     const status = httpError ? 'failed' : error ? 'failed' : timedOut ? 'timeout' : aborted ? 'cancelled' : answer ? 'ok' : 'empty';
@@ -27224,7 +27551,8 @@ function fitCompletionMessagesToContext(messages, budgetTokens) {
     return out;
 }
 
-async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking, preferFree = false } = {}) {
+const PREFER_FREE_WAIT_MS = Math.max(0, parseInt(process.env.PREFER_FREE_WAIT_MS || '60000', 10) || 0);
+async function requestModelCompletion({ messages, model, temperature, maxTokens, disableThinking, preferFree = false, waitMs = undefined, failIfBusy = false } = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error('messages[] is required');
     }
@@ -27235,7 +27563,7 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
         targetInstance = running.find(i => i.modelName === model)
             || modelInstances.get(model)
             || running[0];
-    } else if (preferFree && running.length > 1) {
+    } else if (running.length > 1) {
         // Background housekeeping (memory extraction, experience refinement,
         // pruning) goes to the model with the most free slots, then the
         // fastest — not simply the first instance. With a pair loaded that was
@@ -27243,13 +27571,38 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
         // the lead's only slot, replacing its cached context and making the
         // next turn's first round wait behind it.
         try {
-            const cap = chatCapacity().models;
-            const scored = running.map((i) => {
-                const c = cap.find(m => m.name === i.modelName) || {};
-                return { i, free: Number(c.free) || 0, tps: Number(c.tokensPerSecond) || 0 };
-            }).sort((a, b) => (b.free - a.free) || (b.tps - a.tps));
+            // No model named (automation model nodes, the automation builder,
+            // housekeeping): a model with a FREE slot and more than one slot
+            // first, then the most free, then the fastest — never simply the
+            // first instance in the Map, which on this host was the 1-slot
+            // lead (a daily automation node held it 171-239 s mid-turn).
+            const pick = () => {
+                const cap = chatCapacity().models;
+                return running.map((i) => {
+                    const c = cap.find(m => m.name === i.modelName) || {};
+                    const free = Number(c.free) || 0;
+                    return { i, free, multi: free > 0 && (Number(c.slots) || 1) >= 2 ? 1 : 0, tps: Number(c.tokensPerSecond) || 0 };
+                }).sort((a, b) => (b.multi - a.multi) || (b.free - a.free) || (b.tps - a.tps));
+            };
+            let scored = pick();
+            // Every model busy (a paired turn: the lead on the 27B, jobs on the
+            // 14B's slots) — wait for a slot to free up rather than squeeze in
+            // beside a job (measured: two memory refines landed on the 14B mid-
+            // job, evicted a job's cache and added 3-5 s to it).
+            const waitUntil = Date.now() + (preferFree ? (Number.isFinite(waitMs) ? waitMs : PREFER_FREE_WAIT_MS) : 0);
+            while (scored.length && scored[0].free <= 0 && Date.now() < waitUntil) {
+                await new Promise(r => setTimeout(r, 1000));
+                scored = pick();
+            }
+            // Background work that would have to squeeze in beside a busy
+            // generation reports it instead, so the caller can defer.
+            if (preferFree && failIfBusy && scored.length && scored[0].free <= 0) {
+                const err = new Error('no free model slot');
+                err.code = 'NO_FREE_SLOT';
+                throw err;
+            }
             targetInstance = scored[0] && scored[0].i;
-        } catch (_) { /* fall back below */ }
+        } catch (e) { if (e && e.code === 'NO_FREE_SLOT') throw e; /* fall back below */ }
         targetInstance = targetInstance || running[0];
     } else {
         targetInstance = running[0] || Array.from(modelInstances.values())[0];
@@ -28725,7 +29078,16 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 // Aggregate across ALL running instances — the old code asked
                 // only the first instance, so with several models loaded a
                 // client (Pi) could neither see nor address the others.
-                const settled = await Promise.allSettled(instances.map(async (inst) => {
+                // The configured PRIMARY goes first: a client that takes the
+                // first entry as its default (Pi does) then starts on the fast
+                // model, and the pair hands real work up from there.
+                let ordered = instances;
+                try {
+                    const pr = req.apiKeyData ? await resolvePiPairRoles(req) : null;
+                    const primaryName = pr && pr.enabled ? pr.roles.primary : null;
+                    if (primaryName) ordered = [...instances].sort((a, b) => (piInstanceName(b) === primaryName) - (piInstanceName(a) === primaryName));
+                } catch (_) { /* keep the Map order */ }
+                const settled = await Promise.allSettled(ordered.map(async (inst) => {
                     const host = inst.containerName || 'host.docker.internal';
                     const port = inst.internalPort || inst.port;
                     const upstream = await axios.get(`http://${host}:${port}${req.originalUrl}`, { timeout: 8000 });
@@ -28904,6 +29266,18 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             }
         }
 
+        // Count a /v1 generation in the busy accounting like a chat turn, so
+        // placement and routing see a Pi task holding the 27B's only slot
+        // (it used to report that model free while Pi was generating on it).
+        if (req.method === 'POST' && req.path === '/v1/chat/completions') {
+            const busyName = piInstanceName(firstInstance);
+            if (busyName) {
+                modelBusyInc(busyName);
+                let released = false;
+                res.on('close', () => { if (!released) { released = true; modelBusyDec(busyName); } });
+            }
+        }
+
         if (isStreaming) {
             // Handle streaming response
             console.log('[Proxy] Streaming request detected');
@@ -29000,6 +29374,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                             const obj = JSON.parse(payload);
                             const t = obj?.usage?.total_tokens;
                             if (typeof t === 'number') lastSeenTotalTokens = t;
+                            if (obj && obj.timings) noteSpeedFromTimings(piInstanceName(firstInstance), obj);
                         } catch (_) { /* skip malformed chunk */ }
                     }
                 } catch (_) { /* parsing must never break the pipe */ }
@@ -29080,6 +29455,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // Track token usage
             if (response.data && (response.data.usage || response.data.tokens)) {
                 const tokens = response.data.usage?.total_tokens || response.data.tokens?.total_tokens || 0;
+                if (response.data && response.data.timings) noteSpeedFromTimings(piInstanceName(firstInstance), response.data);
                 if (tokens && proxyEffCtx && tokens > proxyEffCtx) {
                     console.warn(`[Proxy] Context window exceeded during generation: ${tokens} total tokens > ${proxyEffCtx} window — oldest context was silently shifted out`);
                     try {
@@ -33517,9 +33893,9 @@ app.use((req, res) => {
                 function: {
                     name: 'ask_assistant',
                     description:
-                        `Hand legwork to your assistant model (${ctx.assistantModel}) and KEEP WORKING — this returns immediately, it does not wait. ` +
-                        'Use it for anything you would otherwise stop and do yourself: look something up, read or list files, run a script and report what it printed, gather reference material, check a fact. ' +
-                        `Up to ${ASSISTANT_MAX_PARALLEL} run at once (more queue and start automatically) and results are delivered to you as they finish, so dispatch what you need EARLY, and hand over MORE whenever your work reveals it — delegation is continuous, not a one-off. Keep the thinking, design and writing for yourself.`,
+                        `Start background research on ${ctx.assistantModel}: a question needing a web search plus several page reads. Returns at once; do single reads yourself. ` +
+                        'Also fits: comparing sources, checking current versions, prices or docs, or a long script run over a big file. A single file read, page read, listing or command is faster done yourself. Each request is {name, task}. ' +
+                        `Up to ${effectiveAssistantParallel(ctx.assistantModel)} run at once (more queue and start automatically) and results are delivered to you as they finish, so dispatch what you need EARLY, and hand over MORE whenever your work reveals it — delegation is continuous, not a one-off. Keep the thinking, design and writing for yourself.`,
                     parameters: {
                         type: 'object',
                         properties: {
@@ -33603,6 +33979,16 @@ app.use((req, res) => {
                 };
             }
             taken.splice(0, taken.length, ...fresh);
+            // A single read (one URL, one file, one command) is 1-3 s for the
+            // lead and a 15-40 s delegated turn for the assistant — refuse it.
+            const singleReads = taken.filter(t => leadHandoff.isSingleReadJob(t.task));
+            if (singleReads.length === taken.length) {
+                return {
+                    error: 'read_it_yourself',
+                    note: `Not started: ${singleReads.map(t => `"${t.name}"`).join(', ')} ${singleReads.length === 1 ? 'is a single read' : 'are single reads'} — one call for you (web reads up to 3 URLs at once; read_file for a file), a much slower background job for the assistant. Do it yourself and keep the assistant for questions that need a search plus several pages.`,
+                };
+            }
+            if (singleReads.length) taken.splice(0, taken.length, ...taken.filter(t => !singleReads.includes(t)));
 
             // Guard the mistake this tool invites: dispatching the assistant to
             // read/verify a /workspace file the lead has not written YET. The
@@ -33650,7 +34036,7 @@ app.use((req, res) => {
                 note: (queued
                     ? `Started ${startedNow} now; ${queued} queued and will start automatically as slots free. `
                     : 'Started. These are running NOW in the background — do not wait for them. ')
-                    + 'Carry on with your own work; each result is delivered to you as soon as it lands. Hand over more whenever your work reveals another independent lookup, read or run. Only call await_assistant if you truly cannot continue without one.',
+                    + 'Carry on with your own work; each result is delivered to you as soon as it lands. Hand over more only for a gap the answer cannot do without — not for extra depth. Only call await_assistant if you truly cannot continue without one.',
             };
         },
     });
@@ -33686,7 +34072,7 @@ app.use((req, res) => {
             if (typeof ids === 'string') ids = [ids];
             const wanted = Array.isArray(ids) && ids.length
                 ? [...jobs.values()].filter(j => ids.includes(j.id) || ids.includes(j.name))
-                : [...jobs.values()].filter(j => assistantQueue.isPending(j) || !j.delivered);
+                : [...jobs.values()].filter(j => j.status === 'running' || (assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled'));
             if (!wanted.length) return { error: 'No matching assistant jobs.', known: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status })) };
             // Return as soon as the FIRST of them finishes (or one already has),
             // not when all do: measured, a lead blocked 188 s on three jobs doing
@@ -33746,6 +34132,10 @@ app.use((req, res) => {
         build(ctx) {
             if (ctx && (ctx.delegateDepth || 0) >= DELEGATE_MAX_DEPTH) return null;
             if (!checkPermission(ctx && ctx.apiKeyData, 'query')) return null;
+            // A turn with a two-model partner fans out through ask_assistant,
+            // which does not block and is round-capped. Offered both, a lead
+            // once called delegate and sat blocked 348 s on one uncapped worker.
+            if (ctx && ctx.assistantModel) return null;
             return {
                 type: 'function',
                 function: {
