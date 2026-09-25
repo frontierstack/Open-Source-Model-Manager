@@ -211,15 +211,15 @@ const formatDuration = (seconds) => {
 // Settings tooltips - detailed descriptions for all sglang configuration options
 const SETTINGS_TOOLTIPS = {
     maxModelLen: "Maximum number of tokens the model can process at once (passed as --context-length). Larger values allow longer conversations but require more VRAM. Your prompt + response must fit within this limit.",
-    cpuOffloadGb: "Amount of model weights (in GB) to offload to CPU RAM. Use when model doesn't fit entirely in GPU VRAM. Some hybrid Mamba+MoE GGUFs (Qwen3.5/3.6-A3B-MTP) hit a causal_conv1d_fwd dtype error under CPU offload — keep at 0 for those.",
-    memFractionStatic: "Fraction of GPU memory (0.0-1.0) that sglang is allowed to use for weights + KV cache (--mem-fraction-static). Default 0.88. Higher values squeeze in more concurrent requests but leave less headroom for spikes.",
-    tensorParallelSize: "Number of GPUs to shard the model across (--tp). Set to your GPU count to split a large model. The entrypoint clamps this to the number of GPUs the container can actually see, so over-requesting won't hang at NCCL init.",
+    cpuOffloadGb: "Accepted for compatibility but has no effect on sglang — it has no CPU-offload flag. Use the llama.cpp backend (GPU layers) when a model does not fit in VRAM.",
+    memFractionStatic: "--mem-fraction-static, default 0.88 (clamped to 0.95). Since sglang 0.5.17 it sets how much of the FREE VRAM (measured before the weights load) is kept in reserve: higher = more KV cache, lower = LESS — too low and sglang refuses to start. To share a card with another model, raise it rather than lower it.",
+    tensorParallelSize: "Number of GPUs to shard the model across (--tp). Defaults to every visible GPU (or the cards picked under GPUs) and is capped at that count. Must divide the model's KV-head count; optimal settings picks a valid value.",
     maxRunningRequests: "Maximum number of concurrent requests sglang will batch at once (--max-running-requests). Higher values improve throughput but use more KV cache memory. Leave at 256 for general chat; reduce if hitting OOM under load.",
     chunkedPrefillSize: "Chunk size in tokens for prefill (--chunked-prefill-size). 4096 is a balanced default. Set -1 to disable for very small models. Larger chunks improve throughput on long prompts at the cost of latency variance.",
     schedulePolicy: "Request scheduling policy. 'lpm' (longest-prefix-match) pairs with RadixAttention and wins on RAG/multi-turn workloads. 'fcfs' (first-come-first-served) is fine for general chat. 'priority' uses an explicit priority field.",
-    kvCacheDtype: "Data type for KV cache (--kv-cache-dtype). 'auto' uses model's native dtype; 'fp8_e5m2' / 'fp8_e4m3' halve KV memory with minimal quality loss on Hopper/Ada+.",
+    kvCacheDtype: "Data type for KV cache (--kv-cache-dtype). 'auto' uses the model's native dtype; 'fp8_e4m3' / 'fp8_e5m2' halve KV memory with minimal quality loss; 'bf16' forces 16-bit. A plain 'fp8' is normalized to fp8_e4m3.",
     trustRemoteCode: "Whether to trust remote code from the model repository (--trust-remote-code). Required for some custom HF model architectures (e.g., GLM-4, certain MoE variants).",
-    toolCallParser: "Parser sglang uses to structure tool-call text into message.tool_calls (--tool-call-parser). Auto-detected from model name (qwen for Qwen2/3 Instruct, qwen3_coder for Coder variants, llama3, mistral, deepseekv3, kimi_k2, glm45, step3, gpt-oss). Leave empty to disable.",
+    toolCallParser: "Parser sglang uses to structure tool-call text into message.tool_calls (--tool-call-parser). Auto-detected from the model name: qwen3_coder for Qwen3.5+ and Coder models (they emit XML tool calls), qwen for older Qwen, pythonic for Llama-4, else llama3 / mistral / deepseekv3 / kimi_k2 / glm45 / step3 / gpt-oss by family. Leave empty to disable.",
     reasoningParser: "Parser sglang uses to separate <think> reasoning from the final answer (--reasoning-parser). Auto-detected: qwen3 for Qwen3 thinking, deepseek-r1 for R1, glm45 for GLM-4.5, kimi for Kimi K2. Empty for non-reasoning models.",
     contextShift: "Enable context shifting to automatically truncate old context when the limit is reached. Without this, requests fail when context is full. Recommended for long conversations.",
     disableThinking: "Controls reasoning/thinking mode for models that support it (e.g., Qwen3, Gemma thinking variants). ON = reasoning enabled (model shows its work in <think> blocks). OFF = reasoning disabled (model answers directly, faster).",
@@ -1945,144 +1945,14 @@ fetch('${baseUrl}/api/models/pull', {
 .then(data => console.log(data.message))
 .catch(err => console.error(err));`
             },
-            '/api/models/:name/load': {
-                curl: `# Bearer Token Authentication
-curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "maxModelLen": 4096,
-    "cpuOffloadGb": 0,
-    "memFractionStatic": 0.88,
-    "tensorParallelSize": 1,
-    "maxRunningRequests": 256,
-    "compressMemory": true
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "maxModelLen": 4096,
-    "cpuOffloadGb": 0,
-    "memFractionStatic": 0.88,
-    "tensorParallelSize": 1,
-    "maxRunningRequests": 256,
-    "compressMemory": true
-  }'
-
-# compressMemory: Enable AIMem memory compression for long conversations
-# Compresses older messages using dedup + lossy + relevance gating (~48% token reduction)`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/models/Llama-2-7B-GGUF/load',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'maxModelLen': 4096,
-        'cpuOffloadGb': 0,
-        'memFractionStatic': 0.88,
-        'tensorParallelSize': 1,
-        'maxRunningRequests': 256
-    },
-    verify=False  # For self-signed certificates
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    '${baseUrl}/api/models/Llama-2-7B-GGUF/load',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'maxModelLen': 4096,
-        'cpuOffloadGb': 0,
-        'memFractionStatic': 0.88,
-        'tensorParallelSize': 1,
-        'maxRunningRequests': 256
-    },
-    verify=False  # For self-signed certificates
-)
-
-result = response.json()
-print(f"Model loaded on port {result['port']}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    maxModelLen = 4096
-    cpuOffloadGb = 0
-    memFractionStatic = 0.88
-    tensorParallelSize = 1
-    maxRunningRequests = 256
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/models/Llama-2-7B-GGUF/load" -Method Post -Headers $headers -Body $body
-Write-Output "Model loaded on port $($response.port)"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/models/Llama-2-7B-GGUF/load', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    maxModelLen: 4096,
-    cpuOffloadGb: 0,
-    memFractionStatic: 0.88,
-    tensorParallelSize: 1,
-    maxRunningRequests: 256
-  })
-})
-.then(res => res.json())
-.then(data => console.log(\`Model loaded on port \${data.port}\`))
-.catch(err => console.error(err));
-
-// OR API Key + Secret Authentication
-fetch('${baseUrl}/api/models/Llama-2-7B-GGUF/load', {
-  method: 'POST',
-  headers: {
-    'X-API-Key': 'your_api_key',
-    'X-API-Secret': 'your_api_secret',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    maxModelLen: 4096,
-    cpuOffloadGb: 0,
-    memFractionStatic: 0.88,
-    tensorParallelSize: 1,
-    maxRunningRequests: 256
-  })
-})
-.then(res => res.json())
-.then(data => console.log(\`Model loaded on port \${data.port}\`))
-.catch(err => console.error(err));`
-            },
             '/api/models/:name': {
-                curl: `# Bearer Token Authentication
-curl -X DELETE ${baseUrl}/api/models/Llama-2-7B-GGUF \\
+                curl: `# WARNING: deletes the model's files from disk (stops any running instance first)
+# Bearer Token Authentication
+curl -k -X DELETE ${baseUrl}/api/models/Llama-2-7B-GGUF \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -X DELETE ${baseUrl}/api/models/Llama-2-7B-GGUF \\
+curl -k -X DELETE ${baseUrl}/api/models/Llama-2-7B-GGUF \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
@@ -2144,11 +2014,11 @@ fetch('${baseUrl}/api/models/Llama-2-7B-GGUF', {
             },
             '/api/sglang/instances': {
                 curl: `# Bearer Token Authentication
-curl -X GET ${baseUrl}/api/sglang/instances \\
+curl -k -X GET ${baseUrl}/api/sglang/instances \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -X GET ${baseUrl}/api/sglang/instances \\
+curl -k -X GET ${baseUrl}/api/sglang/instances \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
@@ -2211,11 +2081,11 @@ fetch('${baseUrl}/api/sglang/instances', {
             },
             '/api/sglang/instances/:name': {
                 curl: `# Bearer Token Authentication
-curl -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
+curl -k -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
+curl -k -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
@@ -2312,11 +2182,17 @@ curl -k -N -X POST ${baseUrl}/api/chat/stream \\
     "chunkingStrategy": "map-reduce"
   }'
 
+# Normal turns stream {"token":"…","choices":[{"delta":{"content":"…","reasoning":"…"}}]}
+# frames; tool calls arrive as {"type":"tool_executing",…} / {"type":"tool_result",…};
+# the turn ends with {"done":true,…} and data: [DONE].
+#
 # SSE Events for Map-Reduce:
-# - {"type":"chunking_progress","phase":"chunking","message":"Splitting..."}
-# - {"type":"chunking_progress","phase":"map","currentChunk":1,"totalChunks":3}
-# - {"type":"chunking_progress","phase":"reduce","message":"Synthesizing..."}
-# - {"done":true,"mapReduce":{"enabled":true,"chunkCount":3,"synthesized":true}}
+# - {"type":"chunking_progress","phase":"starting","message":"Splitting content into chunks for parallel processing...","totalTokens":N}
+# - {"type":"chunking_progress","phase":"chunking","totalChunks":3,"totalTokens":N}
+# - {"type":"chunking_progress","phase":"map","totalChunks":3,"completedChunks":1,"failedChunks":0}
+# - {"type":"chunking_progress","phase":"reduce","totalChunks":3,"completedChunks":3}
+# - {"type":"chunking_progress","phase":"complete",…}
+# - {"done":true,"mapReduce":{"enabled":true,"chunkCount":3,"synthesized":true,"failedChunks":0}}
 #
 # AIMem Compression (when compressMemory enabled on model instance):
 # Final event includes: {"aimem":{"compressed":true,"tokensSaved":N,"reductionPct":N}}`,
@@ -2403,13 +2279,16 @@ async function streamChat(message, bearerToken, chunkingStrategy = 'auto') {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullResponse = '';
+  let buf = '';
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\\n');
+    // A frame can span two reads: keep the unfinished last line for the next one.
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\\n');
+    buf = lines.pop();
 
     for (const line of lines) {
       if (line.startsWith('data: ')) {
@@ -2635,114 +2514,6 @@ Write-Output "Password reset successful!"`,
             // ============================================================================
             // USER MANAGEMENT (Admin Only)
             // ============================================================================
-            '/api/users/invite': {
-                curl: `# Invite user by email (admin only) - creates pending account
-# Bearer Token or Session Authentication required
-curl -k -X POST ${baseUrl}/api/users/invite \\
-  -H "Authorization: Bearer your_admin_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "email": "newuser@example.com" }'`,
-                python: `import requests
-
-response = requests.post(
-    '${baseUrl}/api/users/invite',
-    headers={'Authorization': 'Bearer your_admin_token'},
-    json={'email': 'newuser@example.com'},
-    verify=False
-)
-
-result = response.json()
-if response.status_code == 201:
-    print(f"Invitation sent to {result['user']['email']}")
-else:
-    print(f"Error: {result['error']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_admin_token"
-}
-$body = @{ email = "newuser@example.com" } | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/invite" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-Write-Output "Invitation sent to $($response.user.email)"`,
-                javascript: `fetch('${baseUrl}/api/users/invite', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_admin_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({ email: 'newuser@example.com' })
-})
-.then(res => res.json())
-.then(data => console.log('Invitation sent:', data.user?.email))
-.catch(err => console.error(err));`
-            },
-            '/api/users/:id/disable': {
-                curl: `# Disable user account (admin only)
-curl -k -X PUT ${baseUrl}/api/users/USER_ID_HERE/disable \\
-  -H "Authorization: Bearer your_admin_token"`,
-                python: `import requests
-
-user_id = "USER_ID_HERE"
-response = requests.put(
-    f'${baseUrl}/api/users/{user_id}/disable',
-    headers={'Authorization': 'Bearer your_admin_token'},
-    verify=False
-)
-
-result = response.json()
-if result.get('success'):
-    print(f"User {result['user']['username']} disabled")
-else:
-    print(f"Error: {result['error']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_admin_token"
-}
-$userId = "USER_ID_HERE"
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/$userId/disable" -Method Put -Headers $headers
-Write-Output "User $($response.user.username) disabled"`,
-                javascript: `const userId = 'USER_ID_HERE';
-fetch(\`${baseUrl}/api/users/\${userId}/disable\`, {
-  method: 'PUT',
-  headers: { 'Authorization': 'Bearer your_admin_token' }
-})
-.then(res => res.json())
-.then(data => console.log('User disabled:', data.user?.username))
-.catch(err => console.error(err));`
-            },
-            '/api/users/:id/enable': {
-                curl: `# Enable user account (admin only)
-curl -k -X PUT ${baseUrl}/api/users/USER_ID_HERE/enable \\
-  -H "Authorization: Bearer your_admin_token"`,
-                python: `import requests
-
-user_id = "USER_ID_HERE"
-response = requests.put(
-    f'${baseUrl}/api/users/{user_id}/enable',
-    headers={'Authorization': 'Bearer your_admin_token'},
-    verify=False
-)
-
-result = response.json()
-if result.get('success'):
-    print(f"User {result['user']['username']} enabled")
-else:
-    print(f"Error: {result['error']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_admin_token"
-}
-$userId = "USER_ID_HERE"
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/$userId/enable" -Method Put -Headers $headers
-Write-Output "User $($response.user.username) enabled"`,
-                javascript: `const userId = 'USER_ID_HERE';
-fetch(\`${baseUrl}/api/users/\${userId}/enable\`, {
-  method: 'PUT',
-  headers: { 'Authorization': 'Bearer your_admin_token' }
-})
-.then(res => res.json())
-.then(data => console.log('User enabled:', data.user?.username))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // WEB SEARCH
             // ============================================================================
@@ -2939,7 +2710,7 @@ $response = Invoke-RestMethod -Uri "${baseUrl}/api/url/fetch" -Method Post -Head
 foreach ($result in $response.results) {
     if ($result.success) {
         Write-Output "Title: $($result.title)"
-        Write-Output "Content: $($result.content.Substring(0, 200))..."
+        Write-Output "Content: $($result.content.Substring(0, [Math]::Min(200, $result.content.Length)))..."
     } else {
         Write-Output "Failed: $($result.url) - $($result.error)"
     }
@@ -3082,7 +2853,7 @@ $body = @{
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/fetch" -Method Post -Headers $headers -Body $body
 Write-Output "Title: $($response.title)"
-Write-Output "Content: $($response.content.Substring(0, 500))..."`,
+Write-Output "Content: $($response.content.Substring(0, [Math]::Min(500, $response.content.Length)))..."`,
                 javascript: `// Bearer Token Authentication
 fetch('${baseUrl}/api/playwright/fetch', {
   method: 'POST',
@@ -3190,7 +2961,7 @@ response = requests.post(
 )
 
 result = response.json()
-print(f"Final URL: {result['url']}")
+print(f"Final URL: {result['finalUrl']}")
 print(f"Content after interaction: {result['content'][:500]}...")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
@@ -3214,7 +2985,7 @@ $body = @{
 } | ConvertTo-Json -Depth 3
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/interact" -Method Post -Headers $headers -Body $body
-Write-Output "Final URL: $($response.url)"`,
+Write-Output "Final URL: $($response.finalUrl)"`,
                 javascript: `// Bearer Token Authentication
 fetch('${baseUrl}/api/playwright/interact', {
   method: 'POST',
@@ -3232,7 +3003,7 @@ fetch('${baseUrl}/api/playwright/interact', {
   })
 })
 .then(res => res.json())
-.then(data => console.log('Final URL:', data.url))
+.then(data => console.log('Final URL:', data.finalUrl))
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
@@ -3252,7 +3023,7 @@ fetch('${baseUrl}/api/playwright/interact', {
   })
 })
 .then(res => res.json())
-.then(data => console.log('Final URL:', data.url))
+.then(data => console.log('Final URL:', data.finalUrl))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -3323,70 +3094,6 @@ fetch('${baseUrl}/api/system/resources', {
 .then(data => {
   console.log(\`CPU: \${data.cpu.model} (\${data.cpu.cores} cores)\`);
   console.log(\`RAM: \${(data.memory.total / 1024**3).toFixed(1)} GB\`);
-})
-.catch(err => console.error(err));`
-            },
-            '/api/system/optimal-settings': {
-                curl: `# Calculate optimal launch settings for a model
-curl -k -X POST ${baseUrl}/api/system/optimal-settings \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "modelName": "Llama-2-7B-GGUF",
-    "modelSize": 4000000000,
-    "quantization": "Q4_K_M"
-  }'`,
-                python: `import requests
-
-response = requests.post(
-    '${baseUrl}/api/system/optimal-settings',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'modelName': 'Llama-2-7B-GGUF',
-        'modelSize': 4000000000,
-        'quantization': 'Q4_K_M'
-    },
-    verify=False
-)
-
-settings = response.json()
-print(f"Recommended settings:")
-print(f"  GPU Layers: {settings['nGpuLayers']}")
-print(f"  Context Size: {settings['contextSize']}")
-print(f"  Flash Attention: {settings['flashAttention']}")
-print(f"  Parallel Slots: {settings['parallelSlots']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    modelName = "Llama-2-7B-GGUF"
-    modelSize = 4000000000
-    quantization = "Q4_K_M"
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/system/optimal-settings" -Method Post -Headers $headers -Body $body
-Write-Output "Recommended GPU Layers: $($response.nGpuLayers)"
-Write-Output "Context Size: $($response.contextSize)"`,
-                javascript: `fetch('${baseUrl}/api/system/optimal-settings', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    modelName: 'Llama-2-7B-GGUF',
-    modelSize: 4000000000,
-    quantization: 'Q4_K_M'
-  })
-})
-.then(res => res.json())
-.then(settings => {
-  console.log('Recommended settings:', settings);
 })
 .catch(err => console.error(err));`
             },
@@ -3633,266 +3340,39 @@ fetch('${baseUrl}/api/skills/read_file/execute', {
             // ============================================================================
             // TASKS
             // ============================================================================
-            '/api/tasks': {
-                curl: `# List all tasks
-curl -k -X GET ${baseUrl}/api/tasks \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Create a new task
-curl -k -X POST ${baseUrl}/api/tasks \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "title": "Review code changes",
-    "description": "Review PR #123 for security issues",
-    "agentId": "agent-id-here",
-    "priority": "high"
-  }'`,
-                python: `import requests
-
-# List tasks
-response = requests.get(
-    '${baseUrl}/api/tasks',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-tasks = response.json()
-for task in tasks:
-    print(f"- [{task['status']}] {task['title']}")
-
-# Create task
-response = requests.post(
-    '${baseUrl}/api/tasks',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'title': 'Review code changes',
-        'description': 'Review PR #123 for security issues',
-        'priority': 'high'
-    },
-    verify=False
-)
-print(f"Created task: {response.json()['id']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-# List tasks
-$tasks = Invoke-RestMethod -Uri "${baseUrl}/api/tasks" -Headers $headers
-$tasks | ForEach-Object { Write-Output "- [$($_.status)] $($_.title)" }
-
-# Create task
-$body = @{
-    title = "Review code changes"
-    description = "Review PR #123 for security issues"
-    priority = "high"
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/tasks" -Method Post -Headers $headers -Body $body
-Write-Output "Created task: $($response.id)"`,
-                javascript: `// List tasks
-fetch('${baseUrl}/api/tasks', {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(tasks => tasks.forEach(t => console.log(\`- [\${t.status}] \${t.title}\`)));
-
-// Create task
-fetch('${baseUrl}/api/tasks', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    title: 'Review code changes',
-    description: 'Review PR #123 for security issues',
-    priority: 'high'
-  })
-})
-.then(res => res.json())
-.then(task => console.log('Created task:', task.id));`
-            },
             // ============================================================================
             // FILE OPERATIONS (Agent API)
             // ============================================================================
-            '/api/agent/file/read': {
-                curl: `# Read a file
-curl -k -X POST ${baseUrl}/api/agent/file/read \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "path": "/path/to/file.txt"
-  }'`,
-                python: `import requests
-
-response = requests.post(
-    '${baseUrl}/api/agent/file/read',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={'path': '/path/to/file.txt'},
-    verify=False
-)
-
-result = response.json()
-if result.get('success'):
-    print(result['content'])
-else:
-    print(f"Error: {result['error']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{ path = "/path/to/file.txt" } | ConvertTo-Json
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/read" -Method Post -Headers $headers -Body $body
-Write-Output $response.content`,
-                javascript: `fetch('${baseUrl}/api/agent/file/read', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({ path: '/path/to/file.txt' })
-})
-.then(res => res.json())
-.then(data => {
-  if (data.success) console.log(data.content);
-  else console.error(data.error);
-});`
-            },
-            '/api/agent/file/write': {
-                curl: `# Write to a file
-curl -k -X POST ${baseUrl}/api/agent/file/write \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "path": "/path/to/file.txt",
-    "content": "Hello, World!\\nThis is line 2."
-  }'`,
-                python: `import requests
-
-response = requests.post(
-    '${baseUrl}/api/agent/file/write',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'path': '/path/to/file.txt',
-        'content': 'Hello, World!\\nThis is line 2.'
-    },
-    verify=False
-)
-
-result = response.json()
-print('Success!' if result.get('success') else f"Error: {result['error']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    path = "/path/to/file.txt"
-    content = "Hello, World!\`nThis is line 2."
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/write" -Method Post -Headers $headers -Body $body
-Write-Output "File written successfully"`,
-                javascript: `fetch('${baseUrl}/api/agent/file/write', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    path: '/path/to/file.txt',
-    content: 'Hello, World!\\nThis is line 2.'
-  })
-})
-.then(res => res.json())
-.then(data => console.log(data.success ? 'Success!' : data.error));`
-            },
-            '/api/agent/file/list': {
-                curl: `# List directory contents
-curl -k -X POST ${baseUrl}/api/agent/file/list \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "path": "/path/to/directory"
-  }'`,
-                python: `import requests
-
-response = requests.post(
-    '${baseUrl}/api/agent/file/list',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={'path': '/path/to/directory'},
-    verify=False
-)
-
-result = response.json()
-if result.get('success'):
-    for item in result['files']:
-        type_icon = '📁' if item['isDirectory'] else '📄'
-        print(f"{type_icon} {item['name']} ({item['size']} bytes)")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{ path = "/path/to/directory" } | ConvertTo-Json
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/list" -Method Post -Headers $headers -Body $body
-$response.files | ForEach-Object { Write-Output "$($_.name) ($($_.size) bytes)" }`,
-                javascript: `fetch('${baseUrl}/api/agent/file/list', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({ path: '/path/to/directory' })
-})
-.then(res => res.json())
-.then(data => {
-  data.files?.forEach(f => {
-    const icon = f.isDirectory ? '📁' : '📄';
-    console.log(\`\${icon} \${f.name} (\${f.size} bytes)\`);
-  });
-});`
-            },
             // ============================================================================
             // API KEYS
             // ============================================================================
             '/api/api-keys': {
-                curl: `# List all API keys (admin only)
+                curl: `# Admin only: an API key + secret whose key has the admin permission
+# (or an admin browser session). Bearer tokens are not accepted here.
+
+# List all API keys (includes secrets)
 curl -k -X GET ${baseUrl}/api/api-keys \\
-  -H "Authorization: Bearer your_admin_token"
+  -H "X-API-Key: your_admin_api_key" \\
+  -H "X-API-Secret: your_admin_api_secret"
 
 # Create a new API key
 curl -k -X POST ${baseUrl}/api/api-keys \\
-  -H "Authorization: Bearer your_admin_token" \\
+  -H "X-API-Key: your_admin_api_key" \\
+  -H "X-API-Secret: your_admin_api_secret" \\
   -H "Content-Type: application/json" \\
   -d '{
     "name": "Production API Key",
     "permissions": ["query", "models"],
-    "rateLimit": {
-      "requestsPerHour": 1000,
-      "tokensPerDay": 100000
-    }
+    "rateLimitRequests": 60,
+    "rateLimitTokens": 100000,
+    "bearerOnly": false
   }'`,
                 python: `import requests
 
 # List API keys
 response = requests.get(
     '${baseUrl}/api/api-keys',
-    headers={'Authorization': 'Bearer your_admin_token'},
+    headers={'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret'},
     verify=False
 )
 keys = response.json()
@@ -3903,25 +3383,26 @@ for key in keys:
 response = requests.post(
     '${baseUrl}/api/api-keys',
     headers={
-        'Authorization': 'Bearer your_admin_token',
+        'X-API-Key': 'your_admin_api_key',
+        'X-API-Secret': 'your_admin_api_secret',
         'Content-Type': 'application/json'
     },
     json={
         'name': 'Production API Key',
         'permissions': ['query', 'models'],
-        'rateLimit': {
-            'requestsPerHour': 1000,
-            'tokensPerDay': 100000
-        }
+        'rateLimitRequests': 60,     # requests per minute
+        'rateLimitTokens': 100000,   # tokens per day
+        'bearerOnly': False          # True = Bearer key (Pi), no secret
     },
     verify=False
 )
 key_data = response.json()
 print(f"API Key: {key_data['key']}")
 print(f"Secret: {key_data['secret']}")
-print("Save these - the secret won't be shown again!")`,
+print("For a bearerOnly key the secret is null: use the key as the Bearer token")`,
                 powershell: `$headers = @{
-    "Authorization" = "Bearer your_admin_token"
+    "X-API-Key" = "your_admin_api_key"
+    "X-API-Secret" = "your_admin_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -3933,10 +3414,9 @@ $keys | ForEach-Object { Write-Output "- $($_.name): $($_.permissions -join ', '
 $body = @{
     name = "Production API Key"
     permissions = @("query", "models")
-    rateLimit = @{
-        requestsPerHour = 1000
-        tokensPerDay = 100000
-    }
+    rateLimitRequests = 60
+    rateLimitTokens = 100000
+    bearerOnly = $false
 } | ConvertTo-Json -Depth 3
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/api-keys" -Method Post -Headers $headers -Body $body
@@ -3944,7 +3424,7 @@ Write-Output "API Key: $($response.key)"
 Write-Output "Secret: $($response.secret)"`,
                 javascript: `// List API keys
 fetch('${baseUrl}/api/api-keys', {
-  headers: { 'Authorization': 'Bearer your_admin_token' }
+  headers: { 'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret' }
 })
 .then(res => res.json())
 .then(keys => keys.forEach(k => console.log(\`- \${k.name}: \${k.permissions.join(', ')}\`)));
@@ -3953,74 +3433,28 @@ fetch('${baseUrl}/api/api-keys', {
 fetch('${baseUrl}/api/api-keys', {
   method: 'POST',
   headers: {
-    'Authorization': 'Bearer your_admin_token',
+    'X-API-Key': 'your_admin_api_key',
+    'X-API-Secret': 'your_admin_api_secret',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
     name: 'Production API Key',
     permissions: ['query', 'models'],
-    rateLimit: {
-      requestsPerHour: 1000,
-      tokensPerDay: 100000
-    }
+    rateLimitRequests: 60,   // requests per minute
+    rateLimitTokens: 100000, // tokens per day
+    bearerOnly: false        // true = Bearer key (Pi), no secret
   })
 })
 .then(res => res.json())
 .then(data => {
   console.log('API Key:', data.key);
   console.log('Secret:', data.secret);
-  console.log('Save these - the secret will not be shown again!');
+  console.log('For a bearerOnly key the secret is null: use the key as the Bearer token');
 });`
             },
             // ============================================================================
             // HUGGINGFACE SEARCH
             // ============================================================================
-            '/api/huggingface/search': {
-                curl: `# Search HuggingFace for GGUF models
-curl -k -G "${baseUrl}/api/huggingface/search" \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  --data-urlencode "q=llama 7b gguf" \\
-  --data-urlencode "limit=10"`,
-                python: `import requests
-
-response = requests.get(
-    '${baseUrl}/api/huggingface/search',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    params={
-        'q': 'llama 7b gguf',
-        'limit': 10
-    },
-    verify=False
-)
-
-results = response.json()
-for model in results:
-    print(f"- {model['id']}: {model['downloads']} downloads")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$query = [uri]::EscapeDataString("llama 7b gguf")
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/search?q=$query&limit=10" -Headers $headers
-$response | ForEach-Object { Write-Output "- $($_.id): $($_.downloads) downloads" }`,
-                javascript: `const params = new URLSearchParams({
-  q: 'llama 7b gguf',
-  limit: 10
-});
-
-fetch(\`${baseUrl}/api/huggingface/search?\${params}\`, {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(models => models.forEach(m => console.log(\`- \${m.id}: \${m.downloads} downloads\`)));`
-            },
             // ============================================================================
             // APPS MANAGEMENT
             // ============================================================================
@@ -4064,43 +3498,65 @@ fetch('${baseUrl}/api/apps', {
             // CHAT UPLOAD
             // ============================================================================
             '/api/chat/upload': {
-                curl: `# Upload a file for chat (images, PDFs, text files)
+                curl: `# Upload a file for chat (images, PDFs, spreadsheets, text, archives).
+# Send the RAW bytes (not multipart) with the name in X-Upload-Filename
+# (URI-encoded). Size limit = the admin "upload size" setting (413 above it).
+# Requires the \`query\` permission.
 curl -k -X POST ${baseUrl}/api/chat/upload \\
   -H "Authorization: Bearer your_bearer_token" \\
-  -F "file=@/path/to/document.pdf"
+  -H "Content-Type: application/octet-stream" \\
+  -H "X-Upload-Filename: document.pdf" \\
+  -H "X-Upload-Mime: application/pdf" \\
+  --data-binary @/path/to/document.pdf
 
 # OR API Key + Secret Authentication
 curl -k -X POST ${baseUrl}/api/chat/upload \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret" \\
-  -F "file=@/path/to/image.png"`,
+  -H "Content-Type: application/octet-stream" \\
+  -H "X-Upload-Filename: document.pdf" \\
+  -H "X-Upload-Mime: application/pdf" \\
+  --data-binary @/path/to/document.pdf
+
+# Response (text file): { "type": "text", "filename": "note.txt", "attachmentId": "…",
+#   "content": "…", "size": 17, "estimatedTokens": 4, "requiresChunking": false, … }`,
                 python: `import requests
+from urllib.parse import quote
+
+path = '/path/to/document.pdf'
 
 # Bearer Token Authentication
-with open('/path/to/document.pdf', 'rb') as f:
+with open(path, 'rb') as f:
     response = requests.post(
         '${baseUrl}/api/chat/upload',
-        headers={'Authorization': 'Bearer your_bearer_token'},
-        files={'file': f},
+        headers={
+            'Authorization': 'Bearer your_bearer_token',
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Filename': quote('document.pdf'),
+            'X-Upload-Mime': 'application/pdf'
+        },
+        data=f,  # streamed as raw bytes
         verify=False
     )
 
 # OR API Key + Secret Authentication
-with open('/path/to/image.png', 'rb') as f:
+with open(path, 'rb') as f:
     response = requests.post(
         '${baseUrl}/api/chat/upload',
         headers={
             'X-API-Key': 'your_api_key',
-            'X-API-Secret': 'your_api_secret'
+            'X-API-Secret': 'your_api_secret',
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Filename': quote('document.pdf'),
+            'X-Upload-Mime': 'application/pdf'
         },
-        files={'file': f},
+        data=f,
         verify=False
     )
 
 result = response.json()
 print(f"Uploaded: {result['filename']}, Type: {result['type']}")
-# PDFs and spreadsheets also return an attachmentId — used to fetch
-# the raw bytes (PDF) or structured sheets (xlsx) on demand via
+# The attachmentId fetches the stored bytes / metadata later via
 # GET /api/attachments/:id and /api/attachments/:id/meta.
 if result.get('attachmentId'):
     print(f"attachmentId: {result['attachmentId']}")`,
@@ -4115,56 +3571,32 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-# Upload file
 $filePath = "C:\\path\\to\\document.pdf"
-$fileBytes = [System.IO.File]::ReadAllBytes($filePath)
-$fileName = [System.IO.Path]::GetFileName($filePath)
+$headers["X-Upload-Filename"] = [uri]::EscapeDataString([System.IO.Path]::GetFileName($filePath))
+$headers["X-Upload-Mime"] = "application/pdf"
 
-$boundary = [System.Guid]::NewGuid().ToString()
-$contentType = "multipart/form-data; boundary=$boundary"
-
-$body = @"
---$boundary
-Content-Disposition: form-data; name="file"; filename="$fileName"
-Content-Type: application/octet-stream
-
-$([System.Text.Encoding]::UTF8.GetString($fileBytes))
---$boundary--
-"@
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/upload" -Method Post -Headers $headers -ContentType $contentType -Body $body
-Write-Output "Uploaded: $($response.filename)"
-# PDFs and spreadsheets include an attachmentId for fetching bytes/meta later.
+# -InFile sends the raw bytes unchanged
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/upload" -Method Post -Headers $headers -ContentType "application/octet-stream" -InFile $filePath
+Write-Output "Uploaded: $($response.filename) ($($response.type))"
 if ($response.attachmentId) { Write-Output "attachmentId: $($response.attachmentId)" }`,
-                javascript: `// Bearer Token Authentication
-const formData = new FormData();
-formData.append('file', fileInput.files[0]);
+                javascript: `// Bearer Token Authentication (browser: file from an <input type="file">)
+const file = fileInput.files[0];
 
 fetch('${baseUrl}/api/chat/upload', {
   method: 'POST',
-  headers: { 'Authorization': 'Bearer your_bearer_token' },
-  body: formData
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/octet-stream',
+    'X-Upload-Filename': encodeURIComponent(file.name),
+    'X-Upload-Mime': file.type || 'application/octet-stream'
+  },
+  body: file  // raw bytes, not FormData
 })
 .then(res => res.json())
 .then(data => {
   console.log('Uploaded:', data.filename, 'Type:', data.type);
-  // PDFs and spreadsheets include an attachmentId — fetch bytes/meta with
-  // GET /api/attachments/:id and /api/attachments/:id/meta.
   if (data.attachmentId) console.log('attachmentId:', data.attachmentId);
 })
-.catch(err => console.error(err));
-
-// OR API Key + Secret Authentication
-fetch('${baseUrl}/api/chat/upload', {
-  method: 'POST',
-  headers: {
-    'X-API-Key': 'your_api_key',
-    'X-API-Secret': 'your_api_secret'
-  },
-  body: formData
-})
-.then(res => res.json())
-.then(data => console.log('Uploaded:', data.filename))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -4374,7 +3806,7 @@ response = requests.get(
 )
 
 result = response.json()
-if result.get('hasContinuation'):
+if result.get('hasMore'):
     print(f"Remaining: {result['remainingTokens']} tokens")
     print(f"Chunk {result['processedChunks']}/{result['totalChunks']}")`,
                 powershell: `# Bearer Token Authentication
@@ -4391,7 +3823,7 @@ $headers = @{
 $conversationId = "conv_abc123"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/continuation/$conversationId" -Headers $headers
-if ($response.hasContinuation) {
+if ($response.hasMore) {
     Write-Output "Remaining: $($response.remainingTokens) tokens"
     Write-Output "Chunk $($response.processedChunks)/$($response.totalChunks)"
 }`,
@@ -4403,7 +3835,7 @@ fetch(\`${baseUrl}/api/chat/continuation/\${conversationId}\`, {
 })
 .then(res => res.json())
 .then(data => {
-  if (data.hasContinuation) {
+  if (data.hasMore) {
     console.log('Remaining:', data.remainingTokens, 'tokens');
     console.log(\`Chunk \${data.processedChunks}/\${data.totalChunks}\`);
   }
@@ -4413,73 +3845,13 @@ fetch(\`${baseUrl}/api/chat/continuation/\${conversationId}\`, {
             // ============================================================================
             // AUTH - LOGOUT
             // ============================================================================
-            '/api/auth/logout': {
-                curl: `# Logout current user
-curl -k -X POST ${baseUrl}/api/auth/logout \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/auth/logout \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/auth/logout',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    '${baseUrl}/api/auth/logout',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-print("Logged out successfully" if response.ok else "Logout failed")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/logout" -Method Post -Headers $headers
-Write-Output "Logged out successfully"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/auth/logout', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(() => console.log('Logged out successfully'))
-.catch(err => console.error(err));
-
-// OR API Key + Secret Authentication
-fetch('${baseUrl}/api/auth/logout', {
-  method: 'POST',
-  headers: {
-    'X-API-Key': 'your_api_key',
-    'X-API-Secret': 'your_api_secret'
-  }
-})
-.then(() => console.log('Logged out'))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // AUTH - GET CURRENT USER
             // ============================================================================
             '/api/auth/me': {
-                curl: `# Get current authenticated user info
+                curl: `# Who am I? With an API key this returns { apiKey: { id, name, permissions,
+# rateLimitRequests, rateLimitTokens, allowedSkills, active, stats } };
+# \`user\` is only present for a signed-in browser session.
 curl -k -X GET ${baseUrl}/api/auth/me \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -4506,8 +3878,8 @@ response = requests.get(
     verify=False
 )
 
-user = response.json().get('user')
-print(f"User: {user['username']}, Role: {user['role']}")`,
+key = response.json().get('apiKey') or {}
+print(f"Key: {key.get('name')}, Permissions: {key.get('permissions')}, Requests: {key.get('stats', {}).get('requestCount')}")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -4520,13 +3892,13 @@ $headers = @{
 }
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/me" -Headers $headers
-Write-Output "User: $($response.user.username), Role: $($response.user.role)"`,
+Write-Output "Key: $($response.apiKey.name), Permissions: $($response.apiKey.permissions -join ', ')"`,
                 javascript: `// Bearer Token Authentication
 fetch('${baseUrl}/api/auth/me', {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(data => console.log('User:', data.user.username, 'Role:', data.user.role))
+.then(data => console.log('Key:', data.apiKey?.name, 'Permissions:', data.apiKey?.permissions))
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
@@ -4537,326 +3909,15 @@ fetch('${baseUrl}/api/auth/me', {
   }
 })
 .then(res => res.json())
-.then(data => console.log('User:', data.user))
-.catch(err => console.error(err));`
-            },
-            // ============================================================================
-            // AUTH - CHANGE PASSWORD
-            // ============================================================================
-            '/api/auth/password': {
-                curl: `# Change current user's password
-curl -k -X PUT ${baseUrl}/api/auth/password \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "currentPassword": "oldPassword123",
-    "newPassword": "newSecurePassword456"
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X PUT ${baseUrl}/api/auth/password \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "currentPassword": "oldPassword123",
-    "newPassword": "newSecurePassword456"
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.put(
-    '${baseUrl}/api/auth/password',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'currentPassword': 'oldPassword123',
-        'newPassword': 'newSecurePassword456'
-    },
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.put(
-    '${baseUrl}/api/auth/password',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'currentPassword': 'oldPassword123',
-        'newPassword': 'newSecurePassword456'
-    },
-    verify=False
-)
-
-print("Password changed" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    currentPassword = "oldPassword123"
-    newPassword = "newSecurePassword456"
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/password" -Method Put -Headers $headers -Body $body
-Write-Output "Password changed successfully"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/auth/password', {
-  method: 'PUT',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    currentPassword: 'oldPassword123',
-    newPassword: 'newSecurePassword456'
-  })
-})
-.then(res => res.json())
-.then(() => console.log('Password changed successfully'))
-.catch(err => console.error(err));
-
-// OR API Key + Secret Authentication
-fetch('${baseUrl}/api/auth/password', {
-  method: 'PUT',
-  headers: {
-    'X-API-Key': 'your_api_key',
-    'X-API-Secret': 'your_api_secret',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    currentPassword: 'oldPassword123',
-    newPassword: 'newSecurePassword456'
-  })
-})
-.then(() => console.log('Password changed'))
+.then(data => console.log('Key:', data.apiKey))
 .catch(err => console.error(err));`
             },
             // ============================================================================
             // MODEL CONFIGS
             // ============================================================================
-            '/api/model-configs/:modelName': {
-                curl: `# Get model configuration
-curl -k -X GET "${baseUrl}/api/model-configs/llama-7b" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X GET "${baseUrl}/api/model-configs/llama-7b" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-model_name = "llama-7b"
-
-# Bearer Token Authentication
-response = requests.get(
-    f'${baseUrl}/api/model-configs/{model_name}',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.get(
-    f'${baseUrl}/api/model-configs/{model_name}',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-config = response.json()
-print(f"Context Size: {config.get('contextSize')}")
-print(f"GPU Layers: {config.get('gpuLayers')}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$modelName = "llama-7b"
-
-$config = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs/$modelName" -Headers $headers
-Write-Output "Context Size: $($config.contextSize)"
-Write-Output "GPU Layers: $($config.gpuLayers)"`,
-                javascript: `const modelName = 'llama-7b';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/model-configs/\${modelName}\`, {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(config => {
-  console.log('Context Size:', config.contextSize);
-  console.log('GPU Layers:', config.gpuLayers);
-})
-.catch(err => console.error(err));`
-            },
-            '/api/model-configs/:modelName/update': {
-                curl: `# Update model configuration
-curl -k -X PUT "${baseUrl}/api/model-configs/llama-7b" \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "contextSize": 8192,
-    "gpuLayers": 35,
-    "temperature": 0.7
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X PUT "${baseUrl}/api/model-configs/llama-7b" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "contextSize": 8192,
-    "gpuLayers": 35
-  }'`,
-                python: `import requests
-
-model_name = "llama-7b"
-
-# Bearer Token Authentication
-response = requests.put(
-    f'${baseUrl}/api/model-configs/{model_name}',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'contextSize': 8192,
-        'gpuLayers': 35,
-        'temperature': 0.7
-    },
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.put(
-    f'${baseUrl}/api/model-configs/{model_name}',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'contextSize': 8192,
-        'gpuLayers': 35
-    },
-    verify=False
-)
-
-print("Config updated" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-$modelName = "llama-7b"
-
-$body = @{
-    contextSize = 8192
-    gpuLayers = 35
-    temperature = 0.7
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs/$modelName" -Method Put -Headers $headers -Body $body
-Write-Output "Config updated successfully"`,
-                javascript: `const modelName = 'llama-7b';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/model-configs/\${modelName}\`, {
-  method: 'PUT',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    contextSize: 8192,
-    gpuLayers: 35,
-    temperature: 0.7
-  })
-})
-.then(res => res.json())
-.then(() => console.log('Config updated'))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // HUGGINGFACE FILES
             // ============================================================================
-            '/api/huggingface/files/:owner/:repo': {
-                curl: `# List files in a HuggingFace repository
-curl -k -X GET "${baseUrl}/api/huggingface/files/TheBloke/Llama-2-7B-GGUF" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X GET "${baseUrl}/api/huggingface/files/TheBloke/Llama-2-7B-GGUF" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-owner = "TheBloke"
-repo = "Llama-2-7B-GGUF"
-
-# Bearer Token Authentication
-response = requests.get(
-    f'${baseUrl}/api/huggingface/files/{owner}/{repo}',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.get(
-    f'${baseUrl}/api/huggingface/files/{owner}/{repo}',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-files = response.json()
-for f in files:
-    print(f"- {f['path']}: {f.get('size', 0) / 1e9:.2f} GB")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$owner = "TheBloke"
-$repo = "Llama-2-7B-GGUF"
-
-$files = Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/files/$owner/$repo" -Headers $headers
-$files | ForEach-Object { Write-Output "- $($_.path): $([math]::Round($_.size / 1GB, 2)) GB" }`,
-                javascript: `const owner = 'TheBloke';
-const repo = 'Llama-2-7B-GGUF';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/huggingface/files/\${owner}/\${repo}\`, {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(files => files.forEach(f =>
-  console.log(\`- \${f.path}: \${(f.size / 1e9).toFixed(2)} GB\`)
-))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // DOWNLOADS
             // ============================================================================
@@ -4890,7 +3951,7 @@ response = requests.get(
 
 downloads = response.json()
 for d in downloads:
-    print(f"- {d['filename']}: {d['progress']}% ({d['status']})")`,
+    print(f"- {d['modelName']}: {d['progress']}% ({d['status']})")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -4904,7 +3965,7 @@ $headers = @{
 
 $downloads = Invoke-RestMethod -Uri "${baseUrl}/api/downloads" -Headers $headers
 $downloads | ForEach-Object {
-    Write-Output "- $($_.filename): $($_.progress)% ($($_.status))"
+    Write-Output "- $($_.modelName): $($_.progress)% ($($_.status))"
 }`,
                 javascript: `// Bearer Token Authentication
 fetch('${baseUrl}/api/downloads', {
@@ -4912,184 +3973,13 @@ fetch('${baseUrl}/api/downloads', {
 })
 .then(res => res.json())
 .then(downloads => downloads.forEach(d =>
-  console.log(\`- \${d.filename}: \${d.progress}% (\${d.status})\`)
+  console.log(\`- \${d.modelName}: \${d.progress}% (\${d.status})\`)
 ))
-.catch(err => console.error(err));`
-            },
-            '/api/downloads/:downloadId': {
-                curl: `# Cancel a download
-curl -k -X DELETE "${baseUrl}/api/downloads/dl_abc123" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X DELETE "${baseUrl}/api/downloads/dl_abc123" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-download_id = "dl_abc123"
-
-# Bearer Token Authentication
-response = requests.delete(
-    f'${baseUrl}/api/downloads/{download_id}',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.delete(
-    f'${baseUrl}/api/downloads/{download_id}',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-print("Download cancelled" if response.ok else f"Error: {response.json()}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$downloadId = "dl_abc123"
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/downloads/$downloadId" -Method Delete -Headers $headers
-Write-Output "Download cancelled"`,
-                javascript: `const downloadId = 'dl_abc123';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/downloads/\${downloadId}\`, {
-  method: 'DELETE',
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(() => console.log('Download cancelled'))
 .catch(err => console.error(err));`
             },
             // ============================================================================
             // SGLANG SLOTS
             // ============================================================================
-            '/api/sglang/instances/:name/slots': {
-                curl: `# Get KV cache slots for a sglang instance
-curl -k -X GET "${baseUrl}/api/sglang/instances/llama-7b/slots" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X GET "${baseUrl}/api/sglang/instances/llama-7b/slots" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-model_name = "llama-7b"
-
-# Bearer Token Authentication
-response = requests.get(
-    f'${baseUrl}/api/sglang/instances/{model_name}/slots',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.get(
-    f'${baseUrl}/api/sglang/instances/{model_name}/slots',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-slots = response.json()
-print(f"Used: {slots.get('used')}, Total: {slots.get('total')}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$modelName = "llama-7b"
-
-$slots = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances/$modelName/slots" -Headers $headers
-Write-Output "Used: $($slots.used), Total: $($slots.total)"`,
-                javascript: `const modelName = 'llama-7b';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/sglang/instances/\${modelName}/slots\`, {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(slots => console.log('Used:', slots.used, 'Total:', slots.total))
-.catch(err => console.error(err));`
-            },
-            '/api/sglang/instances/:name/slots/clear': {
-                curl: `# Clear KV cache for a sglang instance
-curl -k -X POST "${baseUrl}/api/sglang/instances/llama-7b/slots/clear" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X POST "${baseUrl}/api/sglang/instances/llama-7b/slots/clear" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-model_name = "llama-7b"
-
-# Bearer Token Authentication
-response = requests.post(
-    f'${baseUrl}/api/sglang/instances/{model_name}/slots/clear',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    f'${baseUrl}/api/sglang/instances/{model_name}/slots/clear',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-print("KV cache cleared" if response.ok else f"Error: {response.json()}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$modelName = "llama-7b"
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances/$modelName/slots/clear" -Method Post -Headers $headers
-Write-Output "KV cache cleared"`,
-                javascript: `const modelName = 'llama-7b';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/sglang/instances/\${modelName}/slots/clear\`, {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(() => console.log('KV cache cleared'))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // SYSTEM PROMPTS
             // ============================================================================
@@ -5346,144 +4236,14 @@ fetch(\`${baseUrl}/api/system-prompts/\${modelName}\`, {
             // ============================================================================
             // SYSTEM RESET
             // ============================================================================
-            '/api/system/reset': {
-                curl: `# Reset system (Admin only) - stops all instances, clears caches
-curl -k -X POST ${baseUrl}/api/system/reset \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "stopInstances": true,
-    "clearCache": true
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/system/reset \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "stopInstances": true,
-    "clearCache": true
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/system/reset',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'stopInstances': True,
-        'clearCache': True
-    },
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    '${baseUrl}/api/system/reset',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'stopInstances': True,
-        'clearCache': True
-    },
-    verify=False
-)
-
-print("System reset complete" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    stopInstances = $true
-    clearCache = $true
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/system/reset" -Method Post -Headers $headers -Body $body
-Write-Output "System reset complete"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/system/reset', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    stopInstances: true,
-    clearCache: true
-  })
-})
-.then(res => res.json())
-.then(() => console.log('System reset complete'))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // PLAYWRIGHT STATUS
             // ============================================================================
-            '/api/playwright/status': {
-                curl: `# Get Playwright browser status
-curl -k -X GET ${baseUrl}/api/playwright/status \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X GET ${baseUrl}/api/playwright/status \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.get(
-    '${baseUrl}/api/playwright/status',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.get(
-    '${baseUrl}/api/playwright/status',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-
-status = response.json()
-print(f"Browser: {status.get('browser')}, Active: {status.get('active')}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-}
-
-$status = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/status" -Headers $headers
-Write-Output "Browser: $($status.browser), Active: $($status.active)"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/playwright/status', {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(status => console.log('Browser:', status.browser, 'Active:', status.active))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // CONVERSATIONS
             // ============================================================================
             '/api/conversations': {
-                curl: `# List all conversations
+                curl: `# List conversations (an API key sees the conversations created with that key)
 curl -k -X GET ${baseUrl}/api/conversations \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -5512,7 +4272,7 @@ response = requests.get(
 
 conversations = response.json()
 for conv in conversations:
-    print(f"- {conv['id']}: {conv.get('title', 'Untitled')} ({len(conv.get('messages', []))} messages)")`,
+    print(f"- {conv['id']}: {conv.get('title', 'Untitled')} ({conv.get('messageCount', 0)} messages)")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -5526,7 +4286,7 @@ $headers = @{
 
 $conversations = Invoke-RestMethod -Uri "${baseUrl}/api/conversations" -Headers $headers
 $conversations | ForEach-Object {
-    Write-Output "- $($_.id): $($_.title) ($($_.messages.Count) messages)"
+    Write-Output "- $($_.id): $($_.title) ($($_.messageCount) messages)"
 }`,
                 javascript: `// Bearer Token Authentication
 fetch('${baseUrl}/api/conversations', {
@@ -5534,88 +4294,8 @@ fetch('${baseUrl}/api/conversations', {
 })
 .then(res => res.json())
 .then(convs => convs.forEach(c =>
-  console.log(\`- \${c.id}: \${c.title || 'Untitled'} (\${c.messages?.length || 0} messages)\`)
+  console.log(\`- \${c.id}: \${c.title || 'Untitled'} (\${c.messageCount ?? 0} messages)\`)
 ))
-.catch(err => console.error(err));`
-            },
-            '/api/conversations/create': {
-                curl: `# Create a new conversation
-curl -k -X POST ${baseUrl}/api/conversations \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "title": "New Conversation",
-    "model": "llama-7b"
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X POST ${baseUrl}/api/conversations \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "title": "New Conversation",
-    "model": "llama-7b"
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/conversations',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'title': 'New Conversation',
-        'model': 'llama-7b'
-    },
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    '${baseUrl}/api/conversations',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'title': 'New Conversation',
-        'model': 'llama-7b'
-    },
-    verify=False
-)
-
-conv = response.json()
-print(f"Created conversation: {conv['id']}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-$body = @{
-    title = "New Conversation"
-    model = "llama-7b"
-} | ConvertTo-Json
-
-$conv = Invoke-RestMethod -Uri "${baseUrl}/api/conversations" -Method Post -Headers $headers -Body $body
-Write-Output "Created conversation: $($conv.id)"`,
-                javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/conversations', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    title: 'New Conversation',
-    model: 'llama-7b'
-  })
-})
-.then(res => res.json())
-.then(conv => console.log('Created conversation:', conv.id))
 .catch(err => console.error(err));`
             },
             '/api/conversations/:id': {
@@ -5811,97 +4491,14 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}\`, {
 .then(() => console.log('Conversation deleted'))
 .catch(err => console.error(err));`
             },
-            '/api/conversations/:id/messages': {
-                curl: `# Add a message to a conversation
-curl -k -X POST "${baseUrl}/api/conversations/conv_abc123/messages" \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "role": "user",
-    "content": "Hello, how are you?"
-  }'
-
-# OR API Key + Secret Authentication
-curl -k -X POST "${baseUrl}/api/conversations/conv_abc123/messages" \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "role": "user",
-    "content": "Hello, how are you?"
-  }'`,
-                python: `import requests
-
-conversation_id = "conv_abc123"
-
-# Bearer Token Authentication
-response = requests.post(
-    f'${baseUrl}/api/conversations/{conversation_id}/messages',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'role': 'user',
-        'content': 'Hello, how are you?'
-    },
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.post(
-    f'${baseUrl}/api/conversations/{conversation_id}/messages',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'role': 'user',
-        'content': 'Hello, how are you?'
-    },
-    verify=False
-)
-
-print("Message added" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-$conversationId = "conv_abc123"
-
-$body = @{
-    role = "user"
-    content = "Hello, how are you?"
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/messages" -Method Post -Headers $headers -Body $body
-Write-Output "Message added"`,
-                javascript: `const conversationId = 'conv_abc123';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    role: 'user',
-    content: 'Hello, how are you?'
-  })
-})
-.then(res => res.json())
-.then(() => console.log('Message added'))
-.catch(err => console.error(err));`
-            },
             // ============================================================================
             // CONVERSATION MEMORIES
             // ============================================================================
             '/api/memories': {
                 curl: `# List CORE MEMORY: one living memory per theme of work (research, coding,
-# data analysis, documents, media, security, automations) with its playbook,
-# stats, proven approach, lessons and your guidance. Shared by web chat and Pi.
+# data analysis, documents, media, security, automations, general) with its
+# playbook, stats, proven approach, lessons, things to avoid and your own
+# guidance. Shared by web chat and Pi (same account).
 curl -k -X GET "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -5910,15 +4507,13 @@ curl -k -X GET "${baseUrl}/api/memories" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
-# Response (array):
-# [
-#   { "id": "mem-xyz789", "type": "procedure", "activity": "web-research",
-#     "text": "Web research: start broad (web_search + fetch_url), keep going if weak.",
-#     "impact": "important", "count": 4, "source": "auto",
-#     "keywords": ["web","search","research"], "updatedAt": "2026-06-04T..." },
-#   { "id": "mem-abc123", "type": "preference", "impact": "important",
-#     "text": "Prefer concise, bullet-point answers.", "source": "auto" }
-# ]`,
+# Response:
+# { "memories": [
+#     { "id": "5f0c…", "theme": "research", "label": "Research", "enabled": true,
+#       "notes": "Prefer primary sources.", "playbook": "…", "lessons": [ … ],
+#       "avoid": [ … ], "stats": { "runs": 7, "bestCalls": 3, … } } ],
+#   "themes": [ { "key": "security", "label": "Security analysis", … }, … ],
+#   "accountId": "…", "isAdmin": false }`,
                 python: `import requests
 
 # Bearer Token Authentication
@@ -5938,11 +4533,11 @@ response = requests.get(
     verify=False
 )
 
-memories = response.json()
-print(f"Account memories: {len(memories)}")
-for m in memories:
-    tag = m.get('activity') or m.get('type')
-    print(f"- [{tag}/{m.get('impact')}] {m['text']}")`,
+data = response.json()
+print(f"Core memories: {len(data['memories'])}")
+for m in data['memories']:
+    runs = (m.get('stats') or {}).get('runs', 0)
+    print(f"- {m['label']} ({m['theme']}): {runs} tasks, {len(m.get('lessons', []))} lessons")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -5954,20 +4549,19 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$memories = Invoke-RestMethod -Uri "${baseUrl}/api/memories" -Headers $headers
-Write-Output "Account memories: $($memories.Count)"
-$memories | ForEach-Object {
-    $tag = if ($_.activity) { $_.activity } else { $_.type }
-    Write-Output "- [$tag/$($_.impact)] $($_.text)"
+$data = Invoke-RestMethod -Uri "${baseUrl}/api/memories" -Headers $headers
+Write-Output "Core memories: $($data.memories.Count)"
+$data.memories | ForEach-Object {
+    Write-Output "- $($_.label) ($($_.theme)): $($_.stats.runs) tasks, $($_.lessons.Count) lessons"
 }`,
                 javascript: `// Bearer Token Authentication
 fetch(\`${baseUrl}/api/memories\`, {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(memories => {
-  console.log(\`Account memories: \${memories.length}\`);
-  memories.forEach(m => console.log(\`- [\${m.activity || m.type}/\${m.impact}] \${m.text}\`));
+.then(({ memories }) => {
+  console.log(\`Core memories: \${memories.length}\`);
+  memories.forEach(m => console.log(\`- \${m.label} (\${m.theme}): \${m.stats?.runs || 0} tasks, \${(m.lessons || []).length} lessons\`));
 })
 .catch(err => console.error(err));`
             },
@@ -6026,11 +4620,11 @@ fetch(\`${baseUrl}/api/memories\`, {
             },
             '/api/memories/:id': {
                 curl: `# Reset one theme's core memory by id
-curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
+curl -k -X DELETE "${baseUrl}/api/memories/memory_id" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
+curl -k -X DELETE "${baseUrl}/api/memories/memory_id" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
@@ -6038,7 +4632,7 @@ curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
 # 404 if memory not found`,
                 python: `import requests
 
-memory_id = "mem-xyz789"
+memory_id = "memory_id"
 
 # Bearer Token Authentication
 response = requests.delete(
@@ -6069,11 +4663,11 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$memoryId = "mem-xyz789"
+$memoryId = "memory_id"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/memories/$memoryId" -Method Delete -Headers $headers
 Write-Output "Memory deleted"`,
-                javascript: `const memoryId = 'mem-xyz789';
+                javascript: `const memoryId = 'memory_id';
 
 // Bearer Token Authentication
 fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
@@ -6085,28 +4679,29 @@ fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
 .catch(err => console.error(err));`
             },
             '/api/memories/:id/update': {
-                curl: `# Edit a memory (text / impact / type). PATCH the fields you want to change.
-curl -k -X PATCH "${baseUrl}/api/memories/mem-xyz789" \\
+                curl: `# Edit a theme's core memory. Any of:
+#   notes   — your standing guidance for this kind of work (max 1500 chars)
+#   enabled — false pauses the theme (nothing recorded or recalled)
+#   lesson  — add one lesson by hand
+curl -k -X PATCH "${baseUrl}/api/memories/memory_id" \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "text": "Prefer concise, bullet-point answers.",
-    "impact": "important"
+    "notes": "Cite primary sources and give publication dates.",
+    "lesson": "Check the vendor changelog before third-party blogs."
   }'
 
 # OR API Key + Secret Authentication
-curl -k -X PATCH "${baseUrl}/api/memories/mem-xyz789" \\
+curl -k -X PATCH "${baseUrl}/api/memories/memory_id" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret" \\
   -H "Content-Type: application/json" \\
-  -d '{ "text": "Prefer concise, bullet-point answers.", "impact": "important" }'
+  -d '{ "enabled": false }'
 
-# Response: the updated memory object
-# { "id": "mem-xyz789", "text": "Prefer concise, bullet-point answers.",
-#   "impact": "important", "type": "preference", "updatedAt": "2026-06-04T..." }`,
+# Response: { "success": true, "memory": { "id": "…", "theme": "research", "notes": "…", … } }`,
                 python: `import requests
 
-memory_id = "mem-xyz789"
+memory_id = "memory_id"
 
 # Bearer Token Authentication
 response = requests.patch(
@@ -6116,8 +4711,8 @@ response = requests.patch(
         'Content-Type': 'application/json'
     },
     json={
-        'text': 'Prefer concise, bullet-point answers.',
-        'impact': 'important'
+        'notes': 'Cite primary sources and give publication dates.',
+        'lesson': 'Check the vendor changelog before third-party blogs.'
     },
     verify=False
 )
@@ -6130,25 +4725,25 @@ response = requests.patch(
         'X-API-Secret': 'your_api_secret',
         'Content-Type': 'application/json'
     },
-    json={'text': 'Prefer concise, bullet-point answers.', 'impact': 'important'},
+    json={'enabled': False},
     verify=False
 )
 
-print("Updated memory:", response.json().get('text'))`,
+print("Updated:", response.json()['memory']['theme'])`,
                 powershell: `$headers = @{
     "Authorization" = "Bearer your_bearer_token"
     "Content-Type" = "application/json"
 }
-$memoryId = "mem-xyz789"
+$memoryId = "memory_id"
 
 $body = @{
-    text = "Prefer concise, bullet-point answers."
-    impact = "important"
+    notes = "Cite primary sources and give publication dates."
+    lesson = "Check the vendor changelog before third-party blogs."
 } | ConvertTo-Json
 
 $result = Invoke-RestMethod -Uri "${baseUrl}/api/memories/$memoryId" -Method Patch -Headers $headers -Body $body
-Write-Output "Updated memory: $($result.text)"`,
-                javascript: `const memoryId = 'mem-xyz789';
+Write-Output "Updated: $($result.memory.theme)"`,
+                javascript: `const memoryId = 'memory_id';
 
 // Bearer Token Authentication
 fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
@@ -6157,10 +4752,13 @@ fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
     'Authorization': 'Bearer your_bearer_token',
     'Content-Type': 'application/json'
   },
-  body: JSON.stringify({ text: 'Prefer concise, bullet-point answers.', impact: 'important' })
+  body: JSON.stringify({
+    notes: 'Cite primary sources and give publication dates.',
+    lesson: 'Check the vendor changelog before third-party blogs.'
+  })
 })
 .then(res => res.json())
-.then(result => console.log('Updated memory:', result.text))
+.then(result => console.log('Updated:', result.memory.theme))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -6671,7 +5269,7 @@ curl -sk ${baseUrl}/api/agent-permissions \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
-# PUT — update the permissions (any field omitted keeps its previous value).
+# PUT — update the permissions. Send ALL six fields: any field omitted is reset to true.
 curl -sk -X PUT ${baseUrl}/api/agent-permissions \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret" \\
@@ -6690,18 +5288,18 @@ H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}
 print(requests.get(f'${baseUrl}/api/agent-permissions', headers=H, verify=False).json())
 # PUT
 print(requests.put(f'${baseUrl}/api/agent-permissions', headers={**H, 'Content-Type': 'application/json'},
-                   json={'allowFileWrite': False, 'allowFileDelete': False}, verify=False).json())`,
+                   json={'allowFileRead': True, 'allowFileWrite': False, 'allowFileDelete': False, 'allowToolExecution': True, 'allowModelAccess': True, 'allowCollaboration': True}, verify=False).json())`,
                 powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
 Invoke-RestMethod -Uri "${baseUrl}/api/agent-permissions" -Headers $h
 Invoke-RestMethod -Uri "${baseUrl}/api/agent-permissions" -Method Put -Headers $h \`
   -ContentType 'application/json' \`
-  -Body (@{ allowFileWrite = $false; allowFileDelete = $false } | ConvertTo-Json)`,
+  -Body (@{ allowFileRead = $true; allowFileWrite = $false; allowFileDelete = $false; allowToolExecution = $true; allowModelAccess = $true; allowCollaboration = $true } | ConvertTo-Json)`,
                 javascript: `const h = { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' };
 fetch('${baseUrl}/api/agent-permissions', { headers: h }).then(r => r.json()).then(console.log);
 fetch('${baseUrl}/api/agent-permissions', {
   method: 'PUT',
   headers: { ...h, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ allowFileWrite: false, allowFileDelete: false })
+  body: JSON.stringify({ allowFileRead: true, allowFileWrite: false, allowFileDelete: false, allowToolExecution: true, allowModelAccess: true, allowCollaboration: true })
 }).then(r => r.json()).then(console.log);`
             },
             '/api/agent/file/delete': {
@@ -6723,30 +5321,6 @@ Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/delete" -Method Post -Headers 
   method: 'POST',
   headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
   body: JSON.stringify({ filePath: '/models/.modelserver/agents/sandbox/temp.txt' })
-}).then(r => r.json()).then(console.log);`
-            },
-            '/api/agent/file/move': {
-                curl: `# Moves or renames a file. Requires \`agents\` permission.
-curl -sk -X POST ${baseUrl}/api/agent/file/move \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "sourcePath": "/models/.modelserver/agents/sandbox/old.txt",
-    "destPath":   "/models/.modelserver/agents/sandbox/new.txt"
-  }'`,
-                python: `import requests
-H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json'}
-r = requests.post(f'${baseUrl}/api/agent/file/move', headers=H,
-                  json={'sourcePath': 'sandbox/old.txt', 'destPath': 'sandbox/new.txt'}, verify=False)
-print(r.json())`,
-                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
-$body = @{ sourcePath = 'sandbox/old.txt'; destPath = 'sandbox/new.txt' } | ConvertTo-Json
-Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/move" -Method Post -Headers $h -ContentType 'application/json' -Body $body`,
-                javascript: `fetch('${baseUrl}/api/agent/file/move', {
-  method: 'POST',
-  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ sourcePath: 'sandbox/old.txt', destPath: 'sandbox/new.txt' })
 }).then(r => r.json()).then(console.log);`
             },
             '/api/agents/skills/available': {
@@ -7003,56 +5577,82 @@ fetch(\`${baseUrl}/api/docs?library=javascript&query=Array.prototype.map\`, { he
   .then(r => r.json()).then(console.log);`
             },
             '/v1/chat/completions': {
-                curl: `# OpenAI-compatible passthrough — forwards to the first running model instance.
-# Honors client-supplied tools, tool_choice, stream. Server does NOT inject its
-# own tool catalog or run the tool loop on this path (use /api/chat/stream for that).
-# Requires the API key to have the \`query\` permission.
+                curl: `# OpenAI-compatible API. \`model\` picks the loaded model:
+#   - an id from GET /v1/models (a near-miss like "qwen3.8" resolves to the
+#     ONE model it names, case-insensitive);
+#   - "auto" (or no model) = the POOL: each request runs on whichever loaded
+#     model has a free slot, so parallel agents spread across every model.
+# Honors client-supplied tools, tool_choice, stream. The server does NOT inject
+# its own tool catalog or run the tool loop here (use /api/chat/stream for that).
+# Requires the \`query\` permission.
 curl -sk -X POST ${baseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "any",  // ignored — server picks the first running instance
+    "model": "auto",
     "messages": [{ "role": "user", "content": "Hello!" }],
     "stream": false
   }'
 
-# Also reachable: /v1/models, /v1/completions, /v1/embeddings — anything the
-# underlying sglang/llama.cpp instance exposes.
+# Models with per-model concurrency (max_concurrency / capacity.slots /
+# meta.total_slots) plus the "auto" pool entry when 2+ models are loaded:
 curl -sk ${baseUrl}/v1/models \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Live slots per model — how many agents can run at once right now:
+curl -sk ${baseUrl}/v1/capacity \\
   -H "Authorization: Bearer your_bearer_token"`,
-                python: `from openai import OpenAI
-# The OpenAI SDK works directly against the proxy.
+                python: `from concurrent.futures import ThreadPoolExecutor
+from openai import OpenAI
+import httpx
+
+# The OpenAI SDK works directly against the server (self-signed cert).
 client = OpenAI(
     base_url='${baseUrl}/v1',
-    api_key='your_bearer_token',  # passed as Authorization: Bearer
-    default_headers={},
+    api_key='your_bearer_token',  # sent as Authorization: Bearer
+    http_client=httpx.Client(verify=False),
 )
-resp = client.chat.completions.create(
-    model='any',  # ignored by the proxy
-    messages=[{'role': 'user', 'content': 'Hello!'}],
-)
-print(resp.choices[0].message.content)`,
-                powershell: `$h = @{ 'Authorization' = 'Bearer your_bearer_token'; 'Content-Type' = 'application/json' }
+
+# How many agents can run in parallel across every loaded model?
+cap = client.get('/capacity', cast_to=object)
+print('total slots:', cap['total_slots'], [(m['id'], m['slots']) for m in cap['models']])
+
+# Parallel agents on the "auto" pool: each request lands on a free slot.
+def agent(task):
+    r = client.chat.completions.create(model='auto', messages=[{'role': 'user', 'content': task}])
+    return r.model, r.choices[0].message.content
+
+tasks = ['Summarize HTTP/3 in two lines', 'Name three sorting algorithms', 'What is a mutex?']
+with ThreadPoolExecutor(max_workers=cap['total_slots']) as pool:
+    for model, text in pool.map(agent, tasks):
+        print(model, '->', text[:80])`,
+                powershell: `$h = @{ 'Authorization' = 'Bearer your_bearer_token' }
+
+# Slots per loaded model (how many requests can run at once)
+Invoke-RestMethod -Uri "${baseUrl}/v1/capacity" -Headers $h | ConvertTo-Json -Depth 5
+
 $body = @{
-  model    = 'any'
+  model    = 'auto'   # free-slot pool; or an id from /v1/models
   messages = @(@{ role = 'user'; content = 'Hello!' })
   stream   = $false
 } | ConvertTo-Json -Depth 5
 Invoke-RestMethod -Uri "${baseUrl}/v1/chat/completions" -Method Post -Headers $h -ContentType 'application/json' -Body $body`,
-                javascript: `// Drop-in OpenAI SDK usage.
-const res = await fetch('${baseUrl}/v1/chat/completions', {
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+// How many agents can run in parallel?
+const cap = await fetch('${baseUrl}/v1/capacity', { headers }).then(r => r.json());
+console.log('total slots:', cap.total_slots, cap.models.map(m => \`\${m.id}×\${m.slots}\`));
+
+// Parallel agents on the "auto" pool — each lands on a free slot.
+const ask = (content) => fetch('${baseUrl}/v1/chat/completions', {
   method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    model: 'any',  // ignored — server picks the first running instance
-    messages: [{ role: 'user', content: 'Hello!' }],
-    stream: false
-  })
-});
-console.log(await res.json());`
+  headers,
+  body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content }], stream: false })
+}).then(r => r.json());
+
+const replies = await Promise.all(['Summarize HTTP/3 in two lines', 'Name three sorting algorithms', 'What is a mutex?'].map(ask));
+replies.forEach(r => console.log(r.model, '->', r.choices[0].message.content.slice(0, 80)));`
             },
             // ============================================================================
             // AUTOMATION & CHIPS
@@ -7358,257 +5958,6 @@ fetch('${baseUrl}/api/automations/build', {
 .then(res => res.json())
 .then(workflow => console.log('Built automation:', workflow.id));`
             },
-            '/api/chips': {
-                curl: `# List custom node-setting chips. Requires authentication.
-
-# Bearer Token Authentication
-curl -k -X GET ${baseUrl}/api/chips \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -k -X GET ${baseUrl}/api/chips \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"
-
-# Create a chip (compiles to fields on node.data)
-curl -k -X POST ${baseUrl}/api/chips \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "kind": "model",
-    "label": "Temperature",
-    "fields": [{ "key": "temperature", "type": "number", "default": 0.7 }]
-  }'`,
-                python: `import requests
-
-# List chips — Bearer Token Authentication
-response = requests.get(
-    '${baseUrl}/api/chips',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-
-# OR API Key + Secret Authentication
-response = requests.get(
-    '${baseUrl}/api/chips',
-    headers={
-        'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret'
-    },
-    verify=False
-)
-chips = response.json()
-print(f"Chips: {len(chips)}")
-
-# Create a chip
-response = requests.post(
-    '${baseUrl}/api/chips',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'kind': 'model',
-        'label': 'Temperature',
-        'fields': [{'key': 'temperature', 'type': 'number', 'default': 0.7}]
-    },
-    verify=False
-)
-print(f"Created chip: {response.json()['id']}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{ "Authorization" = "Bearer your_bearer_token"; "Content-Type" = "application/json" }
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-    "Content-Type" = "application/json"
-}
-
-# List chips
-$chips = Invoke-RestMethod -Uri "${baseUrl}/api/chips" -Headers $headers
-Write-Output "Chips: $($chips.Count)"
-
-# Create a chip
-$body = @{
-    kind   = "model"
-    label  = "Temperature"
-    fields = @(@{ key = "temperature"; type = "number"; default = 0.7 })
-} | ConvertTo-Json -Depth 5
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/chips" -Method Post -Headers $headers -Body $body
-Write-Output "Created chip: $($response.id)"`,
-                javascript: `// List chips — Bearer Token Authentication
-fetch('${baseUrl}/api/chips', {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(chips => console.log(\`Chips: \${chips.length}\`));
-
-// OR API Key + Secret Authentication
-fetch('${baseUrl}/api/chips', {
-  headers: {
-    'X-API-Key': 'your_api_key',
-    'X-API-Secret': 'your_api_secret'
-  }
-})
-.then(res => res.json())
-.then(chips => console.log(\`Chips: \${chips.length}\`));
-
-// Create a chip
-fetch('${baseUrl}/api/chips', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    kind: 'model',
-    label: 'Temperature',
-    fields: [{ key: 'temperature', type: 'number', default: 0.7 }]
-  })
-})
-.then(res => res.json())
-.then(result => console.log('Created chip:', result.id));`
-            },
-            '/api/skills/:skillName/execute': {
-                curl: `# Bearer Token Authentication
-# Execute any enabled skill by name (needs the "agents" permission).
-# Params match the skill's declared parameters — this example greps a workspace repo.
-curl -k -X POST ${baseUrl}/api/skills/grep_code/execute \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "params": {
-      "pattern": "TODO",
-      "directory": "/workspace"
-    }
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-# Execute any enabled skill by name (needs the "agents" permission)
-response = requests.post(
-    '${baseUrl}/api/skills/grep_code/execute',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={'params': {'pattern': 'TODO', 'directory': '/workspace'}},
-    verify=False  # For self-signed certificates
-)
-
-print(response.json())`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-$body = @{ params = @{ pattern = "TODO"; directory = "/workspace" } } | ConvertTo-Json -Depth 5
-
-$resp = Invoke-RestMethod -Uri "${baseUrl}/api/skills/grep_code/execute" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-$resp | ConvertTo-Json -Depth 5`,
-                javascript: `// Bearer Token Authentication
-// Execute any enabled skill by name (needs the "agents" permission)
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-const resp = await fetch('${baseUrl}/api/skills/grep_code/execute', {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({ params: { pattern: 'TODO', directory: '/workspace' } })
-}).then(r => r.json());
-console.log(resp);`
-            },
-            '/api/me/preferences': {
-                curl: `# Bearer Token Authentication
-# Read preferences for one app (webapp | chat)
-curl -k "${baseUrl}/api/me/preferences?app=webapp" \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Update preferences for that app
-curl -k -X PUT "${baseUrl}/api/me/preferences?app=webapp" \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "theme": "theme-dark" }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {'Authorization': 'Bearer your_bearer_token'}
-
-prefs = requests.get('${baseUrl}/api/me/preferences', params={'app': 'webapp'}, headers=headers, verify=False).json()
-
-requests.put(
-    '${baseUrl}/api/me/preferences?app=webapp',
-    headers={**headers, 'Content-Type': 'application/json'},
-    json={'theme': 'theme-dark'},
-    verify=False
-)`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-$prefs = Invoke-RestMethod -Uri "${baseUrl}/api/me/preferences?app=webapp" -Headers $headers
-
-$body = @{ theme = "theme-dark" } | ConvertTo-Json
-Invoke-RestMethod -Uri "${baseUrl}/api/me/preferences?app=webapp" -Method Put -Headers $headers -Body $body -ContentType "application/json"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-const prefs = await fetch('${baseUrl}/api/me/preferences?app=webapp', { headers }).then(r => r.json());
-
-await fetch('${baseUrl}/api/me/preferences?app=webapp', {
-  method: 'PUT',
-  headers,
-  body: JSON.stringify({ theme: 'theme-dark' })
-});`
-            },
-            '/api/models/load-hf': {
-                curl: `# Bearer Token Authentication
-# Load a HuggingFace repo directly into sglang (no manual download step)
-curl -k -X POST ${baseUrl}/api/models/load-hf \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "repoId": "Qwen/Qwen3-4B-Instruct-2507",
-    "config": {
-      "maxModelLen": 32768,
-      "memFractionStatic": 0.88
-    }
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/models/load-hf',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'repoId': 'Qwen/Qwen3-4B-Instruct-2507',
-        'config': {'maxModelLen': 32768, 'memFractionStatic': 0.88}
-    },
-    verify=False
-)
-print(response.json())`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-$body = @{
-    repoId = "Qwen/Qwen3-4B-Instruct-2507"
-    config = @{ maxModelLen = 32768; memFractionStatic = 0.88 }
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod -Uri "${baseUrl}/api/models/load-hf" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-const resp = await fetch('${baseUrl}/api/models/load-hf', {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({
-    repoId: 'Qwen/Qwen3-4B-Instruct-2507',
-    config: { maxModelLen: 32768, memFractionStatic: 0.88 }
-  })
-}).then(r => r.json());
-console.log(resp);`
-            },
             '/api/models/hf-cache': {
                 curl: `# Bearer Token Authentication
 # List HuggingFace cache contents (sglang downloads)
@@ -7709,95 +6058,6 @@ await fetch('${baseUrl}/api/system-settings', {
   method: 'PUT',
   headers,
   body: JSON.stringify({ allowInternalNetwork: true })
-});`
-            },
-            '/api/memories/search': {
-                curl: `# Bearer Token Authentication
-# Relevance-ranked search over the account's memory (semantic + keyword)
-curl -k -X POST ${baseUrl}/api/memories/search \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "query": "preferred report format" }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-response = requests.post(
-    '${baseUrl}/api/memories/search',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={'query': 'preferred report format'},
-    verify=False
-)
-for m in response.json().get('results', []):
-    print(m)`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-$body = @{ query = "preferred report format" } | ConvertTo-Json
-
-$resp = Invoke-RestMethod -Uri "${baseUrl}/api/memories/search" -Method Post -Headers $headers -Body $body -ContentType "application/json"
-$resp.results | ConvertTo-Json -Depth 5`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-const resp = await fetch('${baseUrl}/api/memories/search', {
-  method: 'POST',
-  headers,
-  body: JSON.stringify({ query: 'preferred report format' })
-}).then(r => r.json());
-console.log(resp.results);`
-            },
-            '/api/memories/maintenance': {
-                curl: `# Bearer Token Authentication
-# Dry-run by default: reports junk deletions + consolidations without applying
-curl -k -X POST ${baseUrl}/api/memories/maintenance \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{}'
-
-# Apply the cleanup (junk-delete + consolidate; optional extra steps)
-curl -k -X POST ${baseUrl}/api/memories/maintenance \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "apply": true, "mergeProcedures": true, "pruneScratch": true }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-}
-
-# Dry-run first — see what would change
-report = requests.post('${baseUrl}/api/memories/maintenance', headers=headers, json={}, verify=False).json()
-print(report)
-
-# Then apply
-requests.post('${baseUrl}/api/memories/maintenance', headers=headers, json={'apply': True}, verify=False)`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-# Dry-run first — see what would change
-$report = Invoke-RestMethod -Uri "${baseUrl}/api/memories/maintenance" -Method Post -Headers $headers -Body "{}" -ContentType "application/json"
-$report | ConvertTo-Json -Depth 5
-
-# Then apply
-$body = @{ apply = $true } | ConvertTo-Json
-Invoke-RestMethod -Uri "${baseUrl}/api/memories/maintenance" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
-
-// Dry-run first — see what would change
-const report = await fetch('${baseUrl}/api/memories/maintenance', {
-  method: 'POST', headers, body: JSON.stringify({})
-}).then(r => r.json());
-console.log(report);
-
-// Then apply
-await fetch('${baseUrl}/api/memories/maintenance', {
-  method: 'POST', headers, body: JSON.stringify({ apply: true })
 });`
             },
             '/api/agent-workspaces': {
@@ -7908,7 +6168,7 @@ await fetch('${baseUrl}/api/agent-workspaces/file?path=uploads/data.csv', {
 curl -k -N -X POST ${baseUrl}/api/automations/AUTOMATION_ID/run \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
-  -d '{ "input": "optional input for the trigger" }'`,
+  -d '{ "input": { "text": "optional input for the trigger" } }'`,
                 python: `import requests, json
 
 # Bearer Token Authentication — live SSE frames
@@ -7918,7 +6178,7 @@ response = requests.post(
         'Authorization': 'Bearer your_bearer_token',
         'Content-Type': 'application/json'
     },
-    json={'input': 'optional input for the trigger'},
+    json={'input': {'text': 'optional input for the trigger'}},
     stream=True,
     verify=False
 )
@@ -7929,7 +6189,7 @@ for line in response.iter_lines():
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
 }
-$body = @{ input = "optional input for the trigger" } | ConvertTo-Json
+$body = @{ input = @{ text = "optional input for the trigger" } } | ConvertTo-Json -Depth 3
 Invoke-RestMethod -Uri "${baseUrl}/api/automations/AUTOMATION_ID/run-sync" -Method Post -Headers $headers -Body $body -ContentType "application/json"`,
                 javascript: `// Bearer Token Authentication — live SSE frames
 const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
@@ -7937,7 +6197,7 @@ const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': '
 const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/run', {
   method: 'POST',
   headers,
-  body: JSON.stringify({ input: 'optional input for the trigger' })
+  body: JSON.stringify({ input: { text: 'optional input for the trigger' } })
 });
 const reader = resp.body.getReader();
 const decoder = new TextDecoder();
@@ -7991,7 +6251,7 @@ console.log(resp.summary, resp.diff);`
             '/api/automations/:id/test': {
                 curl: `# Bearer Token Authentication
 # Test-run a saved automation; the LLM repairs non-config failures.
-# Returns a structured testReport; persists the fix only with "apply": true.
+# Returns a structured testReport; a repair is saved unless you pass "apply": false.
 curl -k -X POST ${baseUrl}/api/automations/AUTOMATION_ID/test \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
@@ -8094,7 +6354,9 @@ console.log(resp);  // { token, url }`
             '/api/automations/webhook/:token': {
                 curl: `# Public endpoint — no auth header. The token (minted via
 # POST /api/automations/:id/webhook-token) gates access; the workflow
-# runs as its owner and the body becomes the trigger input. Returns 202.
+# runs as its owner; the trigger input is { body, query, receivedAt }
+# (read fields as {{input.body.<field>}}). Needs an enabled workflow with a
+# trigger.webhook node. Returns 202.
 curl -k -X POST ${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN \\
   -H "Content-Type: application/json" \\
   -d '{ "event": "deploy-finished", "status": "ok" }'`,
@@ -8115,42 +6377,6 @@ await fetch('${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ event: 'deploy-finished', status: 'ok' })
 });  // 202 Accepted — runs in the background`
-            },
-            '/api/node-types': {
-                curl: `# Bearer Token Authentication
-# List custom palette node types (GET /api/node-types/builtin for the built-in palette)
-curl -k ${baseUrl}/api/node-types \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Create a custom node type
-curl -k -X POST ${baseUrl}/api/node-types \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "name": "My Connector",
-    "kind": "tool",
-    "config": { "tool": "http_request" }
-  }'`,
-                python: `import requests
-
-# Bearer Token Authentication
-headers = {'Authorization': 'Bearer your_bearer_token'}
-
-node_types = requests.get('${baseUrl}/api/node-types', headers=headers, verify=False).json()
-builtin = requests.get('${baseUrl}/api/node-types/builtin', headers=headers, verify=False).json()
-print(len(node_types), len(builtin))`,
-                powershell: `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-}
-$nodeTypes = Invoke-RestMethod -Uri "${baseUrl}/api/node-types" -Headers $headers
-$builtin = Invoke-RestMethod -Uri "${baseUrl}/api/node-types/builtin" -Headers $headers
-$nodeTypes | ConvertTo-Json -Depth 5`,
-                javascript: `// Bearer Token Authentication
-const headers = { 'Authorization': 'Bearer your_bearer_token' };
-
-const nodeTypes = await fetch('${baseUrl}/api/node-types', { headers }).then(r => r.json());
-const builtin = await fetch('${baseUrl}/api/node-types/builtin', { headers }).then(r => r.json());
-console.log(nodeTypes, builtin);`
             },
             '/api/chips/build': {
                 curl: `# Bearer Token Authentication
@@ -8198,11 +6424,11 @@ console.log(chip);`
         // API Key + Secret, so there is no second block to keep in sync.
         const GENERIC_SPECS = {
             // Agents
-            '/api/agents/create':               { method: 'POST',   path: '/api/agents', body: { name: 'My Agent', description: 'What this agent does', permissions: ['query', 'skills'] } },
+            '/api/agents/create':               { method: 'POST',   path: '/api/agents', body: { name: 'My Agent', description: 'What this agent does', modelName: 'loaded-model-name', systemPrompt: 'You are a helpful agent.', skills: ['grep_code'] } },
             '/api/agents/:id':                  { method: 'GET',    path: '/api/agents/agent_id' },
-            '/api/agents/:id/update':           { method: 'PUT',    path: '/api/agents/agent_id', body: { name: 'Renamed Agent', permissions: ['query', 'skills', 'agents'] } },
+            '/api/agents/:id/update':           { method: 'PUT',    path: '/api/agents/agent_id', body: { name: 'Renamed Agent', skills: ['grep_code', 'read_file'] } },
             '/api/agents/:id/delete':           { method: 'DELETE', path: '/api/agents/agent_id' },
-            '/api/agents/:id/regenerate-key':   { method: 'POST',   path: '/api/agents/agent_id/regenerate-key', note: 'Returns a NEW key + secret; the old pair stops working immediately' },
+            '/api/agents/:id/regenerate-key':   { method: 'POST',   path: '/api/agents/agent_id/regenerate-key', note: 'Returns { apiKey } — a new agent key; the old one stops working immediately' },
             // API keys (admin)
             '/api/api-keys/create':             { method: 'POST',   path: '/api/api-keys', body: { name: 'Pi terminal agent', permissions: ['query', 'agents'], bearerOnly: true }, note: 'bearerOnly:true is required for Pi and any Authorization: Bearer caller' },
             '/api/api-keys/:id':                { method: 'PUT',    path: '/api/api-keys/key_id', body: { name: 'Renamed key', permissions: ['query'] } },
@@ -8211,27 +6437,21 @@ console.log(chip);`
             '/api/api-keys/:id/stats':          { method: 'GET',    path: '/api/api-keys/key_id/stats' },
             '/api/api-keys/:id/clear-usage':    { method: 'POST',   path: '/api/api-keys/key_id/clear-usage' },
             // Skills
-            '/api/skills/create':               { method: 'POST',   path: '/api/skills', body: { name: 'my_skill', description: 'What it does', parameters: { text: 'string' }, code: 'def execute(params):\n    return {"ok": True}' } },
+            '/api/skills/create':               { method: 'POST',   path: '/api/skills', body: { name: 'my_skill', type: 'function', description: 'What it does', parameters: { text: 'string' }, code: 'def execute(params):\n    return {"ok": True}' } },
             '/api/skills/:id':                  { method: 'GET',    path: '/api/skills/skill_id' },
             '/api/skills/:id/update':           { method: 'PUT',    path: '/api/skills/skill_id', body: { description: 'Updated description', enabled: true } },
             '/api/skills/:id/delete':           { method: 'DELETE', path: '/api/skills/skill_id' },
-            '/api/markdown-skills/create':      { method: 'POST',   path: '/api/markdown-skills', body: { name: 'incident-runbook', content: '# Runbook\n\nSteps the model should follow.' } },
-            '/api/markdown-skills/:id/update':  { method: 'PUT',    path: '/api/markdown-skills/skill_id', body: { content: '# Updated runbook' } },
+            '/api/markdown-skills/create':      { method: 'POST',   path: '/api/markdown-skills', body: { name: 'incident-runbook', description: 'Steps for handling an incident', body: '# Runbook\n\nSteps the model should follow.' } },
+            '/api/markdown-skills/:id/update':  { method: 'PUT',    path: '/api/markdown-skills/skill_id', body: { body: '# Updated runbook' } },
             '/api/markdown-skills/:id/delete':  { method: 'DELETE', path: '/api/markdown-skills/skill_id' },
             // Tasks
-            '/api/tasks/create':                { method: 'POST',   path: '/api/tasks', body: { name: 'Nightly report', prompt: 'Summarize today activity', schedule: '0 2 * * *' } },
+            '/api/tasks/create':                { method: 'POST',   path: '/api/tasks', body: { agentId: 'agent_id', description: 'Summarize today activity', priority: 'medium' } },
             '/api/tasks/:id':                   { method: 'GET',    path: '/api/tasks/task_id' },
-            '/api/tasks/:id/update':            { method: 'PUT',    path: '/api/tasks/task_id', body: { enabled: false } },
+            '/api/tasks/:id/update':            { method: 'PUT',    path: '/api/tasks/task_id', body: { status: 'completed', result: 'Report sent' } },
             '/api/tasks/:id/delete':            { method: 'DELETE', path: '/api/tasks/task_id' },
-            // Users (admin)
-            '/api/users':                       { method: 'GET',    path: '/api/users' },
-            '/api/users/create':                { method: 'POST',   path: '/api/users', body: { username: 'analyst', password: 'a-strong-password', role: 'user' } },
-            '/api/users/:id':                   { method: 'PUT',    path: '/api/users/user_id', body: { role: 'admin' } },
-            '/api/users/:id/delete':            { method: 'DELETE', path: '/api/users/user_id' },
-            '/api/users/:username/reset-password': { method: 'POST', path: '/api/users/analyst/reset-password', body: { newPassword: 'a-new-strong-password' } },
             // Automations
             '/api/automations/:id':             { method: 'GET',    path: '/api/automations/workflow_id' },
-            '/api/automations/:id/update':      { method: 'PUT',    path: '/api/automations/workflow_id', body: { name: 'Renamed workflow', nodes: [], edges: [] } },
+            '/api/automations/:id/update':      { method: 'PUT',    path: '/api/automations/workflow_id', body: { name: 'Renamed workflow' }, note: 'Fields you send replace the stored ones — sending nodes/edges replaces the whole graph' },
             '/api/automations/:id/delete':      { method: 'DELETE', path: '/api/automations/workflow_id' },
             '/api/automations/:id/enable':      { method: 'POST',   path: '/api/automations/workflow_id/enable', body: { enabled: true } },
             '/api/automations/:id/archive':     { method: 'POST',   path: '/api/automations/workflow_id/archive', body: { archived: true } },
@@ -8241,20 +6461,143 @@ console.log(chip);`
             '/api/automations/runs/:runId/artifacts/:name': { method: 'GET', path: '/api/automations/runs/run_id/artifacts/report.pdf', note: 'Raw bytes of a file the run produced' },
             // Node types + chips (automation palette)
             '/api/node-types/:id':              { method: 'GET',    path: '/api/node-types/type_id' },
-            '/api/node-types/:id/update':       { method: 'PUT',    path: '/api/node-types/type_id', body: { label: 'Renamed node' } },
+            '/api/node-types/:id/update':       { method: 'PUT',    path: '/api/node-types/type_id', body: { name: 'Renamed node' } },
             '/api/node-types/:id/delete':       { method: 'DELETE', path: '/api/node-types/type_id' },
             '/api/node-types/builtin':          { method: 'GET',    path: '/api/node-types/builtin', note: 'The built-in palette (triggers, gates, tools, delivery)' },
             '/api/node-types/build':            { method: 'POST',   path: '/api/node-types/build', body: { prompt: 'A node that posts a message to Discord' } },
             '/api/chips/:id/update':            { method: 'PUT',    path: '/api/chips/chip_id', body: { label: 'Last 24 hours' } },
             '/api/chips/:id/delete':            { method: 'DELETE', path: '/api/chips/chip_id' },
-            '/api/chips/kinds':                 { method: 'GET',    path: '/api/chips/kinds', note: 'Valid chip kinds and the operations each supports' },
+            '/api/chips/kinds':                 { method: 'GET',    path: '/api/chips/kinds', note: 'Node kinds a chip can target (values for appliesTo)' },
             // Memory, models, workspaces, settings
-            '/api/memories/:id/link':           { method: 'POST',   path: '/api/memories/memory_id/link', body: { targetId: 'other_memory_id' }, note: 'Links are symmetric and ride along during retrieval' },
+            '/api/memories/create':             { method: 'POST',   path: '/api/memories', body: { theme: 'research', notes: 'Cite primary sources and give publication dates.' }, note: 'Set your guidance for one theme (security, data-analysis, media, documents, automation, coding, research, general). Max 1500 chars' },
+            '/api/memories/:id/get':            { method: 'GET',    path: '/api/memories/memory_id', note: 'One theme memory: playbook, proven approach, lessons, avoid list, stats, recent tasks' },
+            '/api/memories/recall':             { method: 'POST',   path: '/api/memories/recall', body: { text: 'Compare the latest Node.js and Deno releases' }, note: 'Preview what the model would be handed for this ask: the detected theme + its memory block (nothing is recorded)' },
             '/api/models/hf-cache/:dirName':    { method: 'DELETE', path: '/api/models/hf-cache/models--owner--repo', note: 'Frees disk by deleting one cached Hugging Face repo' },
             '/api/agent-workspaces/:owner/:bucket': { method: 'DELETE', path: '/api/agent-workspaces/user_id/agent-key_id' },
             '/api/agent-workspaces/inventory':  { method: 'GET',    path: '/api/agent-workspaces/inventory', note: 'File inventory of the calling API key sandbox workspace' },
             '/api/system-settings/public':      { method: 'GET',    path: '/api/system-settings/public', note: 'Non-admin subset any signed-in user may read' },
+            // Files, models, downloads
+            '/api/agent/file/list':             { method: 'POST',   path: '/api/agent/file/list', body: { dirPath: '/models/.modelserver/agents/sandbox' }, note: 'Needs the agents permission and allowFileRead. Returns { path, files:[{name,isDirectory,isFile}] }. Allowed roots: /models, /data, the app directory, $HOME' },
+            '/api/agent/file/move':             { method: 'POST',   path: '/api/agent/file/move', body: { sourcePath: '/models/.modelserver/agents/sandbox/old.txt', destPath: '/models/.modelserver/agents/sandbox/new.txt' }, note: 'Moves or renames a file. Needs the agents permission AND allowFileWrite. Use absolute paths' },
+            '/api/huggingface/search':          { method: 'GET',    path: '/api/huggingface/search?query=llama%207b&format=gguf&sortBy=downloads', note: 'Params: query, format (gguf default; safetensors, awq, gptq, fp8, bnb, nvfp4, compressed-tensors, any), sortBy (downloads, likes, trending, newest, params, …), minSize / maxSize (billions of params)' },
+            '/api/huggingface/files/:owner/:repo': { method: 'GET', path: '/api/huggingface/files/owner/repo', note: 'The repo\'s .gguf files as [{ rfilename }]; sizes come from /api/huggingface/repo-size/:owner/:repo' },
+            '/api/model-configs/:modelName':    { method: 'GET',    path: '/api/model-configs/model_name', note: 'Returns { modelName, config, exists } — settings sit under config (contextSize, nGpuLayers, …)' },
+            '/api/model-configs/:modelName/update': { method: 'PUT', path: '/api/model-configs/model_name', body: { config: { contextSize: 8192, nGpuLayers: -1 } }, note: 'The body must be { config: {...} }; it REPLACES the stored config' },
+            '/api/models/load-hf':              { method: 'POST',   path: '/api/models/load-hf', body: { repoId: 'Qwen/Qwen3-4B-Instruct-2507', maxModelLen: 32768, memFractionStatic: 0.88, gpuDevices: [0] }, note: 'Loads a Hugging Face repo into sglang. Settings are top-level fields: maxModelLen, memFractionStatic, tensorParallelSize, maxRunningRequests, chunkedPrefillSize, kvCacheDtype, schedulePolicy, cpuOffloadGb, gpuDevices, extraArgs' },
+            '/api/downloads/:downloadId':       { method: 'DELETE', path: '/api/downloads/download_id', note: 'downloadId (a UUID) comes from GET /api/downloads; only an active download can be cancelled' },
+            '/api/sglang/instances/:name/slots':{ method: 'GET',    path: '/api/sglang/instances/model_name/slots', note: 'Returns { max_sequences, note } — the configured concurrent-sequence limit. Needs the instances permission' },
+            '/api/sglang/instances/:name/slots/clear': { method: 'POST', path: '/api/sglang/instances/model_name/slots/clear', note: 'sglang has no explicit KV-slot clearing: this only checks the instance answers (returns { message, note })' },
+            '/api/system/reset':                { method: 'POST',   path: '/api/system/reset', body: { confirmation: 'RESET' }, note: 'DESTRUCTIVE: stops every instance AND deletes every downloaded model under /models. confirmation must be exactly "RESET"' },
+            '/api/playwright/status':           { method: 'GET',    path: '/api/playwright/status', note: 'Returns { enabled, status, browserPool: { size, maxSize, inUse, available }, features }' },
+            '/api/models/:name/load':           { method: 'POST',   path: '/api/models/model_name/load', body: { backend: 'llamacpp', contextSize: 32768, nGpuLayers: -1, flashAttention: true, cacheTypeK: 'q8_0', cacheTypeV: 'q8_0', parallelSlots: 2, specType: 'none', gpuDevices: [0, 1], compressMemory: false }, note: 'llama.cpp fields: contextSize, nGpuLayers, parallelSlots, flashAttention, cacheTypeK/V, ubatchSize, batchSize, repeatPenalty, specType (none | draft-mtp | draft-simple) + specDraftNMax, gpuDevices, … For sglang send backend: "sglang" with maxModelLen / memFractionStatic / tensorParallelSize / maxRunningRequests. Returns { message, backend, containerId, port, containerName }' },
+            '/api/system/optimal-settings':     { method: 'POST',   path: '/api/system/optimal-settings', body: { modelFileSize: 4000000000, backend: 'llamacpp', gpuDevices: [0] }, note: 'modelFileSize (bytes) is required; results are under settings (contextSize, nGpuLayers, …); omit backend for sglang settings' },
+            '/api/tasks':                       { method: 'GET',    path: '/api/tasks', note: 'Agent tasks: [{ id, agentId, description, status, priority, … }]' },
+            '/api/agent/file/read':             { method: 'POST',   path: '/api/agent/file/read', body: { filePath: '/data/notes.txt' }, note: 'Needs the agents permission and allowFileRead. Returns { content, path }. Allowed roots: /models, /data, the app directory, $HOME' },
+            '/api/agent/file/write':            { method: 'POST',   path: '/api/agent/file/write', body: { filePath: '/data/notes.txt', content: 'Hello from the API' }, note: 'Needs the agents permission and allowFileWrite. Returns { message, path }' },
+            // Conversations
+            '/api/conversations/create':        { method: 'POST',   path: '/api/conversations', body: { title: 'Research notes' }, note: 'Conversations are stored per caller: an API key sees only the conversations created with that key' },
+            '/api/conversations/:id/messages':  { method: 'POST',   path: '/api/conversations/conversation_id/messages', body: { messages: [{ role: 'user', content: 'Hello, how are you?' }, { role: 'assistant', content: 'Doing well — how can I help?' }] }, note: 'Saves (REPLACES) the full message list; returns { success, messageCount }' },
+            // Skills + automation palette
+            '/api/skills/:skillName/execute':   { method: 'POST',   path: '/api/skills/grep_code/execute', body: { pattern: 'TODO', directory: '/workspace' }, note: 'The body IS the skill\'s parameters (flat, not wrapped in "params"). Needs the agents permission' },
+            '/api/chips':                       { method: 'POST',   path: '/api/chips', body: { label: 'Temperature', appliesTo: ['model'], field: 'temperature', type: 'number', default: 0.7 }, note: 'Needs the automation permission. GET the same path to list your chips' },
+            '/api/node-types':                  { method: 'POST',   path: '/api/node-types', body: { name: 'My Connector', category: 'connector', baseType: 'tool', defaults: { tool: 'http_request' }, fields: ['args'] }, note: 'category: trigger | gate | connector. GET the same path to list node types' },
+            '/v1/models':                       { method: 'GET',    path: '/v1/models', note: 'Every loaded model with context_window, max_concurrency and capacity { slots, busy, free }; with 2+ models an "auto" pool entry fans requests out over all of them' },
+            '/v1/capacity':                     { method: 'GET',    path: '/v1/capacity', note: 'Parallel slots per loaded model: { total_slots, free_slots, pool_model: "auto", models: [{ id, slots, busy, free, context_window, tokens_per_second }] }' },
+            // Chat capacity, parallel turns, continuation
+            '/api/chat/capacity':               { method: 'GET',    path: '/api/chat/capacity', note: 'Per loaded model: slots, busy, free (+ running parallel turns)' },
+            '/api/chat/continuation/:conversationId/delete': { method: 'DELETE', path: '/api/chat/continuation/conversation_id' },
+            '/api/conversations/:id/turns':     { method: 'POST',   path: '/api/conversations/conversation_id/turns', body: { model: 'loaded-model-name', messages: [{ role: 'user', content: 'A second, unrelated question' }] }, note: 'Runs a second turn NOW on a free slot while the conversation streams (202 {jobId}); 409 {queued:true} when no slot is free or the message follows up on the reply in progress' },
+            '/api/conversations/:id/turns/list':{ method: 'GET',    path: '/api/conversations/conversation_id/turns?live=1', note: 'Parallel turns of this conversation: status, content, tool chips (live=1 = in-progress text)' },
+            '/api/conversations/:id/turns/:jobId': { method: 'DELETE', path: '/api/conversations/conversation_id/turns/job_id', note: 'Claim a finished parallel turn (or cancel a running one)' },
+            // Two-model roles + logs
+            '/api/model-roles':                 { method: 'GET',    path: '/api/model-roles', note: 'Server-default primary (fast) / secondary (strong) models + the running instances' },
+            '/api/model-roles/update':          { method: 'PUT',    path: '/api/model-roles', body: { primary: 'fast-model-name', secondary: 'strong-model-name', mode: 'auto', firstPass: true, legwork: true, review: 'off', checkWorkers: false }, note: 'Admin only. mode: off | auto | always (all but easy turns); review: off | note | edit' },
+            '/api/logs':                        { method: 'GET',    path: '/api/logs?since=0&limit=500', note: 'Process-log history kept server-side (what the Logs tab backfills); pass the last latestSeq as since' },
+            // Downloads
+            '/api/downloads/partial':           { method: 'GET',    path: '/api/downloads/partial', note: 'Models whose download was interrupted (a new pull of the same repo resumes it)' },
+            '/api/models/:name/partial':        { method: 'DELETE', path: '/api/models/model_name/partial', note: 'Deletes an incomplete download; refused while it is downloading or loaded' },
+            '/api/agent-workspaces/clear':      { method: 'DELETE', path: '/api/agent-workspaces', note: 'Deletes every workspace you may manage (admins: ALL users)' },
+            '/api/automations/:id/runs/delete': { method: 'DELETE', path: '/api/automations/workflow_id/runs', note: 'Clears the run history of one automation' },
+            // Pi two-model pair
+            '/api/pi/pair':                     { method: 'GET',    path: '/api/pi/pair', note: 'Whether the two-model pair is configured/active for Pi, with the reason when it is not' },
+            '/api/pi/assistant/jobs':           { method: 'POST',   path: '/api/pi/assistant/jobs', body: { requests: [{ name: 'release notes', task: 'Find the latest Node.js LTS release and summarize its changes' }] }, note: 'Bearer key only; jobs run on the assistant model in the key sandbox' },
+            '/api/pi/assistant/jobs/get':       { method: 'GET',    path: '/api/pi/assistant/jobs?wait=30000', note: 'Returns settled results once (peek=1 leaves them undelivered); wait = ms to wait for the first result' },
         };
+
+        // PS 7+ ignores ServicePointManager entirely (needs -SkipCertificateCheck),
+        // and on 5.1 a scriptblock validation callback runs on a thread with no
+        // runspace and fails with "underlying connection was closed". So 7+
+        // defaults -SkipCertificateCheck on, 5.1 installs a compiled policy.
+        const psTrust = [
+            '# Trust the server\'s self-signed certificate for this session',
+            'if ($PSVersionTable.PSVersion.Major -ge 6) {',
+            "    $PSDefaultParameterValues['Invoke-RestMethod:SkipCertificateCheck'] = $true",
+            "    $PSDefaultParameterValues['Invoke-WebRequest:SkipCertificateCheck'] = $true",
+            '} else {',
+            '    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12',
+            '    [Net.ServicePointManager]::ServerCertificateValidationCallback = $null',
+            "    if (-not ('TrustAllCertsPolicy' -as [type])) { Add-Type 'using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy:ICertificatePolicy{public bool CheckValidationResult(ServicePoint servicePoint,X509Certificate certificate,WebRequest request,int problem){return true;}}' }",
+            '    $prevCertPolicy = [Net.ServicePointManager]::CertificatePolicy',
+            '    [Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy',
+            '}',
+        ].join('\n');
+        const psRestore = [
+            '# Restore normal certificate validation',
+            'if ($PSVersionTable.PSVersion.Major -ge 6) {',
+            "    $PSDefaultParameterValues.Remove('Invoke-RestMethod:SkipCertificateCheck')",
+            "    $PSDefaultParameterValues.Remove('Invoke-WebRequest:SkipCertificateCheck')",
+            '} else {',
+            '    [Net.ServicePointManager]::CertificatePolicy = $prevCertPolicy',
+            '}',
+        ].join('\n');
+
+        // Routes that accept ONLY a signed-in browser session: user management
+        // checks req.user.role, which API keys never populate, and logout /
+        // password change need a session to act on. Rendered as a login →
+        // cookie flow; the CSRF check needs X-Requested-With on cookie POSTs.
+        const SESSION_SPECS = {
+            '/api/users':                       { method: 'GET',    path: '/api/users', note: 'Admin session only' },
+            '/api/users/create':                { method: 'POST',   path: '/api/users', body: { username: 'analyst', email: 'analyst@example.com', password: 'a-strong-password', role: 'user' }, note: 'Admin session only. username, email and password (8+ chars) are required' },
+            '/api/users/invite':                { method: 'POST',   path: '/api/users/invite', body: { email: 'analyst@example.com' }, note: 'Admin session only. Emails an invite link (needs SMTP configured)' },
+            '/api/users/:id':                   { method: 'PUT',    path: '/api/users/user_id', body: { role: 'admin' }, note: 'Admin session only. Fields: email, role, disabled, allowedSkills' },
+            '/api/users/:id/disable':           { method: 'PUT',    path: '/api/users/user_id/disable', note: 'Admin session only' },
+            '/api/users/:id/enable':            { method: 'PUT',    path: '/api/users/user_id/enable', note: 'Admin session only' },
+            '/api/users/:id/delete':            { method: 'DELETE', path: '/api/users/user_id', note: 'Admin session only' },
+            '/api/users/:username/reset-password': { method: 'POST', path: '/api/users/analyst/reset-password', body: { newPassword: 'a-new-strong-password' }, note: 'Admin session only' },
+            '/api/me/preferences':              { method: 'PUT',    path: '/api/me/preferences?app=webapp', body: { theme: 'dark' }, note: 'Session only — per-app UI preferences (app=webapp or chat); GET the same path to read them' },
+            '/api/auth/logout':                 { method: 'POST',   path: '/api/auth/logout', note: 'Ends the browser session — API keys have no session to end' },
+            '/api/auth/password':               { method: 'PUT',    path: '/api/auth/password', body: { currentPassword: 'your_password', newPassword: 'a-new-strong-password' }, note: 'Session only — API keys cannot change passwords. newPassword must be 8+ characters' },
+        };
+
+        const sessionSnippet = (spec, language) => {
+            const url = `${baseUrl}${spec.path}`;
+            const method = spec.method;
+            const body = spec.body ? JSON.stringify(spec.body, null, 2) : null;
+            const login = `${baseUrl}/api/auth/login`;
+            if (language === 'curl') {
+                const call = [`curl -k -b cookies.txt -X ${method} ${url} \\`, `  -H "X-Requested-With: XMLHttpRequest"`];
+                if (body) { call[1] += ' \\'; call.push(`  -H "Content-Type: application/json" \\`, `  -d '${body}'`); }
+                return `# ${spec.note}\n# 1) Sign in and keep the session cookie\ncurl -k -c cookies.txt -X POST ${login} \\\n  -H "Content-Type: application/json" \\\n  -d '{"username": "admin", "password": "your_password"}'\n\n# 2) Call the route with the cookie (X-Requested-With is required on cookie-authenticated writes)\n${call.join('\n')}`;
+            }
+            if (language === 'python') {
+                const pyBody = body ? `, json=${body.replace(/\btrue\b/g, 'True').replace(/\bfalse\b/g, 'False').replace(/\bnull\b/g, 'None')}` : '';
+                return `# ${spec.note}\nimport requests\n\ns = requests.Session()\ns.verify = False  # self-signed certificate\n\n# 1) Sign in — the session cookie is kept on the Session object\ns.post('${login}', json={'username': 'admin', 'password': 'your_password'}).raise_for_status()\n\n# 2) Call the route (X-Requested-With is required on cookie-authenticated writes)\ns.headers['X-Requested-With'] = 'XMLHttpRequest'\nresponse = s.${method.toLowerCase()}('${url}'${pyBody})\nprint(response.status_code, response.text[:500])`;
+            }
+            if (language === 'powershell') {
+                const bodyPart = body ? `\n$body = @'\n${body}\n'@\n` : '';
+                return `# ${spec.note}\n# 1) Sign in — -SessionVariable keeps the session cookie\n$login = @{ username = "admin"; password = "your_password" } | ConvertTo-Json\nInvoke-RestMethod -Uri "${login}" -Method Post -Body $login -ContentType "application/json" -SessionVariable ms | Out-Null\n${bodyPart}\n# 2) Call the route with the same session\n$response = Invoke-RestMethod -Uri "${url}" -Method ${method.charAt(0) + method.slice(1).toLowerCase()} -WebSession $ms -Headers @{ "X-Requested-With" = "XMLHttpRequest" }${body ? ' -Body $body -ContentType "application/json"' : ''}\n$response | ConvertTo-Json -Depth 5`;
+            }
+            return `// ${spec.note}\n// Run in the browser console of the web UI (${baseUrl}) while signed in —\n// the session cookie is sent automatically.\nfetch('${url}', {\n  method: '${method}',\n  credentials: 'include',\n  headers: {\n    'X-Requested-With': 'XMLHttpRequest'${body ? ",\n    'Content-Type': 'application/json'" : ''}\n  }${body ? `,\n  body: JSON.stringify(${body.split('\n').join('\n  ')})` : ''}\n})\n  .then(res => res.json())\n  .then(data => console.log(data))\n  .catch(err => console.error(err));`;
+        };
+
+        // requireAdmin routes: a session or an X-API-Key + X-API-Secret pair whose
+        // key has the admin permission. Bearer tokens are never accepted there.
+        const ADMIN_KEY_ENDPOINTS = new Set([
+            '/api/api-keys', '/api/api-keys/create', '/api/api-keys/:id', '/api/api-keys/:id/revoke',
+            '/api/api-keys/:id/delete', '/api/api-keys/:id/clear-usage', '/api/api-keys/:id/stats',
+            '/api/system-settings', '/api/model-roles/update', '/api/system/reset',
+            '/api/apps', '/api/apps/:name/start', '/api/apps/:name/stop', '/api/apps/:name/restart',
+        ]);
 
         const genericSnippet = (spec, language) => {
             const url = `${baseUrl}${spec.path}`;
@@ -8270,18 +6613,18 @@ console.log(chip);`
                     lines.push(`  -H "Content-Type: application/json" \\`);
                     lines.push(`  -d '${body}'`);
                 }
-                return `${hash}# Bearer Token Authentication\n${lines.join('\n')}`;
+                return `${hash}${lines.join('\n')}`;
             }
 
             if (language === 'python') {
                 const args = [`    '${url}'`, `    headers={\n        'Authorization': 'Bearer your_bearer_token'${body ? ",\n        'Content-Type': 'application/json'" : ''}\n    }`];
                 if (body) args.push(`    json=${body.replace(/\btrue\b/g, 'True').replace(/\bfalse\b/g, 'False').replace(/\bnull\b/g, 'None').split('\n').join('\n    ')}`);
                 args.push(`    verify=False  # For self-signed certificates`);
-                return `${hash}import requests\n\n# Bearer Token Authentication\nresponse = requests.${method.toLowerCase()}(\n${args.join(',\n')}\n)\n\nprint(response.status_code, response.text[:500])`;
+                return `${hash}import requests\n\nresponse = requests.${method.toLowerCase()}(\n${args.join(',\n')}\n)\n\nprint(response.status_code, response.text[:500])`;
             }
 
             if (language === 'powershell') {
-                const head = `${hash}# Bearer Token Authentication\n$headers = @{\n    "Authorization" = "Bearer your_bearer_token"${body ? '\n    "Content-Type" = "application/json"' : ''}\n}\n`;
+                const head = `${hash}$headers = @{\n    "Authorization" = "Bearer your_bearer_token"${body ? '\n    "Content-Type" = "application/json"' : ''}\n}\n`;
                 const bodyLine = body ? `\n$body = @'\n${body}\n'@\n` : '';
                 const call = `\n$response = Invoke-RestMethod -Uri "${url}" -Method ${method.charAt(0) + method.slice(1).toLowerCase()} -Headers $headers${body ? ' -Body $body' : ''}\n$response | ConvertTo-Json -Depth 5`;
                 return head + bodyLine + call;
@@ -8290,8 +6633,15 @@ console.log(chip);`
             // javascript
             const init = [`  method: '${method}'`, `  headers: {\n    'Authorization': 'Bearer your_bearer_token'${body ? ",\n    'Content-Type': 'application/json'" : ''}\n  }`];
             if (body) init.push(`  body: JSON.stringify(${body.split('\n').join('\n  ')})`);
-            return `${slash}// Bearer Token Authentication\nfetch('${url}', {\n${init.join(',\n')}\n})\n  .then(res => res.json())\n  .then(data => console.log(data))\n  .catch(err => console.error(err));`;
+            return `${slash}fetch('${url}', {\n${init.join(',\n')}\n})\n  .then(res => res.json())\n  .then(data => console.log(data))\n  .catch(err => console.error(err));`;
         };
+
+        if (SESSION_SPECS[endpoint]) {
+            const out = sessionSnippet(SESSION_SPECS[endpoint], lang);
+            return lang === 'powershell' ? `${psTrust}\n\n${out}\n\n${psRestore}` : out;
+        }
+        const adminOnly = ADMIN_KEY_ENDPOINTS.has(endpoint);
+        const authType = adminOnly ? 'apikey' : apiBuilderAuthType;
 
         const code = examples[endpoint]?.[lang]
             || (GENERIC_SPECS[endpoint] ? genericSnippet(GENERIC_SPECS[endpoint], lang) : null)
@@ -8299,7 +6649,7 @@ console.log(chip);`
 // Follow the pattern shown in similar endpoints with the appropriate HTTP method`;
 
         // Filter code based on selected auth type
-        if (code && apiBuilderAuthType) {
+        if (code && authType) {
             const lines = code.split('\n');
             const filteredLines = [];
             let skipUntilNextSection = false;
@@ -8313,7 +6663,7 @@ console.log(chip);`
                 const isApiKeyMarker = (lowerLine.includes('api key') || lowerLine.includes('apikey')) &&
                                        (lowerLine.includes('# or') || lowerLine.includes('// or'));
 
-                if (apiBuilderAuthType === 'bearer') {
+                if (authType === 'bearer') {
                     // Skip API Key sections (marked with "# OR API Key" or "// OR API Key")
                     if (isApiKeyMarker) {
                         skipUntilNextSection = true;
@@ -8369,7 +6719,7 @@ console.log(chip);`
 
             // Post-processing pass: replace any remaining Bearer auth with API Key auth
             // This handles endpoints that only have Bearer auth (no "# OR API Key" section)
-            if (apiBuilderAuthType === 'apikey') {
+            if (authType === 'apikey') {
                 // PowerShell: "Authorization" = "Bearer ..." → X-API-Key + X-API-Secret
                 result = result.replace(
                     /^(\s*)"Authorization"\s*=\s*"Bearer\s+[^"]*"/gm,
@@ -8390,6 +6740,14 @@ console.log(chip);`
                     /^(\s*)-H\s*"Authorization:\s*Bearer\s+[^"]*"\s*\\?/gm,
                     '$1-H "X-API-Key: your_api_key" \\\n$1-H "X-API-Secret: your_api_secret" \\'
                 );
+                // Inline header forms the line-anchored rules above miss:
+                // headers={'Authorization': 'Bearer …'}, @{ 'Authorization' = 'Bearer …'; … },
+                // and a curl -H in the middle of a line.
+                result = result.replace(
+                    /(['"])Authorization\1(\s*[:=]\s*)(['"])Bearer [^'"]*\3/g,
+                    (m, q, sep, q2) => `${q}X-API-Key${q}${sep}${q2}your_api_key${q2}${sep.includes('=') ? ';' : ','} ${q}X-API-Secret${q}${sep}${q2}your_api_secret${q2}`
+                );
+                result = result.replace(/-H "Authorization: Bearer [^"]*"/g, '-H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret"');
                 // Remove leftover "# Bearer Token Authentication" comments
                 result = result.replace(/^[ \t]*#\s*Bearer Token Authentication\s*\n?/gm, '');
                 result = result.replace(/^[ \t]*\/\/\s*Bearer Token Authentication\s*\n?/gm, '');
@@ -8397,8 +6755,20 @@ console.log(chip);`
 
             // PowerShell: Add SSL certificate bypass for self-signed certs
             if (apiBuilderLang === 'powershell') {
-                result = '# Bypass SSL certificate validation (self-signed certs)\n[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }\n\n' + result;
-                result = result + '\n\n# Restore default SSL certificate validation\n[System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null';
+                result = psTrust + '\n\n' + result + '\n\n' + psRestore;
+            }
+
+            if (authType === 'bearer' && !adminOnly) {
+                result = result.replace(
+                    /(['"])X-API-Key\1(\s*[:=]\s*)(['"])your_api_key\3\s*[,;]?\s*(['"])X-API-Secret\4\s*[:=]\s*(['"])your_api_secret\5/g,
+                    (m, q, sep, q2) => `${q}Authorization${q}${sep}${q2}Bearer your_bearer_token${q2}`
+                );
+                result = result.replace(/-H "X-API-Key: your_api_key"(\s*\\?\s*)-H "X-API-Secret: your_api_secret"/g, '-H "Authorization: Bearer your_bearer_token"');
+            }
+
+            if (adminOnly) {
+                const hdr = apiBuilderLang === 'javascript' ? '//' : '#';
+                result = `${hdr} Admin only: needs an API key + secret whose key has the admin permission\n${hdr} (or a signed-in admin session). Bearer tokens are not accepted on this route.\n` + result;
             }
 
             return result;
@@ -12014,24 +10384,29 @@ console.log(chip);`
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>Pi</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>npm install -g @earendil-works/pi-coding-agent</TableCell>
-                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal, automation (see Pi section below)</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" {baseUrl}/api/pi/install | bash</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal agent (see Pi setup)</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--success)' }}>Direct API</TableCell>
                                                             <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{baseUrl}/api/chat</TableCell>
                                                             <TableCell sx={{ color: 'var(--text-secondary)' }}>Integrations</TableCell>
                                                         </TableRow>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--success)' }}>OpenAI API</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{baseUrl}/v1</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>SDKs &amp; agent harnesses — model <code>auto</code> runs parallel agents across every loaded model</TableCell>
+                                                        </TableRow>
                                                     </TableBody>
                                                 </Table>
                                             </TableContainer>
                                         </Box>
 
-                                        {/* Memory / persona */}
+                                        {/* Core memory */}
                                         <Box sx={{ mt: 2, p: 1.75, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.82rem', mb: 0.5 }}>It remembers and gets faster ✨</Typography>
                                             <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-                                                As you chat (web <em>or</em> Pi), the assistant builds an account <strong style={{ color: 'var(--text-primary)' }}>persona</strong>: your preferences, plus <strong style={{ color: 'var(--text-primary)' }}>experience</strong> for each kind of task (&ldquo;reading emails&rdquo;, &ldquo;web research&rdquo;, &ldquo;code analysis&rdquo;) — the approach that worked. Next time a similar task comes up, it reuses that approach instead of re-exploring, so repeat work needs fewer tool calls and finishes faster. Browse, edit, or clear it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab. Turn it off per-chat with the memory toggle. See the <strong style={{ color: 'var(--text-primary)' }}>Pi setup</strong> section for how Pi shares the same persona.
+                                                As you work (web <em>or</em> Pi), the assistant keeps one living <strong style={{ color: 'var(--text-primary)' }}>core memory</strong> per kind of work — research, coding, security analysis, data analysis, documents, media, automations. Each finished task updates that theme&apos;s stats, proven approach and lessons, and from the second task on the model rewrites the theme&apos;s playbook. The next task of the same kind starts from it, so repeat work needs fewer tool calls. A plain question or greeting recalls nothing. Browse, pause, add your own guidance to, or reset a theme in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab; turn it off with the <strong style={{ color: 'var(--text-primary)' }}>Core memory</strong> switch in the chat app&apos;s Settings. Pi shares the same memory.
                                             </Typography>
                                         </Box>
 
@@ -12074,6 +10449,8 @@ console.log(chip);`
                                                             <MenuItem value="/api/attachments/:id/meta">GET /api/attachments/:id/meta - Fetch Attachment Metadata</MenuItem>
                                                             <MenuItem value="/api/complete">POST /api/complete - Text Completion</MenuItem>
                                                             <MenuItem value="/api/chat/continuation/:conversationId">GET /api/chat/continuation/:id - Get Continuation Queue</MenuItem>
+                                                            <MenuItem value="/api/chat/continuation/:conversationId/delete">DELETE /api/chat/continuation/:id - Clear Continuation Queue</MenuItem>
+                                                            <MenuItem value="/api/chat/capacity">GET /api/chat/capacity - Free Slots per Loaded Model</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Authentication ───</MenuItem>
                                                             <MenuItem value="/api/auth/has-users">GET /api/auth/has-users - Check If Users Exist</MenuItem>
                                                             <MenuItem value="/api/auth/register">POST /api/auth/register - Register User</MenuItem>
@@ -12089,7 +10466,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/models/:name/load">POST /api/models/:modelName/load - Load Model</MenuItem>
                                                             <MenuItem value="/api/models/load-hf">POST /api/models/load-hf - Load HF Repo into sglang</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:modelName - Delete Model</MenuItem>
-                                                            <MenuItem value="/api/models/hf-cache">GET/DELETE /api/models/hf-cache - HuggingFace Cache</MenuItem>
+                                                            <MenuItem value="/api/models/hf-cache">GET /api/models/hf-cache - List HuggingFace Cache</MenuItem>
                                                             <MenuItem value="/api/models/hf-cache/:dirName">DELETE /api/models/hf-cache/:dirName - Delete One Cached Repo</MenuItem>
                                                             <MenuItem value="/api/model-configs">GET /api/model-configs - List All Model Configs</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
@@ -12100,6 +10477,8 @@ console.log(chip);`
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Downloads ───</MenuItem>
                                                             <MenuItem value="/api/downloads">GET /api/downloads - List Active Downloads</MenuItem>
                                                             <MenuItem value="/api/downloads/:downloadId">DELETE /api/downloads/:id - Cancel Download</MenuItem>
+                                                            <MenuItem value="/api/downloads/partial">GET /api/downloads/partial - List Incomplete Downloads</MenuItem>
+                                                            <MenuItem value="/api/models/:name/partial">DELETE /api/models/:modelName/partial - Discard Incomplete Download</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Instances ───</MenuItem>
                                                             <MenuItem value="/api/sglang/instances">GET /api/sglang/instances - List sglang Instances</MenuItem>
                                                             <MenuItem value="/api/sglang/instances/:name">DELETE /api/sglang/instances/:modelName - Stop sglang Instance</MenuItem>
@@ -12114,6 +10493,9 @@ console.log(chip);`
                                                             <MenuItem value="/api/system-prompts/:modelName/delete">DELETE /api/system-prompts/:name - Delete System Prompt</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── System ───</MenuItem>
                                                             <MenuItem value="/api/system/resources">GET /api/system/resources - System Hardware Info</MenuItem>
+                                                            <MenuItem value="/api/model-roles">GET /api/model-roles - Two-Model Roles (server default)</MenuItem>
+                                                            <MenuItem value="/api/model-roles/update">PUT /api/model-roles - Set Two-Model Roles (Admin)</MenuItem>
+                                                            <MenuItem value="/api/logs">GET /api/logs - Process Log History (backfill)</MenuItem>
                                                             <MenuItem value="/api/system/optimal-settings">POST /api/system/optimal-settings - Calculate Settings</MenuItem>
                                                             <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
                                                             <MenuItem value="/api/system/tools-catalog">GET /api/system/tools-catalog - Native Tools Catalog</MenuItem>
@@ -12123,7 +10505,9 @@ console.log(chip);`
                                                             <MenuItem value="/api/sandbox/run-code">POST /api/sandbox/run-code - Sandboxed Python Eval</MenuItem>
                                                             <MenuItem value="/api/tool-artifacts/:runId/:filename">GET /api/tool-artifacts/:runId/:filename - Download Tool Artifact</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - DevDocs Reference Lookup</MenuItem>
-                                                            <MenuItem value="/v1/chat/completions">POST /v1/* - OpenAI-Compatible Passthrough</MenuItem>
+                                                            <MenuItem value="/v1/chat/completions">POST /v1/chat/completions - OpenAI-Compatible Chat (model or "auto" pool)</MenuItem>
+                                                            <MenuItem value="/v1/models">GET /v1/models - Loaded Models + Concurrency</MenuItem>
+                                                            <MenuItem value="/v1/capacity">GET /v1/capacity - Parallel Slots per Model (for agent harnesses)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
                                                             <MenuItem value="/api/search">GET /api/search - Web Search</MenuItem>
                                                             <MenuItem value="/api/url/fetch">POST /api/url/fetch - Fetch URLs (Chat Feature)</MenuItem>
@@ -12137,15 +10521,18 @@ console.log(chip);`
                                                             <MenuItem value="/api/conversations/:id/update">PUT /api/conversations/:id - Update Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/delete">DELETE /api/conversations/:id - Delete Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/messages">POST /api/conversations/:id/messages - Add Message</MenuItem>
-                                                            <MenuItem value="/api/memories">GET /api/memories - List Account Memory (persona)</MenuItem>
-                                                            <MenuItem value="/api/memories/clear">DELETE /api/memories - Clear All Memory</MenuItem>
-                                                            <MenuItem value="/api/memories/:id">DELETE /api/memories/:id - Delete Memory</MenuItem>
-                                                            <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Memory</MenuItem>
-                                                            <MenuItem value="/api/memories/:id/link">POST /api/memories/:id/link - Link Two Memories</MenuItem>
-                                                            <MenuItem value="/api/memories/search">POST /api/memories/search - Search Memory (Relevance-Ranked)</MenuItem>
-                                                            <MenuItem value="/api/memories/maintenance">POST /api/memories/maintenance - Memory Cleanup / Consolidation</MenuItem>
+                                                            <MenuItem value="/api/memories">GET /api/memories - List Core Memory (per theme)</MenuItem>
+                                                            <MenuItem value="/api/memories/create">POST /api/memories - Set Theme Guidance (notes)</MenuItem>
+                                                            <MenuItem value="/api/memories/:id/get">GET /api/memories/:id - Get One Theme Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Notes / Pause / Add Lesson</MenuItem>
+                                                            <MenuItem value="/api/memories/:id">DELETE /api/memories/:id - Reset One Theme</MenuItem>
+                                                            <MenuItem value="/api/memories/clear">DELETE /api/memories - Clear All Core Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/recall">POST /api/memories/recall - Preview Recall for an Ask</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/turns">POST /api/conversations/:id/turns - Start a Parallel Turn</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/turns/list">GET /api/conversations/:id/turns - List Parallel Turns</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/turns/:jobId">DELETE /api/conversations/:id/turns/:jobId - Claim / Cancel Parallel Turn</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
                                                             <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
                                                             <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>
@@ -12209,11 +10596,15 @@ console.log(chip);`
                                                             <MenuItem value="/api/pi/install.ps1">GET /api/pi/install.ps1 - Pi auto-installer for native Windows (PowerShell, no WSL)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
+                                                            <MenuItem value="/api/pi/pair">GET /api/pi/pair - Two-Model Pair Status for Pi</MenuItem>
+                                                            <MenuItem value="/api/pi/assistant/jobs">POST /api/pi/assistant/jobs - Hand Jobs to the Assistant Model</MenuItem>
+                                                            <MenuItem value="/api/pi/assistant/jobs/get">GET /api/pi/assistant/jobs - Poll / Await Assistant Results</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Sandbox Workspaces ───</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces">GET /api/agent-workspaces - List Sandbox Workspaces</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces/file">GET/POST /api/agent-workspaces/file - Download / Upload Workspace File</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces/inventory">GET /api/agent-workspaces/inventory - Workspace File Inventory</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces/:owner/:bucket">DELETE /api/agent-workspaces/:owner/:bucket - Delete Workspace</MenuItem>
+                                                            <MenuItem value="/api/agent-workspaces/clear">DELETE /api/agent-workspaces - Clear All Workspaces</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Automation & Chips ───</MenuItem>
                                                             <MenuItem value="/api/automations">GET/POST /api/automations - List / Create Automation</MenuItem>
                                                             <MenuItem value="/api/automations/:id">GET /api/automations/:id - Get Automation</MenuItem>
@@ -12227,6 +10618,7 @@ console.log(chip);`
                                                             <MenuItem value="/api/automations/:id/edit">POST /api/automations/:id/edit - Edit with LLM (preview + diff)</MenuItem>
                                                             <MenuItem value="/api/automations/:id/test">POST /api/automations/:id/test - Test-Run + Self-Repair</MenuItem>
                                                             <MenuItem value="/api/automations/:id/runs">GET /api/automations/:id/runs - Run History</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/runs/delete">DELETE /api/automations/:id/runs - Clear Run History</MenuItem>
                                                             <MenuItem value="/api/automations/:id/webhook-token">POST /api/automations/:id/webhook-token - Mint Webhook Token</MenuItem>
                                                             <MenuItem value="/api/automations/webhook/:token">POST /api/automations/webhook/:token - Public Webhook Trigger</MenuItem>
                                                             <MenuItem value="/api/automations/events">GET /api/automations/events - Live Run Frames (SSE)</MenuItem>
@@ -12562,7 +10954,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography sx={{ fontSize: '0.85rem', fontWeight: 600 }}>Built in — no separate service</Typography>
                                             </Box>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                Open the <strong style={{ color: 'var(--text-primary)' }}>Automation</strong> button next to <strong style={{ color: 'var(--text-primary)' }}>+ New chat</strong> in the chat app to drag-and-drop a workflow on a visual canvas. Workflows run <strong style={{ color: 'var(--text-primary)' }}>manually</strong>, on a <strong style={{ color: 'var(--text-primary)' }}>schedule</strong>, by inbound <strong style={{ color: 'var(--text-primary)' }}>webhook</strong>, on a system <strong style={{ color: 'var(--text-primary)' }}>event</strong>, or when a <strong style={{ color: 'var(--text-primary)' }}>Telegram / Slack</strong> message arrives. Everything runs in-process and reuses this server&apos;s auth, models, and skill catalog.
+                                                Open <strong style={{ color: 'var(--text-primary)' }}>Automations</strong> (below <strong style={{ color: 'var(--text-primary)' }}>New chat</strong> in the chat sidebar) to drag-and-drop a workflow on a visual canvas. Workflows run <strong style={{ color: 'var(--text-primary)' }}>manually</strong>, on a <strong style={{ color: 'var(--text-primary)' }}>schedule</strong>, by inbound <strong style={{ color: 'var(--text-primary)' }}>webhook</strong>, on a system <strong style={{ color: 'var(--text-primary)' }}>event</strong>, or when a <strong style={{ color: 'var(--text-primary)' }}>Telegram / Slack</strong> message arrives. Everything runs in-process and reuses this server&apos;s auth, models, and skill catalog.
                                             </Typography>
                                         </Box>
 
@@ -12573,19 +10965,19 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <TableBody>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap', verticalAlign: 'top' }}>Triggers</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Manual / Run now, Schedule, Inbound Webhook, On Event, Telegram Message, Slack: New Message</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Manual / Run now, Schedule, Inbound Webhook, On Event, Loop</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Tools</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Model / LLM call, Web Search, Fetch URL, Crawl Pages, HTTP Request, Parse JSON, Parse RSS / Atom Feed, Render HTML, Export File, SQLite Query, Render Chart, Plot Chart (PNG), Fetch Time Series, Create PDF, HTML to PDF, Create File, Send File, Script Block (Python), Run Tool / Skill, Track Changes, Database: Store, Database: Query, Loop / Map, Delay / Wait, Set Variable. Playwright Fetch and Scrapling Fetch still execute in saved workflows but are hidden from the palette — Fetch URL now cascades to a stealth browser on its own.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Model / LLM call, Web Search, Fetch URL, Crawl Pages, HTTP Request, Parse JSON, Parse RSS / Atom Feed, Render HTML, Export File, SQLite Query, Render Chart, Plot Chart (PNG), Fetch Time Series, Create PDF, HTML to PDF, Create File, Script Block (Python), Run Tool / Skill, Track Changes, Database: Store, Database: Query</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Connectors</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Slack, Telegram — each with sub-actions: new-message trigger / send / get. Both auto-detect an upstream artifact and send it as a document.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Telegram (on new message · send · get recent messages), Slack (on new message · send), Send File. Telegram and Slack auto-detect an upstream artifact and send it as a document.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Logic Gates</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>If / Else, Switch, Filter, Merge — only these carry branch handles. Delay, Set Variable and Loop are regular steps, not gates.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>If / Else, Switch, Filter, Merge (branching — only these carry branch handles), plus the Delay / Wait and Set Variable utilities, which are not gates.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
@@ -12608,10 +11000,15 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 0.75 } }}>
                                                 <li>Reference upstream data with <code>{'{{nodes.<id>.field}}'}</code> tags. The config panel lists clickable tags from every upstream step — with the expected fields shown before a run, so you can wire a flow without executing it first.</li>
                                                 <li><strong style={{ color: 'var(--text-primary)' }}>Logic gates</strong> support text operators: <code>equals</code>, <code>contains</code>, <code>starts with</code> / <code>ends with</code>, <code>regex</code>, <code>&gt;</code>, <code>&lt;</code>, <code>is-empty</code>, and more. Leave the &quot;Value to check&quot; blank and it defaults to the previous node&apos;s output.</li>
-                                                <li>Independent non-LLM nodes at the same depth run <strong style={{ color: 'var(--text-primary)' }}>in parallel</strong> — fan out, then <code>Merge</code> back together.</li>
+                                                <li>Independent nodes at the same depth — model calls included — run <strong style={{ color: 'var(--text-primary)' }}>in parallel</strong> (up to 8 at once; Database: Store and Track Changes steps take turns). Fan out, then <code>Merge</code> back together.</li>
                                                 <li>Node settings use <strong style={{ color: 'var(--text-primary)' }}>chips</strong>, not raw <code>{'{{}}'}</code> or dropdowns — pick a chip and it compiles to fields on the node; LLM-drafted custom chips come from <code>POST /api/chips/build</code>.</li>
                                                 <li>Each node has a <strong style={{ color: 'var(--text-primary)' }}>power toggle</strong> to disable it from running without removing it from the graph.</li>
                                                 <li>Author inline Python with a <strong style={{ color: 'var(--text-primary)' }}>Script Block</strong> node, and fetch JS-heavy or bot-protected pages with <strong style={{ color: 'var(--text-primary)' }}>Fetch URL</strong> — it cascades from a fast HTTP get to a stealth fetcher to a full browser on its own.</li>
+                                                <li>A webhook run&apos;s input is <code>{'{ body, query, receivedAt }'}</code> — reference fields as <code>{'{{input.body.<field>}}'}</code>.</li>
+                                                <li><strong style={{ color: 'var(--text-primary)' }}>Loop / Map</strong> runs a step over up to 50 items at 1–8 concurrency.</li>
+                                                <li><strong style={{ color: 'var(--text-primary)' }}>Track Changes</strong> snapshots one source per key and reports a readable diff; volatile tokens (session ids, timestamps) are ignored, and a page with no usable content fails the step instead of being stored.</li>
+                                                <li>A failed fetch — or a page that returned no real content — <strong style={{ color: 'var(--text-primary)' }}>fails its node</strong> instead of flowing downstream as data, so a monitor never alerts on an error page.</li>
+                                                <li>Every run (scheduled ones included) gets a <strong style={{ color: 'var(--text-primary)' }}>health check</strong>: empty results are flagged, and delivery steps a gate skipped are reported as UNVERIFIED. Build / edit also runs a static validator that auto-repairs common wiring mistakes before saving.</li>
                                             </Box>
                                         </Box>
 
@@ -12659,7 +11056,7 @@ DELETE ${baseUrl}/api/automations/:id      # delete
 # Build / edit / test with an LLM
 POST   ${baseUrl}/api/automations/build       # { prompt, test? }  draft a workflow from a prompt
 POST   ${baseUrl}/api/automations/:id/edit    # { prompt }  -> { proposed, diff } (preview, does not save)
-POST   ${baseUrl}/api/automations/:id/test    # test-run + self-repair; persists fix only with { apply: true }
+POST   ${baseUrl}/api/automations/:id/test    # test-run + self-repair; saves the repaired graph unless { apply: false }
 
 # Lifecycle
 POST   ${baseUrl}/api/automations/:id/enable  # { enabled } enable/disable
@@ -12747,8 +11144,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' }, mb: 1.5 }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap' }}>results</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 5 per call</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>content / page</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 12,000 chars extracted</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap' }}>results</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>5 by default (<code>limit</code> up to 10)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>content</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Search returns title / url / snippet (+ date); <code>read: 1–3</code> adds up to 2,500 chars of each result&apos;s page. A <code>url</code> read defaults to 15,000 chars.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>query rewrite</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>extractSearchQuery()</code> trims long prompts to key entities (domains, IPs, hashes, CVEs) + intent keywords</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>citations</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Tool description instructs the model to cite sources and quote actual data</TableCell></TableRow>
                                                         </TableBody>
@@ -12756,16 +11153,16 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
 
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Fallback chain</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5 }}>
-                                                        <Chip label="DuckDuckGo" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Chip label="Engine: DDG → Brave → Yahoo → Bing" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
-                                                        <Chip label="Scrapling (StealthyFetcher)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
+                                                        <Chip label="DuckDuckGo (axios)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
-                                                        <Chip label="Brave Search" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                        <Chip label="Brave" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
-                                                        <Chip label="Playwright" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
+                                                        <Chip label="Scrapling" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
                                                     </Box>
                                                     <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
-                                                        Earlier providers serve when reachable; later ones engage only on empty / error / blocked results.
+                                                        The resident web engine tries each backend with rotated browser fingerprints and moves on when an engine is blocked or its results don&apos;t match the query (&ldquo;new / latest&rdquo; asks put Bing News second and anchor the year). Results carry <code>relevance</code> and a reformulation <code>hint</code> when they come back generic. Only if the engine is down or empty does the legacy chain run.
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -12775,16 +11172,15 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)', height: '100%' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                                         <Chip label="web — read path" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Internal engine: <code>fetch_url</code> — backed by <code>POST /api/url/fetch</code> (<code>query</code> scope)</Typography>
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Internal engine: <code>fetch_url</code> → <code>fetchUrlContent()</code> (the same cascade is exposed at <code>POST /api/url/fetch</code>)</Typography>
                                                     </Box>
 
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' }, mb: 1.5 }}>
                                                         <TableBody>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap' }}>urls / call</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 3 URLs per invocation</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxLength (files)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>50,000 chars default</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxLength (HTML)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>12,000 chars default</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>timeout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>30,000 ms default</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxLength</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>15,000 chars (chat <code>web</code>) / 50,000 (<code>/api/url/fetch</code>)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>timeout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>20 s (chat) / 30 s (<code>/api/url/fetch</code>); a browser page that never yields is killed at a hard deadline (75 s default)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>file detection</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PDF, DOCX, XLSX/XLS, plus text/code (<code>.txt .csv .json .xml .md .py .js</code>, …) by extension</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>pdf pipeline</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>pdf-parse</code> + <code>repairPdfUrls()</code> rejoins URLs broken across lines</TableCell></TableRow>
                                                         </TableBody>
@@ -12794,14 +11190,18 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5 }}>
                                                         <Chip label="Direct download" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
-                                                        <Chip label="Scrapling" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
+                                                        <Chip label="axios (fast)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
-                                                        <Chip label="Playwright" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                        <Chip label="Impersonate (fingerprint rotation)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Scrapling (warm pool)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Playwright" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
                                                         <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
                                                         <Chip label="axios" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
                                                     </Box>
                                                     <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
-                                                        Known file extensions skip the browser path entirely and go straight to direct download (bot-protected file CDNs escalate to a real-browser download). The cascade is JS-shell-aware: a thin SPA app-shell in the raw HTML escalates to Playwright, while small-but-complete static pages are served fast. Hosts whose bot protection defeats every layer fast-fail for ~10 minutes with guidance to try a different site.
+                                                        Known file extensions skip the browser path entirely and go straight to direct download (bot-protected file CDNs escalate to a real-browser download). The cascade is JS-shell-aware: a thin SPA app-shell in the raw HTML escalates to Playwright, while small-but-complete static pages are served fast. Hosts whose bot protection defeats every layer fast-fail for ~10 minutes with guidance to try a different site. Every layer&apos;s answer is checked for obstacles (bot wall, consent / login / paywall / age gate, geo block, JS shell): the result carries <code>obstacle</code> plus a one-step <code>hint</code>, the browser dismisses consent and age overlays itself, and a bot-walled, paywalled or login-gated page is retried from the Internet Archive (<code>source: &apos;archive&apos;</code>). Ads are blocked and ad slots stripped on every layer. Reads carry <code>pagination.next</code> for listings; <code>find: &quot;term&quot;</code> returns just the matching lines and links of a long page.
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -12814,7 +11214,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         <TableBody>
                                                             <TableRow>
                                                                 <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 200, whiteSpace: 'nowrap' }}>Scrapling StealthyFetcher</TableCell>
-                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Playwright-based anti-bot fetcher invoked via <code>execFile</code> (safe URL passing). Timeout in milliseconds. Retries with a longer timeout when initial content is &lt; 500 chars.</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Anti-bot stealth browser kept warm in the resident web engine (a pool of patchright Chrome instances; one-shot <code>execFile</code> fallback). Timeout in milliseconds. Re-fetches once when the first read yields &lt; 200 chars.</TableCell>
                                                             </TableRow>
                                                             <TableRow>
                                                                 <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_main_content()</TableCell>
@@ -12838,7 +11238,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             </TableRow>
                                                             <TableRow>
                                                                 <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>download_html (skill)</TableCell>
-                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>When <code>fetch_url</code>'s extraction is too lossy, the <code>download_html</code> sandbox skill saves the page's <strong>raw, untruncated</strong> HTML into <code>/workspace</code> so <code>read_file</code> / <code>grep_code</code> / <code>parse_html</code> can work the full document. For bot-protected sites prefer <code>scrapling_fetch</code> / Playwright Fetch.</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>When <code>fetch_url</code>'s extraction is too lossy, the <code>download_html</code> sandbox skill saves the page's <strong>raw, untruncated</strong> HTML into <code>/workspace</code> so <code>read_file</code> / <code>grep_code</code> / <code>parse_html</code> can work the full document. For bot-protected sites prefer <code>web</code> with <code>mode: &quot;stealth&quot;</code> or <code>mode: &quot;browser&quot;</code>.</TableCell>
                                                             </TableRow>
                                                         </TableBody>
                                                     </Table>
@@ -12854,20 +11254,23 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </Typography>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.72rem' } }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 190, whiteSpace: 'nowrap' }}>web (modes)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>mode: stealth</code> = Scrapling anti-bot fetch; <code>mode: browser</code> = full Playwright load with XHR interception; <code>mode: interact</code> = scripted clicks / typing via <code>actions[]</code>; <code>mode: crawl</code> = follow links from a seed URL across multiple pages; <code>want: images | links</code> extracts rendered images / hyperlinks instead of text.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 190, whiteSpace: 'nowrap' }}>web (modes)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>mode: stealth</code> = Scrapling anti-bot fetch; <code>mode: browser</code> = full Playwright load with XHR interception; <code>mode: interact</code> = scripted clicks / typing via <code>actions[]</code>; <code>mode: crawl</code> = walk a paginated listing (next links, <code>?page=N</code>, load-more buttons, infinite scroll; <code>maxPages</code> 5 by default, 20 max); <code>mode: interact</code> keeps the page open for the rest of the turn; <code>want: images | links</code> extracts rendered images / hyperlinks instead of text.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>sniff_media_streams</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DevTools-style network inspector — passively records the media URLs (HLS <code>.m3u8</code>, DASH <code>.mpd</code>, direct files) a JS player loads at runtime. Hidden when Playwright is unavailable.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_video</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extracts a playable video (embed / direct file / HLS) from URLs the model found via search and renders an inline click-to-play player in the chat.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_image</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Searches the open web for images (or displays model-supplied image / page URLs — JS-rendered galleries are read via the stealth browser), liveness-probes each, and renders an inline thumbnail grid. Also handles &quot;take a screenshot of &lt;url&gt;&quot; asks via full-page capture.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>render_chart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Validates a chart spec (line / bar / area / pie / scatter) and renders it inline via Recharts.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>fetch_timeseries</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pulls a price/quote time series from Yahoo Finance (no key) for charting and analysis.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>dns_lookup / virustotal_lookup</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DNS record resolution and VirusTotal reputation lookup for security / OSINT questions.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extract an uploaded or downloaded archive (zip / tar / gz / bz2 / xz — magic-byte detection beats a lying extension) into the conversation workspace for <code>read_file</code> / <code>grep_code</code> analysis.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extract any archive or compressed file — zip, 7z, rar, cab / msi, every tar variant, gz / bz2 / xz / zst / lz4 / …, deb / rpm, iso / dmg / wim, self-extracting exe — detected from the file bytes; multi-volume sets and a <code>password</code> are supported. Output lands in the conversation workspace for <code>read_file</code> / <code>grep_code</code> / <code>scan_source_files</code>.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>build_automation</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Builds a real saved workflow in the Automation engine from a plain-English ask ("check this site every morning and Telegram me a summary") — the same builder <code>POST /api/automations/build</code> uses. Requires the <code>automation</code> permission.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>search_string</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Search a string or regex in fetched text or a file and return only the matching lines with context — far cheaper than re-reading a page body after <code>web</code> / <code>fetch_url</code>.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>query_document</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic search over a large uploaded document (TF-IDF ranked chunks with line ranges to cite). Use before reading a big file end to end.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>read_document_chunk</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Read one or more chunks of an indexed document by index — the follow-up to <code>query_document</code>, or to walk a document linearly.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Tool discovery by capability: describes what it needs and gets matching tools made callable on the next step. The escape hatch when the router trimmed a needed tool out of the catalog.</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>record_learning</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>The model's self-improvement path — saves an outcome-aware lesson or per-task recipe into account memory (consolidates into prior learnings instead of duplicating).</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>record_learning</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Adds one lesson to <strong>core memory</strong> for a theme of work (research, coding, data analysis, …), reused on later tasks of that theme.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>preview_html</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Renders a workspace HTML file in the server&apos;s real browser and returns page errors, console errors, failed requests, blank-canvas checks and a screenshot — how the model tests pages it wrote (the sandbox itself has no browser).</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>delegate</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Runs 2–4 independent sub-tasks as parallel worker agents (each a full chat turn with tools) and hands back their reports; placed across loaded models by measured speed and free slots.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>ask_assistant / await_assistant</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Two-model pairing: the lead hands legwork to the assistant model as background jobs and keeps writing; results are merged when they land. Configured under <strong>Model roles</strong> on the Models tab.</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>base64_decode / load_skill</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Decode a base64 blob; load a skill's full code on demand. Plus every enabled skill in the catalog is exposed as its own tool (a semantic router trims the 130+ tool catalog to the relevant ones per turn).</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
@@ -12893,7 +11296,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Sandbox Skills &amp; Artifacts</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Workspace-scoped Python skills and artifact downloads</Typography>
                                             </Box>
                                         </Box>
 
@@ -12941,23 +11344,23 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>html_to_pdf</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an HTML document (inline <code>html</code> or a <code>/workspace</code> <code>htmlPath</code>) to PDF via WeasyPrint — full CSS layout, unlike <code>create_pdf</code>&apos;s markdown subset. Params: <code>html</code> or <code>htmlPath</code>, <code>outputName</code>. Output surfaces as a download chip.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an HTML document to PDF via WeasyPrint — full CSS layout, unlike <code>create_pdf</code>&apos;s markdown subset; web fonts and remote images load over public internet, and the result reports any CSS the renderer dropped. Params: <code>content</code> (inline HTML) or <code>htmlPath</code>, <code>outputName</code>, optional <code>margin</code> / <code>pageSize</code> / <code>autoFonts</code>. Output surfaces as a download chip.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>create_xlsx</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Write an Excel workbook (openpyxl). Params: <code>filename</code>, <code>sheets</code> (name → header row + data rows). Counterpart to <code>read_xlsx</code>; output surfaces as a download chip.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Write an Excel workbook (openpyxl). Params: <code>filename</code>, <code>sheetName</code>, <code>headers</code>, <code>rows</code> — or <code>rowsFile</code> (a <code>/workspace</code> JSON file for large data), or <code>sheets</code> (a list for several sheets). Counterpart to <code>read_xlsx</code>; output surfaces as a download chip.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>download_video</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>yt-dlp download of a video URL into <code>/workspace/artifacts/</code> (format fallback chain handles HLS-only sources). Params: <code>url</code>, optional <code>format</code> / <code>outputName</code>.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>yt-dlp download of a video URL into <code>/workspace/artifacts/</code> (format fallback chain handles HLS-only sources). Params: <code>url</code>, optional <code>format</code> / <code>noCheckCertificate</code>.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>ocr_image</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Tesseract OCR over a workspace image (pasted screenshots land in <code>/workspace/uploads/</code>). Params: <code>imagePath</code> (bare filenames auto-resolve), <code>lang</code>.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Tesseract OCR over a workspace image (pasted screenshots land in <code>/workspace/uploads/</code>); small images are upscaled automatically. Params: <code>imagePath</code> (bare filenames auto-resolve), optional <code>language</code> / <code>scale</code> / <code>psm</code>.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>download_html</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Download a web page&apos;s raw HTML into <code>/workspace</code> so other tools (<code>read_file</code> / <code>grep_code</code> / <code>parse_html</code>) can parse the full, <strong>untruncated</strong> page. Params: <code>url</code> (required), <code>filename</code> (optional). For bot-protected sites use <code>scrapling_fetch</code> instead.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Download a web page&apos;s raw HTML into <code>/workspace</code> so other tools (<code>read_file</code> / <code>grep_code</code> / <code>parse_html</code>) can parse the full, <strong>untruncated</strong> page. Params: <code>url</code> (required), <code>filename</code> (optional). For bot-protected sites use <code>web</code> with <code>mode: &quot;stealth&quot;</code>.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>code navigation</TableCell>
@@ -12980,7 +11383,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                             <Box sx={{ fontSize: '0.8rem' }}>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Any file a sandbox skill writes to <code>/workspace/artifacts/</code> during a run is picked up automatically. The runner attaches an <code>_artifacts</code> array to the tool result and the chat UI renders one download chip per file.</Typography>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Files are <strong>mtime-filtered</strong> — only files modified during the current skill invocation are surfaced, so previous-turn artifacts won't re-appear. If a user asks to download a file from an earlier turn, call <code>make_downloadable</code> again (it touches the mtime so the file re-qualifies).</Typography>
-                                                <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>Filenames are sanitized: anything outside <code>[A-Za-z0-9._-]</code> becomes <code>_</code>, length is capped at 120 chars, and leading dots are stripped. Bytes are streamed via <code>GET /api/tool-artifacts/:runId/:filename</code>.</Typography>
+                                                <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><code>make_downloadable</code> sanitizes its output name (<code>[A-Za-z0-9._-]</code>, ≤ 120 chars, no leading dot); the runner skips dotfiles. Bytes stream from <code>GET /api/tool-artifacts/:runId/:filename</code>, which falls back to the conversation&apos;s workspace copy after the 1-hour staging copy is swept, so old download links keep working.</Typography>
                                             </Box>
                                         </Box>
 
@@ -13032,7 +11435,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatLastN</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>64</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty window</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>presencePenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Presence penalty</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>frequencyPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Frequency penalty</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ctxCheckpoints</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>2</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Context checkpoint count</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ctxCheckpoints</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>2</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Context checkpoints per slot (fixed at 2; not a load parameter)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
@@ -13040,6 +11443,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specType</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>none</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-type (none / draft-mtp / draft-simple)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftNMax</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>3</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-n-max (1–16)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftModel</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>""</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-model PATH (only when draft-simple)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cacheRam</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--cache-ram host prompt cache in MiB (blank = sized from the model&apos;s KV state and host RAM, 0 = off)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftPMin</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>unset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-p-min (0–1; minimum draft probability)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuDevices</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>all</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pin to GPU indices, e.g. [0,2] (the container sees only those cards; empty = every card)</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
@@ -13055,16 +11461,18 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
                                                         <TableBody>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 150 }}>maxModelLen</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--context-length</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>CPU offload (GB)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>memFractionStatic</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.88</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--mem-fraction-static (replaces vLLM gpuMemoryUtilization)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--tp (auto-clamped to visible GPUs)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Accepted but has no effect on sglang (use llama.cpp for CPU offload)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>memFractionStatic</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.88</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--mem-fraction-static. Since sglang 0.5.17 it sets how much free VRAM is RESERVED — lower = LESS KV cache (0.1–1.0, clamped to 0.95)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>all GPUs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--tp (capped at the visible / pinned GPUs; must divide the model&apos;s KV heads)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxRunningRequests</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>256</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--max-running-requests</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>chunkedPrefillSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--chunked-prefill-size (-1 to disable)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>schedulePolicy</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>lpm</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--schedule-policy (pairs with RadixAttention)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto / fp8_e5m2 / fp8_e4m3</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto / fp8_e4m3 / fp8_e5m2 / bf16 (plain fp8 is normalized to fp8_e4m3)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>toolCallParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen / qwen3_coder / llama3 / pythonic (Llama-4) / mistral / deepseekv3 / deepseekv31 / deepseekv32 / kimi_k2 / glm / glm45 / gpt-oss / step3 / hermes</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>reasoningParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen3 / deepseek-r1 / glm45 / kimi</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--trust-remote-code</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuDevices</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>all</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pin to GPU indices (also caps --tp)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>extraArgs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>""</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Raw sglang flags → SGLANG_EXTRA_ARGS (e.g. --mamba-ssm-dtype bfloat16)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
@@ -13184,13 +11592,14 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/complete</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create conversations</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage conversation</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Append a message</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Save (replace) the conversation&apos;s messages — body <code>{`{ messages: [...] }`}</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Background-stream status / cancel</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Account memory &amp; persona — list / add / clear all (account-scoped, shared across web + Pi)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / edit / delete one memory</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Relevance-ranked memory search</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/maintenance</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clean up memory (junk-delete + consolidate; dry-run unless <code>apply: true</code>)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id/link</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Link / unlink two related memories</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/turns</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start a parallel turn on a free slot (202 <code>{`{ jobId }`}</code>; 409 = queue it) / poll it (<code>?live=1</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/turns/:jobId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Claim a finished parallel turn / cancel a running one</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/capacity</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-model slots / busy / free (used to start a second message in parallel)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Core memory (one per theme of work) — list themes / set a theme&apos;s guidance <code>{`{ theme, notes }`}</code> / clear all (account-scoped, shared across web + Pi)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get one theme / edit notes, pause (<code>enabled</code>) or add a <code>lesson</code> / reset the theme</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/recall</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Preview what an ask would recall (<code>{`{ text }`}</code> → theme + memory block)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Web search with content fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch URLs for chat context</TableCell></TableRow>
@@ -13198,6 +11607,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Page interaction</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/status</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Browser status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/docs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DevDocs reference lookup</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/logs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Process-log history backfill (<code>?since=&lt;seq&gt;&amp;limit=</code>); same visibility as the WebSocket</TableCell></TableRow>
 
                                                     {/* Models Permission */}
                                                     <TableRow>
@@ -13213,6 +11623,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start model instance</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load HuggingFace repo directly into sglang</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete model</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/partial</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Remove an incomplete download (409 while it is downloading or loaded)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List HuggingFace cache contents (sglang downloads)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache/:dirName</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a cached HF repo</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all model configs</TableCell></TableRow>
@@ -13222,8 +11633,10 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/repo-size/:owner/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List active downloads</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Cancel download</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads/partial</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List interrupted downloads (pulling the same repo again resumes them)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Hardware info</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/optimal-settings</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Calculate optimal settings</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-roles</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Two-model pairing (primary / secondary, mode) — read (any user) / set the server default (admin)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/tools-catalog</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List native tools the chat model can invoke</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/egress-proxy</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Egress-proxy status / sandbox info</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/sandbox/run-code</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Execute code in the sandboxed runner</TableCell></TableRow>
@@ -13240,8 +11653,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sglang instances</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop sglang instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get KV cache slots</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clear KV cache</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Configured concurrent-sequence limit (<code>max_sequences</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Check the instance answers (sglang has no explicit KV-slot clearing)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List llama.cpp instances</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop llama.cpp instance</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/system-prompts</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List system prompts</TableCell></TableRow>
@@ -13275,7 +11688,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/delete</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete file</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/list</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List directory</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/move</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Move/rename file</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sandbox workspaces (agents + webchat sessions; admins see all)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sandbox workspaces (agents + webchat sessions; admins see all) / DEL clears every workspace you may manage (admins: all users&apos;)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/:owner/:bucket</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a sandbox workspace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download / upload a file in the caller&apos;s agent workspace (Pi host⇆workspace bridge; API-key callers only)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/inventory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>File inventory of the caller&apos;s agent workspace (Pi injects this into its system prompt so sandbox state survives compaction)</TableCell></TableRow>
@@ -13295,7 +11708,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/run-sync</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Run and return the final JSON only</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/build</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Draft a workflow from a prompt (LLM; <code>test: true</code> test-runs + self-repairs)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/edit</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Edit with an LLM — returns proposed graph + diff (preview, does not save)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/test</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Test-run + self-repair a saved automation (persists fix only with <code>apply: true</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/test</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Test-run + self-repair a saved automation (saves the repaired graph unless <code>apply: false</code>)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/enable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Enable / disable (body <code>{`{ enabled }`}</code>)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/archive</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Archive / unarchive</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/automations/:id/runs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / clear run history</TableCell></TableRow>
@@ -13323,17 +11736,17 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/has-users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Check if users exist</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/register</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Register user</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/login</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Login</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Logout</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get current user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/me/preferences</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-user preferences (theme, fonts, layout; scoped per app via ?app=webapp|chat)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Logout (browser session only)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Current user (session) or the calling API key&apos;s details</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/me/preferences</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-user preferences (theme, fonts, layout; scoped per app via ?app=webapp|chat) — session only</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Change password (session auth only)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Self-service password reset</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create users</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/disable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Disable user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/enable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Enable user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:username/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Admin resets a user&apos;s password</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/invite</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Generate user invite link</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create users (admin browser session)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete user (admin browser session)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/disable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Disable user (admin browser session)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/enable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Enable user (admin browser session)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:username/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Admin resets a user&apos;s password (admin browser session)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/invite</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Generate user invite link (admin browser session)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create API keys</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id/revoke</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Revoke API key</TableCell></TableRow>
@@ -13343,7 +11756,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/start</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/restart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart app</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Reset system</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop every instance and DELETE every downloaded model (admin; body <code>{`{ confirmation: "RESET" }`}</code>)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system-settings</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Server-wide settings (e.g. <code>allowInternalNetwork</code> SSRF relaxation; cloud-metadata IPs stay blocked)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system-settings/public</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Non-admin subset any signed-in user may read (e.g. <code>uploadMaxMb</code>)</TableCell></TableRow>
 
@@ -13352,13 +11765,14 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         <TableCell colSpan={3} sx={{ bgcolor: 'rgba(251, 191, 36, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                                 <Chip label="OpenAI" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.3)' }} />
-                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Instance Ports (8001+)</Typography>
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>OpenAI-compatible ({baseUrl}/v1, query permission)</Typography>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible chat — routed to the model named in <code>model</code> (case-insensitive, unique prefix ok); <code>&quot;auto&quot;</code> or no model = the free-slot pool across every loaded model</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible text completion</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Every loaded model with <code>context_window</code>, <code>max_concurrency</code> and <code>capacity</code> (slots / busy / free); with 2+ models an <code>auto</code> pool entry</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/capacity</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Parallel slots per loaded model — how many agents can run at once (for agent harnesses)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other sglang/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
 
                                                     {/* Pi Terminal Agent */}
@@ -13372,7 +11786,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install.ps1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PowerShell auto-installer for native Windows — no WSL, no admin. Installs Node (winget → zip), git, Pi, the extension, and persists env user-scope.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh, install.ps1</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/pair</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Two-model pairing status for Pi (configured / active / reason)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/assistant/jobs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi ask_assistant / await_assistant — dispatch background jobs / collect results (<code>?wait=ms</code>)</TableCell></TableRow>
 
                                                 </TableBody>
                                             </Table>
@@ -13420,13 +11836,14 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </TableRow>
                                                 </TableHead>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>./start.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start all services (webapp and model backends).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>./start.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start the webapp (:3001) and chat (:3002) containers; rebuilds the chat image if its code changed and generates / refreshes the SSL certs. Models are started from My Models → Load.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./stop.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop all services and cleanup running model instances.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./build.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./reset.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Full system reset. Removes all data except downloaded models. Options: --force (skip confirmation), --rebuild (rebuild Docker images), --full (also delete models)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./build.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Build every Docker image (llamacpp, sglang, sandbox-runtime, webapp, chat) with parallel builds, auto-resume, and state tracking — only images whose inputs changed are rebuilt.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rebuild and restart services without data loss. Options: webapp (= <code>update.sh --no-pull --force webapp</code>), all</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>sudo ./update.sh</code> — pull the latest code from GitHub, rebuild only the images whose build inputs changed, redeploy webapp / chat, run post-update tests, and clean up. Options: --dry-run, --no-pull, --force &lt;webapp|chat|sandbox-runtime|llamacpp|sglang|all&gt; (repeatable), --stop-instances, --ref, --repo, --discard-local, --skip-build, --skip-deploy, --skip-tests, --no-cleanup, --deep-clean.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./reset.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart from a clean container state: stops model instances and services, removes the webapp_data volume, restarts. Accounts, API keys, conversations and models (all under ./models) are kept. Options: -f / --force (skip confirmation), --rebuild (rebuild llamacpp, sglang, webapp and chat with no cache — 20–30 min), --full (factory reset: also deletes ./models, including every account, key and conversation)</TableCell></TableRow>
                                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./wsl-setup.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>WSL Native-Docker bootstrap: installs Docker + NVIDIA Container Toolkit inside WSL2 (run once on Windows hosts before ./build.sh).</TableCell></TableRow>
+                                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./wsl-expose.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Make :3001 / :3002 reachable from other machines on the LAN when running in WSL2 (portproxy for NAT mode, firewall rule for mirrored mode).</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -13462,7 +11879,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                 ./build.sh --no-cache    # Force rebuild without Docker cache<br/>
                                                 ./build.sh --no-parallel # Sequential builds (for low RAM)<br/>
                                                 ./build.sh --no-resume   # Clear build state, start fresh<br/>
-                                                ./build.sh --retry 3     # Set retry attempts (default: 2)
+                                                ./build.sh --retry 3     # Set retry attempts (default: 2)<br/>
+                                                ./build.sh --no-cleanup  # Skip Docker cleanup after the build<br/>
+                                                ./build.sh --skip-ssl-check # Skip corporate SSL-inspection detection
                                             </Typography>
                                         </Box>
 
@@ -13493,7 +11912,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ p: 2, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.2)', mb: 2 }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                Stops all instances and cleans up Docker resources. By default downloaded models, API keys, and configuration are preserved. The shell equivalent <code style={{ fontSize: '0.7rem' }}>./reset.sh --full</code> additionally wipes downloaded models for a true factory reset.
+                                                Stops all running instances, <strong style={{ color: 'var(--error)' }}>deletes every downloaded model</strong> in the models folder, and removes leftover sglang containers. API keys, accounts, system prompts, conversations and settings are kept, and the sglang Hugging Face cache is not touched. The shell script is different: <code style={{ fontSize: '0.7rem' }}>./reset.sh</code> keeps models, and <code style={{ fontSize: '0.7rem' }}>./reset.sh --full</code> wipes everything under <code style={{ fontSize: '0.7rem' }}>./models</code>, including accounts, API keys and conversations.
                                             </Typography>
                                         </Box>
                                         <Button

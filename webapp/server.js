@@ -5086,7 +5086,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 tokenizer: req.body.tokenizer || '',
                 chatTemplate: req.body.chatTemplate || '',
                 toolCallParser: req.body.toolCallParser ?? autoDetectSglangToolParser(modelName),
-                reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(modelName)
+                reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(modelName),
+                extraArgs: typeof req.body.extraArgs === 'string' ? req.body.extraArgs.trim() : ''
             };
 
             broadcast({ type: 'log', message: `Creating sglang instance for ${modelName}...` });
@@ -16004,6 +16005,71 @@ function piRunningModelNames() {
 function piInstanceName(instance) {
     for (const [k, inst] of modelInstances.entries()) if (inst === instance) return k;
     return instance?.modelName || null;
+}
+
+// Is this /v1 request from Pi with our extension loaded? The two-model pair
+// routing and the memory bridge were designed for Pi, but they used to key on
+// `bearerOnly` alone — so any other bearer-key harness (Iris, an agent
+// framework) had its requests re-routed to the pair's lead and core memory
+// injected into its prompts. Measured: every request of an Iris run landed on
+// the single-slot 27B lead, its parallel worker agents never overlapped, and
+// Iris (correctly) switched worker agents off. Recognise Pi by what only the
+// extension puts on the wire: its own tools, its runtime markers, or Pi's
+// compaction-summarizer prompt.
+const PI_EXTENSION_TOOL_NAMES = new Set(['workspace_get', 'workspace_list', 'workspace_put', 'ask_assistant', 'await_assistant', 'shell_exec', 'shell_open', 'shell_send', 'ssh_connect']);
+function isPiClientRequest(body) {
+    if (!body || !Array.isArray(body.messages)) return false;
+    if (Array.isArray(body.tools) && body.tools.some(t => PI_EXTENSION_TOOL_NAMES.has(t?.function?.name || t?.name))) return true;
+    const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(p => p?.text || '').join('\n') : '');
+    const sys = body.messages[0]?.role === 'system' ? textOf(body.messages[0].content) : '';
+    if (/^You are a (?:context )?summarization assistant/i.test(sys.trim())) return true;
+    for (const m of body.messages) {
+        const t = textOf(m?.content);
+        if (t && (t.includes(PI_SANDBOX_INVENTORY_MARKER) || t.includes(PI_PAIR_MARKER))) return true;
+    }
+    return false;
+}
+
+// ── /v1 model routing for harnesses ─────────────────────────────────────────
+// `auto` (or no `model` at all) asks for the POOL: each request goes to the
+// loaded model with a free slot, so a harness running several agents in
+// parallel spreads them over every loaded model instead of queueing on one.
+const V1_POOL_MODEL_ID = 'auto';
+const V1_POOL_ALIASES = new Set(['auto', 'modelserver-auto', 'modelserver/auto', 'pool']);
+function v1ModelIds(inst) {
+    const ids = [inst.config?.hfRepoId, inst.modelName, piInstanceName(inst)].filter(Boolean);
+    for (const id of [...ids]) if (id.includes('/')) ids.push(id.split('/').pop());
+    return ids;
+}
+// A requested id that matches no exact rule: case-insensitive equality, then a
+// UNIQUE prefix match on the punctuation-stripped id ("qwen3.8" → the one
+// loaded "Qwen3.8-27B-…" model). Ambiguous → null (caller uses the pool).
+function v1FuzzyMatchInstance(requested, instances) {
+    const lc = String(requested || '').toLowerCase();
+    if (!lc) return null;
+    const exact = instances.filter(i => v1ModelIds(i).some(id => id.toLowerCase() === lc));
+    if (exact.length === 1) return exact[0];
+    const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const n = norm(lc);
+    if (n.length < 3) return null;
+    const hits = instances.filter(i => v1ModelIds(i).some(id => norm(id).startsWith(n)));
+    return hits.length === 1 ? hits[0] : null;
+}
+// Pick the pool member for one request: most free slots first, then the
+// faster model; when everything is busy, the one with the shortest queue per
+// slot. The caller reserves the slot at once (modelBusyInc) so a burst of
+// concurrent requests spreads instead of all seeing the same "free" model.
+function pickV1PoolInstance(instances) {
+    const cap = chatCapacity().models;
+    const scored = instances.map((i) => {
+        const name = piInstanceName(i);
+        const c = cap.find(m => m.name === name) || {};
+        const slots = Number(c.slots) || 1;
+        const busy = Number(c.busy) || 0;
+        return { i, name, free: Math.max(0, slots - busy), load: busy / slots, tps: Number(c.tokensPerSecond) || 0 };
+    });
+    scored.sort((a, b) => (b.free - a.free) || (a.load - b.load) || (b.tps - a.tps));
+    return scored[0] || null;
 }
 
 async function resolvePiPairRoles(req) {
@@ -28273,6 +28339,7 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
         // Step 2: Delete all model directories (except .modelserver)
         broadcast({ type: 'log', message: 'Step 2/4: Deleting all model directories...' });
         const modelsDir = '/models';
+        let modelsDeleted = 0;
 
         try {
             const entries = await fs.readdir(modelsDir, { withFileTypes: true });
@@ -28287,6 +28354,7 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
                 broadcast({ type: 'log', message: `  Deleting ${dirent.name}...` });
                 await fs.rm(modelPath, { recursive: true, force: true });
             }
+            modelsDeleted = modelDirs.length;
             broadcast({ type: 'log', message: `  Deleted ${modelDirs.length} model(s).` });
         } catch (error) {
             broadcast({ type: 'log', message: `  Warning: ${error.message}` });
@@ -28341,7 +28409,7 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
             message: 'System reset complete',
             details: {
                 instancesStopped: instanceNames.length,
-                modelsDeleted: modelDirs ? modelDirs.length : 0,
+                modelsDeleted,
                 remainingModels: modelCount,
                 remainingInstances: modelInstances.size
             }
@@ -29107,14 +29175,46 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // tell. Returning 404 would break existing callers that rely on the
         // fallback, so: still serve it, but say so loudly and name the
         // alternatives.
-        if (requestedModel && !matched && instances.length > 0) {
-            console.warn(
-                `[Proxy] model "${requestedModel}" matched no running instance — falling back to `
-                + `"${instances[0].modelName || instances[0].containerName}". Known: `
-                + instances.map(i => i.config?.hfRepoId || i.modelName || i.containerName).join(', ')
-            );
+        // Not silent any more: a near-miss id resolves to the ONE model it
+        // names (case-insensitive / unique prefix), and a request for the pool
+        // (`auto`), with no model, or with an id that names nothing goes to
+        // whichever loaded model has a free slot — logged, never instances[0]
+        // by accident (which was a 1-slot model for every caller).
+        const isChatPost = req.method === 'POST' && (req.path === '/v1/chat/completions' || req.path === '/v1/completions');
+        const wantsPool = !requestedModel || V1_POOL_ALIASES.has(requestedModel.toLowerCase());
+        let routedBy = matched ? 'exact' : null;
+        let resolved = matched;
+        if (!resolved && requestedModel && !wantsPool) {
+            resolved = v1FuzzyMatchInstance(requestedModel, instances);
+            if (resolved) routedBy = 'fuzzy';
         }
-        let firstInstance = matched || instances[0];
+        let poolReserved = null;
+        if (!resolved && isChatPost && instances.length > 1) {
+            const pick = pickV1PoolInstance(instances);
+            if (pick) {
+                resolved = pick.i;
+                routedBy = 'pool';
+                poolReserved = pick.name;
+                modelBusyInc(pick.name);
+                let released = false;
+                res.on('close', () => { if (!released) { released = true; modelBusyDec(pick.name); } });
+            }
+        }
+        if (requestedModel && !matched && !wantsPool) {
+            const got = resolved ? piInstanceName(resolved) : (instances[0].modelName || instances[0].containerName);
+            console.warn(
+                `[Proxy] model "${requestedModel}" matched no running instance exactly — `
+                + (routedBy === 'fuzzy' ? `resolved to "${got}"` : `served by "${got}"${routedBy === 'pool' ? ' (free-slot pool)' : ''}`)
+                + `. Known: ${instances.map(i => i.config?.hfRepoId || i.modelName || i.containerName).join(', ')}, ${V1_POOL_MODEL_ID}`
+            );
+        } else if (routedBy === 'pool') {
+            console.log(`[Proxy] pool request → ${poolReserved}`);
+        }
+        let firstInstance = resolved || instances[0];
+        // sglang checks the served model name; llama.cpp ignores it.
+        if (routedBy && routedBy !== 'exact' && firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId && req.body && typeof req.body === 'object') {
+            req.body.model = firstInstance.config.hfRepoId;
+        }
         // Use container name to reach sglang via Docker network
         // Fall back to host.docker.internal for backwards compatibility
         let targetHost = firstInstance.containerName || `host.docker.internal`;
@@ -29133,6 +29233,31 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // throttles itself even when the loaded model has a much larger
         // window. Augment each entry with contextSize from the matched
         // instance config so Pi's status line reflects reality.
+        // What a harness needs to plan parallel agents: every loaded model's
+        // concurrent slots (llama.cpp --parallel / sglang's honest KV-pool
+        // count), how many are busy right now, and its per-request window.
+        if (req.method === 'GET' && req.path === '/v1/capacity') {
+            const cap = chatCapacity();
+            const byName = new Map(instances.map(i => [piInstanceName(i), i]));
+            const models = cap.models.filter(m => byName.has(m.name)).map((m) => {
+                const inst = byName.get(m.name);
+                return {
+                    id: inst.config?.hfRepoId || m.name,
+                    backend: m.backend,
+                    slots: m.slots, busy: m.busy, free: m.free,
+                    context_window: v1ContextGuard.effectiveContextSize(inst) || inst.config?.contextSize || inst.config?.maxModelLen || null,
+                    ...(m.tokensPerSecond ? { tokens_per_second: m.tokensPerSecond } : {}),
+                };
+            });
+            return res.json({
+                object: 'capacity',
+                pool_model: V1_POOL_MODEL_ID,
+                total_slots: models.reduce((a, m) => a + m.slots, 0),
+                free_slots: models.reduce((a, m) => a + m.free, 0),
+                models,
+            });
+        }
+
         if (req.method === 'GET' && req.path === '/v1/models') {
             try {
                 // Aggregate across ALL running instances — the old code asked
@@ -29160,13 +29285,24 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         || inst.config?.maxModelLen
                         || null;
                     const entries = Array.isArray(upstream.data?.data) ? upstream.data.data : [];
+                    // Concurrency per model, so a harness can see how many
+                    // agents a model serves at once (llama.cpp's own /props
+                    // calls it total_slots).
+                    const slots = modelSlotCount(inst);
+                    const busy = modelBusy.get(piInstanceName(inst)) || 0;
+                    const capFields = {
+                        max_concurrency: slots,
+                        capacity: { slots, busy, free: Math.max(0, slots - busy), backend: inst.backend || 'llamacpp' },
+                    };
                     return entries.map((m) => (ctx ? {
                         ...m,
                         // Set after spread so a backend-supplied stale default
                         // (32768) doesn't override our authoritative value.
                         context_window: ctx,
                         max_tokens: Math.max(1024, Math.floor(ctx / 8)),
-                    } : m));
+                        ...capFields,
+                        meta: { ...(m.meta && typeof m.meta === 'object' ? m.meta : {}), total_slots: slots },
+                    } : { ...m, ...capFields, meta: { ...(m.meta && typeof m.meta === 'object' ? m.meta : {}), total_slots: slots } }));
                 }));
                 const merged = [];
                 const seenIds = new Set();
@@ -29180,6 +29316,24 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     }
                 }
                 if (!merged.length) throw new Error('no instance answered /v1/models');
+                // The pool entry LAST (Pi takes the first entry as its default):
+                // one id that fans parallel requests out over every loaded model.
+                if (instances.length > 1) {
+                    const cap = chatCapacity();
+                    const ctxs = merged.map(m => Number(m.context_window)).filter(n => Number.isFinite(n) && n > 0);
+                    const minCtx = ctxs.length ? Math.min(...ctxs) : null;
+                    merged.push({
+                        id: V1_POOL_MODEL_ID,
+                        object: 'model',
+                        owned_by: 'modelserver',
+                        created: Math.floor(Date.now() / 1000),
+                        description: `Pool of ${instances.length} loaded models: each request runs on the one with a free slot, so parallel agents spread across all of them.`,
+                        ...(minCtx ? { context_window: minCtx, max_tokens: Math.max(1024, Math.floor(minCtx / 8)) } : {}),
+                        max_concurrency: cap.totalSlots,
+                        capacity: { slots: cap.totalSlots, free: cap.totalFree, models: cap.models.map(m => m.name) },
+                        meta: { total_slots: cap.totalSlots },
+                    });
+                }
                 return res.status(200).json({ object: 'list', data: merged });
             } catch (err) {
                 console.warn(`[Proxy] /v1/models aggregation failed (${err.message}); falling through to passthrough`);
@@ -29215,8 +29369,9 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // ── Two models for Pi (see planPiPair) ─────────────────────────────
         // Before memory and the context guard: the pair decides which model
         // this request actually runs on, and both of those size against it.
+        const piClient = req.apiKeyData?.bearerOnly === true && isPiClientRequest(req.body);
         if (req.method === 'POST' && req.path === '/v1/chat/completions'
-            && req.apiKeyData?.bearerOnly === true && Array.isArray(req.body?.messages) && req.body.messages.length) {
+            && piClient && Array.isArray(req.body?.messages) && req.body.messages.length) {
             try {
                 const pairPlan = await Promise.race([
                     planPiPair(req, firstInstance),
@@ -29252,7 +29407,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         const piMemId = req.userId || req.apiKeyData?.id;
         if (req.method === 'POST'
             && req.path === '/v1/chat/completions'
-            && req.apiKeyData?.bearerOnly === true
+            && piClient
             && piMemId
             && Array.isArray(req.body?.messages)
             && req.body.messages.length) {
@@ -29331,7 +29486,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // (it used to report that model free while Pi was generating on it).
         if (req.method === 'POST' && req.path === '/v1/chat/completions') {
             const busyName = piInstanceName(firstInstance);
-            if (busyName) {
+            if (busyName && busyName !== poolReserved) {
                 modelBusyInc(busyName);
                 let released = false;
                 res.on('close', () => { if (!released) { released = true; modelBusyDec(busyName); } });
