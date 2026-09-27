@@ -1425,6 +1425,15 @@ async function listWorkspaceFiles(userId, bucket, { maxFiles = 150, maxDepth = 7
     return { files, total };
 }
 
+/** Names of the folders under a bucket's archives/ (one per extracted
+ *  archive, named after it) — lets the assistant's job screen recognise a
+ *  job that asks to extract an archive that is already extracted. */
+async function listArchiveDirs(userId, bucket) {
+    if (!bucket) return [];
+    const dir = path.join(WORKSPACE_DIR_IN_CONTAINER, workspaceOwnerDir(userId), bucket, 'archives');
+    try { return (await fs.readdir(dir, { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name); } catch { return []; }
+}
+
 /** Classify a bucket dir name for the management UI. */
 function classifyBucket(name) {
     return name.startsWith('agent-') ? 'agent'
@@ -1647,6 +1656,7 @@ module.exports = {
     ensureWorkspace,
     workspaceOwnerDir,
     listWorkspaceFiles,
+    listArchiveDirs,
     resolveInWorkspace,
     normalizePathArgs,
     resolveMissingReadPaths,

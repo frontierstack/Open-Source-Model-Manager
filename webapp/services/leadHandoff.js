@@ -694,12 +694,13 @@ function buildDuplicateJudgeTask({ job, existing = [] }) {
     const letters = 'ABCDEFGHIJKL';
     return [
         'Background research jobs are running for one user request. Decide whether the NEW job would mostly find the same information as one of the EXISTING jobs.',
-        'It is a DUPLICATE only when an existing job already covers its main question — a reworded or more detailed version of the same lookup, or a question the existing job\'s report already answers. A job asking for a different or narrower fact that the existing task and report do not cover is NEW (a follow-up that fills a gap in a report is NEW).',
+        'It is a DUPLICATE only when existing work already covers its main question — a reworded or more detailed version of the same lookup, the same file or URL processed the same way by the main model\'s own step (e.g. "decompile the MSI" after the main model already ran an MSI analysis tool on that file), or a question an existing result already answers. A job asking for a different or narrower fact that the existing work does not cover is NEW (a follow-up that fills a gap in a result is NEW).',
         '',
-        'EXISTING JOBS:',
+        'EXISTING WORK:',
         ...existing.slice(0, letters.length).map((e, i) => {
             const report = String(e.report || '').replace(/\s+/g, ' ').trim();
-            return `${letters[i]}. ${e.name}: ${String(e.task || '').replace(/\s+/g, ' ').slice(0, 320)}${report ? `\n   Its report: ${report.slice(0, 600)}` : ' (still running)'}`;
+            const label = e.leadStep ? `(done by the main model itself) ${e.task}` : `${e.name}: ${String(e.task || '').replace(/\s+/g, ' ').slice(0, 320)}`;
+            return `${letters[i]}. ${label}${report ? `\n   ${e.leadStep ? 'Its result' : 'Its report'}: ${report.slice(0, 600)}` : ' (still running)'}`;
         }),
         '',
         'NEW JOB:',
@@ -707,6 +708,54 @@ function buildDuplicateJudgeTask({ job, existing = [] }) {
         '',
         'Reply with exactly one line: "DUPLICATE OF <letter>" or "NEW".',
     ].join('\n');
+}
+
+// A job that names only files the lead has ALREADY processed whole with a
+// whole-file tool, and asks to analyse/extract them again, repeats the lead's
+// own step — the judge model let a reworded "run dotnet-decompile on
+// Set-up.msi" through after the lead had run inspect_msi on it.
+const WHOLE_FILE_TOOLS = new Set(['inspect_msi', 'extract_archive', 'tar_extract', 'unzip_file', 'extract_strings', 'scan_source_files', 'read_pdf', 'outline_file']);
+const REPROCESS_VERB = /\b(?:decompil|disassembl|analy[sz]|inspect|dump|extract|unpack|unzip|untar|list|parse|examine|review|read|open|scan|strings)\w*/i;
+// An archive the job asks to extract whose folder already exists under
+// /workspace/archives (from this turn or an earlier one) is done work: a
+// follow-up "extract the inner Software_Cloud.zip" ran after turn 1 had
+// extracted it to archives/Software_Cloud/.
+const ARCHIVE_NAME_RE = /[A-Za-z0-9][\w.()-]{0,120}?\.(?:zip|zipx|7z|rar|tar|tgz|tar\.gz|tar\.bz2|tar\.xz|gz|bz2|xz|zst|cab|iso|msi|deb|rpm)\b/gi;
+const EXTRACT_VERB = /\b(?:extract|unpack|unzip|untar|unrar|decompress|open up)\w*/i;
+function alreadyExtractedArchive(job, archiveDirs = []) {
+    const task = String((job && job.task) || '');
+    if (!archiveDirs.length || !EXTRACT_VERB.test(task)) return null;
+    const key = (s) => String(s || '').toLowerCase().replace(/\.(?:tar\.(?:gz|bz2|xz)|[a-z0-9]{1,5})$/i, '').replace(/[^a-z0-9]/g, '');
+    const names = [...new Set((task.match(ARCHIVE_NAME_RE) || []).map(n => n.split('/').pop().trim()))];
+    if (!names.length) return null;
+    const dirs = archiveDirs.map(d => ({ d, k: String(d).toLowerCase().replace(/[^a-z0-9]/g, '') }));
+    const hits = names.map((n) => {
+        const k = key(n);
+        if (k.length < 5) return null;
+        return dirs.find(x => x.k === k || (x.k.startsWith(k) && x.k.length - k.length <= 7)) || null;
+    });
+    if (!hits.every(Boolean)) return null;
+    return { id: 'extracted', name: 'already extracted', leadStep: true, status: 'done', tool: 'extract_archive', task: `already extracted to ${hits.map(h => `/workspace/archives/${h.d}/`).join(', ')}` };
+}
+
+// A proposal model can loop inside the task text (seen live: "CustomActionData64,
+// CustomActionArguments64, CustomActionData32, …" for 2,000 chars). Such a
+// task is not a brief anyone can act on.
+function isDegenerateTask(task) {
+    const words = String(task || '').toLowerCase().match(/[a-z0-9_]+/g) || [];
+    if (words.length < 40) return false;
+    return new Set(words).size / words.length < 0.3;
+}
+
+function coveredByLeadStep(job, steps = [], archiveDirs = []) {
+    const extracted = alreadyExtractedArchive(job, archiveDirs);
+    if (extracted) return extracted;
+    const task = String((job && job.task) || '');
+    const norm = (p) => String(p || '').replace(/[.,;:)'"`\]]+$/, '').replace(/\/+$/, '');
+    const paths = [...new Set([...task.matchAll(/\/workspace\/[A-Za-z0-9._\/-]+/g)].map(m => norm(m[0])))];
+    if (!paths.length || !REPROCESS_VERB.test(task)) return null;
+    const hits = paths.map(p => (steps || []).find(st => st && st.leadStep && WHOLE_FILE_TOOLS.has(st.tool) && norm(st.target) === p));
+    return hits.every(Boolean) ? hits[0] : null;
 }
 
 function parseDuplicateVerdict(text, existing = []) {
@@ -761,6 +810,7 @@ function isWorkableJob(job) {
     const name = String(job && job.name || '').trim();
     const task = String(job && job.task || '').trim();
     if (task.length < 15) return false;
+    if (isDegenerateTask(task)) return false;
     if (isSingleReadJob(task)) return false;
     // The proposal prompt's own template echoed back ("<short name>: <one-line
     // brief…>", "If nothing would help, reply exactly: …") is not a job. Seen
@@ -1096,6 +1146,9 @@ function buildJobPartnerLine({ partnerModel, maxJobs }) {
 }
 
 module.exports = {
+    alreadyExtractedArchive,
+    isDegenerateTask,
+    coveredByLeadStep,
     wantsDelegation,
     isArtifactAnalysis,
     buildArtifactLegworkTask,

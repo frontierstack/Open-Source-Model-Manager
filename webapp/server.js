@@ -21404,6 +21404,19 @@ const chatStreamHandlerInner = async (req, res) => {
                     if (ws.truncated) {
                         lines.push('  • …more not listed — call list_directory(dirPath="/workspace", recursive=True) for the full inventory');
                     }
+                    // Windows Installer packages anywhere in the tree (they sit
+                    // inside extracted archives, below the depth this inventory
+                    // shows): name the one-call analyser, or the model parses
+                    // the MSI by hand in run_python again.
+                    try {
+                        const bucket = inProcBucket || ('conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_'));
+                        const listing = await sbRunner.listWorkspaceFiles(req.userId, bucket, { maxFiles: 400 });
+                        const msis = (listing.files || []).filter(f => /\.msi$/i.test(f.rel)).slice(0, 4).map(f => `/workspace/${f.rel}`);
+                        if (msis.length && fullToolCatalog.some(t => t?.function?.name === 'inspect_msi')) {
+                            preflightForcedTools.add('inspect_msi');
+                            lines.push(`  • Windows Installer package${msis.length === 1 ? '' : 's'}: ${msis.join(', ')} — analyse with inspect_msi(path=...) (custom actions, carved payloads with hashes/PE facts/IOCs, registry, installed files) in ONE call; do not parse it by hand in run_python.`);
+                        }
+                    } catch (_) { /* advisory */ }
                     handoffWorkspaceLines = lines.map(l => l.replace(/ — do NOT git_clone_shallow.*$/, '').replace(/ \(list_directory to browse\)/, ''));
                     const wsNote =
                         '[SYSTEM: This conversation\'s sandbox workspace (/workspace) still contains the files below, created in EARLIER turns. They persist across turns — reuse them directly with read_file / grep_code / list_directory' +
@@ -21613,9 +21626,11 @@ const chatStreamHandlerInner = async (req, res) => {
                 const assistant = toolCtx.assistantModel;
                 const lead = targetModel;
                 followUpInFlight = true;
-                const leadSteps = persistedToolChips
-                    .filter(c => c && c.label && !['first_pass', 'ask_assistant', 'await_assistant'].includes(c.label))
-                    .map(c => `${c.label}${c.purpose ? `: ${c.purpose}` : ''}`);
+                const leadSteps = leadStepLog.length
+                    ? leadStepLog.map(st => `${st.tool}(${st.target})${st.purpose ? `: ${st.purpose}` : ''}`)
+                    : persistedToolChips
+                        .filter(c => c && c.label && !['first_pass', 'ask_assistant', 'await_assistant'].includes(c.label))
+                        .map(c => `${c.label}${c.purpose ? `: ${c.purpose}` : ''}`);
                 const jobsForPrompt = all.map(j => ({ name: j.name, task: j.task, status: j.status, answer: j.result && j.result.answer }));
                 const t0 = Date.now();
                 Promise.race([
@@ -21694,6 +21709,29 @@ const chatStreamHandlerInner = async (req, res) => {
         let pendingJobsNote = null;
         let silentRoundReminders = 0;
         let msiRedirects = 0;
+        const leadStepLog = [];
+        // The file/URL/query a step worked on — what makes a later job with the
+        // same target recognisable as a repeat.
+        const leadStepTarget = (a) => {
+            if (!a || typeof a !== 'object') return '';
+            for (const k of ['path', 'filePath', 'dirPath', 'directory', 'url', 'archiveId', 'query', 'codeFile', 'repoUrl']) {
+                if (a[k] && typeof a[k] === 'string') return a[k].slice(0, 200);
+            }
+            if (Array.isArray(a.urls) && a.urls.length) return a.urls.slice(0, 3).join(', ').slice(0, 200);
+            const code = typeof a.code === 'string' ? a.code : '';
+            const m = code.match(/\/workspace\/[A-Za-z0-9._\/-]+/);
+            return m ? m[0] : '';
+        };
+        if (toolCtx) toolCtx._leadStepsForScreen = () => leadStepLog.map((st, i) => ({
+            id: `lead-step-${i + 1}`,
+            name: `${targetModel} itself: ${st.tool}`,
+            task: `${st.tool}(${st.target})${st.purpose ? ` — ${st.purpose}` : ''}${st.running ? ' (in progress)' : ''}`,
+            status: 'done',
+            leadStep: true,
+            tool: st.tool,
+            target: st.target,
+            result: { answer: st.head },
+        }));
         let artifactTurnCached = null;
         const artifactTurnActive = () => {
             if (req.delegate || !toolCtx || !toolCtx._assistantJobs || !toolCtx.assistantModel) return false;
@@ -24203,6 +24241,16 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             } catch (_) { clientConnected = false; }
                         }
                         noteRunningToolCall(call, policy);
+                        // Visible to the assistant's duplicate screen from the
+                        // moment it starts: a follow-up proposed while this call
+                        // runs ("decompile the MSI" during the lead's own MSI
+                        // script) must see it.
+                        if (!req.delegate && !['ask_assistant', 'await_assistant', 'delegate'].includes(call.function.name)) {
+                            let a = {};
+                            try { a = JSON.parse(call.function.arguments || '{}'); } catch (_) { a = {}; }
+                            leadStepLog.push({ id: call.id, tool: call.function.name || 'tool', target: leadStepTarget(a), purpose: call.purpose || '', head: '(still running)', running: true });
+                            if (leadStepLog.length > 40) leadStepLog.shift();
+                        }
                         let targetKey = null;
                         const targetExtractor = MUTATING_TARGET_EXTRACTORS[call.function.name];
                         if (targetExtractor) {
@@ -25414,6 +25462,25 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             clearRunningToolCall(call.id);
                             if (modelRoles.secondary && modelRoles.review !== 'off' && toolEvidenceForChecker.length < 40) {
                                 toolEvidenceForChecker.push({ name: call.function.name || 'tool', purpose: call.purpose || '', failed: !!failedChip, content: String(resultMsg.content || '').slice(0, 6000) });
+                            }
+                            // The lead's own finished work, for the assistant's
+                            // duplicate screen and follow-up proposals (a job that
+                            // repeats a step the lead already did is wasted).
+                            {
+                                const at = leadStepLog.findIndex(st => st.id === call.id);
+                                if (failedChip || refusalKind) {
+                                    if (at >= 0) leadStepLog.splice(at, 1);
+                                } else if (!req.delegate && !['ask_assistant', 'await_assistant', 'delegate'].includes(call.function.name)) {
+                                    const done = {
+                                        id: call.id,
+                                        tool: call.function.name || 'tool',
+                                        target: leadStepTarget(parsedArgsForChip),
+                                        purpose: call.purpose || '',
+                                        head: String(resultMsg.content || '').slice(0, 900),
+                                    };
+                                    if (at >= 0) leadStepLog[at] = done;
+                                    else { leadStepLog.push(done); if (leadStepLog.length > 40) leadStepLog.shift(); }
+                                }
                             }
                             persistedToolChips.push({
                                 type: 'native_tool_call',
@@ -27237,10 +27304,23 @@ function assistantProgressFrame(jobs, model, toolCallId) {
 // done from an EARLIER dispatch? Embedding similarity screens out clearly
 // different jobs for free; the close ones get a one-line verdict from the
 // assistant model (the slot this job is about to use is free). Fails open.
-async function screenDuplicateJob(jobs, job, model) {
+async function screenDuplicateJob(jobs, job, model, ctx = null) {
     try {
         const others = [...jobs.values()].filter(j => j !== job && j.batch !== job.batch && !j.duplicateOf
             && (j.status === 'running' || j.status === 'done'));
+        // The lead's own finished steps count too: measured, a follow-up
+        // "decompile the MSI" job started after the lead had already run
+        // inspect_msi on that file — job-vs-job screening could never see it.
+        let leadSteps = [];
+        try { leadSteps = (ctx && typeof ctx._leadStepsForScreen === 'function') ? ctx._leadStepsForScreen() : []; } catch (_) { leadSteps = []; }
+        let archiveDirs = [];
+        try { archiveDirs = (ctx && ctx.workspaceBucket) ? await require('./services/sandboxRunner').listArchiveDirs(ctx.userId, ctx.workspaceBucket) : []; } catch (_) { archiveDirs = []; }
+        const covered = leadHandoff.coveredByLeadStep(job, leadSteps, archiveDirs);
+        if (covered) {
+            console.log(`[Assistant] duplicate screen "${job.name}": every file it names was already processed by ${covered.task.slice(0, 120)} → DUPLICATE (lead step)`);
+            return covered;
+        }
+        others.push(...leadSteps);
         if (!others.length) return null;
         const text = (j) => `${j.name}: ${String(j.task || '').replace(/\s+/g, ' ').slice(0, 600)}`;
         const sim = await Promise.race([
@@ -27256,7 +27336,7 @@ async function screenDuplicateJob(jobs, job, model) {
         const t0 = Date.now();
         const verdict = await Promise.race([
             requestModelCompletion({
-                messages: [{ role: 'user', content: leadHandoff.buildDuplicateJudgeTask({ job, existing: near.map(x => ({ name: x.j.name, task: x.j.task, report: x.j.status === 'done' && x.j.result ? x.j.result.answer : '' })) }) }],
+                messages: [{ role: 'user', content: leadHandoff.buildDuplicateJudgeTask({ job, existing: near.map(x => ({ name: x.j.name, task: x.j.task, leadStep: !!x.j.leadStep, report: x.j.status === 'done' && x.j.result ? x.j.result.answer : '' })) }) }],
                 model, temperature: 0, maxTokens: 24, disableThinking: true,
             }),
             new Promise(resolve => setTimeout(() => resolve(null), JOB_DUP_JUDGE_MS)),
@@ -27306,7 +27386,7 @@ function startAssistantJobs(ctx, items, model, { origin = null } = {}) {
             maxJobs: ctx.assistantMaxJobs || ASSISTANT_MAX_JOBS,
             jobs,
             onChange: () => { if (typeof ctx.emitEvent === 'function') ctx.emitEvent(assistantProgressFrame(jobs, model, ctx._assistantChipId)); },
-            run: (job) => screenDuplicateJob(jobs, job, model).then((dup) => {
+            run: (job) => screenDuplicateJob(jobs, job, model, ctx).then((dup) => {
                 if (job.status === 'cancelled') return null;
                 if (dup) {
                     job.duplicateOf = dup.id;
@@ -27320,7 +27400,9 @@ function startAssistantJobs(ctx, items, model, { origin = null } = {}) {
                         name: job.name, status: 'ok', toolCalls: 0, tools: [], filesWritten: [],
                         seconds: Math.round((Date.now() - (job.startedAt || Date.now())) / 100) / 10,
                         duplicateOf: dup.id,
-                        answer: `Not run: this repeats "${dup.name}" (${dup.id}), which ${dup.status === 'done' ? 'has already reported' : 'is still running'} — its report is delivered to you separately. Do not dispatch it again.`,
+                        answer: dup.leadStep
+                            ? `Not run: you already did this yourself (${String(dup.task || '').slice(0, 160)}). Do not dispatch it again.`
+                            : `Not run: this repeats "${dup.name}" (${dup.id}), which ${dup.status === 'done' ? 'has already reported' : 'is still running'} — its report is delivered to you separately. Do not dispatch it again.`,
                     };
                 }
                 return runJob(job);
