@@ -1393,6 +1393,38 @@ async function describeAgentWorkspace(userId, apiKeyId, opts = {}) {
     return describeWorkspaceBucket(userId, bucket, opts);
 }
 
+/** Breadth-first listing of the FILES in a bucket (workspace-relative paths +
+ *  sizes), bounded. Used to hand the assistant model a concrete inventory when
+ *  it plans analysis jobs over files the user supplied — describeWorkspaceBucket
+ *  stops at depth 2, which for an archive-in-an-archive is only the folder names. */
+async function listWorkspaceFiles(userId, bucket, { maxFiles = 150, maxDepth = 7 } = {}) {
+    if (!bucket) return { files: [], total: 0 };
+    const base = path.join(WORKSPACE_DIR_IN_CONTAINER, workspaceOwnerDir(userId), bucket);
+    const files = [];
+    let total = 0;
+    const queue = [{ dir: base, depth: 0 }];
+    while (queue.length) {
+        const { dir, depth } = queue.shift();
+        let ents;
+        try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+        ents.sort((a, b) => a.name.localeCompare(b.name));
+        for (const e of ents) {
+            if (WORKSPACE_SUMMARY_NOISE.has(e.name) || e.name === '.git' || e.name === '.deps') continue;
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) { if (depth < maxDepth) queue.push({ dir: full, depth: depth + 1 }); continue; }
+            if (!e.isFile()) continue;
+            total += 1;
+            if (files.length < maxFiles) {
+                let size = null;
+                try { size = (await fs.stat(full)).size; } catch { /* */ }
+                files.push({ rel: path.relative(base, full), size });
+            }
+        }
+        if (total > 5000) break;
+    }
+    return { files, total };
+}
+
 /** Classify a bucket dir name for the management UI. */
 function classifyBucket(name) {
     return name.startsWith('agent-') ? 'agent'
@@ -1614,6 +1646,7 @@ module.exports = {
     migrateLegacyWorkspaces,
     ensureWorkspace,
     workspaceOwnerDir,
+    listWorkspaceFiles,
     resolveInWorkspace,
     normalizePathArgs,
     resolveMissingReadPaths,

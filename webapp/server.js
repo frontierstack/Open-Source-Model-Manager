@@ -19109,6 +19109,24 @@ const chatStreamHandlerInner = async (req, res) => {
                         catch (_) { return false; }
                     })(),
                 });
+                // What the pair should do beyond web lookups: an analysis of
+                // supplied files (an upload, or files extracted in an earlier
+                // turn) splits into independent parts, and the user's chosen
+                // system prompt may explicitly ask for the assistant to be used.
+                // Neither was read before — a malware persona saying "leverage
+                // the assistant as much as possible" produced zero hand-offs.
+                try {
+                    const userInstr = (Array.isArray(inputMessages) ? inputMessages : [])
+                        .filter(m => m && m.role === 'system')
+                        .map(m => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => (p && p.text) || '').join(' ') : ''))
+                        .join('\n');
+                    const bodyKinds = coreMemory.deriveAttachmentKinds(req.body?.attachments);
+                    const kinds = [...new Set([...leadHandoff.attachmentKindsFromText(askText), ...(bodyKinds instanceof Set ? bodyKinds : (Array.isArray(bodyKinds) ? bodyKinds : []))])];
+                    handoff.userInstructions = userInstr.slice(0, 4000);
+                    handoff.userAskedDelegation = leadHandoff.wantsDelegation(userInstr) || leadHandoff.wantsDelegation(leadHandoff.cleanAsk(askText));
+                    handoff.attachmentKinds = kinds;
+                    handoff.artifact = leadHandoff.isArtifactAnalysis({ text: askText, attachmentKinds: kinds });
+                } catch (_) { /* advisory */ }
                 if (handoff.easy && pairRoles.secondary && pairRoles.mode !== 'off') {
                     console.log(`[Chat Stream] Hand-off: ${handoff.reason} — ${handoff.runOn} answers alone`);
                 }
@@ -19566,7 +19584,7 @@ const chatStreamHandlerInner = async (req, res) => {
             // Lead framing goes after the shared prelude for the same
             // prompt-cache reason the worker framing does.
             if (handoff.engaged && handoff.legwork) {
-                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: effectiveAssistantParallel(handoff.primary) })}`;
+                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: effectiveAssistantParallel(handoff.primary), artifact: !!handoff.artifact, userAsked: !!handoff.userAskedDelegation })}`;
             } else if (assistantModelForTurn && req.delegate) {
                 prelude = `${prelude}\n${leadHandoff.buildJobPartnerLine({ partnerModel: assistantModelForTurn, maxJobs: req.delegate.assistantMaxJobs || ASSISTANT_JOB_MAX_JOBS })}`;
             } else if (assistantModelForTurn) {
@@ -20791,6 +20809,8 @@ const chatStreamHandlerInner = async (req, res) => {
         const CONTINUATION_CONTEXT_CHARS = 3000; // ~750 tokens of tail context for better continuation pickup
 
         let fullResponse = '';
+        // Reasoning a thinking-off model produced anyway (dropped from the stream).
+        let hiddenReasoningChars = 0;
         let fullReasoning = '';
         let tokenCount = 0;
         let promptTokens = 0;
@@ -21468,6 +21488,28 @@ const chatStreamHandlerInner = async (req, res) => {
             console.warn('[Chat Stream] image pre-flight failed:', e.message);
         }
 
+        // Visible thinking-aloud on a thinking-OFF model. With no reasoning
+        // trace the model's only commentary is prose before its tool calls,
+        // and the 27B loaded with --reasoning off wrote none: 0 chars across a
+        // 33-call turn, every chip at contentOffset 0 — the user saw a column
+        // of tool chips and no idea what it was thinking. The same request
+        // replayed against llama.cpp: the "write one line before each call"
+        // rule in the SYSTEM prompt (10k chars, 18 paragraphs) narrated 0/3;
+        // the same rule at the end of the latest user message narrated 8/8.
+        // Appended (the /no_think switch stays first); the user message is
+        // new each turn, so the prompt-cache prefix is untouched.
+        if (hideReasoning && !req.delegate && latestUserMsgIdx >= 0 && fullToolCatalog.length) {
+            const narrNote = '\n\n[SYSTEM: Before each tool call, write one short visible sentence: what you know so far and what you are doing next. Then make the call.]';
+            const um = chatMessages[latestUserMsgIdx];
+            if (typeof um.content === 'string') um.content = um.content + narrNote;
+            else if (Array.isArray(um.content)) {
+                let tIdx = -1;
+                um.content.forEach((p, i) => { if (p?.type === 'text' && typeof p.text === 'string') tIdx = i; });
+                if (tIdx >= 0) um.content[tIdx].text = um.content[tIdx].text + narrNote;
+                else um.content.push({ type: 'text', text: narrNote.trim() });
+            }
+        }
+
         // A paired setup where the primary is answering ALONE still needs to say
         // so — otherwise the user cannot tell which of the two replied.
         if (pairedTurn && !handoff.engaged) {
@@ -21609,6 +21651,14 @@ const chatStreamHandlerInner = async (req, res) => {
                     const view = Object.create(toolCtx);
                     view._assistantChipId = chip.toolCallId;
                     const started = startAssistantJobs(view, proposed, assistant, { origin: 'followup' });
+                    // Tell the lead which parts are now covered — without it the
+                    // lead started the same work itself (measured: it began
+                    // decompiling an installer 9 s after a follow-up job took it).
+                    pendingJobsNote = {
+                        role: 'system',
+                        content: `[Your assistant ${assistant} started ${proposed.length} more background job${proposed.length === 1 ? '' : 's'} — do NOT do ${proposed.length === 1 ? 'it' : 'them'} yourself; each report is delivered to you when it lands:\n`
+                            + proposed.map(p => `• ${p.name}: ${String(p.task).slice(0, 220)}`).join('\n') + ']',
+                    };
                     logChatActivity(`Two models: follow-up batch ${followUpBatches} — ${assistant} took ${started.length} more job(s) after ${reason}: ${started.map(d => `"${d.name}"`).join(', ')}`);
                     console.log(`[Chat Stream] Hand-off: follow-up batch ${followUpBatches} (${secs}s to propose) started ${started.length} job(s): ${started.map(d => d.name).join(' | ')}`);
                     const promises = started.map(d => (toolCtx._assistantJobs.get(d.id) || {}).promise).filter(Boolean);
@@ -21626,6 +21676,142 @@ const chatStreamHandlerInner = async (req, res) => {
                     });
                 }).catch((e) => { followUpInFlight = false; console.warn('[Chat Stream] follow-up legwork failed:', e.message); });
             } catch (e) { followUpInFlight = false; console.warn('[Chat Stream] follow-up legwork skipped:', e.message); }
+        };
+        // ── Analysis legwork over supplied files ─────────────────────────────
+        // The first pass plans only web LOOKUPS, so an analysis of an uploaded
+        // archive / binary / repo (or of files extracted in an earlier turn)
+        // started no jobs, and the lead did every step itself. Measured on a
+        // password-protected installer bundle: 33 tool calls, 7 min, zero
+        // hand-offs — with the user's persona saying "leverage the assistant as
+        // much as possible". Once the lead has concrete files on disk (after an
+        // extraction, a few calls into its own analysis, or at the start of a
+        // follow-up turn), the ASSISTANT reads the inventory and proposes
+        // independent analysis jobs over parts of it; they start as an
+        // ask_assistant chip and the lead is told which parts are covered.
+        let artifactBatches = 0;
+        let artifactInFlight = false;
+        let leadFileWorkCalls = 0;
+        let pendingJobsNote = null;
+        let silentRoundReminders = 0;
+        let artifactTurnCached = null;
+        const artifactTurnActive = () => {
+            if (req.delegate || !toolCtx || !toolCtx._assistantJobs || !toolCtx.assistantModel) return false;
+            if (HANDOFF_ARTIFACT_BATCHES <= 0 || handoff.toolsForbidden) return false;
+            if (handoff.engaged && !handoff.legwork) return false;
+            // A solo primary turn whose partner is the SLOWER model only fans
+            // out when the user asked for the assistant to be used.
+            const fasterAssistant = handoff.engaged || toolCtx.assistantModel !== handoff.secondaryLoaded;
+            if (!fasterAssistant && !handoff.userAskedDelegation) return false;
+            if (artifactTurnCached === null) {
+                try {
+                    artifactTurnCached = !leadHandoff.forbidsTools(latestUserText) && !!(handoff.artifact || leadHandoff.isArtifactAnalysis({
+                        text: latestUserText,
+                        attachmentKinds: handoff.attachmentKinds || [],
+                        workspaceHasContent: !!(handoffWorkspaceLines && handoffWorkspaceLines.length),
+                    }));
+                } catch (_) { artifactTurnCached = false; }
+            }
+            return artifactTurnCached;
+        };
+        const artifactBucket = () => (toolCtx && toolCtx.workspaceBucket)
+            || (conversationId ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_') : null);
+        const scheduleArtifactLegwork = async (reason, { minFiles = 1 } = {}) => {
+            try {
+                if (!artifactTurnActive() || artifactInFlight || artifactBatches >= HANDOFF_ARTIFACT_BATCHES) return false;
+                if (turnEnded || assistantDraining || assistantRevising || streamAbortController.signal.aborted) return false;
+                const jobs = toolCtx._assistantJobs;
+                const all = [...jobs.values()];
+                // Only while the assistant is idle: a batch behind running jobs
+                // just queues, and the proposal call itself takes a slot.
+                if (all.some(assistantQueue.isPending)) return false;
+                if (all.length >= (toolCtx.assistantMaxJobs || ASSISTANT_MAX_JOBS)) return false;
+                artifactInFlight = true;
+                const listing = await require('./services/sandboxRunner').listWorkspaceFiles(req.userId, artifactBucket()).catch(() => ({ files: [], total: 0 }));
+                const real = (listing.files || []).filter(f => !/^(?:[^/]+\.(?:py|js|sh)|artifacts\/)/.test(f.rel));
+                // Count only UNPACKED files: an outer zip holding one inner
+                // archive is the lead's own next step, and a batch proposed
+                // then handed the assistant exactly that ("extract the RAR").
+                let archRe = /\.(?:zip|rar|7z|tar|tgz|gz|bz2|xz|zst|cab|iso)$/i;
+                try { archRe = require('./services/archiveExtractor').ARCHIVE_EXT_RE || archRe; } catch (_) { /* default */ }
+                const unpacked = real.filter(f => !archRe.test(f.rel) && !/^uploads\//.test(f.rel));
+                if (unpacked.length < minFiles) { artifactInFlight = false; return false; }
+                const fmt = (n) => !Number.isFinite(n) ? '' : n >= 1048576 ? ` (${(n / 1048576).toFixed(1)} MB)` : n >= 1024 ? ` (${Math.round(n / 1024)} KB)` : ` (${n} B)`;
+                const inventory = real.map(f => `/workspace/${f.rel}${fmt(f.size)}`);
+                if (listing.total > real.length) inventory.push(`…and ${listing.total - real.length} more files`);
+                const assistant = toolCtx.assistantModel;
+                const lead = targetModel;
+                const leadSteps = persistedToolChips
+                    .filter(c => c && c.label && !['first_pass', 'ask_assistant', 'await_assistant'].includes(c.label))
+                    .map(c => `${c.label}${c.purpose ? `: ${c.purpose}` : ''}`);
+                const t0 = Date.now();
+                const r = await Promise.race([
+                    requestModelCompletion({
+                        messages: [{ role: 'user', content: leadHandoff.buildArtifactLegworkTask({
+                            userText: latestUserText, leadModel: lead, inventory, leadSteps,
+                            jobs: all.map(j => ({ name: j.name, task: j.task, status: j.status })),
+                            maxJobs: Math.min(HANDOFF_FOLLOWUP_JOBS, Math.max(1, effectiveAssistantParallel(assistant))),
+                            context: (toolCtx._handoffGoal && toolCtx._handoffGoal.context) || '',
+                            instructions: handoff.userInstructions || '',
+                        }) }],
+                        model: assistant, temperature: 0.2, maxTokens: 500, disableThinking: true,
+                    }),
+                    new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_LEGWORK_RETRY_MS)),
+                ]).catch((e) => { console.warn('[Chat Stream] analysis legwork proposal failed:', e.message); return null; });
+                artifactInFlight = false;
+                const secs = Math.round((Date.now() - t0) / 100) / 10;
+                if (turnEnded || streamAbortController.signal.aborted || assistantRevising || assistantDraining) return false;
+                const existing = [...jobs.values()];
+                const proposed = leadHandoff.parseLegwork(r && r.content)
+                    .filter(j => !leadHandoff.isDuplicateJob(j, existing))
+                    .slice(0, HANDOFF_FOLLOWUP_JOBS);
+                // A proposal counts against the cap even when it is empty —
+                // re-asking every few calls would spend the assistant's slot
+                // on proposals instead of jobs.
+                artifactBatches += 1;
+                if (!proposed.length) {
+                    console.log(`[Chat Stream] Hand-off: analysis legwork after ${reason} — ${assistant} proposed nothing (${secs}s, ${real.length} files)`);
+                    return false;
+                }
+                const chip = openHandoffChip({
+                    type: 'native_tool_call',
+                    label: 'ask_assistant',
+                    model: lead,
+                    purpose: `Handing ${proposed.length} analysis job${proposed.length === 1 ? '' : 's'} to ${assistant}`,
+                    query: proposed.map(i => i.name).join(', ').slice(0, 60),
+                    args: { requests: proposed.map(i => ({ name: i.name, task: i.task })) },
+                    contentOffset: Math.max(0, Math.min(lastToolContentOffset, fullResponse.length)),
+                    _startedAt: Date.now(),
+                });
+                const view = Object.create(toolCtx);
+                view._assistantChipId = chip.toolCallId;
+                const started = startAssistantJobs(view, proposed, assistant, { origin: 'brief' });
+                logChatActivity(`Two models: ${assistant} took ${started.length} analysis job(s) after ${reason}: ${started.map(d => `"${d.name}"`).join(', ')}`);
+                console.log(`[Chat Stream] Hand-off: analysis batch ${artifactBatches} (${secs}s to propose, ${real.length} files) started ${started.length} job(s): ${started.map(d => d.name).join(' | ')}`);
+                pendingJobsNote = {
+                    role: 'system',
+                    content: `[Your assistant ${assistant} is now working on these parts in the background — do NOT do them yourself; each report is delivered to you when it lands:\n`
+                        + proposed.map(p => `• ${p.name}: ${String(p.task).slice(0, 220)}`).join('\n')
+                        + '\nCarry on with the other parts and the write-up.]',
+                };
+                const promises = started.map(d => (jobs.get(d.id) || {}).promise).filter(Boolean);
+                Promise.allSettled(promises).then(() => {
+                    const rows = started.map(d => jobs.get(d.id)).filter(Boolean).map(j => ({
+                        id: j.id, name: j.name, model: j.model || assistant, status: j.status, calls: j.calls || 0,
+                        ...(typeof j.seconds === 'number' ? { seconds: j.seconds } : {}),
+                        ...(j.error ? { error: j.error } : {}),
+                    }));
+                    chip.assistantJobs = rows;
+                    closeHandoffChip(chip, {
+                        purpose: `${assistant} ran ${rows.filter(x => x.status === 'done').length}/${rows.length} analysis job${rows.length === 1 ? '' : 's'} for ${lead}`,
+                        result: { model: assistant, requestedBy: lead, jobs: rows },
+                    });
+                });
+                return true;
+            } catch (e) {
+                artifactInFlight = false;
+                console.warn('[Chat Stream] analysis legwork skipped:', e.message);
+                return false;
+            }
         };
         let assistantRevising = false;
         let assistantDraining = false;
@@ -22595,7 +22781,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             const msgs = (requestBody.messages || []).map((m, i) => `${i}:${m.role}:${h(m.content || '')}${m.tool_calls ? '+tc' : ''}:${String(typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length)}`);
                             try {
                                 const flag = require('fs').readFileSync('/tmp/prefix-debug', 'utf8');
-                                if (/dump/.test(flag)) require('fs').writeFileSync(`/tmp/prefix-dump-${Date.now()}-${req.delegate ? 'job' : 'turn'}.json`, JSON.stringify({ tools: requestBody.tools, messages: requestBody.messages }, null, 1));
+                                if (/dump/.test(flag)) require('fs').writeFileSync(`/tmp/prefix-dump-${Date.now()}-${req.delegate ? 'job' : 'turn'}.json`, JSON.stringify(requestBody, null, 1));
                             } catch (_) {}
                             console.log(`[PrefixDebug] ${req.delegate ? 'job ' + (req.delegate.label || '') : 'turn'} model=${targetModel} tools=${h(requestBody.tools || [])}/${(requestBody.tools || []).length} [${(requestBody.tools || []).map(t => t.function && t.function.name).join(',').slice(0, 300)}] msgs=${msgs.join(' ')}`);
                         } catch (_) {}
@@ -22688,6 +22874,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                             // Thinking dropdown doesn't appear. Also strip stray
                                             // <think>...</think> from content for the same reason.
                                             if (hideReasoning) {
+                                                if (reasoning) hiddenReasoningChars += reasoning.length;
                                                 reasoning = '';
                                                 if (rawContent) {
                                                     // A CLOSING think tag in a thinking-off round means
@@ -22712,6 +22899,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                                             const job = activeStreamingJobs.get(streamingConversationId);
                                                             if (job) job.content = fullResponse;
                                                         }
+                                                        if (dropped > 0) console.log(`[Chat Stream] Leaked thinking: dropped ${dropped} chars before a stray close tag (round ${toolCallRound})`);
                                                         if (dropped > 0 && clientConnected) {
                                                             try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'leaked_thinking' })}\n\n`); } catch (_) { clientConnected = false; }
                                                         }
@@ -23409,6 +23597,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 };
             };
 
+            // A follow-up turn over files extracted earlier ("what is inside the
+            // post-install scripts?") has its inventory on disk already.
+            if (handoffWorkspaceLines && handoffWorkspaceLines.length && artifactTurnActive()) {
+                scheduleArtifactLegwork('files already in the workspace', { minFiles: HANDOFF_ARTIFACT_MIN_FILES });
+            }
             let softDeadlineHit = false;
             let finalReportAsked = false;
             while (toolCallRound <= roundCap) {
@@ -25420,6 +25613,40 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     const assistantMsg = deliverAssistantResults();
                     if (assistantMsg) scheduleFollowUpLegwork('a delivered batch');
                     const idleMsg = idleAssistantNudge(safeToolCalls);
+                    // Analysis legwork over supplied files: after an extraction
+                    // (once there are enough files to split) or after a few of
+                    // the lead's own file-work calls. Async — the proposal runs
+                    // while the lead's next round streams; its note lands in
+                    // the round after that.
+                    if (artifactTurnActive() && artifactBatches < HANDOFF_ARTIFACT_BATCHES) {
+                        let extracted = false;
+                        for (const c of safeToolCalls) {
+                            const nm = c && c.function && c.function.name;
+                            if (!nm) continue;
+                            if (ARTIFACT_FILE_WORK_RE.test(nm)) leadFileWorkCalls += 1;
+                            if (ARTIFACT_PRODUCER_RE.test(nm)) {
+                                const tr = toolResultMessages.find(m => m && m.tool_call_id === c.id);
+                                const body = tr && typeof tr.content === 'string' ? tr.content : '';
+                                if (body && !/^\s*\{\s*"(?:error|success"\s*:\s*false)/.test(body)) extracted = true;
+                            }
+                        }
+                        if (extracted || leadFileWorkCalls >= HANDOFF_ARTIFACT_AFTER_CALLS) {
+                            const why = extracted ? 'an extraction' : `${leadFileWorkCalls} of ${targetModel}'s own file-analysis calls`;
+                            scheduleArtifactLegwork(why, { minFiles: HANDOFF_ARTIFACT_MIN_FILES }).then((ok) => { if (ok) leadFileWorkCalls = 0; });
+                            if (!extracted) leadFileWorkCalls = 0;
+                        }
+                    }
+                    const jobsNote = pendingJobsNote;
+                    pendingJobsNote = null;
+                    // A thinking-off model that made this round's calls without a
+                    // word gets a one-line reminder next to the results — the
+                    // turn-start note alone kept only the FIRST round narrated
+                    // (measured: 1 line, then 5 silent rounds).
+                    let narrationReminder = null;
+                    if (hideReasoning && !req.delegate && !String(turnContent || '').trim() && silentRoundReminders < NARRATION_REMINDER_MAX) {
+                        silentRoundReminders += 1;
+                        narrationReminder = { role: 'system', content: '[Before your next tool call, write one short visible sentence for the user: what these results showed and what you are doing next.]' };
+                    }
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -25431,6 +25658,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
                         ...(assistantMsg ? [assistantMsg] : []),
                         ...(idleMsg ? [idleMsg] : []),
+                        ...(jobsNote ? [jobsNote] : []),
+                        ...(narrationReminder ? [narrationReminder] : []),
                         ...(pendingLoopCheckpoint ? [pendingLoopCheckpoint] : []),
                     ];
                     if (pendingLoopCheckpoint) pendingLoopCheckpoint = null;
@@ -26515,6 +26744,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     conversationMsgs.push(assistantMessage);
                     await saveConversationMessages(userId, streamingConversationId, conversationMsgs, { memoryUserId: chatMemId });
                     console.log(`[Chat Stream] Response saved to ${streamingConversationId} (clientConnected=${clientConnected})`);
+                    if (hiddenReasoningChars) console.log(`[Chat Stream] Thinking-off model still produced ${hiddenReasoningChars} chars of reasoning this turn (hidden)`);
                 }
             } catch (saveErr) {
                 console.error(`[Chat Stream] Failed to save response:`, saveErr);
@@ -26898,7 +27128,11 @@ async function awaitJobsWindow(wanted, { windowMs = ASSISTANT_AWAIT_WINDOW_MS, m
 // Cap on an await_assistant once the lead already has results this turn.
 // The tools a background legwork job is given (see the router block).
 const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWORK_SALVAGE_EVIDENCE_CHARS || '14000', 10) || 14000);
-const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file'];
+// Tools whose success means new files landed in the workspace, and the lead's
+// own file-analysis calls (see scheduleArtifactLegwork).
+const ARTIFACT_PRODUCER_RE = /^(?:extract_archive|tar_extract|unzip_file|git_clone_shallow|download_file)$/;
+const ARTIFACT_FILE_WORK_RE = /^(?:run_python|run_node|run_bash|grep_code|read_file|list_directory|extract_strings|hex_dump|outline_file|scan_source_files|search_files|extract_archive|tar_extract|unzip_file|read_pdf)$/;
+const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump'];
 // Output cap for a background job's report round.
 const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
@@ -26911,6 +27145,17 @@ const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PA
 // 3); the queue below holds the ones past the parallel limit. The old default
 // of 2 silently dropped the third proposed job on every turn.
 const HANDOFF_AUTO_JOBS = Math.max(0, parseInt(process.env.HANDOFF_AUTO_JOBS || '3', 10) || 0);
+// Analysis-job proposals per turn over supplied files (scheduleArtifactLegwork);
+// 0 disables. After an extraction the proposal needs at least
+// HANDOFF_ARTIFACT_MIN_FILES files on disk (an outer zip holding one inner
+// archive is the lead's next step, not a job), and without an extraction it
+// fires after HANDOFF_ARTIFACT_AFTER_CALLS of the lead's own file-work calls.
+// Per-turn cap on the "say what you are doing" reminders a thinking-off model
+// gets after a silent tool round.
+const NARRATION_REMINDER_MAX = Math.max(0, parseInt(process.env.NARRATION_REMINDER_MAX || '12', 10) || 0);
+const HANDOFF_ARTIFACT_BATCHES = Math.max(0, parseInt(process.env.HANDOFF_ARTIFACT_BATCHES || '2', 10) || 0);
+const HANDOFF_ARTIFACT_MIN_FILES = Math.max(1, parseInt(process.env.HANDOFF_ARTIFACT_MIN_FILES || '6', 10) || 6);
+const HANDOFF_ARTIFACT_AFTER_CALLS = Math.max(1, parseInt(process.env.HANDOFF_ARTIFACT_AFTER_CALLS || '3', 10) || 3);
 const HANDOFF_LEGWORK_RETRY_MS = Math.max(0, parseInt(process.env.HANDOFF_LEGWORK_RETRY_MS || '20000', 10) || 0);
 // How long the turn will wait for background work it dispatched but never
 // collected, and how many times it will do so. Bounded: a job that never
@@ -34108,8 +34353,8 @@ app.use((req, res) => {
                 function: {
                     name: 'ask_assistant',
                     description:
-                        `Start background research on ${ctx.assistantModel}: a question needing a web search plus several page reads. Returns at once; do single reads yourself. ` +
-                        'Also fits: comparing sources, checking current versions, prices or docs, or a long script run over a big file. A single file read, page read, listing or command is faster done yourself. Each request is {name, task}. ' +
+                        `Run independent multi-step work on ${ctx.assistantModel} in the background: web research, or analysis of part of the files in /workspace. ` +
+                        'Returns at once. Fits: a web search plus several page reads, comparing sources, checking current versions or docs, or analysing one part of supplied files already on disk (a nested archive or installer, a group of binaries, a folder of scripts: unpack, extract strings, grep for IOCs, decode) — no web search needed for that. A single file read, page read, listing or command is faster done yourself. Each request is {name, task}. ' +
                         `Up to ${effectiveAssistantParallel(ctx.assistantModel)} run at once (more queue and start automatically) and results are delivered to you as they finish, so dispatch what you need EARLY, and hand over MORE whenever your work reveals it — delegation is continuous, not a one-off. Keep the thinking, design and writing for yourself.`,
                     parameters: {
                         type: 'object',

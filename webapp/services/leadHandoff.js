@@ -734,7 +734,10 @@ const USER_DEVICE = /\b(?:your|the\s+user'?s)\s+(?:tv|pc|computer|laptop|phone|d
 // listing 25.8 s while the lead listed it itself). A long script over a big
 // file ("run", two paths) is still legwork.
 const SINGLE_READ_VERB = /\b(read|open|fetch|extract|summari[sz]e|list|view|show|get|load|print|download|look at|check the contents of|inspect)\b/i;
-const MULTI_STEP_VERB = /\b(search|find|look\s*up|research|compare|gather|collect|investigate|identify|determine|survey|cross[- ]check|verify against|which|latest|current|versions?|releases?|prices?)\b/i;
+// Analysing one supplied file (a binary, an installer, a nested archive) for
+// what it contains or does is several calls, not a read — the artifact-
+// analysis batches below name exactly one path per job.
+const MULTI_STEP_VERB = /\b(search|find|look\s*up|research|compare|gather|collect|investigate|identify|determine|survey|cross[- ]check|verify against|which|latest|current|versions?|releases?|prices?|analy[sz]e|decompile|disassemble|deobfuscate|decode|iocs?|indicators?|custom actions?|embedded|every|all (?:urls|domains|ips|strings|scripts|files))\b/i;
 function isSingleReadJob(task) {
     const t = String(task || '');
     const refs = (t.match(/https?:\/\/\S+/g) || []).length + (t.match(/\/workspace\/[A-Za-z0-9._\/-]+/g) || []).length;
@@ -980,13 +983,88 @@ function applyRevisionEdits(draft, output) {
 }
 
 // Framing for the lead turn itself, appended to the shared prelude.
-function buildLeadPrelude({ assistantModel, maxParallel }) {
+// Did the user's own words — their chosen system prompt / persona, or the ask —
+// tell the model to hand work to the assistant? ("leverage the assistant as
+// much as possible", "offload easy work to the helper", "delegate"). Measured
+// on the "Malware" persona: the instruction was there and the lead still made
+// zero hand-offs, because nothing on the server read it.
+const DELEGATION_WISH_RE = /\b(?:(?:use|using|leverage|leveraging|utili[sz]e|involve|lean on|rely on|make use of)\s+(?:of\s+)?(?:the|your|an?|my)\s+(?:assistant|helper|second(?:ary)? model|other model|sub-?agents?|workers?)|(?:off-?load|hand(?:\s+(?:it|this|work))?\s*(?:off|over)|delegate|farm out|outsource|pass)\b[^.\n]{0,80}?\b(?:assistant|helper|other model|sub-?agents?|workers?)|delegat(?:e|ion|ing)\b|off-?load\b)/i;
+const DELEGATION_NEG_RE = /\b(?:don'?t|do not|never|no|without|avoid)\s+(?:\w+\s+){0,3}$/i;
+function wantsDelegation(text) {
+    const t = String(text || '');
+    if (!t) return false;
+    const re = new RegExp(DELEGATION_WISH_RE.source, 'gi');
+    let m;
+    while ((m = re.exec(t)) !== null) {
+        const before = t.slice(Math.max(0, m.index - 40), m.index);
+        if (!DELEGATION_NEG_RE.test(before)) return true;
+    }
+    return false;
+}
+
+// Is this turn an ANALYSIS of files the user supplied (an uploaded archive,
+// binary, capture or repo — or files already extracted in the workspace from
+// an earlier turn)? Such a turn has plenty of independent legwork (a nested
+// installer, a folder of scripts, a group of binaries) but none of it is a
+// web lookup, so the lookup-only first pass skipped it and the lead did it
+// all itself.
+const ARTIFACT_KINDS = new Set(['archive', 'capture', 'code', 'log-large', 'file', 'spreadsheet', 'document']);
+const CONTENTS_Q_RE = /\b(decompil\w*|disassembl\w*|iocs?|indicators?|post[- ]?install\w*|custom actions?|embedded|imports|hashes)\b/i;
+function isArtifactAnalysis({ text, attachmentKinds = [], workspaceHasContent = false } = {}) {
+    const raw = cleanAsk(text);
+    if (!raw) return false;
+    const { ask, toolsForbidden } = stripNegatedTools(raw);
+    if (toolsForbidden) return false;
+    const heavy = (attachmentKinds || []).some(k => ARTIFACT_KINDS.has(k)) || CODE_HOST_OR_FILE.test(ask) || !!workspaceHasContent;
+    if (!heavy) return false;
+    // Real analysis intent only: "read the license and check the installer's
+    // size" names files too, and a fan-out there made the lead hand trivial
+    // reads to the assistant.
+    return ANALYSIS_VERB.test(ask) || ANALYSIS_NOUN.test(ask) || SECURITY_RE.test(ask) || CONTENTS_Q_RE.test(ask);
+}
+
+// The assistant proposes ANALYSIS jobs over the files on disk (no tools in this
+// step). Asked once the lead has something concrete in the workspace — after
+// an extraction, or at the start of a follow-up turn over files already there.
+function buildArtifactLegworkTask({ userText, leadModel, inventory = [], leadSteps = [], jobs = [], maxJobs = 3, context = '', instructions = '' }) {
+    const inv = inventory.filter(Boolean).slice(0, 80).map(l => `  ${String(l).trim().slice(0, 200)}`);
+    const steps = leadSteps.slice(-12).map(s => `- ${String(s).slice(0, 160)}`);
+    const done = jobs.slice(-12).map(j => `- ${j.name}: ${String(j.task || '').slice(0, 200)} → ${j.status}`);
+    return [
+        `${leadModel || 'The main model'} is analysing the files below for the user and will write the answer. You are the faster model of the pair: you will run background ANALYSIS JOBS on parts of these files, in parallel, while it works.`,
+        'You have NO tools in this step and must not answer the request.',
+        ...(context ? ['', 'THE CONVERSATION SO FAR (context only):', context] : []),
+        '',
+        'THE USER ASKED:',
+        askForFirstPass(userText, 2500),
+        ...(instructions ? ['', 'THE USER\'S STANDING INSTRUCTIONS (the jobs must follow them too):', String(instructions).trim().slice(0, 1800)] : []),
+        '',
+        'FILES ON DISK:',
+        ...(inv.length ? inv : ['  (see the steps below)']),
+        '',
+        'STEPS THE MAIN MODEL ALREADY TOOK:',
+        ...(steps.length ? steps : ['- none yet']),
+        ...(done.length ? ['', 'JOBS ALREADY RUNNING OR DONE (do not repeat them):', ...done] : []),
+        '',
+        `Split the remaining analysis into at most ${maxJobs} INDEPENDENT jobs. Each job covers a DIFFERENT part of these files and takes several tool calls on the server — for example one nested archive or installer (unpack it and identify what it installs and runs), one group of binaries (extract their strings and identify URLs, IPs, domains, registry keys, commands), or one folder of scripts (grep for URLs, base64, eval/atob, download-and-execute, install hooks). Use the exact /workspace paths from the list. Each job reports concrete findings with the file path each came from.`,
+        'NOT a job: the whole task, one file read or one listing, writing the report, anything already done above, or a web search for general information.',
+        JOB_RULE,
+        'Reply with ONLY this section, nothing else:',
+        'LEGWORK',
+        '- <short name>: <what to analyse (with its /workspace path) and exactly what to report back>',
+        'If nothing would help, reply exactly: LEGWORK\n- none',
+    ].join('\n');
+}
+
+function buildLeadPrelude({ assistantModel, maxParallel, artifact = false, userAsked = false }) {
     const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
     return [
         'YOU ARE THE LEAD ON THIS TASK.',
         `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} is standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
         `\`ask_assistant\` hands it jobs ({name, task} each) and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands. Fan-out on this turn goes through ask_assistant.`,
-        'HAND OFF questions that need SEVERAL steps and are independent of what you are writing: a web search plus reading the pages that answer it, comparing several sources, checking current versions, prices, dates or docs, or a long script run over a big file the user supplied.',
+        'HAND OFF work that needs SEVERAL steps and is independent of what you are writing: a web search plus reading the pages that answer it, comparing several sources, checking current versions, prices, dates or docs — or ANALYSIS of a part of the files the user supplied that is already on disk (one nested archive or installer, a group of binaries, the scripts in one folder: unpack, extract strings, grep for URLs/IPs/base64, decode, dump tables). File analysis needs no web search.',
+        ...(artifact ? ['THIS TURN ANALYSES SUPPLIED FILES: once they are extracted or listed, split the work — keep the overall picture and the write-up for yourself and hand independent parts (each named by its /workspace path) to the assistant in ONE ask_assistant call, then carry on with your own part.'] : []),
+        ...(userAsked ? ['THE USER\'S INSTRUCTIONS ASK YOU TO USE YOUR ASSISTANT: whenever the work splits into independent parts, hand them over with ask_assistant rather than doing every step yourself.'] : []),
         'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet (it cannot read a file you have not written); or a single read, listing or command — reading one known URL or file is one call for you and a much slower background job for the assistant.',
         'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write. `await_assistant` blocks and is only for when you genuinely cannot continue.',
         'Delegation continues only while it is needed: when a delivered result leaves a gap the answer cannot do without (something the user asked for), hand it over and carry on. Do not dispatch more jobs just to add depth or detail the user did not ask for — answer from what you have. Never invent work to keep the assistant busy.',
@@ -1018,6 +1096,9 @@ function buildJobPartnerLine({ partnerModel, maxJobs }) {
 }
 
 module.exports = {
+    wantsDelegation,
+    isArtifactAnalysis,
+    buildArtifactLegworkTask,
     REVISION_EDITS_PROMPT,
     REVISION_EDITS_RETRY,
     applyRevisionEdits,
