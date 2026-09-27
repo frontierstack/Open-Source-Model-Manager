@@ -17926,7 +17926,7 @@ app.post('/api/chat/upload', requireAuth, chatUploadRawBody, async (req, res) =>
                 const buf = fileBuf;
                 await require('fs').promises.writeFile(diskPath, buf);
 
-                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/<archive-name>/ (a legible directory named after the archive; the tool result reports the exact path) where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.]`;
+                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/<archive-name>/ (a legible directory named after the archive; the tool result reports the exact path) where read_file, grep_code, outline_file, and scan_source_files can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all. If it holds a source tree, survey it with ONE paged scan_source_files call rather than reading files one at a time.${/\.msi$/i.test(safeName) ? ' It is a Windows Installer package: extract_archive also places the .msi in that folder — then call inspect_msi on it for custom actions, their payloads and IOCs.' : ''}]`;
                 return res.json({
                     type: 'archive',
                     filename: safeName,
@@ -21693,6 +21693,7 @@ const chatStreamHandlerInner = async (req, res) => {
         let leadFileWorkCalls = 0;
         let pendingJobsNote = null;
         let silentRoundReminders = 0;
+        let msiRedirects = 0;
         let artifactTurnCached = null;
         const artifactTurnActive = () => {
             if (req.delegate || !toolCtx || !toolCtx._assistantJobs || !toolCtx.assistantModel) return false;
@@ -25284,6 +25285,24 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     `Interpreter advisory (${soFar}/${INTERP_NET_SCRIPT_MAX}): this script made its own HTTP/DNS requests. Use the purpose-built tools instead — web (reads a page or JSON API in one call), dns_lookup, virustotal_lookup, http_request — and reserve ${call.function.name} for computation over data you already have. After ${INTERP_NET_SCRIPT_MAX} such scripts in one turn, further ones are refused.`);
                                 logChatActivity(`Interpreter: ${call.function.name} hand-rolled HTTP/DNS (${soFar}/${INTERP_NET_SCRIPT_MAX} this turn) — advised the model to use the web tool`);
                             }
+                            // An MSI parsed by hand: inspect_msi reads every table,
+                            // decodes the custom actions and carves their payloads in
+                            // one call (measured: the lead spent ~8 min on 14 scripts
+                            // guessing pymsi's API). Redirect, never refuse — a
+                            // script over an already-carved payload is legitimate.
+                            if ((recName === 'run_python' || recName === 'run_node') && msiRedirects < 3 && fullByName.has('inspect_msi') && !blockedToolNames.has('inspect_msi')) {
+                                try {
+                                    const code = String((JSON.parse(call.function.arguments || '{}') || {}).code || '');
+                                    const m = code.match(/['"`]([^'"`\n]*\.msi)['"`]/i);
+                                    if (m && /\b(?:pymsi|olefile|OleFileIO|msilib|msiextract|msiinfo|_Tables|_StringPool|CustomAction|Binary\.|7z)\b/.test(code)) {
+                                        msiRedirects += 1;
+                                        if (toolCtx._forcedToolNames instanceof Set) toolCtx._forcedToolNames.add('inspect_msi');
+                                        resultMsg = attachAdvisory(resultMsg,
+                                            `Use inspect_msi(path="${m[1]}") instead of parsing the MSI by hand: ONE call returns the summary info, every table's row count, the decoded custom actions (type, sync/async, what they run and when), the EXE/DLL/script payloads carved to disk with hashes, PE facts and IOC strings, registry/persistence writes and the installed files.`);
+                                        logChatActivity(`Interpreter: ${recName} parsed an MSI by hand — pointed the model at inspect_msi`);
+                                    }
+                                } catch (_) { /* advisory */ }
+                            }
                             // Exploration budget: N successful interpreter runs in one
                             // turn with no answer yet is the "one script per item"
                             // pattern (a jar audit ran 19 analyzeN.py, ~25 s of model
@@ -27132,7 +27151,7 @@ const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWO
 // own file-analysis calls (see scheduleArtifactLegwork).
 const ARTIFACT_PRODUCER_RE = /^(?:extract_archive|tar_extract|unzip_file|git_clone_shallow|download_file)$/;
 const ARTIFACT_FILE_WORK_RE = /^(?:run_python|run_node|run_bash|grep_code|read_file|list_directory|extract_strings|hex_dump|outline_file|scan_source_files|search_files|extract_archive|tar_extract|unzip_file|read_pdf)$/;
-const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump'];
+const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi'];
 // Output cap for a background job's report round.
 const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
@@ -33798,6 +33817,31 @@ app.use((req, res) => {
                 // to the PAGED batch reader + grep, and make sure those tools
                 // are actually advertised next round (the router picked the
                 // catalog from the user's ask, before the archive existed).
+                // Windows Installer packages (the upload itself, or MSIs found
+                // inside the tree): one inspect_msi call reads every table,
+                // decodes the custom actions and carves their payloads. Without
+                // the pointer the lead spent ~8 min guessing pymsi's API in
+                // run_python (MSIFile / Msi / Package, 14 scripts).
+                let msiNote = '';
+                try {
+                    const msiPaths = [];
+                    if (/\.msi$/i.test(String(filename || '')) && result && !result.error) {
+                        const dest = pathMod.join(extractRoot, pathMod.basename(String(filename)).replace(/[^A-Za-z0-9._-]/g, '_'));
+                        if (extractInput && extractInput.sourcePath) await fsp.copyFile(extractInput.sourcePath, dest);
+                        else if (buffer && buffer.length) await fsp.writeFile(dest, buffer);
+                        await fsp.chmod(dest, 0o666).catch(() => {});
+                        msiPaths.push(`/workspace/archives/${dirName}/${pathMod.basename(dest)}`);
+                    }
+                    for (const e of (result && result.entries) || []) {
+                        const rel = String((e && (e.path || e.name)) || '');
+                        if (/\.msi$/i.test(rel)) msiPaths.push(rel.startsWith('/workspace/') ? rel : `/workspace/${rel.replace(/^\/+/, '')}`);
+                    }
+                    const uniq = [...new Set(msiPaths)].slice(0, 5);
+                    if (uniq.length) {
+                        if (ctx && ctx._forcedToolNames instanceof Set) ctx._forcedToolNames.add('inspect_msi');
+                        msiNote = ` WINDOWS INSTALLER: ${uniq.join(', ')} — call inspect_msi(path="${uniq[0]}") to get its custom actions, the EXE/DLL payloads they run (carved to disk with hashes, PE facts and IOC strings), registry/persistence and installed files in ONE call. Do not parse the MSI by hand in run_python.`;
+                    }
+                } catch (_) { /* advisory */ }
                 const isSourceTree = (result.entryCount || 0) >= 15;
                 if (isSourceTree && ctx && ctx._forcedToolNames instanceof Set) {
                     ctx._forcedToolNames.add('scan_source_files');
@@ -33817,7 +33861,7 @@ app.use((req, res) => {
                             : '') +
                         (isSourceTree
                             ? `Extracted ${result.entryCount} files into the conversation workspace under archives/${dirName}/. This is a whole source tree — survey it with ONE scan_source_files call (dirPath="archives/${dirName}", paged: repeat with the returned startIndex) and use grep_code / outline_file for targeted questions. Do NOT read_file every file one at a time: at this breadth whole-file reads flood your context window and evict earlier findings. Reserve read_file for the handful of files that actually matter.`
-                            : `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`),
+                            : `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`) + msiNote,
                 };
             } catch (e) {
                 return { error: e.message || String(e) };

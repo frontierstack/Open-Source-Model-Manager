@@ -125,6 +125,10 @@ const INTENT_RULES = [
     [/\.(zip|zipx|tar|gz|tgz|7z|rar|bz2|xz|zst|tzst|lz4|lzma|cab|msu|msi|deb|rpm|cpio|iso|dmg|wim|arj|lzh|xar)\b|archiveId=|\[Archive uploaded|\b(decompress|unpack|unarchive|extract)\b[\s\S]{0,60}\b(archive|cab(inet)?|installer|package|compressed)\b/i, ['extract_archive']],
     [/\b(grep|find in|search) (the )?code|where is .* (defined|function)|outline (the|this) file|read the file\b/i, ['grep_code', 'read_file', 'outline_file']],
     [/\b(xor|hex ?dump|hex ?convert|extract strings|carve|entropy|magic bytes)\b/i, ['xor_bytes', 'hex_dump', 'extract_strings']],
+    // Windows Installer triage: one call reads every table, decodes custom
+    // actions and carves their payloads — the alternative was the model
+    // guessing pymsi's API across a dozen run_python scripts.
+    [/\.msi\b|\bmsi (?:file|package|installer)\b|\bwindows installer\b|\bcustom actions?\b|\b(?:decompil\w*|unpack\w*|inspect\w*|analy[sz]\w*) (?:the |this |that )?(?:msi|installer)\b/i, ['inspect_msi', 'extract_strings']],
     // Network-capture / traffic forensics. A capture is opaque to every reading
     // tool on the platform (read_file returns binary, grep_code finds nothing),
     // so the ONLY way to answer is to parse it in the sandbox — dpkt is baked
