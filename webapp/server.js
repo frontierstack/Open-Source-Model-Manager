@@ -27218,7 +27218,7 @@ const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWO
 // own file-analysis calls (see scheduleArtifactLegwork).
 const ARTIFACT_PRODUCER_RE = /^(?:extract_archive|tar_extract|unzip_file|git_clone_shallow|download_file)$/;
 const ARTIFACT_FILE_WORK_RE = /^(?:run_python|run_node|run_bash|grep_code|read_file|list_directory|extract_strings|hex_dump|outline_file|scan_source_files|search_files|extract_archive|tar_extract|unzip_file|read_pdf)$/;
-const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi'];
+const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi', 'binary_info', 'disassemble', 'decompile', 'unpack_upx'];
 // Output cap for a background job's report round.
 const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);

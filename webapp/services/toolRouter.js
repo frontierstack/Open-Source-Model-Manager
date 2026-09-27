@@ -125,6 +125,12 @@ const INTENT_RULES = [
     [/\.(zip|zipx|tar|gz|tgz|7z|rar|bz2|xz|zst|tzst|lz4|lzma|cab|msu|msi|deb|rpm|cpio|iso|dmg|wim|arj|lzh|xar)\b|archiveId=|\[Archive uploaded|\b(decompress|unpack|unarchive|extract)\b[\s\S]{0,60}\b(archive|cab(inet)?|installer|package|compressed)\b/i, ['extract_archive']],
     [/\b(grep|find in|search) (the )?code|where is .* (defined|function)|outline (the|this) file|read the file\b/i, ['grep_code', 'read_file', 'outline_file']],
     [/\b(xor|hex ?dump|hex ?convert|extract strings|carve|entropy|magic bytes)\b/i, ['xor_bytes', 'hex_dump', 'extract_strings']],
+    // Reverse engineering / binary analysis. An uploaded executable, library
+    // or shellcode is opaque to read_file/grep_code; these route to the
+    // static-analysis toolchain (LIEF/radare2/objdump/capstone/gdb) so the
+    // model reaches for the right instrument instead of hand-rolling parsers.
+    [/\b(disassemb\w*|decompil\w*|reverse[- ]?engineer\w*|\brev\b|pseudo[- ]?code|assembly|shellcode|opcodes?|byte ?code|packed|unpack|upx|obfuscat\w*|control[- ]flow|call ?graph|\bELF\b|\bPE\b(?:32|\+)?|mach-?o|\.(?:exe|dll|so|dylib|elf|bin|o|ko|sys|efi)\b|entry ?point|import table|\bIAT\b|\bGOT\b|\bPLT\b|debugger|gdb|breakpoint|\bmalware\b|firmware|\bCTF\b|crackme|binary (?:analysis|triage))\b/i,
+        ['binary_info', 'disassemble', 'decompile', 'gdb_batch', 'unpack_upx', 'extract_strings', 'hex_dump']],
     // Windows Installer triage: one call reads every table, decodes custom
     // actions and carves their payloads — the alternative was the model
     // guessing pymsi's API across a dozen run_python scripts.

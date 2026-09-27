@@ -339,6 +339,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends cabextract \
     && rm -rf /root/.cache \
     && python3 -c "import pycab, cabarchive, pymsi; print('cab/msi python libs OK')"
 
+# Reverse-engineering / binary-analysis toolchain for the disassemble,
+# decompile, binary_info and gdb_batch skills (static analysis of uploaded
+# ELF/PE/Mach-O samples — a first-class DFIR/CTF input on this platform).
+# objdump/nm/readelf come from binutils (already present via NodeSource layer
+# deps indirectly, but binutils-multiarch adds cross-arch disassembly);
+# radare2 + r2ghidra provide function discovery and Ghidra pseudo-C (pdg);
+# gdb drives batch inspection/tracing. Capstone/LIEF/pefile/pyelftools/r2pipe
+# are the Python engines the skills call. Late layer so the heavy
+# whisper/JDK/node/weasyprint layers above stay cached on rebuild.
+ARG R2_VERSION=6.2.2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gdb \
+        binutils-multiarch \
+        upx-ucl \
+        file \
+        curl \
+    && curl -fsSL -o /tmp/r2.deb https://github.com/radareorg/radare2/releases/download/${R2_VERSION}/radare2_${R2_VERSION}_amd64.deb \
+    && curl -fsSL -o /tmp/r2ghidra.deb https://github.com/radareorg/r2ghidra/releases/download/${R2_VERSION}/r2ghidra_${R2_VERSION}_amd64.deb \
+    && apt-get install -y --no-install-recommends /tmp/r2.deb /tmp/r2ghidra.deb \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/* /tmp/r2.deb /tmp/r2ghidra.deb \
+    && pip install --no-cache-dir \
+        capstone==5.0.7 \
+        lief==1.0.0 \
+        pefile==2024.8.26 \
+        pyelftools==0.31 \
+        r2pipe==1.9.8 \
+    && rm -rf /root/.cache \
+    && r2 -qv \
+    && gdb --version | head -1 \
+    && python3 -c "import capstone, lief, pefile, elftools, r2pipe; print('RE toolchain OK', 'capstone', capstone.__version__)"
+
 USER sandbox
 WORKDIR /tmp
 
