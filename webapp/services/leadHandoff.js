@@ -309,11 +309,25 @@ function forbidsTools(text) {
 // background lookups) is worth a call at all: building, writing and coding
 // turns skip it, lookup turns get a brief that is asked for its jobs.
 const LOOKUP_NEED_RE = /\b(research|look (?:it |this |that )?up|find out|search (?:for|the web|online)|sources?|citations?|compare|comparison|vs\.?|versus|alternatives?|best|reviews?|recommend\w*|options for|what'?s new|changelog)\b/i;
+// An EXPLICIT user directive to go and search/research the web — an imperative,
+// not a passing mention. When the user says this, research is a REQUIREMENT of
+// the turn, not something the planner may optimise away (measured: on "Perform
+// web searches to research the best methods…" the first pass wrote "LEGWORK:
+// none" and the lead ran a single search then reverted to brute-forcing).
+const USER_RESEARCH_DIRECTIVE_RE = /\bweb\s+search(?:es|ing)?\b|\bsearch\s+(?:the\s+web|online|the\s+internet|google)\b|\bresearch\s+(?:online|on\s+the\s+web|the\s+best|how\b|methods?|approaches?|techniques?|ways?\b)|\blook\s+up\s+(?:how|the\s+best|online|ways?)\b|\buse\s+web\s+search|\bgoogle\s+(?:it|how|the)\b|\bsearch\s+for\s+(?:the\s+best|how|information|guides?|methods?)\b/i;
+function userDemandsResearch(text) {
+    const raw = cleanAsk(text);
+    if (!raw) return false;
+    const { ask, toolsForbidden } = stripNegatedTools(raw);
+    if (toolsForbidden) return false; // "no web searches" wins
+    return USER_RESEARCH_DIRECTIVE_RE.test(ask);
+}
 function needsLookup(text) {
     const raw = cleanAsk(text);
     if (!raw) return false;
     const { ask, toolsForbidden } = stripNegatedTools(raw);
     if (toolsForbidden) return false;
+    if (USER_RESEARCH_DIRECTIVE_RE.test(ask)) return true; // explicit "search/research the web" is a hard lookup need
     if (URL_RE.test(ask)) return true;
     if (BUILD_OBJ.test(ask) && !RESEARCH_RE.test(ask) && !LOOKUP_NEED_RE.test(ask)) return false;
     // One current fact (a score, a price, the weather, a date) is one search
@@ -329,6 +343,7 @@ function needsLookup(text) {
 function isRetrievalShaped(text) {
     const ask = cleanAsk(text);
     if (!ask) return false;
+    if (USER_RESEARCH_DIRECTIVE_RE.test(ask)) return true; // an explicit research directive is retrieval-shaped
     if (BUILD_VERB.test(ask) && ARTIFACT.test(ask)) return false;
     return RESEARCH_RE.test(ask) || FRESH_RE.test(ask) || (ANALYSIS_VERB.test(ask) && !CODEISH.test(ask)) || LOOKUP_RE.test(ask);
 }
@@ -1106,10 +1121,11 @@ function buildArtifactLegworkTask({ userText, leadModel, inventory = [], leadSte
     ].join('\n');
 }
 
-function buildLeadPrelude({ assistantModel, maxParallel, artifact = false, userAsked = false }) {
+function buildLeadPrelude({ assistantModel, maxParallel, artifact = false, userAsked = false, researchDemanded = false }) {
     const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
     return [
         'YOU ARE THE LEAD ON THIS TASK.',
+        ...(researchDemanded ? ['THE USER EXPLICITLY ASKED YOU TO RESEARCH THIS ON THE WEB: web research is a REQUIREMENT of this turn, not optional. Before you conclude, run web searches (several, with different queries) and READ the most relevant results — hand the searching to your assistant as background jobs so it runs while you work. Do not fall back to guessing or brute force after a single search; if one approach fails, search for another. Only skip a search the user forbade.'] : []),
         `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} is standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
         `\`ask_assistant\` hands it jobs ({name, task} each) and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands. Fan-out on this turn goes through ask_assistant.`,
         'HAND OFF work that needs SEVERAL steps and is independent of what you are writing: a web search plus reading the pages that answer it, comparing several sources, checking current versions, prices, dates or docs — or ANALYSIS of a part of the files the user supplied that is already on disk (one nested archive or installer, a group of binaries, the scripts in one folder: unpack, extract strings, grep for URLs/IPs/base64, decode, dump tables). File analysis needs no web search.',
@@ -1178,6 +1194,7 @@ module.exports = {
     stripNegatedToolClauses: (text) => stripNegatedTools(String(text || '')).ask,
     isRetrievalShaped,
     needsLookup,
+    userDemandsResearch,
     forbidsTools,
     planHandoff,
     buildFirstPassTask,

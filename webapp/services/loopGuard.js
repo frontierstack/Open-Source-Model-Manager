@@ -1001,6 +1001,70 @@ function commandInstallsBrowser(command) {
 }
 
 // ---------------------------------------------------------------------------
+// Interpreter code that duplicates a faster, dedicated tool
+// ---------------------------------------------------------------------------
+// The model reaches for run_python/run_node to hand-roll a job a purpose-built
+// skill already does in one faster call (measured: a conversation literally
+// titled "Extract strings from .exe files" used run_python and LOOPED, where
+// extract_strings exists; malware turns hand-parse PEs with pefile/struct when
+// binary_info/disassemble/inspect_msi are advertised). This classifier maps
+// such code to the tool that replaces it. It is used ONLY to attach a
+// NON-BLOCKING advisory (never to refuse) — a false positive there just adds a
+// hint the model can ignore, whereas a false refusal would break legitimate
+// custom work. Signals therefore require the library IMPORT or the subprocess
+// INVOCATION itself, not a mere filename mention, and deliberately DO NOT cover
+// jobs that legitimately belong in the interpreter and have no dedicated tool:
+// pcap/dpkt, evtx, scapy, numpy/pandas computation, or custom crypto/decrypt.
+const DUP_TOOL_RULES = [
+    // OCR
+    [/\bpytesseract\b|\bimage_to_(?:string|data|osd)\s*\(/, 'ocr_image',
+        'read text out of an image (OCR)'],
+    // Binary structure (PE/ELF/Mach-O headers, sections, imports)
+    [/\b(?:import|from)\s+pefile\b|\bpefile\.PE\s*\(|\b(?:import|from)\s+lief\b|\blief\.parse\s*\(/, 'binary_info',
+        "read a compiled binary's format, sections, imports and entropy"],
+    // Disassembly
+    [/\b(?:import|from)\s+capstone\b|\bcapstone\.Cs\s*\(|\bCs\s*\(\s*CS_ARCH_|subprocess\.[a-z_]+\([^)]*\bobjdump\b|["']objdump["']\s*,/, 'disassemble',
+        'disassemble machine code'],
+    // Decompilation / scripted radare2
+    [/\b(?:import|from)\s+r2pipe\b|\br2pipe\.open\s*\(|\br2ghidra\b/, 'decompile',
+        'analyze a binary with radare2 (disassemble/decompile do this directly)'],
+    // UPX unpack
+    [/subprocess\.[a-z_]+\([^)]*\bupx\b|["']upx["']\s*,\s*["']-d["']|\bupx\s+-d\b/, 'unpack_upx',
+        'unpack a UPX-packed executable'],
+    // PDF text extraction
+    [/\b(?:import|from)\s+(?:PyPDF2|pypdf|pdfplumber)\b|\bPdfReader\s*\(|\bPdfFileReader\s*\(|\bpdfplumber\.open\s*\(|\b(?:import|from)\s+fitz\b/, 'read_pdf',
+        'extract text from a PDF'],
+    // Spreadsheet reading
+    [/\b(?:import|from)\s+openpyxl\b|\bload_workbook\s*\(|\b(?:pd|pandas)\.read_excel\s*\(|\b(?:import|from)\s+xlrd\b/, 'read_xlsx',
+        'read an .xlsx/.xls spreadsheet'],
+    // SQLite
+    [/\b(?:import\s+sqlite3\b|sqlite3\.connect\s*\()/, 'query_sqlite',
+        'query a SQLite database (query_sqlite is read-only by default)'],
+    // Archive extraction (uploaded/downloaded archives)
+    [/\b(?:import\s+(?:tarfile|zipfile|py7zr|rarfile)\b|tarfile\.open\s*\(|zipfile\.ZipFile\s*\(|py7zr\.SevenZipFile\s*\(|rarfile\.RarFile\s*\()|subprocess\.[a-z_]+\([^)]*\b(?:7z|7za|unzip|unrar|bsdtar)\b|["'](?:7z|7za|unzip|unrar|bsdtar)["']\s*,/, 'extract_archive',
+        'unpack an archive'],
+    // Git clone
+    [/\bgit\s+clone\b|["']clone["']\s*,\s*["']https?:/, 'git_clone_shallow',
+        'clone a git repository'],
+    // strings(1)-style extraction
+    [/\bre\.(?:findall|finditer)\s*\(\s*(?:rb?|b)["']\[[\\]?x?20|subprocess\.[a-z_]+\([^)]*\bstrings\b|["']strings["']\s*,/, 'extract_strings',
+        'pull printable strings out of a binary'],
+    // Manual hex dump via an external tool
+    [/subprocess\.[a-z_]+\([^)]*\b(?:xxd|hexdump)\b|["'](?:xxd|hexdump)["']\s*,/, 'hex_dump',
+        'produce a hex dump'],
+];
+// Returns { tool, reason } for the first dedicated tool a run_python/run_node
+// program duplicates, or null. Conservative by design (see comment above).
+function codeDuplicatesTool(code) {
+    const s = String(code || '');
+    if (s.length < 12) return null;
+    for (const [re, tool, reason] of DUP_TOOL_RULES) {
+        if (re.test(s)) return { tool, reason };
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
 // Error-class signature + same-error streak
 // ---------------------------------------------------------------------------
 // The progress ledger scores a call as progress when it succeeded, was
@@ -1101,6 +1165,7 @@ module.exports = {
     codeNetworkTargets,
     codeNeedsBrowser,
     commandInstallsBrowser,
+    codeDuplicatesTool,
     errorSignature,
     makeErrorStreakTracker,
     normalizeNarration,

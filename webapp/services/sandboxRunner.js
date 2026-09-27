@@ -460,6 +460,27 @@ except Exception as _e:
     const memoryBytes = parseMemory(memory);
     const nanoCpus = Math.round(parseFloat(cpus) * 1e9);
 
+    // Run the sandbox as root so analysis/file tools can read and traverse the
+    // workspace regardless of what uid/mode an earlier extraction or carve left
+    // behind. The uid-1000 default hit EACCES on a root-owned 0600 carved PE
+    // (and on files chowned to another uid, or inside a 0700 dir) — the
+    // recurring "permission denied" in binary/malware analysis. gVisor (runsc)
+    // stays the security boundary regardless of in-container uid, so root here
+    // is still confined; DAC_OVERRIDE/DAC_READ_SEARCH restore root's normal
+    // permission bypass despite CapDrop:['ALL']. Only under gVisor: with the
+    // runc dev-fallback, in-container root is host-adjacent, so we keep uid 1000
+    // there. SANDBOX_RUN_AS_ROOT=0 opts out.
+    const runAsRoot = useRunsc && process.env.SANDBOX_RUN_AS_ROOT !== '0';
+    // Writable rootfs + install capabilities so apt-get/dpkg (and other tools
+    // that must write outside /tmp and /workspace) can run. Opt-in: it drops the
+    // immutable-rootfs guarantee for the run, so enable only on a trusted host
+    // (SANDBOX_WRITABLE_ROOT=1) or per skill (opts.writableRoot). apt also needs
+    // a network tier (allowlist/open) with the package repos reachable.
+    const writableRoot = process.env.SANDBOX_WRITABLE_ROOT === '1' || !!opts.writableRoot;
+    const sandboxCaps = runAsRoot
+        ? ['DAC_OVERRIDE', 'DAC_READ_SEARCH', ...(writableRoot ? ['CHOWN', 'FOWNER', 'SETUID', 'SETGID'] : [])]
+        : [];
+
     // 3. Create + start + wait with timeout
     const start = Date.now();
     let container, stdout = '', stderr = '', exitCode = -1, timedOut = false;
@@ -469,16 +490,18 @@ except Exception as _e:
             Cmd: opts.cmd || ['python3', '/work/skill.py'],
             WorkingDir: '/work',
             Env: env,
+            User: runAsRoot ? '0:0' : undefined, // root under gVisor (see note above); image default (uid 1000) otherwise
             AttachStdout: true,
             AttachStderr: true,
             HostConfig: {
                 AutoRemove: false, // we remove explicitly so we can inspect first
-                ReadonlyRootfs: true,
+                ReadonlyRootfs: !writableRoot,
                 Runtime: useRunsc ? 'runsc' : undefined,
                 Memory: memoryBytes,
                 NanoCpus: nanoCpus,
                 PidsLimit: 256,
                 CapDrop: ['ALL'],
+                CapAdd: sandboxCaps,
                 SecurityOpt: ['no-new-privileges'],
                 NetworkMode: networkMode,
                 Binds: [

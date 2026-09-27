@@ -169,6 +169,20 @@ const INTENT_RULES = [
     // strands the model (observed: 4 failed make_downloadable calls on a nonexistent
     // .html, 20 web loops, then "I don't have a create_file tool" — no PDF delivered).
     [/\b(make|create|generate|write|produce|prepare|give|format|turn|convert|export|save|download|render|compile)\b[\s\S]{0,80}?\b(pdf|docx|word document)\b|\bpdf\b[\s\S]{0,40}?\b(report|version|file|document|copy)\b/i, ['create_pdf', 'html_to_pdf', 'create_docx', 'create_file', 'append_to_file']],
+    // READING an existing PDF (extract/parse/summarize its text), distinct from
+    // the CREATION rule above. Without this the model hand-rolls pypdf/pdfplumber
+    // in run_python because read_pdf has no deterministic recall.
+    [/\b(read|extract|parse|pull|scrape|ocr|summari[sz]e|analy[sz]e|search)\b[\s\S]{0,40}?\bpdf\b|\.pdf\b[\s\S]{0,30}?\b(text|contents?|tables?|says?|contains?)\b|\bpdf\b[\s\S]{0,20}?\b(text|contents?|tables?)\b/i, ['read_pdf', 'pdf_page_count', 'pdf_to_images']],
+    // OCR — text out of an image/screenshot/scan. Otherwise the model runs
+    // pytesseract in run_python (the skill exists and auto-upscales for accuracy).
+    [/\bocr\b|\b(read|extract|get|pull|transcribe|recogni[sz]e)\b[\s\S]{0,30}?\btext\b[\s\S]{0,25}?\b(image|picture|photo|screenshot|scan|\.png|\.jpe?g|\.gif|\.bmp|\.tiff?)\b|\btext\b[\s\S]{0,12}?\b(in|from|on)\b[\s\S]{0,12}?\b(image|screenshot|photo|scan)\b/i, ['ocr_image']],
+    // SQLite / a .db file — read-only SELECTs. Otherwise the model opens it with
+    // sqlite3 in run_python.
+    [/\b(\.sqlite3?|\.db)\b|\bsqlite\b|\b(query|select from|read|dump|inspect|list)\b[\s\S]{0,25}?\b(database|\.db\b|sqlite|table)\b|\bSELECT\b[\s\S]{0,30}?\bFROM\b/i, ['query_sqlite']],
+    // Clone a git repo to inspect it — git_clone_shallow lands it under
+    // /workspace/gh-clones for the other file tools; otherwise the model shells
+    // out to `git clone` in run_python (or reaches for download_file).
+    [/\bgit clone\b|\bclone\b[\s\S]{0,30}?\b(repo|repositor|github|gitlab|bitbucket)\b|\bgithub\.com\/[\w.-]+\/[\w.-]+/i, ['git_clone_shallow', 'scan_source_files', 'grep_code']],
 ];
 
 // ---- find_tools discovery meta-tool (the universal reachability backstop).

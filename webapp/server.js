@@ -19126,6 +19126,12 @@ const chatStreamHandlerInner = async (req, res) => {
                     handoff.userAskedDelegation = leadHandoff.wantsDelegation(userInstr) || leadHandoff.wantsDelegation(leadHandoff.cleanAsk(askText));
                     handoff.attachmentKinds = kinds;
                     handoff.artifact = leadHandoff.isArtifactAnalysis({ text: askText, attachmentKinds: kinds });
+                    // An explicit "search/research the web" directive from the user
+                    // or their system prompt makes web research a REQUIREMENT of the
+                    // turn (the prelude says so, and `web` is force-advertised so the
+                    // router cannot hide it). Measured: without this the planner wrote
+                    // "LEGWORK: none" on exactly such a message and searched once.
+                    handoff.researchDemanded = leadHandoff.userDemandsResearch(askText) || leadHandoff.userDemandsResearch(userInstr);
                 } catch (_) { /* advisory */ }
                 if (handoff.easy && pairRoles.secondary && pairRoles.mode !== 'off') {
                     console.log(`[Chat Stream] Hand-off: ${handoff.reason} — ${handoff.runOn} answers alone`);
@@ -19584,7 +19590,7 @@ const chatStreamHandlerInner = async (req, res) => {
             // Lead framing goes after the shared prelude for the same
             // prompt-cache reason the worker framing does.
             if (handoff.engaged && handoff.legwork) {
-                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: effectiveAssistantParallel(handoff.primary), artifact: !!handoff.artifact, userAsked: !!handoff.userAskedDelegation })}`;
+                prelude = `${prelude}\n\n${leadHandoff.buildLeadPrelude({ assistantModel: handoff.primary, maxParallel: effectiveAssistantParallel(handoff.primary), artifact: !!handoff.artifact, userAsked: !!handoff.userAskedDelegation, researchDemanded: !!handoff.researchDemanded })}`;
             } else if (assistantModelForTurn && req.delegate) {
                 prelude = `${prelude}\n${leadHandoff.buildJobPartnerLine({ partnerModel: assistantModelForTurn, maxJobs: req.delegate.assistantMaxJobs || ASSISTANT_JOB_MAX_JOBS })}`;
             } else if (assistantModelForTurn) {
@@ -21127,6 +21133,9 @@ const chatStreamHandlerInner = async (req, res) => {
         toolCtx.fullToolCatalog = fullToolCatalog;
         toolCtx._forcedToolNames = new Set();      // find_tools pushes discovered names here
         const preflightForcedTools = new Set();    // pre-flights that NAME a tool force-include it
+        // The user explicitly asked to research on the web — make sure `web` is
+        // advertised even if the router's semantic cut would not have picked it.
+        if (typeof handoff !== 'undefined' && handoff && handoff.researchDemanded) preflightForcedTools.add('web');
         let advertisedNames = new Set(fullByName.keys());  // grows across rounds
         let routeCompactLevel = null;   // set when routing is active; used to rebuild on grow
         // Doc-analysis pre-step (agentic/follow-up) instructs the model to call
@@ -25348,6 +25357,33 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                         resultMsg = attachAdvisory(resultMsg,
                                             `Use inspect_msi(path="${m[1]}") instead of parsing the MSI by hand: ONE call returns the summary info, every table's row count, the decoded custom actions (type, sync/async, what they run and when), the EXE/DLL/script payloads carved to disk with hashes, PE facts and IOC strings, registry/persistence writes and the installed files.`);
                                         logChatActivity(`Interpreter: ${recName} parsed an MSI by hand — pointed the model at inspect_msi`);
+                                    }
+                                } catch (_) { /* advisory */ }
+                            }
+                            // A run_python/run_node script that hand-rolls a job a
+                            // dedicated tool does faster (extract_strings, binary_info,
+                            // disassemble, decompile, read_pdf, read_xlsx, ocr_image,
+                            // query_sqlite, extract_archive, unpack_upx, git clone,
+                            // hex_dump). NON-BLOCKING advisory + re-advertise the tool
+                            // (the router may have hidden it, so the model literally
+                            // could not call it and fell back to core run_python). The
+                            // classifier in loopGuard is deliberately conservative:
+                            // pcap/dpkt, evtx, numpy/pandas compute and custom crypto
+                            // are never flagged (no dedicated tool exists for them).
+                            // Advise each tool at most once per turn.
+                            if ((recName === 'run_python' || recName === 'run_node') && !recFailed) {
+                                try {
+                                    const code = String((JSON.parse(call.function.arguments || '{}') || {}).code || '');
+                                    const dup = loopGuard.codeDuplicatesTool(code);
+                                    if (dup && fullByName.has(dup.tool) && !blockedToolNames.has(dup.tool)) {
+                                        if (!(toolCtx._dupToolAdvised instanceof Set)) toolCtx._dupToolAdvised = new Set();
+                                        if (!toolCtx._dupToolAdvised.has(dup.tool)) {
+                                            toolCtx._dupToolAdvised.add(dup.tool);
+                                            if (toolCtx._forcedToolNames instanceof Set) toolCtx._forcedToolNames.add(dup.tool);
+                                            resultMsg = attachAdvisory(resultMsg,
+                                                `You used ${recName} to ${dup.reason}. The ${dup.tool} tool does this in ONE faster, more reliable call and is now available to you — prefer it over hand-writing the code. Keep ${recName} only for work no dedicated tool covers.`);
+                                            logChatActivity(`Interpreter: ${recName} hand-rolled ${dup.tool}'s job — advised the model to use ${dup.tool}`);
+                                        }
                                     }
                                 } catch (_) { /* advisory */ }
                             }
