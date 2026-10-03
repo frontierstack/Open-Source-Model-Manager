@@ -116,15 +116,22 @@ const THEMES = [
         key: 'coding', label: 'Coding',
         description: 'Writing, running, debugging and reviewing code; exploring repositories and archives.',
         tools: ['run_python', 'run_node', 'run_npm', 'run_bash', 'run_powershell', 'create_file', 'append_to_file', 'replace_lines', 'preview_html', 'grep_code', 'outline_file', 'scan_source_files', 'git_clone_shallow', 'git_status', 'git_diff', 'git_log', 'git_branch', 'git_blame', 'list_directory', 'read_file', 'head_file', 'tail_file', 'extract_archive', 'tar_extract', 'unzip_file', 'search_files', 'get_file_metadata', 'move_file', 'copy_file', 'make_downloadable'],
-        text: /\b(code|codebase|repo(sitory)?|scripts?|functions?|class(es)?|bug|debug|refactor|compile|build (me |a |an )?(app|game|page|site|tool|script|cli)|python|javascript|typescript|node\.?js|react|html|css|api|endpoint|regex|sql|npm|package\.json|library|unit tests?|stack ?trace|traceback|game|website|web ?app)\b/i,
+        // Coding WORK (write, fix, build, run). Naming a language or a runtime
+        // is only a TOPIC: "the latest versions of Node.js, Bun and Deno" is a
+        // research question, and with the names counted as work it tied with
+        // Research and won on list order, so research asks recalled the
+        // Coding playbook (npm-tarball and decompiler tips).
+        text: /\b(code|codebase|repo(sitory)?|scripts?|functions?|class(es)?|bug|debug|refactor|compile|(build|make|write|create) (me )?(a |an )?([\w-]+ ){0,2}(app|game|page|web ?site|site|tool|script|cli|program|bot|extension|plugin|web ?app)|endpoint|regex|package\.json|unit tests?|stack ?trace|traceback|web ?app|syntax error|exception|implement\w*)\b/i,
         textWeight: 1.5,
+        topic: /\b(python|javascript|typescript|node\.?js|deno|bun|react|vue|angular|svelte|html|css|api|sql|npm|pip|library|framework|rust|golang|java|c\+\+|c#|php|ruby|kotlin|swift|game|website)\b/i,
+        topicWeight: 0.5,
         attachments: ['code', 'archive'],
     },
     {
         key: 'research', label: 'Research',
         description: 'Looking things up on the web, comparing options, gathering sources, current events.',
         tools: ['web', 'web_search', 'fetch_url', 'crawl_pages', 'scrapling_fetch', 'playwright_fetch', 'playwright_interact', 'download_html', 'parse_rss'],
-        text: /\b(research|search(es)?|look ?(it )?up|find (out|me|the|a|info)|latest|news|current|recent|who is|what is (the )?(price|cost|status)|compare|comparison|reviews? of|release date|best .{0,30} for|sources?|cite|citations?|articles?|according to|website|online|google|wikipedia|trending|announced)\b/i,
+        text: /\b(research|search(es)?|look ?(it )?up|find (out|me|the|a|info)|latest|newest|news|current|recent|who is|what is (the )?(price|cost|status)|compare|comparison|vs\.?|versus|reviews? of|release dates?|released|versions?|what'?s new|changelog|best .{0,30} for|sources?|cite|citations?|articles?|according to|online|google|wikipedia|trending|announced|benchmarks?|(summari[sz]e|read|explain|what does) (this |the |that )?(article|page|post|blog|link|thread))\b/i,
         textWeight: 1.5,
         attachments: [],
     },
@@ -173,13 +180,16 @@ function deriveAttachmentKinds(attachments) {
 function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new Set(), hasTools = null } = {}) {
     const scores = new Map();
     const bump = (k, w) => scores.set(k, (scores.get(k) || 0) + w);
-    const q = clean(userText, 4000);
+    // Words inside a URL are its path, not the user's intent: the ".html"
+    // of an article link filed "summarize <article>" under Coding.
+    const q = clean(String(userText || '').replace(/\b(?:https?:\/\/|www\.)\S+/gi, ' link '), 4000);
     for (const label of toolLabels) {
         const k = TOOL_THEME.get(label);
         if (k) bump(k, 1);
     }
     for (const t of THEMES) {
         if (t.text && q && t.text.test(q)) bump(t.key, t.textWeight || 1.5);
+        if (t.topic && q && t.topic.test(q)) bump(t.key, t.topicWeight || 0.5);
         for (const kind of t.attachments) if (attachmentKinds && attachmentKinds.has && attachmentKinds.has(kind)) bump(t.key, 2);
     }
     let best = null;
