@@ -105,7 +105,7 @@ function LlamacppPills({ cfg }) {
             {Array.isArray(cfg?.gpuDevices) && cfg.gpuDevices.length > 0 && (
                 <Pill tooltip="GPUs this instance is pinned to (the others stay free for another model)" label={`GPU ${cfg.gpuDevices.join(',')}`} tone="accent" />
             )}
-            <Pill tooltip="GPU layers (-1 = all)" label={`Layers: ${cfg?.nGpuLayers === -1 ? 'All' : (cfg?.nGpuLayers ?? 'All')}`} />
+            <Pill tooltip="GPU layers (-1 = all)" label={`Layers: ${cfg?.nGpuLayers === -1 ? 'All' : Number(cfg?.nGpuLayers) === 0 ? '0 (CPU only)' : (cfg?.nGpuLayers ?? 'All')}`} />
             <Pill tooltip="Parallel slots" label={`Slots: ${cfg?.parallelSlots ?? 1}`} />
             {cfg?.threads > 0 && <Pill tooltip="CPU threads" label={`Threads: ${cfg.threads}`} />}
             {cfg?.batchSize && cfg.batchSize !== 2048 && <Pill tooltip="Batch size" label={`Batch: ${cfg.batchSize}`} />}

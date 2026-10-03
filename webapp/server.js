@@ -5155,8 +5155,9 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             broadcast({ type: 'log', message: `Creating sglang instance for ${modelName}...` });
             result = await createSglangInstance(modelName, fullPath, config);
         } else if (backend === 'llamacpp') {
+            const gpuCountHere = await getGpuCount();
             const config = {
-                gpuDevices: normalizeGpuDevices(req.body.gpuDevices, await getGpuCount()),
+                gpuDevices: normalizeGpuDevices(req.body.gpuDevices, gpuCountHere),
                 nGpuLayers: req.body.nGpuLayers ?? -1,
                 contextSize: req.body.contextSize || 4096,
                 contextShift: req.body.contextShift ?? true,
@@ -5192,6 +5193,14 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 specDraftPMin: req.body.specDraftPMin ?? null,
                 specDraftModel: req.body.specDraftModel || ''
             };
+            // GPU layers 0 on a GPU host runs the whole model on the CPU —
+            // ~10-50x slower, and as the pair's assistant it times out every
+            // brief and job. Allowed (it can be deliberate), but never silent.
+            if (Number(config.nGpuLayers) === 0 && gpuCountHere > 0) {
+                const msg = `[${modelName}] Loading with GPU layers = 0: the model runs ENTIRELY ON THE CPU although ${gpuCountHere} GPU(s) are available — expect very slow prompt processing and generation. Choose "All (-1)" unless this is intentional.`;
+                console.warn(msg);
+                broadcast({ type: 'log', level: 'warning', message: msg });
+            }
 
             // Prompt-cache budget: explicit value wins ('' / null = auto); auto is
             // the smaller of ~2 full-context states and this instance's share
@@ -6035,6 +6044,14 @@ async function monitorContainerHealth(container, modelName, port) {
             // Instance was removed (user stopped it)
             return;
         }
+        // The model was unloaded and loaded again under the same name: the
+        // instance now belongs to a NEW container with its own monitor. This
+        // one would inspect the removed container every few seconds forever.
+        const ownId = String(container.id || '');
+        const curId = String(instance.containerId || '');
+        if (ownId && curId && !curId.startsWith(ownId) && !ownId.startsWith(curId)) {
+            return;
+        }
 
         try {
             // Check if container is still running
@@ -6203,6 +6220,12 @@ async function monitorContainerHealth(container, modelName, port) {
                 setTimeout(healthCheck, PHASE3_INTERVAL);
             }
         } catch (error) {
+            // The container is gone (removed outside this monitor) — nothing
+            // left to watch.
+            if (error && (error.statusCode === 404 || /no such container/i.test(error.message || ''))) {
+                console.warn(`Health monitor for ${modelName}: container ${String(container.id || '').slice(0, 12)} no longer exists — stopping`);
+                return;
+            }
             console.error(`Health check error for ${modelName}:`, error.message);
             // Continue monitoring even on errors
             const interval = totalSeconds <= PHASE1_DURATION ? PHASE1_INTERVAL :
