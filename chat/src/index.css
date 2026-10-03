@@ -5537,3 +5537,19 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 .msg-turn.is-collapsed { padding-bottom: 10px; }
 .msg-turn.is-collapsed .msg-turn-head { margin-bottom: 0; }
 @media (max-width: 640px) { .msg-turn-toggle { min-height: 36px; } }
+
+/* Working notes + the two-model exchange as ONE card. */
+.msg-notes.msg-work { margin: 6px 0 8px; padding: 6px 10px 8px; }
+.msg-work > .msg-notes-toggle { width: calc(100% + 8px); margin: 0 -4px; }
+.msg-work .msg-notes-toggle .msg-turn-pair { margin-left: 4px; }
+.msg-work-section { margin-top: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--rule-2, var(--rule, var(--border-primary))); min-width: 0; }
+.msg-work-sublabel {
+    font-size: 10px; --fs: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-4); margin: 0 0 6px;
+}
+.msg-work-sublabel--steps { margin-top: 10px; margin-bottom: 0; }
+.msg-work .msg-notes-steps { margin-top: 6px; }
+.msg-work > .msg-notes-toggle { flex-wrap: wrap; row-gap: 4px; }
+.msg-work > .msg-notes-toggle .msg-turn-pill { text-transform: none; letter-spacing: 0; }
+.msg-work > .msg-notes-toggle .msg-turn-totals { white-space: normal; overflow: visible; }
+@media (max-width: 640px) { .msg-work > .msg-notes-toggle .msg-turn-totals { flex-basis: 100%; margin-left: 19px; } }

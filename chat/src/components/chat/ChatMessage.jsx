@@ -289,14 +289,41 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
 // per background job so the queue the two models pass back and forth is
 // visible while it happens. It disappears with the turn; the durable record
 // lives on the `first_pass` / `ask_assistant` chips in the finished message.
-function HandoffRows({ rows }) {
-    const [open, setOpen] = useState(true);
-    if (!rows.length) return null;
+function handoffSummary(rows) {
     const jobs = rows.filter(r => r.indent);
     const running = jobs.filter(r => !r.done).length;
     const summary = [];
     if (jobs.length) summary.push(`${jobs.length} task${jobs.length === 1 ? '' : 's'}`);
     if (running) summary.push(`${running} running`);
+    return summary;
+}
+function HandoffTimeline({ rows }) {
+    return (
+        <ol className="msg-turn-timeline">
+        {rows.map(r => {
+            const state = r.done ? (r.failed ? 'failed' : 'done') : 'running';
+            return (
+                <li key={r.key} className={`msg-turn-event${r.indent ? ' msg-turn-event--job' : ''}`} data-state={state}>
+                    <span className="msg-turn-dot" aria-hidden="true" />
+                    <div className="msg-turn-line">
+                        {!r.indent && <span className="msg-turn-pill" title={r.model}>{shortModel(r.model)}</span>}
+                        <span className="msg-turn-text">
+                            {r.indent
+                                ? <><span className="msg-turn-job-name">{r.parts[0]}</span>{r.parts.slice(1).length ? <span className="msg-turn-muted">{' \u00b7 ' + r.parts.slice(1).join(' \u00b7 ')}</span> : null}</>
+                                : r.parts.join(' \u00b7 ')}
+                        </span>
+                        {r.seconds >= 1 && <span className="msg-turn-meta">{r.seconds}s</span>}
+                    </div>
+                </li>
+            );
+        })}
+    </ol>
+    );
+}
+function HandoffRows({ rows }) {
+    const [open, setOpen] = useState(true);
+    if (!rows.length) return null;
+    const summary = handoffSummary(rows);
     return (
         <div className={`msg-turn msg-turn--live${open ? '' : ' is-collapsed'}`} aria-live="polite">
             <button
@@ -310,25 +337,7 @@ function HandoffRows({ rows }) {
                 <span className="msg-turn-label">Two models working</span>
                 {summary.length > 0 && <span className="msg-turn-totals">{summary.join(' \u00b7 ')}</span>}
             </button>
-            {open && <ol className="msg-turn-timeline">
-                {rows.map(r => {
-                    const state = r.done ? (r.failed ? 'failed' : 'done') : 'running';
-                    return (
-                        <li key={r.key} className={`msg-turn-event${r.indent ? ' msg-turn-event--job' : ''}`} data-state={state}>
-                            <span className="msg-turn-dot" aria-hidden="true" />
-                            <div className="msg-turn-line">
-                                {!r.indent && <span className="msg-turn-pill" title={r.model}>{shortModel(r.model)}</span>}
-                                <span className="msg-turn-text">
-                                    {r.indent
-                                        ? <><span className="msg-turn-job-name">{r.parts[0]}</span>{r.parts.slice(1).length ? <span className="msg-turn-muted">{' \u00b7 ' + r.parts.slice(1).join(' \u00b7 ')}</span> : null}</>
-                                        : r.parts.join(' \u00b7 ')}
-                                </span>
-                                {r.seconds >= 1 && <span className="msg-turn-meta">{r.seconds}s</span>}
-                            </div>
-                        </li>
-                    );
-                })}
-            </ol>}
+            {open && <HandoffTimeline rows={rows} />}
         </div>
     );
 }
@@ -479,9 +488,7 @@ function ExchangeJob({ job }) {
     );
 }
 
-function ExchangePanel({ steps }) {
-    const [open, setOpen] = useState(true);
-    if (!steps.length) return null;
+function exchangeSummary(steps) {
     // The pair: the brief's author is the assistant and its recipient the lead;
     // a delegation runs the other way.
     const brief = steps.find(s => s.kind === 'brief');
@@ -496,11 +503,42 @@ function ExchangePanel({ steps }) {
     if (jobs.length) totals.push(`${jobs.length} task${jobs.length === 1 ? '' : 's'} delegated${batches > 1 ? ` in ${batches} batches` : ''}`);
     if (calls) totals.push(`${calls} call${calls === 1 ? '' : 's'}`);
     if (jobSecs >= 1) totals.push(fmtSecs(jobSecs));
-    const pill = (name) => {
-        if (!name) return null;
-        const role = name === lead ? 'lead' : name === assistant ? 'assist' : 'other';
-        return <span className={`msg-turn-pill msg-turn-pill--${role}`} title={name}>{shortModel(name)}</span>;
-    };
+    return { lead, assistant, totals };
+}
+function PairPill({ name, lead, assistant }) {
+    if (!name) return null;
+    const role = name === lead ? 'lead' : name === assistant ? 'assist' : 'other';
+    return <span className={`msg-turn-pill msg-turn-pill--${role}`} title={name}>{shortModel(name)}</span>;
+}
+function ExchangeTimeline({ steps, lead, assistant }) {
+    const pill = (name) => <PairPill name={name} lead={lead} assistant={assistant} />;
+    return (
+        <ol className="msg-turn-timeline">
+        {steps.map(st => (
+            <li key={st.key} className="msg-turn-event" data-state={st.failed ? 'failed' : st.warn ? 'warn' : 'done'} data-kind={st.kind}>
+                <span className="msg-turn-dot" aria-hidden="true" />
+                <div className="msg-turn-line">
+                    {pill(st.from || '')}
+                    <span className="msg-turn-text">{st.text}</span>
+                    {(st.meta || st.seconds >= 0.1) && (
+                        <span className="msg-turn-meta">{[st.meta, fmtSecs(st.seconds)].filter(Boolean).join(' \u00b7 ')}</span>
+                    )}
+                </div>
+                {st.detail && <div className="msg-turn-detail" title={st.detail}>{st.detail}</div>}
+                {(st.jobs || []).length > 0 && (
+                    <ul className="msg-turn-jobs">
+                        {st.jobs.map((j, i) => <ExchangeJob key={`${st.key}j${i}`} job={j} />)}
+                    </ul>
+                )}
+            </li>
+        ))}
+    </ol>
+    );
+}
+function ExchangePanel({ steps }) {
+    const [open, setOpen] = useState(true);
+    if (!steps.length) return null;
+    const { lead, assistant, totals } = exchangeSummary(steps);
     return (
         <section className={`msg-turn${open ? '' : ' is-collapsed'}`} aria-label="Two models on this turn">
             <button
@@ -512,34 +550,21 @@ function ExchangePanel({ steps }) {
             >
                 <ChevronDown strokeWidth={2} />
                 <span className="msg-turn-label">Two models on this turn</span>
-                <span className="msg-turn-pair">
-                    {pill(lead)}
-                    {lead && assistant && <span className="msg-turn-muted" aria-hidden="true">+</span>}
-                    {pill(assistant)}
-                </span>
+                <PairPills lead={lead} assistant={assistant} />
                 {totals.length > 0 && <span className="msg-turn-totals">{totals.join(' \u00b7 ')}</span>}
             </button>
-            {open && <ol className="msg-turn-timeline">
-                {steps.map(st => (
-                    <li key={st.key} className="msg-turn-event" data-state={st.failed ? 'failed' : st.warn ? 'warn' : 'done'} data-kind={st.kind}>
-                        <span className="msg-turn-dot" aria-hidden="true" />
-                        <div className="msg-turn-line">
-                            {pill(st.from || '')}
-                            <span className="msg-turn-text">{st.text}</span>
-                            {(st.meta || st.seconds >= 0.1) && (
-                                <span className="msg-turn-meta">{[st.meta, fmtSecs(st.seconds)].filter(Boolean).join(' \u00b7 ')}</span>
-                            )}
-                        </div>
-                        {st.detail && <div className="msg-turn-detail" title={st.detail}>{st.detail}</div>}
-                        {(st.jobs || []).length > 0 && (
-                            <ul className="msg-turn-jobs">
-                                {st.jobs.map((j, i) => <ExchangeJob key={`${st.key}j${i}`} job={j} />)}
-                            </ul>
-                        )}
-                    </li>
-                ))}
-            </ol>}
+            {open && <ExchangeTimeline steps={steps} lead={lead} assistant={assistant} />}
         </section>
+    );
+}
+function PairPills({ lead, assistant }) {
+    if (!lead && !assistant) return null;
+    return (
+        <span className="msg-turn-pair">
+            <PairPill name={lead} lead={lead} assistant={assistant} />
+            {lead && assistant && <span className="msg-turn-muted" aria-hidden="true">+</span>}
+            <PairPill name={assistant} lead={lead} assistant={assistant} />
+        </span>
     );
 }
 
@@ -588,7 +613,9 @@ function stepState(calls) {
     if (calls.some(c => c && c.status === 'failed')) return 'failed';
     return 'done';
 }
-function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
+// `pair` (two-model turns) folds the exchange into this same card: its pills
+// and totals join the header, its timeline opens above the steps.
+function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming, pair }) {
     const calls = Array.isArray(toolCalls) ? toolCalls.length : 0;
     const dur = fmtMs(totalToolMs(toolCalls));
     const failed = Array.isArray(toolCalls) ? toolCalls.filter(t => t && t.status === 'failed').length : 0;
@@ -597,7 +624,7 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
     if (failed) meta.push(`${failed} failed`);
     if (dur) meta.push(dur);
     return (
-        <div className="msg-notes">
+        <div className={`msg-notes${pair ? ' msg-turn msg-work' : ''}`} aria-live={pair && isStreaming ? 'polite' : undefined}>
             <button
                 type="button"
                 className="msg-notes-toggle"
@@ -607,8 +634,16 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming }) {
             >
                 <ChevronDown strokeWidth={2} />
                 <span className="msg-turn-label">Working notes</span>
-                <span className="msg-turn-totals">{meta.join(' \u00b7 ')}</span>
+                {pair && <PairPills lead={pair.lead} assistant={pair.assistant} />}
+                <span className="msg-turn-totals">{[...(pair ? pair.totals : []), ...meta].join(' \u00b7 ')}</span>
             </button>
+            {open && pair && pair.body && (
+                <div className="msg-work-section">
+                    <div className="msg-work-sublabel">{isStreaming ? 'Two models working' : 'Two models'}</div>
+                    {pair.body}
+                </div>
+            )}
+            {open && pair && <div className="msg-work-sublabel msg-work-sublabel--steps">Steps</div>}
             {open && (
                 <ol className="msg-notes-steps">
                     {segments.map((seg, i) => {
@@ -759,6 +794,26 @@ export default React.memo(function ChatMessage({
     const split = React.useMemo(() => splitNarration(displayContent, toolCalls), [displayContent, toolCalls]);
     const notesLayout = !isUser && !split.legacy && Array.isArray(toolCalls) && toolCalls.length > 0
         && (isStreaming || !!split.answer.trim());
+    // The two-model exchange, folded into the Working notes card: live rows
+    // while streaming, the durable timeline once committed.
+    const liveRows = (isStreaming && handoffActive)
+        ? handoffRows({ handoff, toolCalls, now: Date.now(), startsRef: handoffStartsRef })
+        : [];
+    const notesPair = (() => {
+        if (isStreaming) {
+            if (!liveRows.length) return null;
+            const a = handoffActors(handoff) || {};
+            return { lead: a.lead, assistant: a.assistant, totals: handoffSummary(liveRows), body: <HandoffTimeline rows={liveRows} /> };
+        }
+        const steps = exchangeSteps(toolCalls, review);
+        if (!steps.length) return null;
+        const { lead, assistant } = exchangeSummary(steps);
+        // The header already carries steps/calls/time; only the delegation
+        // count is new information (the full totals stay on the timeline).
+        const jobs = steps.reduce((n, st) => n + (st.jobs || []).length, 0);
+        const totals = jobs ? [`${jobs} task${jobs === 1 ? '' : 's'} delegated`] : [];
+        return { lead, assistant, totals, body: <ExchangeTimeline steps={steps} lead={lead} assistant={assistant} /> };
+    })();
     const answerText = notesLayout ? split.answer : displayContent;
 
     // Deduped image grids for the bubble. The server now dedups find_image
@@ -989,16 +1044,13 @@ export default React.memo(function ChatMessage({
                         working right now, so "the secondary is writing WHILE
                         the primary runs two background jobs" is visible
                         instead of reading as a single silent model. */}
-                    {isStreaming && handoffActive && (
-                        <HandoffRows rows={handoffRows({ handoff, toolCalls, now: Date.now(), startsRef: handoffStartsRef })} />
+                    {isStreaming && handoffActive && !notesLayout && liveRows.length > 0 && (
+                        <HandoffRows rows={liveRows} />
                     )}
 
-                    {/* Working notes → divider → answer. The two-model exchange
-                        record sits above the notes so the order reads exchange,
-                        notes, answer. */}
-                    {notesLayout && !isStreaming && !bodyCollapsed && (
-                        <ExchangePanel steps={exchangeSteps(toolCalls, review)} />
-                    )}
+                    {/* Working notes → divider → answer. On a two-model turn the
+                        exchange lives INSIDE the notes card (user: "combine the
+                        two models working and the working notes into one"). */}
                     {notesLayout && !bodyCollapsed && (
                         <WorkingNotes
                             segments={split.segments}
@@ -1006,6 +1058,7 @@ export default React.memo(function ChatMessage({
                             open={notesOpen}
                             onToggle={toggleNotes}
                             isStreaming={isStreaming}
+                            pair={notesPair}
                         />
                     )}
                     {/* The ANSWER label is held until the turn ends: while it
