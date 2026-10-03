@@ -534,6 +534,29 @@ function isPrivateUrl(urlString) {
 }
 
 // Validate model name to prevent path traversal (e.g. ../../etc/passwd)
+// Docker's embedded DNS splits a container name on dots, and a DNS label may
+// hold at most 63 characters. A model folder like
+// "Qwen3.8-27B-TURBO-…-MTP-GGUF" therefore gives a container name that NEVER
+// resolves (FORMERR), so the webapp could not reach a perfectly healthy
+// instance and it sat in "loading" forever. Such containers get a short,
+// deterministic network alias, and every in-network URL goes through
+// instanceHost().
+function instanceNetAlias(containerName) {
+    if (!containerName) return containerName;
+    const labelsOk = containerName.split('.').every(l => l.length > 0 && l.length <= 63);
+    if (labelsOk && containerName.length <= 253) return containerName;
+    return 'ms-inst-' + crypto.createHash('sha1').update(containerName).digest('hex').slice(0, 12);
+}
+function instanceNetworkingConfig(containerName) {
+    const alias = instanceNetAlias(containerName);
+    if (alias === containerName) return undefined;
+    return { EndpointsConfig: { modelserver_default: { Aliases: [alias] } } };
+}
+function instanceHost(inst) {
+    if (!inst) return 'host.docker.internal';
+    return inst.netHost || (inst.containerName ? instanceNetAlias(inst.containerName) : null) || 'host.docker.internal';
+}
+
 function isValidModelName(modelName) {
     if (!modelName || typeof modelName !== 'string') return false;
     // Reject path traversal sequences and absolute paths
@@ -2582,10 +2605,19 @@ async function syncModelInstances() {
 
             const status = inspect.State.Running ? 'running' : 'stopped';
             const containerName = containerInfo.Names[0].substring(1); // Remove leading /
+            // A container whose name Docker DNS cannot serve (see
+            // instanceNetAlias) is reached by its alias, or — created before
+            // aliases existed — by its IP on the shared network.
+            let netHost = instanceNetAlias(containerName);
+            if (netHost !== containerName) {
+                const net = inspect.NetworkSettings?.Networks?.modelserver_default;
+                if (!(net?.Aliases || []).includes(netHost) && net?.IPAddress) netHost = net.IPAddress;
+            }
 
             modelInstances.set(modelName, {
                 containerId: containerInfo.Id,
                 containerName,
+                netHost,
                 port,
                 internalPort: port,
                 status,
@@ -5521,6 +5553,7 @@ async function createSglangInstance(modelName, modelPath, config) {
             Image: 'modelserver-sglang:latest',
             name: containerName,
             Env: envVars,
+            NetworkingConfig: instanceNetworkingConfig(containerName),
             HostConfig: {
                 Runtime: 'nvidia',
                 Binds: [getModelsVolumeBind()],
@@ -5543,6 +5576,7 @@ async function createSglangInstance(modelName, modelPath, config) {
         modelInstances.set(modelName, {
             containerId: container.id,
             containerName,
+            netHost: instanceNetAlias(containerName),
             port,
             internalPort,
             status: 'starting',
@@ -5633,6 +5667,7 @@ async function createSglangHfInstance(repoId, format, config) {
             Image: 'modelserver-sglang:latest',
             name: containerName,
             Env: envVars,
+            NetworkingConfig: instanceNetworkingConfig(containerName),
             HostConfig: {
                 Runtime: 'nvidia',
                 Binds: [
@@ -5655,6 +5690,7 @@ async function createSglangHfInstance(repoId, format, config) {
         modelInstances.set(repoId, {
             containerId: container.id,
             containerName,
+            netHost: instanceNetAlias(containerName),
             port,
             internalPort,
             status: 'starting',
@@ -5778,6 +5814,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             Image: 'modelserver-llamacpp:latest',
             name: containerName,
             Env: envVars,
+            NetworkingConfig: instanceNetworkingConfig(containerName),
             HostConfig: {
                 Runtime: 'nvidia',
                 Binds: [getModelsVolumeBind()],
@@ -5799,6 +5836,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
         modelInstances.set(modelName, {
             containerId: container.id,
             containerName,
+            netHost: instanceNetAlias(containerName),
             port,
             internalPort,
             status: 'starting',
@@ -6031,7 +6069,7 @@ async function monitorContainerHealth(container, modelName, port) {
 
             // Container is running, check if sglang server is responding
             // Use /v1/models endpoint for sglang readiness check
-            const targetHost = instance.containerName || `host.docker.internal`;
+            const targetHost = instanceHost(instance);
             const targetPort = instance.internalPort || port;
             try {
                 const response = await axios.get(`http://${targetHost}:${targetPort}/v1/models`, { timeout: 5000 });
@@ -6638,7 +6676,7 @@ app.post('/api/sglang/instances/:modelName/slots/clear', requireAuth, async (req
 
     try {
         // Use container name for Docker network communication
-        const targetHost = instance.containerName || `host.docker.internal`;
+        const targetHost = instanceHost(instance);
         const targetPort = instance.internalPort || instance.port;
 
         // sglang manages sequences internally, we just verify the server is responsive
@@ -18232,7 +18270,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         }
 
         // Use container name for Docker network communication
-        const targetHost = targetInstance.containerName || `host.docker.internal`;
+        const targetHost = instanceHost(targetInstance);
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Get context size configuration
@@ -18710,7 +18748,7 @@ async function probeSglangCapacity(name) {
     if (sglangCapacityInFlight.has(name)) return null;
     sglangCapacityInFlight.add(name);
     try {
-        const host = inst.containerName || 'host.docker.internal';
+        const host = instanceHost(inst);
         const port = inst.internalPort || inst.port;
         const { data } = await axios.get(`http://${host}:${port}/get_server_info`, { timeout: 15000 });
         const pool = parseInt(data && data.max_total_num_tokens, 10);
@@ -18796,7 +18834,7 @@ async function probeModelSpeed(name) {
         // Model containers are on the shared Docker network — reach them by
         // container name, exactly like the health monitor does. 127.0.0.1 is
         // the HOST's loopback and refuses from inside the webapp container.
-        const host = inst.containerName || 'host.docker.internal';
+        const host = instanceHost(inst);
         const port = inst.internalPort || inst.port;
         const url = `http://${host}:${port}/v1/chat/completions`;
         const ask = (maxTokens) => axios.post(url, {
@@ -19026,7 +19064,7 @@ function templateOptsIntoPreserveThinking(inst) {
     const key = inst.containerId || inst.containerName;
     if (preserveThinkingByInstance.has(key)) return preserveThinkingByInstance.get(key) === true;
     preserveThinkingByInstance.set(key, 'pending');
-    const host = inst.containerName || 'host.docker.internal';
+    const host = instanceHost(inst);
     axios.get(`http://${host}:${inst.internalPort || inst.port}/props`, { timeout: 5000 })
         .then((r) => {
             const t = String((r.data && r.data.chat_template) || '');
@@ -19190,7 +19228,7 @@ const chatStreamHandlerInner = async (req, res) => {
         }
 
         // Use container name for Docker network communication
-        const targetHost = targetInstance.containerName || `host.docker.internal`;
+        const targetHost = instanceHost(targetInstance);
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Register the streaming job IMMEDIATELY so refresh / conversation
@@ -28151,7 +28189,7 @@ async function requestModelCompletion({ messages, model, temperature, maxTokens,
     }
 
     const targetModel = model || targetInstance.modelName || 'default';
-    const targetHost = targetInstance.containerName || 'host.docker.internal';
+    const targetHost = instanceHost(targetInstance);
     const targetPort = targetInstance.internalPort || targetInstance.port;
 
     const contextSize = (targetInstance.config && (targetInstance.config.contextSize || targetInstance.config.maxModelLen)) || 4096;
@@ -28262,7 +28300,7 @@ app.post('/api/complete', requireAuth, async (req, res) => {
         }
 
         // Use container name for Docker network communication
-        const targetHost = targetInstance.containerName || `host.docker.internal`;
+        const targetHost = instanceHost(targetInstance);
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Load system prompt for this model
@@ -29632,7 +29670,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         }
         // Use container name to reach sglang via Docker network
         // Fall back to host.docker.internal for backwards compatibility
-        let targetHost = firstInstance.containerName || `host.docker.internal`;
+        let targetHost = instanceHost(firstInstance);
         let targetPort = firstInstance.internalPort || firstInstance.port;
         let targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
 
@@ -29688,7 +29726,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     if (primaryName) ordered = [...instances].sort((a, b) => (piInstanceName(b) === primaryName) - (piInstanceName(a) === primaryName));
                 } catch (_) { /* keep the Map order */ }
                 const settled = await Promise.allSettled(ordered.map(async (inst) => {
-                    const host = inst.containerName || 'host.docker.internal';
+                    const host = instanceHost(inst);
                     const port = inst.internalPort || inst.port;
                     const upstream = await axios.get(`http://${host}:${port}${req.originalUrl}`, { timeout: 8000 });
                     // Effective PER-REQUEST window: llama.cpp splits --ctx-size
@@ -29797,7 +29835,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     if (leadInst && leadInst.status === 'running' && leadInst !== firstInstance) {
                         console.log(`[Pi/Pair] routing ${authName}'s request from ${piInstanceName(firstInstance)} to ${pairPlan.runOn}`);
                         firstInstance = leadInst;
-                        targetHost = firstInstance.containerName || 'host.docker.internal';
+                        targetHost = instanceHost(firstInstance);
                         targetPort = firstInstance.internalPort || firstInstance.port;
                         targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
                         if (firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId) req.body.model = firstInstance.config.hfRepoId;
