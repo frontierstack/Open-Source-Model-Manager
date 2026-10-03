@@ -2727,6 +2727,36 @@ async function loadSystemSettings() {
 // Per-account chat prefs and a request body override these per field.
 let systemModelRoles = { primary: '', secondary: '', mode: 'auto', firstPass: true, legwork: true, review: 'off', checkWorkers: false };
 
+// A role that names a model which is neither running nor on disk (deleted
+// from the Models page, its folder removed by hand, an HF cache entry wiped)
+// would otherwise stay in system-settings.json forever and keep showing in
+// the role dropdowns. Clear it.
+async function roleModelExists(name) {
+    if (!name) return true;
+    if (modelInstances.has(name)) return true;
+    const candidates = [];
+    if (isValidModelName(name)) candidates.push(path.join('/models', name));
+    if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(name)) candidates.push(path.join('/hf-cache/hub', 'models--' + name.replace('/', '--')));
+    for (const c of candidates) {
+        try { if ((await fs.stat(c)).isDirectory()) return true; } catch (_) {}
+    }
+    return false;
+}
+async function pruneMissingRoleModels(reason) {
+    const cleared = [];
+    for (const key of ['primary', 'secondary']) {
+        const name = systemModelRoles[key];
+        if (name && !(await roleModelExists(name))) cleared.push([key, name]);
+    }
+    if (!cleared.length) return false;
+    const next = { ...systemModelRoles };
+    for (const [key] of cleared) next[key] = '';
+    systemModelRoles = modelRolesSvc.sanitizeSystemRoles(next);
+    try { await saveSystemSettings(); } catch (e) { console.warn('[model-roles] save after prune failed:', e.message); }
+    console.log(`[model-roles] cleared ${cleared.map(([k, n]) => `${k}=${n}`).join(', ')} — model no longer downloaded or running (${reason})`);
+    return true;
+}
+
 async function saveSystemSettings() {
     const settings = { allowInternalNetwork: allowInternalNetworkFlag, uploadMaxMb: uploadMaxMbSetting, modelRoles: systemModelRoles };
     await fs.writeFile(SYSTEM_SETTINGS_FILE, JSON.stringify(settings, null, 2));
@@ -5353,6 +5383,7 @@ app.delete('/api/models/hf-cache/:dirName', requireAuth, async (req, res) => {
     try {
         await fs.rm(resolved, { recursive: true, force: true });
         broadcast({ type: 'log', message: `[hf-cache] deleted ${repoId}` });
+        await pruneMissingRoleModels(`deleted ${repoId}`).catch(() => {});
         res.json({ ok: true, repoId });
     } catch (error) {
         console.error('hf-cache delete error:', error.message);
@@ -28382,6 +28413,7 @@ app.delete('/api/models/:modelName', requireAuth, async (req, res) => {
         broadcast({ type: 'log', message: `Deleting model directory ${modelPath}...` });
         await fs.rm(modelPath, { recursive: true, force: true });
         broadcast({ type: 'log', message: `Model directory deleted.` });
+        await pruneMissingRoleModels(`deleted ${modelName}`).catch(() => {});
 
         res.json({ message: `Model ${modelName} deleted successfully` });
     } catch (error) {
@@ -28503,7 +28535,8 @@ app.get('/api/system-settings', requireAdmin, async (req, res) => {
 
 // Model roles: readable by any signed-in user (the chat shows the server
 // default), writable by admins from the Models page.
-app.get('/api/model-roles', requireAuth, (req, res) => {
+app.get('/api/model-roles', requireAuth, async (req, res) => {
+    await pruneMissingRoleModels('roles read').catch(() => {});
     const running = [];
     for (const [name, inst] of modelInstances.entries()) {
         if (inst && inst.status && inst.status !== 'running') continue;
@@ -35143,6 +35176,7 @@ server.listen(PORT, async () => {
     try {
         const s = await loadSystemSettings();
         if (s.allowInternalNetwork) console.warn('[Startup] allowInternalNetwork is ON — internal/private network access is permitted (metadata IP still blocked).');
+        await pruneMissingRoleModels('startup').catch(() => {});
     } catch (e) {
         console.warn('[Startup] loadSystemSettings failed:', e.message);
     }
