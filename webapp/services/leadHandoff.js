@@ -334,8 +334,22 @@ function needsLookup(text) {
     // for the lead — a background job would only add its start-up time.
     const words = ask.split(/\s+/).filter(Boolean).length;
     if (words <= 10 && LOOKUP_RE.test(ask) && FRESH_RE.test(ask) && !SUMMARY_OF_MANY.test(ask) && !RESEARCH_RE.test(ask) && !LOOKUP_NEED_RE.test(ask) && !FORECAST_RE.test(ask)) return false;
+    // A comparison on its own is not a lookup: "Compare TCP and UDP" or
+    // "Python vs Go vs Rust on speed and safety" is the lead's own knowledge,
+    // and the planner sent each one out as three background web jobs (24 s
+    // and 115 s instead of a direct answer). It needs a lookup only when it is
+    // about something CURRENT — FRESH_RE, a model or version number, prices,
+    // reviews, benchmarks — or the rest of the ask needs one.
+    if (COMPARE_RE.test(ask) && !FRESH_RE.test(ask) && !/\d/.test(ask) && !MARKET_RE.test(ask)) {
+        const rest = ask.replace(COMPARE_RE_G, ' ');
+        return RESEARCH_RE.test(rest) || LOOKUP_NEED_RE.test(rest) || FORECAST_RE.test(rest);
+    }
     return FRESH_RE.test(ask) || RESEARCH_RE.test(ask) || LOOKUP_NEED_RE.test(ask) || FORECAST_RE.test(ask);
 }
+const COMPARE_SRC = '\\b(?:compare[sd]?|comparing|comparison|vs\\.?|versus|differences? between|pros and cons|tradeoffs?|trade-offs?)(?![\\w-])';
+const COMPARE_RE = new RegExp(COMPARE_SRC, 'i');
+const COMPARE_RE_G = new RegExp(COMPARE_SRC, 'gi');
+const MARKET_RE = /\b(prices?|pricing|cost|costs|plans?|subscriptions?|benchmarks?|reviews?|ratings?|specs?|market share|sales|revenue|salar(?:y|ies)|deals?|cheapest|best|top|alternatives?|recommend\w*)\b/i;
 
 // Does the answer mainly depend on facts that have to be LOOKED UP (research,
 // current facts, comparing sources) rather than on something the lead BUILDS?
@@ -1130,18 +1144,16 @@ function buildArtifactLegworkTask({ userText, leadModel, inventory = [], leadSte
 }
 
 function buildLeadPrelude({ assistantModel, maxParallel, artifact = false, userAsked = false, researchDemanded = false }) {
-    const who = assistantModel ? `the faster primary model (${assistantModel})` : 'a faster primary model';
+    const who = assistantModel ? `the faster model (${assistantModel})` : 'the faster model';
     return [
-        'YOU ARE THE LEAD ON THIS TASK.',
-        ...(researchDemanded ? ['THE USER EXPLICITLY ASKED YOU TO RESEARCH THIS ON THE WEB: web research is a REQUIREMENT of this turn, not optional. Before you conclude, run web searches (several, with different queries) and READ the most relevant results — hand the searching to your assistant as background jobs so it runs while you work. Do not fall back to guessing or brute force after a single search; if one approach fails, search for another. Only skip a search the user forbade.'] : []),
-        `You are the stronger of the two models loaded, and this task was handed up to you. ${who.charAt(0).toUpperCase()}${who.slice(1)} is standing by as your assistant. You write the final answer — the user sees your work, not its, so do the designing, the writing and the code yourself.`,
-        `\`ask_assistant\` hands it jobs ({name, task} each) and returns IMMEDIATELY — the assistant works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once)` : ''} while you carry on, and each result is delivered into your context the moment it lands. Fan-out on this turn goes through ask_assistant.`,
-        'HAND OFF work that needs SEVERAL steps and is independent of what you are writing: a web search plus reading the pages that answer it, comparing several sources, checking current versions, prices, dates or docs — or ANALYSIS of a part of the files the user supplied that is already on disk (one nested archive or installer, a group of binaries, the scripts in one folder: unpack, extract strings, grep for URLs/IPs/base64, decode, dump tables). File analysis needs no web search.',
-        ...(artifact ? ['THIS TURN ANALYSES SUPPLIED FILES: once they are extracted or listed, split the work — keep the overall picture and the write-up for yourself and hand independent parts (each named by its /workspace path) to the assistant in ONE ask_assistant call, then carry on with your own part.'] : []),
-        ...(userAsked ? ['THE USER\'S INSTRUCTIONS ASK YOU TO USE YOUR ASSISTANT: whenever the work splits into independent parts, hand them over with ask_assistant rather than doing every step yourself.'] : []),
-        'DO NOT hand off: the actual answer or code (that is your job); anything that depends on output you have not produced yet (it cannot read a file you have not written); or a single read, listing or command — reading one known URL or file is one call for you and a much slower background job for the assistant.',
-        'Dispatch what you will need EARLY — at the start, alongside your first real step — so it runs while you write. `await_assistant` blocks and is only for when you genuinely cannot continue.',
-        'Delegation continues only while it is needed: when a delivered result leaves a gap the answer cannot do without (something the user asked for), hand it over and carry on. Do not dispatch more jobs just to add depth or detail the user did not ask for — answer from what you have. Never invent work to keep the assistant busy.',
+        `TWO MODELS — YOU LEAD. You are the stronger model and you write the final answer; ${who} is your assistant and runs jobs in the background${maxParallel > 1 ? ` (${maxParallel} at once, more queue)` : ''}. The user sees only your answer.`,
+        ...(researchDemanded ? ['THE USER ASKED FOR WEB RESEARCH: searching and reading sources is required on this turn — hand the searches to your assistant as jobs so they run while you work, and do not conclude after a single search. Skip only a search the user forbade.'] : []),
+        ...(userAsked ? ['THE USER\'S INSTRUCTIONS ASK YOU TO USE YOUR ASSISTANT: hand every independent lookup or piece of legwork to it rather than doing those steps yourself.'] : []),
+        `HAND OFF with \`ask_assistant\` ({name, task} each — it returns at once and each report is delivered into your context when it lands): work that takes several steps and does not depend on what you are writing — a search plus reading the pages that answer it, comparing sources, checking current versions, prices, dates or docs, or analysing one part of files already in /workspace (an archive, a group of binaries, a folder of scripts; no web search needed for that).`,
+        ...(artifact ? ['THIS TURN ANALYSES SUPPLIED FILES: once they are extracted or listed, keep the overall picture and the write-up for yourself and hand the independent parts (each named by its /workspace path) to the assistant in ONE ask_assistant call, then carry on with your own part.'] : []),
+        'DO NOT hand off: the answer, the design or the code (that is your job); anything that needs output you have not written yet (it cannot read a file you have not created); or a single step — one page, one file, one command is faster done yourself than as a background job.',
+        'GOOD JOBS: one subject each, written as a complete brief — what to find or do, where to look (URLs, paths), and what to report (the facts, with their URLs). The assistant sees only the brief, never this conversation. Dispatch everything you will need at the START in one ask_assistant call, then carry on with your own part. Do not search for what a running job is already finding, and call `await_assistant` only when you have nothing left to write without its result.',
+        'WHEN A REPORT LANDS, use it as it stands — do not re-fetch or re-check what it already covers unless two reports conflict or it says it could not find something. Delegation continues only while it is needed: if a report leaves a gap the answer cannot do without, hand that gap over and carry on; do not dispatch jobs just to add depth or detail nobody asked for, and never invent work to keep the assistant busy.',
     ].join(' ');
 }
 
@@ -1151,14 +1163,12 @@ function buildLeadPrelude({ assistantModel, maxParallel, artifact = false, userA
 function buildPartnerPrelude({ partnerModel, partnerIsStronger, maxParallel }) {
     const who = partnerModel || 'the other model';
     return [
+        `TWO MODELS — YOU ANSWER THIS TURN; the ${partnerIsStronger ? 'STRONGER' : 'FASTER'} model of the pair (${who}) is idle as your assistant.`,
+        `\`ask_assistant\` hands it a job ({name, task}) and returns at once — it works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once, more queue)` : ''} and each report is delivered into your context when it lands.`,
         partnerIsStronger
-            ? `You are answering this turn yourself; the STRONGER model of the pair (${who}) is loaded and idle as your assistant.`
-            : `You are answering this turn yourself; the FASTER model of the pair (${who}) is loaded and idle as your assistant.`,
-        `\`ask_assistant\` hands it a job and returns IMMEDIATELY — it works in the background${maxParallel > 1 ? ` (up to ${maxParallel} at once, more queue)` : ''} while you carry on, and each result is delivered into your context the moment it lands.`,
-        partnerIsStronger
-            ? 'HAND OFF the parts that need more capability than you have — a hard design decision, tricky reasoning or a proof to check, a difficult piece of code or analysis, a review of a draft section — plus any independent legwork (a lookup, a file to read, a script to run). Give it the context it needs in the brief; it cannot see your conversation.'
+            ? 'HAND OFF what needs more capability than you have — a hard design decision, tricky reasoning or a proof to check, a difficult piece of code or analysis, a review of a draft section — plus independent legwork (a lookup, a file to read, a script to run).'
             : 'HAND OFF independent legwork — a lookup, a file to read or summarise, a script to run and report on, a claim to check — and keep the thinking, design and writing for yourself.',
-        'DO NOT hand off the whole task, and never something that depends on output you have not written yet. Delegation is CONTINUOUS: hand over more whenever your work reveals it, and when nothing more is needed simply carry on — never invent work for it.',
+        'Write each job as a complete brief (what to do, where to look, what to report): it cannot see this conversation. Never hand off the whole task or anything that depends on output you have not written yet. Delegation is CONTINUOUS: hand over more whenever your work reveals it; when nothing more is needed simply carry on — never invent work for it.',
     ].join(' ');
 }
 

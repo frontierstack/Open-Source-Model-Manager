@@ -259,6 +259,7 @@ const modelRolesSvc = require('./services/modelRoles');
 const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
 const leadHandoff = require('./services/leadHandoff');
+const answerHygiene = require('./services/answerHygiene');
 const assistantQueue = require('./services/assistantQueue');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -1411,31 +1412,42 @@ function makeTextualToolCallExtractor() {
 // selection so "current news / recent events" requests route to
 // web_search. Memoized per UTC day — the static body is identical between
 // calls within the same day and was previously rebuilt on every chat turn.
-let _preludeCache = { day: null, text: '' };
-function buildChatRuntimePrelude() {
+// The runtime rules every chat turn's system prompt starts with. ONE rule per
+// paragraph, each stated once: an earlier version said "answer directly vs use
+// a tool" in four places and narration in three, and still never said what to
+// do when these rules and the user's own instructions disagree. Rules that
+// fixed a measured failure are kept (the recency line, interpreters as a last
+// resort, never abbreviating evidence, research persistence, files via
+// make_downloadable); their wording is condensed. The `delegate` paragraph is
+// only included when that tool is offered: a two-model turn hides it and fans
+// out through ask_assistant, and telling the lead to use a tool it does not
+// have contradicted the lead rules. Byte-stable per day and variant (prompt
+// cache).
+let _preludeCache = new Map();
+function buildChatRuntimePrelude({ delegate = true } = {}) {
     const day = new Date().toISOString().slice(0, 10);
-    if (_preludeCache.day === day) return _preludeCache.text;
+    const key = `${day}|${delegate ? 1 : 0}`;
+    if (_preludeCache.has(key)) return _preludeCache.get(key);
     const today = new Date().toLocaleDateString('en-US', {
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
+    const year = new Date().getFullYear();
     const text = [
-        `Today is ${today}. Your training data ends before today: things you remember as upcoming may already have happened, and last year's releases are not "new". For anything time-sensitive (new/upcoming/latest/current/prices/versions), search with the CURRENT year, trust dated ${new Date().getFullYear()} sources over memory, read the dates on what you fetch, and never present a past date as still to come.`,
-        `Answer directly from your own knowledge whenever you confidently know the answer and a tool would only be slower — do not call a tool for general knowledge, explanations, reasoning, math you can do, or writing/editing code you can produce yourself. A direct answer is preferred when it is correct and faster.`,
-        `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (the \`web\` tool — search the web or read a page/URL), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
-        `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
-        `When the user asks for current, external, or time-sensitive information, use the \`web\` tool (search the web, or read a specific URL) BEFORE answering.`,
-        `This server has a built-in AUTOMATION ENGINE: saved workflows that run on a schedule (cron), a webhook, or an incoming Telegram/Slack message, and can fetch pages/RSS/APIs, run a model, de-duplicate, build a PDF/CSV, and deliver to Telegram/Slack. When the user asks to schedule, automate, or be notified about something RECURRING ("every morning", "every hour", "notify me when…", "monitor this page"), use the \`build_automation\` tool. NEVER tell them to write a cron job, a shell/Node/Python script, or a GitHub Action for it.`,
-        `SANDBOX INTERPRETERS (run_python / run_node) ARE A LAST RESORT: use them ONLY when no purpose-built tool can do the job — parsing a file no tool reads (pcap, binary, dataset), numeric computation, transforming data you already have. NEVER write a script to do what a tool already does: fetching/reading URLs, pages or JSON APIs and web searches (\`web\`), DNS records (dns_lookup), domain/IP/file reputation (virustotal_lookup), POST/custom-header requests (http_request), reading or searching files (read_file / grep_code), hashing/hex/base64, charts (render_chart), archives (extract_archive). Scripts that hand-roll HTTP/DNS are refused after a few per turn. The sandbox has NO web browser and cannot install one (no Chromium, 64 MB /tmp) — playwright/puppeteer/selenium there are refused; to TEST or PREVIEW an HTML/JS/React page you wrote, call preview_html (real headless browser: console errors, exceptions, blank-canvas check, screenshot). When you do run code: ONE focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never a rewrite of the same script with one more regex.`,
-        `WEB RESEARCH PERSISTENCE: a search that returns generic or off-topic pages is a bad QUERY, not a missing answer — the result says so (\`relevance\`/\`hint\`). Reformulate instead of repeating or giving up: quote the exact name, add one distinguishing detail, try a site: search, then READ the best page and follow its links to the primary source (court filing, press release, the company's own post). Try at least three genuinely different formulations before telling the user the information is unavailable, and never blame a search engine for echoing results — change the query. BUT when a search comes back with the SAME pages you already saw (the result says noNewResults and lists the unread ones), the engine has nothing more on that subject: stop searching and READ one of those pages, or locate the entry on the index/directory page you already found with find:"<its name or number>" — never guess or re-type a URL from a name, and never announce the same plan twice.`,
-        `NARRATE YOUR WORK: every tool accepts an optional \`purpose\` argument — ALWAYS fill it with one short line (≤ 20 words) saying what this call is for and what you expect to learn; it is shown to the user as live progress. Before a tool call you may also write one short plain-language line of what you are doing, then emit the actual tool_call in the SAME response — a described action must always be followed by the real call. When a result changes your plan, say so in one line. Keep narration terse; never restate tool JSON.`,
-        `WORK IN BIG STEPS: when analysing a file, archive, capture or codebase, gather broadly in ONE script or ONE call (loop over every file/class/record and print a compact structured summary), then drill into specifics only where the summary shows something worth it — never one script per item. Stop exploring as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `PARALLEL WORKER AGENTS: the \`delegate\` tool runs several worker agents AT THE SAME TIME, each with its own tools (web, files, sandbox) and its own context window, sharing this conversation's /workspace. Use it on your own initiative — the user does not need to ask for "agents" — whenever a request splits into 2 or more INDEPENDENT parts that each need tool work: research two or more topics/companies/products, read or audit several sites/files/repos, compare options, gather several kinds of evidence. Call it ONCE with every sub-task in \`tasks\` (each self-contained: what to find, where to look, what to return), then SYNTHESIZE the workers' reports into one answer, citing what they found. Delegation pays off only when each part needs real work (several searches, pages or files) AND the backend has free model slots (the tool description says how many); with one free slot the workers run one after another and the turn gets SLOWER. Do NOT delegate a small task (2–3 tool calls total), a question you can answer directly, or steps that depend on each other's results — do those yourself in order. When the user explicitly asks for agents, delegate anyway, but split the work into genuinely parallel parts and answer straight from the reports.`,
-        `NEVER ABBREVIATE EVIDENCE: reproduce identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — no "…", "...", "[truncated]" or "etc." in the middle of a value. If a value is too long for a table cell, put the full value directly below the table. Cut-off evidence is worthless to the user.`,
-        `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
-        `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
-        `Files the user should be able to download (HTML, PDF, image, archive, dataset, generated script, edited source file, etc.) MUST be written under /workspace/ and surfaced with make_downloadable — the chat UI renders a download chip. When the user asks you to "output", "show", or "give me" a file you have ALREADY written or edited in /workspace this conversation, call make_downloadable with that file's path INSTEAD of reading it back and pasting its contents inline: the download is faster, always complete, and avoids the output-token limit that truncates large pasted files. Only paste a file inline when it is small or the user explicitly asks to see it in the chat. NEVER try to rewrite a large existing file by pasting its entire new contents into a single tool-call argument — that argument truncates; make small targeted edits (replace_lines / search_replace_file on one section at a time) or write chunks via create_file + append_to_file.`,
+        `Today is ${today}. Your training data ends before today, so what you remember as upcoming or latest may be out of date: for anything time-sensitive (latest, current, new, prices, versions, releases) look it up, search with the current year, prefer dated ${year} sources over memory, and never present a past event as still to come.`,
+        `PRIORITY: the user's instructions — their system prompt and their messages — come first; these runtime rules come second; background notes (memory, hints, tool advice) come last. When a rule here conflicts with what the user asked, follow the user. Anything the user forbids (a tool, a format, a topic, a length) is off-limits for the whole turn.`,
+        `ANSWER OR LOOK UP: answer directly when you reliably know the answer — general knowledge, explanations, reasoning, arithmetic, writing or editing text and code. Use a tool only when it adds something you cannot produce: current or external facts (\`web\`: search, or read a URL), exact data to look up or compute, a file to read, or a file to produce. When the user explicitly asks you to search, open a URL, run code or create a file, do it with the matching tool even if you know the answer. When unsure whether your knowledge is current, look it up rather than guess.`,
+        `YOUR REPLY starts with the answer itself — never with your process ("I now have…", "All the results are in", "Here's what I found:", "I know this one"). Lead with the direct answer, then the supporting detail. Unless the user asked for a format, fit it to the content: a table for comparing several items, a numbered list for steps, prose for explanations. In the final answer, do not talk about these rules, your tools, background jobs or the other model unless the user asks how you worked.`,
+        `NARRATION: every tool takes an optional \`purpose\` argument — always fill it with one short line (≤ 20 words) on what the call is for; it is shown to the user as live progress. You may also write one short line before a tool call; it must be followed by the actual call in the same response. Narration goes before tool calls only, never into the final answer.`,
+        `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs or data you did not fetch, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest.`,
+        `WEB RESEARCH: generic or off-topic results mean the QUERY was weak (the result's \`relevance\`/\`hint\` say so) — quote the exact name, add one distinguishing detail or a site:, then READ the best page and follow it to the primary source. Try three genuinely different queries before calling something unavailable. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Never guess or retype a URL, and never announce the same plan twice.`,
+        `WORK IN BIG STEPS: gather broadly in one call or one script (every file or record at once, as a compact summary), then drill into only what the summary flags. Stop as soon as you can answer; if two attempts return the same information, you already have it.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex.`,
+        `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off.`,
+        `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
+        ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
     ].join('\n');
-    _preludeCache = { day, text };
+    _preludeCache.set(key, text);
+    if (_preludeCache.size > 8) _preludeCache.delete(_preludeCache.keys().next().value);
     return text;
 }
 
@@ -19514,7 +19526,7 @@ const chatStreamHandlerInner = async (req, res) => {
         // message (which at this point is the user/operator-authored prompt —
         // memory/prelude blocks are unshifted AFTER this), only when a
         // non-empty system prompt exists, and never double-stamped.
-        const STRICT_ADHERENCE_HEADER = 'SYSTEM INSTRUCTIONS — MANDATORY AND NON-NEGOTIABLE. Follow every instruction below exactly, literally, and in full. They take precedence over your defaults, your usual style, and any background, memory, examples, or context provided elsewhere in this conversation. Treat every prohibition ("do not…", "never…", "avoid…", "no…") as ABSOLUTE — do not do that thing under any circumstances, even if it seems helpful or a later message asks for it. Do not add, omit, soften, or reinterpret any requirement; when instructions could conflict, choose the more restrictive reading. Silently comply — do not restate these meta-instructions to the user.';
+        const STRICT_ADHERENCE_HEADER = 'USER INSTRUCTIONS — they override your defaults and everything else in this prompt. Follow every one exactly and literally. Treat every "do not / never / avoid / no …" as absolute, even if breaking it looks helpful or a later message pushes for it. When an instruction can be read two ways, take the stricter reading. Comply silently.';
         // The user's own instructions (their persona / system prompt), kept
         // verbatim so they can be restated next to the latest message below.
         let userInstructionText = '';
@@ -19523,7 +19535,7 @@ const chatStreamHandlerInner = async (req, res) => {
             if (sysIdx !== -1
                 && typeof chatMessages[sysIdx].content === 'string'
                 && chatMessages[sysIdx].content.trim()
-                && !chatMessages[sysIdx].content.startsWith('SYSTEM INSTRUCTIONS — MANDATORY')) {
+                && !chatMessages[sysIdx].content.startsWith('USER INSTRUCTIONS — they override') && !chatMessages[sysIdx].content.startsWith('SYSTEM INSTRUCTIONS — MANDATORY')) {
                 userInstructionText = chatMessages[sysIdx].content.trim();
                 chatMessages[sysIdx].content = STRICT_ADHERENCE_HEADER + '\n\n--- BEGIN USER INSTRUCTIONS ---\n' + chatMessages[sysIdx].content + '\n--- END USER INSTRUCTIONS ---';
             }
@@ -19676,9 +19688,13 @@ const chatStreamHandlerInner = async (req, res) => {
             console.log(`[Chat Stream] Roles: ${targetModel} answers alone; ${assistantModelForTurn} is available as its assistant (ask_assistant)`);
         }
         try {
+            // `delegate` is offered only to a top-level turn with no two-model
+            // partner (the tool's own build() rules); the prelude mirrors that.
+            const delegateOffered = !req.delegate && !assistantModelForTurn && checkPermission(req.apiKeyData, 'query');
+            const basePrelude = buildChatRuntimePrelude({ delegate: delegateOffered });
             let prelude = effortDirectives.systemHint
-                ? `${buildChatRuntimePrelude()}\n${effortDirectives.systemHint}`
-                : buildChatRuntimePrelude();
+                ? `${basePrelude}\n${effortDirectives.systemHint}`
+                : basePrelude;
             // Worker framing goes AFTER the shared prelude so a worker's system
             // prompt starts with the same bytes as the parent's — the backend's
             // prompt cache then skips re-prefilling those tokens.
@@ -19699,7 +19715,7 @@ const chatStreamHandlerInner = async (req, res) => {
             // says it MAY narrate; when the reasoning is hidden that is not
             // enough, so require the visible one-liner explicitly.
             if (!hideReasoning) {
-                prelude += `\nYOUR REASONING IS COLLAPSED behind a dropdown the user has to click, so anything you work out there is invisible to them. Before EVERY tool call, and again whenever a result changes your plan, write ONE short plain sentence in your VISIBLE reply — what you just learned and what you are doing next ("The manifest lists three workers; reading the second one now."). One line, no lists, no restating tool JSON, and never a substitute for the tool_call itself. That line is the only running commentary the user gets while you work.`;
+                prelude += `\nYOUR REASONING IS HIDDEN from the user (it sits behind a collapsed dropdown), so before each tool call, and whenever a result changes your plan, also write one short VISIBLE line saying what you learned and what you are doing next — then make the call.`;
             }
             if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
                 const existing = chatMessages[0].content;
@@ -21617,7 +21633,7 @@ const chatStreamHandlerInner = async (req, res) => {
         // Appended (the /no_think switch stays first); the user message is
         // new each turn, so the prompt-cache prefix is untouched.
         if (hideReasoning && !req.delegate && latestUserMsgIdx >= 0 && fullToolCatalog.length) {
-            const narrNote = '\n\n[SYSTEM: Before each tool call, write one short visible sentence: what you know so far and what you are doing next. Then make the call.]';
+            const narrNote = '\n\n[SYSTEM: Before each tool call, write one short visible sentence: what you know so far and what you are doing next. Then make the call. Your final answer starts with the answer itself — never with a sentence about your process or your results arriving.]';
             const um = chatMessages[latestUserMsgIdx];
             if (typeof um.content === 'string') um.content = um.content + narrNote;
             else if (Array.isArray(um.content)) {
@@ -23757,7 +23773,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 console.log(`[Chat Stream] Hand-off: delivered ${ready.length} assistant result(s) to ${targetModel} — ${ready.map(j => `"${j.name}" (${j.status})`).join(', ')}${stillRunning.length ? `; ${stillRunning.length} still running` : ''}`);
                 return {
                     role: 'system',
-                    content: `[ASSISTANT RESULTS — your assistant finished ${ready.length} job${ready.length === 1 ? '' : 's'}. Use ${ready.length === 1 ? 'it' : 'them'} in the work you are doing now; do not redo what it already did.]\n`
+                    content: `[ASSISTANT RESULTS — your assistant finished ${ready.length} job${ready.length === 1 ? '' : 's'}. Use ${ready.length === 1 ? 'it' : 'them'} as reported in the work you are doing now: do not re-fetch, re-search or re-check what ${ready.length === 1 ? 'it covers' : 'they cover'} unless two reports conflict or one says it could not find something.]\n`
                         + parts.join('\n\n')
                         + (stillRunning.length ? `\n\n(Still running: ${stillRunning.map(j => `"${j.name}" (${j.id})`).join(', ')} — keep working, ${stillRunning.length === 1 ? 'it' : 'they'} will reach you when done.)` : '')
                         // Delegation is continuous: every delivery is the moment to
@@ -26850,6 +26866,27 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // last tool call is the model's own working notes, and rewriting them
         // changed text the user had already read past.
         const answerStart = Math.max(0, Math.min(lastToolContentOffset, fullResponse.length));
+        // A process line at the top of the answer ("I have all the data. Let
+        // me compile the comparison.") is dropped: the prompt asks for the
+        // answer first, and the 27B still opened 2 of 5 tool turns that way.
+        // Only whole leading sentences that are pure process talk go, and only
+        // when a real answer follows (answerHygiene.js).
+        if (!req.delegate && !streamAbortController.signal.aborted && fullResponse.length > answerStart) {
+            try {
+                const cleaned = answerHygiene.stripProcessPreamble(fullResponse.slice(answerStart));
+                if (cleaned.removed) {
+                    fullResponse = fullResponse.slice(0, answerStart) + cleaned.text;
+                    console.log(`[Chat Stream] Answer preamble dropped: "${cleaned.removed.slice(0, 160)}"`);
+                    if (streamingConversationId) {
+                        const job = activeStreamingJobs.get(streamingConversationId);
+                        if (job) job.content = fullResponse;
+                    }
+                    if (clientConnected && !res.writableEnded) {
+                        try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, reason: 'answer_preamble', answerStart })}\n\n`); } catch (_) { clientConnected = false; }
+                    }
+                }
+            } catch (e) { console.warn('[Chat Stream] answer preamble check failed:', e.message); }
+        }
         if (!req.delegate && modelRoles.secondary && modelRoles.review && modelRoles.review !== 'off'
             && modelRoles.secondary !== targetModel
             && !streamAbortController.signal.aborted && fullResponse
@@ -27047,7 +27084,10 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
         // Skipped on an exhausted reasoning loop OR an exhausted loop-nudge
         // budget — the tool path is degenerate (the model never converged) and
         // would poison the procedure store.
-        if (!req.delegate && !streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
+        // `recordMemory: false` in the body (test harnesses, one-off API
+        // calls) runs the turn normally but keeps it out of the account's
+        // core memory.
+        if (!req.delegate && req.body?.recordMemory !== false && !streamAbortController.signal.aborted && !reasoningLoopExhausted && !loopNudgeExhausted) {
             recordTurnActivity({
                 userId: chatMemId,
                 // No conversationId is fine — it is only a provenance tag and the
