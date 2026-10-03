@@ -290,13 +290,27 @@ function handoffRows({ handoff, toolCalls, now, startsRef }) {
 // visible while it happens. It disappears with the turn; the durable record
 // lives on the `first_pass` / `ask_assistant` chips in the finished message.
 function HandoffRows({ rows }) {
+    const [open, setOpen] = useState(true);
     if (!rows.length) return null;
+    const jobs = rows.filter(r => r.indent);
+    const running = jobs.filter(r => !r.done).length;
+    const summary = [];
+    if (jobs.length) summary.push(`${jobs.length} task${jobs.length === 1 ? '' : 's'}`);
+    if (running) summary.push(`${running} running`);
     return (
-        <div className="msg-turn msg-turn--live" aria-live="polite">
-            <div className="msg-turn-head">
+        <div className={`msg-turn msg-turn--live${open ? '' : ' is-collapsed'}`} aria-live="polite">
+            <button
+                type="button"
+                className="msg-turn-head msg-turn-toggle"
+                onClick={() => setOpen(v => !v)}
+                aria-expanded={open}
+                aria-label={open ? 'Collapse live two-model activity' : 'Expand live two-model activity'}
+            >
+                <ChevronDown strokeWidth={2} />
                 <span className="msg-turn-label">Two models working</span>
-            </div>
-            <ol className="msg-turn-timeline">
+                {summary.length > 0 && <span className="msg-turn-totals">{summary.join(' \u00b7 ')}</span>}
+            </button>
+            {open && <ol className="msg-turn-timeline">
                 {rows.map(r => {
                     const state = r.done ? (r.failed ? 'failed' : 'done') : 'running';
                     return (
@@ -314,7 +328,7 @@ function HandoffRows({ rows }) {
                         </li>
                     );
                 })}
-            </ol>
+            </ol>}
         </div>
     );
 }
@@ -466,6 +480,7 @@ function ExchangeJob({ job }) {
 }
 
 function ExchangePanel({ steps }) {
+    const [open, setOpen] = useState(true);
     if (!steps.length) return null;
     // The pair: the brief's author is the assistant and its recipient the lead;
     // a delegation runs the other way.
@@ -487,8 +502,15 @@ function ExchangePanel({ steps }) {
         return <span className={`msg-turn-pill msg-turn-pill--${role}`} title={name}>{shortModel(name)}</span>;
     };
     return (
-        <section className="msg-turn" aria-label="Two models on this turn">
-            <header className="msg-turn-head">
+        <section className={`msg-turn${open ? '' : ' is-collapsed'}`} aria-label="Two models on this turn">
+            <button
+                type="button"
+                className="msg-turn-head msg-turn-toggle"
+                onClick={() => setOpen(v => !v)}
+                aria-expanded={open}
+                aria-label={open ? 'Collapse two-model details' : 'Expand two-model details'}
+            >
+                <ChevronDown strokeWidth={2} />
                 <span className="msg-turn-label">Two models on this turn</span>
                 <span className="msg-turn-pair">
                     {pill(lead)}
@@ -496,8 +518,8 @@ function ExchangePanel({ steps }) {
                     {pill(assistant)}
                 </span>
                 {totals.length > 0 && <span className="msg-turn-totals">{totals.join(' \u00b7 ')}</span>}
-            </header>
-            <ol className="msg-turn-timeline">
+            </button>
+            {open && <ol className="msg-turn-timeline">
                 {steps.map(st => (
                     <li key={st.key} className="msg-turn-event" data-state={st.failed ? 'failed' : st.warn ? 'warn' : 'done'} data-kind={st.kind}>
                         <span className="msg-turn-dot" aria-hidden="true" />
@@ -516,7 +538,7 @@ function ExchangePanel({ steps }) {
                         )}
                     </li>
                 ))}
-            </ol>
+            </ol>}
         </section>
     );
 }

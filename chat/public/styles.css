@@ -6249,6 +6249,19 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     .msg-notes-step-head { flex-wrap: wrap; row-gap: 2px; font-size: 12.5px; --fs: 12.5px; }
     .msg-notes-step-sum { white-space: normal; flex-basis: 100%; order: 2; }
 }
+
+/* "Two models on this turn" card collapses from its header. */
+.msg-turn-toggle {
+    width: calc(100% + 8px); background: none; border: 0; padding: 2px 4px; margin-left: -4px; margin-right: -4px;
+    font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: 6px;
+}
+.msg-turn-toggle:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.msg-turn-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.msg-turn-toggle > svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--ink-4); transform: rotate(-90deg); transition: transform .15s; }
+.msg-turn-toggle[aria-expanded="true"] > svg { transform: none; }
+.msg-turn.is-collapsed { padding-bottom: 10px; }
+.msg-turn.is-collapsed .msg-turn-head { margin-bottom: 0; }
+@media (max-width: 640px) { .msg-turn-toggle { min-height: 36px; } }
 .hover\:underline:hover{
   text-decoration-line: underline;
 }
