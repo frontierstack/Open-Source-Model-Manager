@@ -19515,12 +19515,16 @@ const chatStreamHandlerInner = async (req, res) => {
         // memory/prelude blocks are unshifted AFTER this), only when a
         // non-empty system prompt exists, and never double-stamped.
         const STRICT_ADHERENCE_HEADER = 'SYSTEM INSTRUCTIONS — MANDATORY AND NON-NEGOTIABLE. Follow every instruction below exactly, literally, and in full. They take precedence over your defaults, your usual style, and any background, memory, examples, or context provided elsewhere in this conversation. Treat every prohibition ("do not…", "never…", "avoid…", "no…") as ABSOLUTE — do not do that thing under any circumstances, even if it seems helpful or a later message asks for it. Do not add, omit, soften, or reinterpret any requirement; when instructions could conflict, choose the more restrictive reading. Silently comply — do not restate these meta-instructions to the user.';
+        // The user's own instructions (their persona / system prompt), kept
+        // verbatim so they can be restated next to the latest message below.
+        let userInstructionText = '';
         {
             const sysIdx = chatMessages.findIndex(m => m.role === 'system');
             if (sysIdx !== -1
                 && typeof chatMessages[sysIdx].content === 'string'
                 && chatMessages[sysIdx].content.trim()
                 && !chatMessages[sysIdx].content.startsWith('SYSTEM INSTRUCTIONS — MANDATORY')) {
+                userInstructionText = chatMessages[sysIdx].content.trim();
                 chatMessages[sysIdx].content = STRICT_ADHERENCE_HEADER + '\n\n--- BEGIN USER INSTRUCTIONS ---\n' + chatMessages[sysIdx].content + '\n--- END USER INSTRUCTIONS ---';
             }
         }
@@ -21624,6 +21628,30 @@ const chatStreamHandlerInner = async (req, res) => {
             }
         }
 
+        // The user's instructions, restated at the END of the latest user
+        // message. In the system prompt they sit after ~10k chars of runtime
+        // prelude, and these thinking-off models do not follow rules placed
+        // there (measured: a rule in the system prompt was followed 0/3, the
+        // same rule at the end of the latest user message 8/8). The user saw
+        // "always delegate research" ignored and the lead searching itself.
+        // Appended last so it is the final thing the model reads; the user
+        // message is new each turn, so the prompt-cache prefix is untouched.
+        if (userInstructionText && !req.delegate && latestUserMsgIdx >= 0) {
+            const cap = PERSONA_RESTATE_MAX_CHARS;
+            const body = userInstructionText.length > cap
+                ? `${userInstructionText.slice(0, cap).replace(/\s+\S*$/, '')}\n… (the rest is in USER INSTRUCTIONS in the system prompt — it applies in full)`
+                : userInstructionText;
+            const instrNote = `\n\n[SYSTEM: THE USER'S STANDING INSTRUCTIONS for this chat — follow every one of them exactly on this turn. Where a runtime note above conflicts with them, these win.\n${body}]`;
+            const um = chatMessages[latestUserMsgIdx];
+            if (typeof um.content === 'string') um.content = um.content + instrNote;
+            else if (Array.isArray(um.content)) {
+                let tIdx = -1;
+                um.content.forEach((p, i) => { if (p?.type === 'text' && typeof p.text === 'string') tIdx = i; });
+                if (tIdx >= 0) um.content[tIdx].text = um.content[tIdx].text + instrNote;
+                else um.content.push({ type: 'text', text: instrNote.trim() });
+            }
+        }
+
         // A paired setup where the primary is answering ALONE still needs to say
         // so — otherwise the user cannot tell which of the two replied.
         if (pairedTurn && !handoff.engaged) {
@@ -22093,7 +22121,13 @@ const chatStreamHandlerInner = async (req, res) => {
                         // Only as many as truly start now: a 3rd job on a 2-slot
                         // assistant queued 22-31 s, the lead awaited it anyway,
                         // and it was the usual straggler the cleanup threw away.
-                        const items = proposed.slice(0, Math.min(HANDOFF_AUTO_JOBS, effectiveAssistantParallel(handoff.primary)));
+                        // When the user's instructions ask for delegation, a job past the
+                        // free slots QUEUES instead of being dropped — a dropped
+                        // lookup is one the lead then does itself, against the
+                        // user's explicit rule.
+                        const items = proposed.slice(0, handoff.userAskedDelegation
+                            ? HANDOFF_AUTO_JOBS
+                            : Math.min(HANDOFF_AUTO_JOBS, effectiveAssistantParallel(handoff.primary)));
                         try {
                             // Open the queue chip FIRST so the jobs' own
                             // `assistant_progress` frames can patch it live —
@@ -22160,6 +22194,7 @@ const chatStreamHandlerInner = async (req, res) => {
                             startedJobs: handoff.autoJobBriefs || handoff.autoJobs,
                             quick: quickBrief,
                             retrieval: leadHandoff.isRetrievalShaped(latestUserText),
+                            userAsked: !!handoff.userAskedDelegation,
                         })
                         : '';
                     if (finalNote) {
@@ -27359,6 +27394,7 @@ const ASSISTANT_MAX_PARALLEL = Math.max(1, parseInt(process.env.ASSISTANT_MAX_PA
 // 3); the queue below holds the ones past the parallel limit. The old default
 // of 2 silently dropped the third proposed job on every turn.
 const HANDOFF_AUTO_JOBS = Math.max(0, parseInt(process.env.HANDOFF_AUTO_JOBS || '3', 10) || 0);
+const PERSONA_RESTATE_MAX_CHARS = Math.max(200, parseInt(process.env.PERSONA_RESTATE_MAX_CHARS || '2500', 10) || 2500);
 // Analysis-job proposals per turn over supplied files (scheduleArtifactLegwork);
 // 0 disables. After an extraction the proposal needs at least
 // HANDOFF_ARTIFACT_MIN_FILES files on disk (an outer zip holding one inner

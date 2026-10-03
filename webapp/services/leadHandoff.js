@@ -944,7 +944,7 @@ function parseLegwork(brief) {
 // buildJobBrief); the lead is only told what is running for it. With nothing
 // running there is no note at all (the lead prelude already explains
 // ask_assistant).
-function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null, quick = false, retrieval = false }) {
+function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, legworkAvailable = true, startedJobs = null, quick = false, retrieval = false, userAsked = false }) {
     const body = String(brief || '').trim();
     if (!body) return '';
     const who = assistantModel || 'the primary model';
@@ -962,13 +962,21 @@ function renderBriefNote({ brief, assistantModel, firstPassSeconds, toolCalls, l
     // Research-shaped work: the jobs ARE the lookups the answer depends on —
     // writing first means writing around holes, searching yourself repeats
     // them (measured: the lead ran the same searches its jobs were running).
+    // The user's own instructions asked for delegation: anything the reports
+    // leave open goes back to the assistant, never to the lead's own search.
+    const leftOpen = userAsked
+        ? `for anything their reports leave open, hand it to ${who} with \`ask_assistant\` — the user's instructions ask you to delegate this work, so do not search yourself`
+        : 'search yourself only for what their reports leave open';
     const howToWork = retrieval
-        ? `These jobs are fetching the facts this answer depends on. Outline the answer now (structure, what you already know for certain), then call \`await_assistant\` for the reports; search yourself only for what their reports leave open.`
+        ? `These jobs are fetching the facts this answer depends on. Outline the answer now (structure, what you already know for certain), then call \`await_assistant\` for the reports; ${leftOpen}.`
         : `Do not sit and wait for them: start the work now — the parts only you can do. Call \`await_assistant\` only when you have nothing left to do without a result.`;
+    const more = userAsked
+        ? `Hand any further lookup or research to ${who} with \`ask_assistant\`.`
+        : `Hand over more with \`ask_assistant\` only for another lookup that takes several steps.`;
     return [
         `[SYSTEM: TWO MODELS — you are the main model on this task and you write the final answer. ${started.length} background job${started.length === 1 ? ' is' : 's are'} ALREADY RUNNING${meta ? ` (${meta})` : ''}:`,
         list,
-        `Do NOT redo that work yourself and do NOT dispatch it again under another name — each result is delivered to you when it lands. ${howToWork} Never put a placeholder, "pending" marker or "results to follow" note in the answer: write around a missing piece and fill it in when its result arrives.${open ? ` Open question noted by ${who}: ${open}` : ''} Hand over more with \`ask_assistant\` only for another lookup that takes several steps.]`,
+        `Do NOT redo that work yourself and do NOT dispatch it again under another name — each result is delivered to you when it lands. ${howToWork} Never put a placeholder, "pending" marker or "results to follow" note in the answer: write around a missing piece and fill it in when its result arrives.${open ? ` Open question noted by ${who}: ${open}` : ''} ${more}]`,
     ].join('\n');
 }
 
