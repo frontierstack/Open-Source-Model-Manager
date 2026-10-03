@@ -210,6 +210,9 @@ export const useChatStore = create(
         // without this the notes folded the instant the turn ended and the
         // answer jumped up as the user started reading. Consumed on mount.
         notesOpenMessageId: null,
+        // Working notes start folded; this records that the user opened them
+        // on the LIVE bubble, so the committed bubble mounts open too.
+        streamingNotesOpen: false,
 
         // Optional server-driven status for the streaming bubble (chunking,
         // synthesizing, etc.). Cleared when streaming ends or when token
@@ -688,7 +691,8 @@ export const useChatStore = create(
             const lastAssistant = [...toAdd].reverse().find(m => m && m.role === 'assistant' && m.id);
             return {
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
-                notesOpenMessageId: lastAssistant ? lastAssistant.id : state.notesOpenMessageId,
+                notesOpenMessageId: (lastAssistant && state.streamingNotesOpen) ? lastAssistant.id : state.notesOpenMessageId,
+                streamingNotesOpen: false,
                 streamingContent: '',
                 streamingToolDrafts: {},
                 streamingReasoning: '',
@@ -712,6 +716,7 @@ export const useChatStore = create(
             streamingStatus: null,
             streamingHandoff: null,
             streamingRevisedAt: 0,
+            streamingNotesOpen: false,
             streamingToolCalls: [],
             isStreaming: false,
             // Clear the streaming message collapse entry when streaming ends

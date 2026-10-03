@@ -717,14 +717,17 @@ export default React.memo(function ChatMessage({
         const t = setTimeout(() => setToolTick(x => x + 1), 1000);
         return () => clearTimeout(t);
     }, [revisedAt]);
-    // Working notes (narration + chips before the answer): open while the
-    // turn streams and LEFT open when it commits — folding them at that
-    // moment shoves the answer up just as the user starts reading it. A
-    // fresh mount (reload, switching back) starts folded.
+    // Working notes (narration + chips before the answer) start FOLDED (user
+    // preference). If the user opens them on the live bubble, the committed
+    // bubble — a fresh mount — opens too, so the answer does not jump.
     const [notesOpen, setNotesOpen] = useState(() => {
-        if (isStreaming) return true;
-        // Just committed from a stream (foreground or reconnect) — keep open.
-        return !!(id && useChatStore.getState().notesOpenMessageId === id);
+        const st = useChatStore.getState();
+        if (isStreaming) return !!st.streamingNotesOpen;
+        return !!(id && st.notesOpenMessageId === id);
+    });
+    const toggleNotes = () => setNotesOpen(v => {
+        if (isStreaming) useChatStore.setState({ streamingNotesOpen: !v });
+        return !v;
     });
     React.useEffect(() => {
         if (!hasRunningTool) return undefined;
@@ -1001,7 +1004,7 @@ export default React.memo(function ChatMessage({
                             segments={split.segments}
                             toolCalls={toolCalls}
                             open={notesOpen}
-                            onToggle={() => setNotesOpen(v => !v)}
+                            onToggle={toggleNotes}
                             isStreaming={isStreaming}
                         />
                     )}

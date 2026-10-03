@@ -1164,8 +1164,8 @@ export default function ChatContainer({
                                                     serverMsgs.length >= localMessages.length;
                                                 if (serverHasNewAssistant) {
                                                     // The committed bubble mounts fresh — keep its
-                                                    // Working notes open like a foreground commit.
-                                                    if (last.id) useChatStore.setState({ notesOpenMessageId: last.id });
+                                                    // Working notes open if the user opened them live.
+                                                    if (last.id && useChatStore.getState().streamingNotesOpen) useChatStore.setState({ notesOpenMessageId: last.id, streamingNotesOpen: false });
                                                     setMessages(serverMsgs);
                                                     loaded = true;
                                                 } else if (!hasLocalStreamContent && serverMsgs.length > 0) {
@@ -1775,7 +1775,7 @@ export default function ChatContainer({
             // path the last turn ended on, the new bubble starts empty.
             setStreamingHandoff(null);
             setStreamingToolCalls([]);
-            useChatStore.setState({ streamingToolDrafts: {}, streamingStatus: null, streamingRevisedAt: 0 });
+            useChatStore.setState({ streamingToolDrafts: {}, streamingStatus: null, streamingRevisedAt: 0, streamingNotesOpen: false });
             // The pump reads these refs from its first frame — before the first
             // token — so they must not carry a previous turn's text.
             pendingContentRef.current = '';
