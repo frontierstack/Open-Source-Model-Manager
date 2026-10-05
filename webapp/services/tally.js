@@ -203,12 +203,24 @@ function recordsFromJsonDocs(docs, source) {
 function stripTags(s) {
     return decodeEntities(String(s || '').replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
+// End of the <div> that opens at `start` (balanced), capped — so a card is
+// exactly its own markup, never the next card's.
+function divEnd(h, start, cap = 30000) {
+    const re = /<div\b|<\/div\s*>/gi;
+    re.lastIndex = start;
+    let depth = 0, m;
+    while ((m = re.exec(h)) && m.index < start + cap) {
+        if (m[0][1] === '/') { depth--; if (depth === 0) return m.index + m[0].length; }
+        else depth++;
+    }
+    return Math.min(h.length, start + 4000);
+}
 function recordsFromHtml(html) {
     const h = String(html || '').replace(/<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<!--[\s\S]*?-->/gi, ' ');
     const groups = [];
-    for (const tag of ['tr', 'li', 'article', 'item', 'entry']) {
+    for (const tag of ['tr', 'li', 'article', 'section', 'item', 'entry']) {
         const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
-        groups.push({ kind: tag, parts: [...h.matchAll(re)].map(m => m[1]) });
+        groups.push({ kind: tag, parts: [...h.matchAll(re)].map(m => ({ html: m[1], start: m.index, end: m.index + m[0].length })) });
     }
     // Cards: <div class="X ..."> repeated with the same first class.
     const divRe = /<div\b[^>]*\bclass\s*=\s*["']([^"' ]+)[^"']*["'][^>]*>/gi;
@@ -221,14 +233,16 @@ function recordsFromHtml(html) {
     }
     for (const [cls, idxs] of byClass) {
         if (idxs.length < MIN_RECORDS || idxs.length > 5000) continue;
-        const parts = idxs.map((start, i) => h.slice(start, Math.min(idxs[i + 1] ?? start + 4000, start + 4000)));
+        const parts = idxs.map(start => { const end = divEnd(h, start); return { html: h.slice(start, end), start, end }; });
         groups.push({ kind: `div.${cls}`, parts });
     }
-    let best = null;
+    const scored = [];
     for (const g of groups) {
         const records = [];
+        const spans = [];
         const seenSig = new Set();
-        for (const part of g.parts) {
+        for (const seg of g.parts) {
+            const part = seg.html;
             // Any element's datetime attribute (<time>, GitHub's <relative-time>, …).
             const timeAttr = [...part.matchAll(/<[a-z][\w-]*\b[^>]*\bdatetime\s*=\s*["']([^"']+)["']/gi)].map(x => parseDateLike(x[1])).filter(Boolean);
             const text = stripTags(part);
@@ -238,7 +252,12 @@ function recordsFromHtml(html) {
             if (!dates.length) {
                 dates = [...part.matchAll(/href\s*=\s*["'][^"']*?\/(\d{4})\/(\d{2})\/(\d{2})\//gi)].map(x => ymd(+x[1], +x[2], +x[3])).filter(Boolean);
             }
-            const distinct = [...new Set(dates)];
+            // A datetime attribute is markup for THIS element's own date; when
+            // there are several (a release card with signed-commit footers),
+            // the first in document order is the entry's — headers precede
+            // bodies. Dates found in TEXT stay strict: two of them is a range
+            // or a summary row, not an entry.
+            const distinct = timeAttr.length ? [timeAttr[0]] : [...new Set(dates)];
             if (distinct.length !== 1) continue; // 0 = not an entry; 2+ = a range or a summary row
             const title = text.replace(/\b\d{4}-\d{2}-\d{2}(?:[ T][\d:.]+)?\b/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
             // The same entry rendered twice in one group (nested list items,
@@ -247,9 +266,39 @@ function recordsFromHtml(html) {
             if (seenSig.has(sig)) continue;
             seenSig.add(sig);
             records.push({ date: distinct[0], title });
+            spans.push([seg.start, seg.end]);
         }
-        if (records.length >= MIN_RECORDS && (!best || records.length > best.records.length)) best = { kind: g.kind, records };
+        if (records.length < MIN_RECORDS) continue;
+        // Size alone picks the wrong group: a footer repeated in every card
+        // ("This commit was signed…", one date each) outnumbers the cards
+        // themselves. Real entries have distinct titles; boilerplate does not.
+        const heads = new Set(records.map(r => r.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 40)));
+        const diversity = heads.size / records.length;
+        const semantic = /^(tr|li|article|section|item|entry)$/.test(g.kind) ? 1.15 : 1;
+        scored.push({ kind: g.kind, records, spans, score: records.length * diversity * semantic, diversity });
     }
+    // Parts of an entry are not entries: when most of a group's elements sit
+    // INSIDE another group's elements, at no more than 3 per container (two
+    // signed-commit footers per GitHub release section), the outer group is
+    // the list. A few year sections that each hold hundreds of rows keep the
+    // rows (more than 3 per container).
+    const inside = (inner, outer) => {
+        let j = 0, hit = 0;
+        const outs = outer.spans;
+        for (const [a, b] of inner.spans) {
+            while (j < outs.length && outs[j][1] < b) j++;
+            if (j < outs.length && outs[j][0] <= a && b <= outs[j][1]) hit++;
+        }
+        return hit / inner.spans.length;
+    };
+    for (const inner of scored) {
+        for (const outer of scored) {
+            if (outer === inner || outer.records.length < MIN_RECORDS) continue;
+            if (inner.records.length <= outer.records.length * 3 && inside(inner, outer) >= 0.8) { inner.suppressed = true; break; }
+        }
+    }
+    let best = null;
+    for (const c of scored) if (!c.suppressed && (!best || c.score > best.score)) best = c;
     if (!best) return null;
     return { source: `html:${best.kind}`, records: best.records, dateField: best.kind, titleField: null, totalItems: best.records.length };
 }
