@@ -328,6 +328,11 @@ function needsLookup(text) {
     const { ask, toolsForbidden } = stripNegatedTools(raw);
     if (toolsForbidden) return false;
     if (USER_RESEARCH_DIRECTIVE_RE.test(ask)) return true; // explicit "search/research the web" is a hard lookup need
+    // "Summarize <url>" is one read for the lead. Planned as a lookup, the
+    // brief invented background research the user never asked for, and the
+    // lead tried to hand the one page off (refused as read_it_yourself — a
+    // wasted round and a failed chip).
+    if (isSingleReadAsk(ask)) return false;
     if (URL_RE.test(ask)) return true;
     if (BUILD_OBJ.test(ask) && !RESEARCH_RE.test(ask) && !LOOKUP_NEED_RE.test(ask)) return false;
     // One current fact (a score, a price, the weather, a date) is one search
@@ -489,14 +494,19 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     // starts now on the primary instead of queueing behind that generation.
     if (secondaryBusy && !verdict.substantial && !verdict.explicit && !wantsSecondary) return alone('the secondary is busy — light work stays on the primary', soloOn);
 
+    // One page or one file to read: the lead reads it itself in one call, so
+    // there is nothing to plan and nothing to hand off (unless the user asked
+    // the models to work together).
+    const singleRead = !verdict.explicit && isSingleReadAsk(userText);
     return {
         runOn: secondary,
         switched: secondary !== requested,
         engaged: true,
         // The user ruled out searching / tools: legwork is off the table, so
         // there is nothing for a brief to plan either.
-        firstPass: r.firstPass !== false && !verdict.toolsForbidden,
-        legwork: r.legwork !== false && !verdict.toolsForbidden,
+        firstPass: r.firstPass !== false && !verdict.toolsForbidden && !singleRead,
+        legwork: r.legwork !== false && !verdict.toolsForbidden && !singleRead,
+        singleRead,
         toolsForbidden: !!verdict.toolsForbidden,
         primary,
         secondary,
@@ -816,6 +826,14 @@ const SINGLE_READ_VERB = /\b(read|open|fetch|extract|summari[sz]e|list|view|show
 // what it contains or does is several calls, not a read — the artifact-
 // analysis batches below name exactly one path per job.
 const MULTI_STEP_VERB = /\b(search|find|look\s*up|research|compare|gather|collect|investigate|identify|determine|survey|cross[- ]check|verify against|which|latest|current|versions?|releases?|prices?|analy[sz]e|decompile|disassemble|deobfuscate|decode|iocs?|indicators?|custom actions?|embedded|every|all (?:urls|domains|ips|strings|scripts|files))\b/i;
+// The whole ask is reading one linked page or one /workspace file ("summarize
+// <url>", "read /workspace/x.log") — nothing a background job could add.
+function isSingleReadAsk(text) {
+    const ask = cleanAsk(text);
+    if (!ask || RESEARCH_RE.test(ask.replace(/https?:\/\/\S+/g, ' ')) || LOOKUP_NEED_RE.test(ask.replace(/https?:\/\/\S+/g, ' '))) return false;
+    return isSingleReadJob(ask);
+}
+
 function isSingleReadJob(task) {
     const t = String(task || '');
     const refs = (t.match(/https?:\/\/\S+/g) || []).length + (t.match(/\/workspace\/[A-Za-z0-9._\/-]+/g) || []).length;
@@ -844,7 +862,7 @@ function isWorkableJob(job) {
     // The proposal prompt's own template echoed back ("<short name>: <one-line
     // brief…>", "If nothing would help, reply exactly: …") is not a job. Seen
     // live: both lines started as jobs and ran 34 s and 61 s each.
-    if (/<[^>]{2,40}>/.test(`${name} ${task}`)) return false;
+    if (/<[^>]{2,40}>/.test(`${name} ${task}`) || /^<[^<>]{2,200}>\.?$/.test(task)) return false;
     if (/^(?:if nothing\b|reply (?:exactly|with only)\b)/i.test(name) || /\breply exactly\b/i.test(`${name} ${task}`)) return false;
     if (HARD_USER_STEP_NAME.test(name) || HARD_USER_STEP_NAME.test(task)) return false;
     if (USER_STEP_START.test(task) && !RESEARCH_VERB.test(task)) return false;
@@ -917,6 +935,11 @@ function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], lea
     return L.join('\n');
 }
 
+function jobNameFromTask(task) {
+    return String(task || '').replace(/^(please\s+|go\s+|now\s+)/i, '')
+        .split(/(?<=[.;:,])\s|\n/)[0].trim().replace(/[.;:,]$/, '').slice(0, 48) || 'job';
+}
+
 // Pull the LEGWORK lines back out of the brief so the note can tell the primary
 // to dispatch exactly those. Tolerant of the shapes a small model produces
 // (numbered or bare heading, "- name: brief" or "name — brief").
@@ -936,9 +959,13 @@ function parseLegwork(brief) {
         if (!line) continue;
         if (/^none\b/i.test(line) || /^n\/a\b/i.test(line)) continue;
         const split = line.match(/^(.{2,60}?)\s*[:—–-]\s+(.+)$/);
-        const name = split ? split[1].trim() : line.slice(0, 50);
+        let name = split ? split[1].trim() : line.slice(0, 50);
         const task = split ? split[2].trim() : line;
         if (task.length < 8) continue;
+        // Small models copy the template's `<short name>` verbatim and then
+        // write a real brief after it (seen live: every job of a brief dropped
+        // as "no legwork proposed"). Name it from its task instead.
+        if (/^<[^>]{2,40}>$/.test(name)) name = jobNameFromTask(task);
         const job = { name: name.replace(/[."]+$/, ''), task };
         if (!isWorkableJob(job)) continue;
         jobs.push(job);
@@ -1199,6 +1226,7 @@ module.exports = {
     isDuplicateJob,
     isWorkableJob,
     isSingleReadJob,
+    isSingleReadAsk,
     isHostFileJob,
     buildPartnerPrelude,
     buildJobPartnerLine,

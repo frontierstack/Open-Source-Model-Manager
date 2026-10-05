@@ -22159,6 +22159,7 @@ const chatStreamHandlerInner = async (req, res) => {
         // it and the lead starts at once — measured 1-3 s saved on those turns.
         const firstPassSkip = handoff.engaged
             ? (handoff.toolsForbidden ? 'the user ruled out tools or searching'
+                : handoff.singleRead ? 'one page or file to read — the lead reads it itself, no assistant'
                 : !handoff.legwork ? 'legwork is switched off'
                 : !handoff.firstPass ? 'first pass is switched off'
                 : (HANDOFF_FIRST_PASS_MODE !== 'full' && !leadHandoff.needsLookup(latestUserText)) ? 'nothing to look up' : null)
