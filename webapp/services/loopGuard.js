@@ -381,11 +381,28 @@ function priorAnswerRepeat(text, priorNorms, opts = {}) {
         // of waiting for the whole reply.
         if (cov >= coverage && trailing >= 2 && (!best || cov > best.coverage)) best = { priorIndex: idx, coverage: cov, windows: windows.length, hits };
     });
+    // A reply stitched from SEVERAL earlier answers (one turn's opening
+    // narration + another turn's answer) is just as much a copy, but no
+    // single message reaches the bar — measured 2026-10-05: a correction turn
+    // replayed turn 3's narration and turn 5's answer word for word, 1/2
+    // windows each, and the user got the old chart summary a third time.
+    // So also count a window as copied when ANY earlier message holds it.
+    if (!best) {
+        const pool = (priorNorms || []).filter(p => p && p.length >= window);
+        if (pool.length > 1) {
+            let hits = 0, trailing = 0;
+            for (const w of windows) {
+                if (pool.some(p => p.includes(w))) { hits++; trailing++; } else trailing = 0;
+            }
+            const cov = hits / windows.length;
+            if (cov >= coverage && trailing >= 2) best = { priorIndex: -1, coverage: cov, windows: windows.length, hits, stitched: true };
+        }
+    }
     if (!best) return null;
     return {
         ...best,
         chars: text.length,
-        reason: `${Math.round(best.coverage * 100)}% of the reply so far (${best.hits}/${best.windows} ${window}-char windows) is copied verbatim from an earlier assistant message`,
+        reason: `${Math.round(best.coverage * 100)}% of the reply so far (${best.hits}/${best.windows} ${window}-char windows) is copied verbatim from ${best.stitched ? 'earlier assistant messages' : 'an earlier assistant message'}`,
     };
 }
 

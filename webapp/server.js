@@ -313,6 +313,7 @@ const modelRolesSvc = require('./services/modelRoles');
 const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
 const leadHandoff = require('./services/leadHandoff');
+const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
 const assistantQueue = require('./services/assistantQueue');
 
@@ -1495,7 +1496,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs or data you did not fetch, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest.`,
         `WEB RESEARCH: generic or off-topic results mean the QUERY was weak (the result's \`relevance\`/\`hint\` say so) — quote the exact name, add one distinguishing detail or a site:, then READ the best page and follow it to the primary source. Try three genuinely different queries before calling something unavailable. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Never guess or retype a URL, and never announce the same plan twice.`,
         `WORK IN BIG STEPS: gather broadly in one call or one script (every file or record at once, as a compact summary), then drill into only what the summary flags. Stop as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING many entries (posts per month, items per category, totals over a long list) is numeric work: never count by eye from a page you read — save the page with download_file and count it with one run_python script, then chart or report those counts.`,
         `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off.`,
         `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
         ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
@@ -1512,7 +1513,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
 // and siblings are in its brief), so jobs share one prompt prefix, and ONE
 // report spec — the worker prelude's "150-300 words + a data table" contradicted
 // the brief's bullet format.
-const LEGWORK_PRELUDE = 'You are a BACKGROUND JOB for the main model, which is writing the answer to the user while you work. Do the ONE job in your brief with your tools — no questions, no waiting, never address the user, never attempt the whole request. Look things up rather than answering from memory. Your FINAL message is the only thing the main model sees: write it in the report format your brief gives, with every URL, path, identifier and number written out in full. Do not create documents or deliverables and never use make_downloadable.';
+const LEGWORK_PRELUDE = 'You are a BACKGROUND JOB for the main model, which is writing the answer to the user while you work. Do the ONE job in your brief with your tools — no questions, no waiting, never address the user, never attempt the whole request. Look things up rather than answering from memory. Your FINAL message is the only thing the main model sees: write it in the report format your brief gives, with every URL, path, identifier and number written out in full. Do not create documents or deliverables and never use make_downloadable. To COUNT or tally many entries in a long list (posts per month, items per category), never count by eye: download_file the page into /workspace, count it with one run_python script, and report the counts as a table.';
 
 function buildDelegatePrelude(delegate) {
     const label = String((delegate && delegate.label) || 'worker').slice(0, 80);
@@ -13591,7 +13592,12 @@ function smartTruncate(content, maxLength) {
     const head = content.slice(0, headSize);
     const tail = content.slice(-tailSize);
 
-    return head + '\n\n[... earlier content omitted ...]\n\n' + tail;
+    // Say WHAT was cut and how to get it: the old "[... earlier content
+    // omitted ...]" read like a page that simply started there, so a model
+    // charting a newest-first list of posts took the missing middle as
+    // months with no posts at all (2026-10-05).
+    const omitted = content.length - head.length - tail.length;
+    return head + `\n\n[... ${omitted} characters from the MIDDLE of this page were cut — the page is ${content.length} characters long. To read them: re-read with maxLength:${Math.min(100000, content.length + 500)}, or use find:"<term>" for specific entries ...]\n\n` + tail;
 }
 
 // Web search endpoint using DuckDuckGo HTML parsing
@@ -19304,6 +19310,24 @@ const chatStreamHandlerInner = async (req, res) => {
         // becomes its assistant (first pass now, legwork on request later).
         // A worker or sidecar turn never hands off — it would recurse.
         let handoff = { engaged: false, lead: null, assistant: null, reason: 'not evaluated' };
+        // A correction ("I still don't see the line") or "continue" redoes the
+        // earlier request it refers to (leadHandoff.detectRedo). Resolved here
+        // so routing, the lookup plan and the turn's notes all see that request.
+        let redoInfo = null;
+        if (!req.delegate && !req.sidecar && Array.isArray(inputMessages)) {
+            try {
+                const textOf = (m) => (typeof m?.content === 'string' ? m.content
+                    : Array.isArray(m?.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
+                const userIdx = [];
+                inputMessages.forEach((m, i) => { if (m && m.role === 'user') userIdx.push(i); });
+                const latestIdx = userIdx[userIdx.length - 1];
+                const earlier = userIdx.slice(0, -1).reverse().slice(0, 6).map(i => textOf(inputMessages[i]));
+                if (latestIdx != null && earlier.length) {
+                    redoInfo = leadHandoff.detectRedo({ text: textOf(inputMessages[latestIdx]), previousTexts: earlier });
+                    if (redoInfo) console.log(`[Chat Stream] Redo turn (${redoInfo.kind}): redoes "${redoInfo.original.slice(0, 120)}"${redoInfo.complaints.length ? ` after ${redoInfo.complaints.length} earlier correction(s)` : ''}`);
+                }
+            } catch (e) { console.warn('[Chat Stream] redo detection skipped:', e.message); }
+        }
         if (!req.delegate && !req.sidecar) {
             try {
                 const runningNames = [];
@@ -19334,6 +19358,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     // A short go-ahead ("ok, do it", "yes") inherits the work
                     // it resumes: the previous request or the assistant's offer.
                     ...(Array.isArray(inputMessages) ? piPreviousTexts(inputMessages) : {}),
+                    ...(redoInfo ? { redoText: redoInfo.original } : {}),
                     secondaryBusy: (() => {
                         try { const row = pairRoles.secondary && chatCapacity().models.find(x => x.name === pairRoles.secondary); return !!(row && row.free <= 0); }
                         catch (_) { return false; }
@@ -21770,6 +21795,21 @@ const chatStreamHandlerInner = async (req, res) => {
             }
         }
 
+        // A correction or "continue": say so in the latest user message (the
+        // slot these thinking-off models actually follow), naming the request
+        // being redone — on its own words the turn looked like a chat reply.
+        if (redoInfo && !req.delegate && latestUserMsgIdx >= 0) {
+            const redoNote = '\n\n' + leadHandoff.buildRedoNote(redoInfo);
+            const um = chatMessages[latestUserMsgIdx];
+            if (typeof um.content === 'string') um.content = um.content + redoNote;
+            else if (Array.isArray(um.content)) {
+                let tIdx = -1;
+                um.content.forEach((p, i) => { if (p?.type === 'text' && typeof p.text === 'string') tIdx = i; });
+                if (tIdx >= 0) um.content[tIdx].text = um.content[tIdx].text + redoNote;
+                else um.content.push({ type: 'text', text: redoNote.trim() });
+            }
+        }
+
         // The user's instructions, restated at the END of the latest user
         // message. In the system prompt they sit after ~10k chars of runtime
         // prelude, and these thinking-off models do not follow rules placed
@@ -22143,7 +22183,9 @@ const chatStreamHandlerInner = async (req, res) => {
         const handoffContext = req.delegate ? '' : leadHandoff.buildConversationContext(inputMessages);
         toolCtx._handoffGoal = req.delegate
             ? (req.delegate.handoffGoal || null)
-            : { userText: leadHandoff.askForFirstPass(latestUserText, 1500), context: handoffContext, plan: [] };
+            : { userText: redoInfo
+                ? leadHandoff.askForFirstPass(`${redoInfo.original}\n\nThe user's correction of the previous attempt: ${latestUserText}`, 1500)
+                : leadHandoff.askForFirstPass(latestUserText, 1500), context: handoffContext, plan: [] };
 
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
@@ -22162,7 +22204,7 @@ const chatStreamHandlerInner = async (req, res) => {
                 : handoff.singleRead ? 'one page or file to read — the lead reads it itself, no assistant'
                 : !handoff.legwork ? 'legwork is switched off'
                 : !handoff.firstPass ? 'first pass is switched off'
-                : (HANDOFF_FIRST_PASS_MODE !== 'full' && !leadHandoff.needsLookup(latestUserText)) ? 'nothing to look up' : null)
+                : (HANDOFF_FIRST_PASS_MODE !== 'full' && !leadHandoff.needsLookup(redoInfo ? `${redoInfo.original}\n${latestUserText}` : latestUserText)) ? 'nothing to look up' : null)
             : null;
         if (firstPassSkip) {
             console.log(`[Chat Stream] Hand-off: first pass skipped (${firstPassSkip}) — ${handoff.secondary} starts at once`);
@@ -22211,7 +22253,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     try {
                         const r = await Promise.race([
                             requestModelCompletion({
-                                messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: latestUserText, leadModel: handoff.secondary, context: handoffContext }) }],
+                                messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: redoInfo ? `${redoInfo.original}\n\nThe user says the previous attempt was wrong or unfinished: ${leadHandoff.cleanAsk(latestUserText)}` : latestUserText, leadModel: handoff.secondary, context: handoffContext }) }],
                                 model: handoff.primary, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
                             }),
                             new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
@@ -23598,6 +23640,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     }
                 }
                 priorAnswerAsk = leadHandoff.cleanAsk(latestUserRaw).slice(0, 600);
+                if (redoInfo) priorAnswerAsk = `${priorAnswerAsk} (this corrects or continues their earlier request: "${redoInfo.original.slice(0, 400)}" — redo that work with tool calls)`;
                 priorAnswerDetector = loopGuard.makePriorAnswerDetector(priorTexts, {
                     exempt: !!req.delegate || loopGuard.userAsksForRepeat(priorAnswerAsk),
                 });
@@ -23711,6 +23754,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // One-shot retry latch for the false-completion detector below
             // (claims "saved/created/wrote ... file" but emitted no tool calls).
             let falseCompletionRetried = false;
+            let redoNoWorkRetried = false;
             // One-shot retry latch for the abandoned-research detector
             // (mid-research turn ends "Let me dig deeper..." / "I'll search
             // for X" without emitting the next tool_call).
@@ -26297,6 +26341,40 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         ];
                         continue; // re-stream
                     }
+                }
+
+                // A correction or "continue" that ends without a single tool
+                // call has only re-answered from memory — the user asked for
+                // the work to be done again (measured: "I still don't see the
+                // line" got the previous chart summary back with no call).
+                // Drop that reply and ask once for the actual work.
+                if (redoInfo && !redoNoWorkRetried && !req.delegate && accumulatedToolCalls.length === 0
+                    && fullToolCatalog.length && !handoff.toolsForbidden && !leadHandoff.forbidsTools(latestUserText)
+                    && !toolCallHistory.some(e => e && !e.nudge)
+                    && !(toolCtx._assistantJobs && toolCtx._assistantJobs.size) && !assistantRevising) {
+                    redoNoWorkRetried = true;
+                    const dropped = fullResponse.length - roundStart;
+                    const said = fullResponse.slice(roundStart).trim();
+                    fullResponse = fullResponse.slice(0, roundStart);
+                    if (streamingConversationId) {
+                        const job = activeStreamingJobs.get(streamingConversationId);
+                        if (job) job.content = holdClientContent && heldJobContent != null ? heldJobContent : fullResponse;
+                    }
+                    console.warn(`[Chat Stream] Redo turn ended with no tool call — dropped ${dropped} chars and asking for the work: ${JSON.stringify(said.slice(0, 160))}`);
+                    logChatActivity('The model answered a correction without redoing any work — asking it to redo the work with tools', 'warn');
+                    if (clientConnected && dropped > 0) {
+                        try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'redo_no_work' })}\n\n`); } catch (_) { clientConnected = false; }
+                    }
+                    currentMessages = [
+                        ...currentMessages,
+                        ...(said ? [{ role: 'assistant', content: said }] : []),
+                        {
+                            role: 'system',
+                            content: `That reply made no tool call, so nothing was redone and the user would see the same result again. The user's message corrects or continues this request: "${redoInfo.original.slice(0, 500)}". Their message: "${leadHandoff.cleanAsk(latestUserText).slice(0, 500)}". Call the tools now — re-read the source data in full and re-run the step that produced the result (chart, file, script or search) with corrected arguments. Only if a part truly cannot be done, say which part and why — in plain words, without repeating your earlier answer.`,
+                        },
+                    ];
+                    continuationCount = 0;
+                    continue;
                 }
 
                 // The lead is ready to stop, but work it handed to the primary
@@ -31104,11 +31182,18 @@ app.use((req, res) => {
         build() {
             return null; // consolidated into the `web` tool — hidden from the chat catalog, still registered for automations + the web router
         },
-        async execute(args) {
+        async execute(args, ctx) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
             { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
-            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 15000, 10)));
+            // Default read size follows what the model can take back (its
+            // result budget, ~40-50k chars on a 131k-context model) instead of
+            // a flat 15k: a list page cut to its first part was read as the
+            // whole list (a newest-first post feed charted as "no posts before
+            // August"), and models rarely ask for a bigger read themselves.
+            const budget = typeof ctx?.resultBudgetChars === 'number' && ctx.resultBudgetChars > 0
+                ? Math.max(15000, Math.min(60000, Math.round(ctx.resultBudgetChars * 0.9))) : 15000;
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || budget, 10)));
             try {
                 const result = await fetchUrlContent(url, { timeout: 20_000, maxLength, waitForJS: true });
                 if (!result.success) {
@@ -31116,6 +31201,12 @@ app.use((req, res) => {
                 }
                 const content = (result.content || '').slice(0, maxLength);
                 const title = result.title || '';
+                // Tell the model plainly when the page was cut: a partial list
+                // read as the whole list is silently wrong data.
+                const cutMatch = /\[\.\.\. (\d+) characters from the MIDDLE of this page were cut — the page is (\d+) characters long/.exec(content);
+                const cut = cutMatch
+                    ? { shownChars: content.length, pageChars: Number(cutMatch[2]), omittedChars: Number(cutMatch[1]), howToContinue: Number(cutMatch[2]) <= 100000 ? `Re-read with maxLength:${Math.min(100000, Number(cutMatch[2]) + 500)} to get the whole page, or find:"<term>" for specific entries. Do not treat the cut part as empty. To COUNT or tally entries (per month, per category), do not count by eye: download_file this URL and count it with one run_python script.` : 'The page is longer than the 100000-char read limit: use find:"<term>" for the entries you need, or mode:"crawl" if it is paginated. Do not treat the cut part as empty. To COUNT or tally entries, download_file this URL and count it with one run_python script.' }
+                    : null;
                 // The cascade classified what it served (fetchUrlContent attaches
                 // `obstacle` when a login wall / paywall / undismissable overlay /
                 // thin render is all any layer could get). Its hint names the exact
@@ -31137,6 +31228,7 @@ app.use((req, res) => {
                     ...(result.dismissed ? { dismissed: result.dismissed } : {}),
                     ...(result.published ? { published: result.published } : {}),
                     content,
+                    ...(cut ? { truncated: cut } : {}),
                     ...(result.pagination ? { pagination: result.pagination } : {}),
                     ...(obs ? { obstacle: publicObstacle(obs) } : {}),
                     ...(hint ? { hint } : {}),
@@ -31640,41 +31732,45 @@ app.use((req, res) => {
                 function: {
                     name: 'render_chart',
                     description:
-                        'USE WHEN the user asks to visualize data, plot a chart, graph numbers, or display time-series. ' +
-                        'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries or the `web` tool. ' +
-                        'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers out of the conversation/log yourself and pass them straight here in `data[]`; this renders an interactive chart inline in one step, whereas run_python+matplotlib is slower, can truncate on large data, and only yields a static image. ' +
+                        'Draw an inline chart in the chat: line, bar, area, pie, scatter, or a COMBO of bars + a line (give each series its own type). ' +
+                        'USE WHEN the user asks to visualize, plot, graph or chart data — data from the conversation or data you fetched via fetch_timeseries or the `web` tool. ' +
+                        'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers yourself and pass them in `data[]`; this renders an interactive chart in one step. ' +
                         'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
-                        'For multi-series charts, pass each series as `{ name, color? }` in `series[]` and one `{ x, <seriesName>: y, ... }` object per x-value in `data[]`. For single-series charts, just use `{ x, y }`. ' +
-                        'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary.',
+                        'Rows: one object per x-value, e.g. [{month:"Jan 2026", posts:8}, …]. Each series names the row key it plots in `dataKey` (default: its `name`). ' +
+                        'COMBO ("bar and line", "line over the bars", "with a cumulative line"): type:"combo" and series like [{name:"Posts", dataKey:"posts", type:"bar"}, {name:"Cumulative", dataKey:"posts", type:"line", cumulative:true}] — cumulative:true plots the running total of that key (computed for you); yAxis:"right" puts a series on a second axis (default for cumulative). ' +
+                        'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary. A series whose dataKey is not in the rows is an error, not a blank chart.',
                     parameters: {
                         type: 'object',
                         properties: {
                             type: {
                                 type: 'string',
-                                enum: ['line', 'bar', 'area', 'pie', 'scatter'],
-                                description: 'Chart type.',
+                                enum: ['line', 'bar', 'area', 'pie', 'scatter', 'combo'],
+                                description: 'Chart type. combo = mix bars/lines/areas, one type per series.',
                             },
                             title: { type: 'string', description: 'Chart title.' },
                             xLabel: { type: 'string', description: 'X-axis label (omit for pie).' },
                             yLabel: { type: 'string', description: 'Y-axis label (omit for pie).' },
+                            y2Label: { type: 'string', description: 'Right-axis label when a series uses yAxis:"right".' },
                             data: {
                                 type: 'array',
                                 description:
-                                    'Rows of data. Single-series: [{x, y}, ...]. Multi-series: [{x, seriesName1: y1, seriesName2: y2, ...}, ...]. ' +
-                                    'Pie: [{label, value}, ...].',
+                                    'Rows of data, one per x-value: [{x, y}, ...] or [{month, posts, ...}, ...]. Pie: [{label, value}, ...].',
                                 items: { type: 'object' },
                             },
                             series: {
                                 type: 'array',
-                                description: 'Optional explicit series for multi-series charts.',
+                                description: 'Optional explicit series (required for combo).',
                                 items: {
                                     type: 'object',
                                     properties: {
-                                        name: { type: 'string', description: 'Series name — must match a key in each data row.' },
+                                        name: { type: 'string', description: 'Legend label.' },
+                                        dataKey: { type: 'string', description: 'The row key this series plots (default: name).' },
+                                        type: { type: 'string', enum: ['bar', 'line', 'area'], description: 'Mark for this series (combo charts).' },
+                                        cumulative: { type: 'boolean', description: 'Plot the running total of dataKey.' },
+                                        yAxis: { type: 'string', enum: ['left', 'right'], description: 'Which y-axis (default left; right for cumulative).' },
                                         color: { type: 'string', description: 'CSS color (hex / rgb / named). Optional; auto-assigned if omitted.' },
                                     },
                                     required: ['name'],
-                                    additionalProperties: false,
                                 },
                             },
                             summary: {
@@ -31683,44 +31779,34 @@ app.use((req, res) => {
                             },
                         },
                         required: ['type', 'data'],
-                        additionalProperties: false,
                     },
                 },
             };
         },
-        async execute(args) {
-            const type = String(args?.type || '').toLowerCase();
-            if (!['line', 'bar', 'area', 'pie', 'scatter'].includes(type)) {
-                return { error: `Unsupported chart type "${args?.type}". Use line, bar, area, pie, or scatter.` };
-            }
-            const data = Array.isArray(args?.data) ? args.data : null;
-            if (!data || data.length === 0) {
-                return { error: 'data must be a non-empty array of objects.' };
-            }
-            // Hard cap to keep the tool_result SSE event under the 32 KB
-            // serialization cap that gates structured payload shipping.
-            const MAX_POINTS = 1000;
-            const trimmed = data.length > MAX_POINTS ? data.slice(0, MAX_POINTS) : data;
-            const series = Array.isArray(args?.series)
-                ? args.series.filter(s => s && typeof s.name === 'string').map(s => ({
-                      name: s.name,
-                      ...(typeof s.color === 'string' ? { color: s.color } : {}),
-                  }))
-                : null;
-            const chartSpec = {
-                type,
-                title: typeof args?.title === 'string' ? args.title : '',
-                xLabel: typeof args?.xLabel === 'string' ? args.xLabel : '',
-                yLabel: typeof args?.yLabel === 'string' ? args.yLabel : '',
-                data: trimmed,
-                ...(series && series.length > 0 ? { series } : {}),
-            };
-            return {
-                chartSpec,
-                summary: typeof args?.summary === 'string' ? args.summary : '',
-                pointCount: trimmed.length,
-                truncated: data.length > MAX_POINTS,
-            };
+        async execute(args, ctx) {
+            // A chart drawn while the assistant is still fetching its data is
+            // drawn from memory: measured 2026-10-05, a lead with two data
+            // jobs running charted invented monthly counts at 18 s and then
+            // wrote that the source "shows posts beginning in August". Refuse
+            // ONCE per turn while data jobs are pending and the lead has not
+            // retrieved anything itself; a second call goes through.
+            try {
+                const jobs = ctx && ctx._assistantJobs;
+                const pending = jobs && typeof jobs.values === 'function'
+                    ? [...jobs.values()].filter(j => j && (j.status === 'running' || j.status === 'queued' || j.status === 'pending'))
+                    : [];
+                const labels = Array.isArray(ctx?._turnToolLabels) ? ctx._turnToolLabels : [];
+                const retrieved = labels.some(l => /^(?:web|web_search|fetch_url|scrapling_fetch|playwright_fetch|playwright_interact|crawl_pages|http_request|fetch_timeseries|read_file|read_xlsx|query_sqlite|run_python|run_node|csv_describe|spreadsheet_query)$/.test(l));
+                // The flag lives on the turn's job Map: ctx may be a per-call view.
+                if (pending.length && !retrieved && !jobs._chartWaitRefused) {
+                    jobs._chartWaitRefused = true;
+                    return {
+                        error: 'chart_data_pending',
+                        message: `Not drawn yet: your assistant is still gathering the data this chart needs (${pending.map(j => `"${j.name}"`).join(', ')}) and you have not read any source yourself this turn, so these numbers would be guesses. Call await_assistant, then chart the numbers from its report — or read the source yourself with the web tool first.`,
+                    };
+                }
+            } catch (_) { /* never block a chart on a bookkeeping error */ }
+            return normalizeChartArgs(args);
         },
     });
 
@@ -34989,10 +35075,17 @@ app.use((req, res) => {
             if (!jobs || jobs.size === 0) return { error: 'No assistant jobs have been started on this turn.' };
             let ids = args && args.ids;
             if (typeof ids === 'string') ids = [ids];
-            const wanted = Array.isArray(ids) && ids.length
-                ? [...jobs.values()].filter(j => ids.includes(j.id) || ids.includes(j.name))
-                : [...jobs.values()].filter(j => j.status === 'running' || (assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled'));
-            if (!wanted.length) return { error: 'No matching assistant jobs.', known: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status })) };
+            const outstanding = () => [...jobs.values()].filter(j => j.status === 'running' || j.status === 'queued' || (assistantQueue.isSettled(j) && !j.delivered && j.status !== 'cancelled'));
+            const norm = (v) => String(v || '').toLowerCase().trim();
+            let wanted = Array.isArray(ids) && ids.length
+                ? [...jobs.values()].filter(j => ids.some(x => norm(x) && (norm(x) === norm(j.id) || norm(x) === norm(j.name))))
+                : outstanding();
+            // Models invent ids ("job_1", "a1") for jobs the runtime started
+            // for them. Treating that as "nothing to wait for" sent a lead
+            // straight on to chart guessed numbers while its data jobs ran
+            // (2026-10-05) — an unknown id means "the outstanding jobs".
+            if (!wanted.length && Array.isArray(ids) && ids.length) wanted = outstanding();
+            if (!wanted.length) return { error: 'No assistant jobs are outstanding — every report has already been delivered to you.', known: [...jobs.values()].map(j => ({ id: j.id, name: j.name, status: j.status })) };
             // Return as soon as the FIRST of them finishes (or one already has),
             // not when all do: measured, a lead blocked 188 s on three jobs doing
             // nothing, which is exactly what two models working together is not.

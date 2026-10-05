@@ -5,6 +5,7 @@ import {
     AreaChart, Area,
     PieChart, Pie, Cell,
     ScatterChart, Scatter,
+    ComposedChart,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
     ResponsiveContainer,
 } from 'recharts';
@@ -46,6 +47,11 @@ export default function ChartBlock({ spec, summary }) {
         if (Array.isArray(series) && series.length > 0) {
             const declared = series.map((s, i) => ({
                 name: s.name,
+                // Server-normalized specs carry the row key separately from
+                // the legend label; older saved specs only have `name`.
+                dataKey: s.dataKey || s.name,
+                type: s.type,
+                yAxis: s.yAxis,
                 color: s.color || DEFAULT_COLORS[i % DEFAULT_COLORS.length],
             }));
             // Series-key inference fallback: if every declared series name is
@@ -54,12 +60,12 @@ export default function ChartBlock({ spec, summary }) {
             // Rewrite the dataKey to 'y' when present, else infer numeric
             // keys from the first row excluding the X-axis key.
             const allMissing = declared.every(s =>
-                data.every(row => !(s.name in (row || {})))
+                data.every(row => !(s.dataKey in (row || {})))
             );
             if (allMissing) {
                 const sample = data[0] || {};
                 if ('y' in sample) {
-                    return [{ name: 'y', color: declared[0].color }];
+                    return [{ name: 'y', dataKey: 'y', color: declared[0].color }];
                 }
                 const inferred = Object.keys(sample).filter(k =>
                     k !== 'x' && k !== 'label' && k !== 'date' &&
@@ -68,6 +74,7 @@ export default function ChartBlock({ spec, summary }) {
                 if (inferred.length > 0) {
                     return inferred.map((k, i) => ({
                         name: k,
+                        dataKey: k,
                         color: declared[i] ? declared[i].color : DEFAULT_COLORS[i % DEFAULT_COLORS.length],
                     }));
                 }
@@ -76,34 +83,43 @@ export default function ChartBlock({ spec, summary }) {
         }
         if (type === 'pie') return [];
         if (type === 'scatter') {
-            return [{ name: 'value', color: DEFAULT_COLORS[0] }];
+            return [{ name: 'value', dataKey: 'value', color: DEFAULT_COLORS[0] }];
         }
         // Try to infer series from data keys, excluding the x-axis key.
         const sample = data[0] || {};
-        const keys = Object.keys(sample).filter(k => k !== 'x' && k !== 'label' && k !== 'date');
+        const xk = spec.xKey;
+        const keys = Object.keys(sample).filter(k => k !== 'x' && k !== 'label' && k !== 'date' && k !== xk);
         if (keys.length === 1 && keys[0] === 'y') {
-            return [{ name: 'y', color: DEFAULT_COLORS[0] }];
+            return [{ name: 'y', dataKey: 'y', color: DEFAULT_COLORS[0] }];
         }
         if (keys.length === 0) {
-            return [{ name: 'y', color: DEFAULT_COLORS[0] }];
+            return [{ name: 'y', dataKey: 'y', color: DEFAULT_COLORS[0] }];
         }
         return keys.map((k, i) => ({
             name: k,
+            dataKey: k,
             color: DEFAULT_COLORS[i % DEFAULT_COLORS.length],
         }));
-    }, [type, series, data]);
+    }, [type, series, data, spec.xKey]);
 
     // The x-axis key. Common shapes: { x, y }, { date, close }, { label, value }.
     const xKey = useMemo(() => {
         const sample = data[0] || {};
+        if (spec.xKey && spec.xKey in sample) return spec.xKey;
         if ('x' in sample) return 'x';
         if ('date' in sample) return 'date';
         if ('label' in sample) return 'label';
         const keys = Object.keys(sample);
         return keys[0] || 'x';
-    }, [data]);
+    }, [data, spec.xKey]);
 
     const chartHeight = 320;
+    // A series with its own mark that differs from the chart type (or a
+    // `combo` spec) is drawn as a ComposedChart: bars, lines and areas on one
+    // set of axes, with a second y-axis for series that ask for it.
+    const isCombo = type === 'combo' || (['line', 'bar', 'area'].includes(type)
+        && resolvedSeries.some(s => s.type && s.type !== type));
+    const hasRightAxis = resolvedSeries.some(s => s.yAxis === 'right');
 
     const tooltipStyle = {
         background: 'var(--surface)',
@@ -121,7 +137,30 @@ export default function ChartBlock({ spec, summary }) {
     };
 
     let chart = null;
-    if (type === 'line') {
+    if (isCombo) {
+        const markOf = (s) => s.type || (type === 'combo' ? 'line' : type);
+        chart = (
+            <ComposedChart data={data} margin={{ top: 8, right: hasRightAxis ? 4 : 16, left: 0, bottom: xLabel ? 24 : 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
+                <XAxis dataKey={xKey} {...axisProps} label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -8, fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
+                <YAxis yAxisId="left" {...axisProps} label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
+                {hasRightAxis && (
+                    <YAxis yAxisId="right" orientation="right" {...axisProps} label={spec.y2Label ? { value: spec.y2Label, angle: 90, position: 'insideRight', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
+                )}
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'var(--bg-2)' }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* Bars first so lines and areas draw on top of them. */}
+                {[...resolvedSeries].sort((a, b) => (markOf(a) === 'bar' ? 0 : 1) - (markOf(b) === 'bar' ? 0 : 1)).map(s => {
+                    const axisId = s.yAxis === 'right' && hasRightAxis ? 'right' : 'left';
+                    const key = s.dataKey || s.name;
+                    const mark = markOf(s);
+                    if (mark === 'bar') return <Bar key={s.name} yAxisId={axisId} dataKey={key} name={s.name} fill={s.color} isAnimationActive={false} />;
+                    if (mark === 'area') return <Area key={s.name} yAxisId={axisId} type="monotone" dataKey={key} name={s.name} stroke={s.color} fill={s.color} fillOpacity={0.25} strokeWidth={2} isAnimationActive={false} />;
+                    return <Line key={s.name} yAxisId={axisId} type="monotone" dataKey={key} name={s.name} stroke={s.color} strokeWidth={2} dot={data.length <= 30} activeDot={{ r: 4 }} isAnimationActive={false} />;
+                })}
+            </ComposedChart>
+        );
+    } else if (type === 'line') {
         chart = (
             <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: xLabel ? 24 : 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
@@ -130,7 +169,7 @@ export default function ChartBlock({ spec, summary }) {
                 <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
-                    <Line key={s.name} type="monotone" dataKey={s.name} stroke={s.color} strokeWidth={2} dot={data.length <= 30} activeDot={{ r: 4 }} isAnimationActive={false} />
+                    <Line key={s.name} type="monotone" dataKey={s.dataKey || s.name} name={s.name} stroke={s.color} strokeWidth={2} dot={data.length <= 30} activeDot={{ r: 4 }} isAnimationActive={false} />
                 ))}
             </LineChart>
         );
@@ -143,7 +182,7 @@ export default function ChartBlock({ spec, summary }) {
                 <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'var(--bg-2)' }} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
-                    <Bar key={s.name} dataKey={s.name} fill={s.color} isAnimationActive={false} />
+                    <Bar key={s.name} dataKey={s.dataKey || s.name} name={s.name} fill={s.color} isAnimationActive={false} />
                 ))}
             </BarChart>
         );
@@ -156,7 +195,7 @@ export default function ChartBlock({ spec, summary }) {
                 <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
-                    <Area key={s.name} type="monotone" dataKey={s.name} stroke={s.color} fill={s.color} fillOpacity={0.25} strokeWidth={2} isAnimationActive={false} />
+                    <Area key={s.name} type="monotone" dataKey={s.dataKey || s.name} name={s.name} stroke={s.color} fill={s.color} fillOpacity={0.25} strokeWidth={2} isAnimationActive={false} />
                 ))}
             </AreaChart>
         );

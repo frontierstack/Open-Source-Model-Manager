@@ -304,6 +304,74 @@ function forbidsTools(text) {
     return NO_TOOLS_RE.test(ask) || stripNegatedTools(ask).toolsForbidden;
 }
 
+// ── Corrections and "continue" ──────────────────────────────────────────────
+// "NO! I said Jan - Oct", "I still don't see the line", "you didn't finish",
+// "continue": the message is about the PREVIOUS request — it redoes or
+// resumes it. Planned on its own words it has nothing to look up and no build
+// verb, so the first pass was skipped ("nothing to look up"), the lead made no
+// tool call and resent its earlier reply word for word (measured 2026-10-05:
+// a chart the user had complained about twice, 0 tool calls, 10.9 s).
+const CORRECTION_RES = [
+    /\bI (?:said|asked(?: for| you)?|told you|wanted|meant|specifically (?:said|asked))\b/i,
+    /\b(?:I )?(?:still |also )?(?:don'?t|do not|can'?t|cannot|didn'?t|did not) see\b/i,
+    /\bstill (?:not|no|don'?t|doesn'?t|isn'?t|aren'?t|missing|wrong|broken|empty|the same|nothing|zero|shows?)\b/i,
+    /\byou (?:didn'?t|did not|haven'?t|have not|forgot|missed|ignored|left out|skipped|never|stopped|quit|gave up|are not listening|aren'?t listening|weren'?t listening|got (?:it|that|this) wrong)\b/i,
+    /\b(?:not|isn'?t|wasn'?t) what I (?:asked|wanted|said|meant)\b/i,
+    /\b(?:that'?s|that is|this is|it'?s|it is|these are|those are) (?:wrong|incorrect|not right|not correct|inaccurate|incomplete|not it)\b/i,
+    /\b(?:isn'?t|doesn'?t|didn'?t|is not|does not|did not|won'?t|aren'?t) (?:work|show|render|display|load|appear|include|match|contain)\w*\b/i,
+    /\bwhere(?:'s| is| are) (?:the|my) (?:\w+ ){0,2}(?:chart|graph|line|bars?|table|file|data|results?|answer|report|link|download|image|picture|code|script|output|pdf|summary|rest)\b/i,
+    /\b(?:not listening|didn'?t listen|wrong (?:data|numbers|dates|chart|graph|answer|results?|months?)|missing (?:data|results?|entries|months?|the \w+))\b/i,
+    /\b(?:redo|re-do|try again|do it again|do it right|start over)\b/i,
+];
+const CONTINUE_ASK_RE = /^(?:please\s+)?(?:continue|keep going|carry on|go on|resume|proceed|finish(?: (?:it|that|this|up|the \w+))?|keep at it|don'?t stop)\b|\b(?:you (?:stopped|quit|gave up|didn'?t finish|did not finish|never finished)|(?:it|that) (?:stopped|got cut off|was cut off)|unfinished|pick up where you left off)\b/i;
+
+function redoKind(ask) {
+    if (!ask) return null;
+    const words = ask.split(/\s+/).filter(Boolean).length;
+    if (words > 120) return null; // a long message is a new request of its own
+    if (words <= 30 && CONTINUE_ASK_RE.test(ask)) return 'continue';
+    if (CORRECTION_RES.some(re => re.test(ask))) return 'correction';
+    return null;
+}
+
+/**
+ * Is the latest message a correction of, or a request to continue, earlier
+ * work? `previousTexts` are the earlier USER messages, most recent first.
+ * Walks back past earlier corrections ("NO! I said Jan-Oct" → "I still don't
+ * see the line") to the request they all refer to.
+ * @returns {null|{kind:'correction'|'continue', original:string, complaints:string[], ask:string}}
+ */
+function detectRedo({ text, previousTexts = [] } = {}) {
+    const ask = cleanAsk(text);
+    const kind = redoKind(ask);
+    if (!kind) return null;
+    const complaints = [];
+    let original = null;
+    for (const p of previousTexts || []) {
+        const c = cleanAsk(p);
+        if (!c) continue;
+        if (redoKind(c) && complaints.length < 3) { complaints.push(c); continue; }
+        original = c;
+        break;
+    }
+    if (!original) return null;
+    return { kind, original, complaints: complaints.reverse(), ask };
+}
+
+/** The note that tells the model to redo / resume the work instead of re-answering. */
+function buildRedoNote(redo, { maxChars = 700 } = {}) {
+    if (!redo) return '';
+    const clip = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n).replace(/\s+\S*$/, '')}…` : t; };
+    const original = clip(redo.original, maxChars);
+    if (redo.kind === 'continue') {
+        return `[SYSTEM: The user is asking you to CONTINUE unfinished work on their request: "${original}". Pick up where you stopped and do the remaining steps now with tool calls. Do not restate what is already done and do not stop until the request is complete or you hit a real blocker — then name the blocker.]`;
+    }
+    const earlier = redo.complaints.length
+        ? ` They already corrected you before: ${redo.complaints.map(c => `"${clip(c, 300)}"`).join('; ')}.`
+        : '';
+    return `[SYSTEM: This message CORRECTS your previous answer — the user says it did not do what they asked. Their original request: "${original}".${earlier} Do the work again on THIS turn with tool calls: fetch the data again (your earlier data may be incomplete — read the whole source, not just its first part) and re-run the step that produced the wrong result (the chart, file, script or search) with corrected arguments. Do NOT resend or reword your previous answer. Never say a result shows something unless a tool result from THIS turn proves it. If part of the request truly cannot be done, say exactly which part and why.]`;
+}
+
 // Does answering need anything LOOKED UP — current facts, research, a
 // comparison, a linked page? Decides whether the brief (which exists to plan
 // background lookups) is worth a call at all: building, writing and coding
@@ -433,7 +501,7 @@ function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHis
  *   reason: string, substantial: boolean
  * }}
  */
-function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds, hasHistory = false, previousText = null, lastAssistantText = null, secondaryBusy = false } = {}) {
+function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds, hasHistory = false, previousText = null, lastAssistantText = null, secondaryBusy = false, redoText = null } = {}) {
     const r = roles || {};
     const m = MODES.includes(mode) ? mode : (MODES.includes(r.mode) ? r.mode : 'auto');
     const loaded = running instanceof Set ? running : new Set(Array.isArray(running) ? running : []);
@@ -442,8 +510,17 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     const primary = r.primary || null;
     const secondary = r.secondary || null;
     const requested = targetModel || null;
-    const verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds, previousText, lastAssistantText });
-    const easy = isEasyTurn({ text: userText, hasAttachments, attachmentKinds, hasHistory, previousText, lastAssistantText });
+    let verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds, previousText, lastAssistantText });
+    let easy = isEasyTurn({ text: userText, hasAttachments, attachmentKinds, hasHistory, previousText, lastAssistantText });
+    // A correction ("I still don't see the line") or "continue" redoes the
+    // request it refers to: plan it as that request, not as its own words.
+    if (redoText && !verdict.substantial) {
+        const v2 = isSubstantialWork({ text: redoText, hasAttachments, attachmentKinds });
+        if (v2.substantial) {
+            verdict = { ...v2, reason: `redoes an earlier request (${v2.reason})` };
+            easy = { easy: false, reason: verdict.reason };
+        }
+    }
 
     // Picking the strong model in the composer is a deliberate choice — honour
     // it even when the turn is trivial.
@@ -1237,6 +1314,8 @@ module.exports = {
     askLength,
     isSubstantialWork,
     isEasyTurn,
+    detectRedo,
+    buildRedoNote,
     stripNegatedToolClauses: (text) => stripNegatedTools(String(text || '')).ask,
     isRetrievalShaped,
     needsLookup,
