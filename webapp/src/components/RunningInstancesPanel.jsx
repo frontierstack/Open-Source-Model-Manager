@@ -128,6 +128,10 @@ function LlamacppPills({ cfg }) {
             {cfg?.specType === 'draft-simple' && (
                 <Pill tooltip={`Speculative decoding with draft model (n-max=${cfg?.specDraftNMax ?? 3})`} label={`Spec: draft+${cfg?.specDraftNMax ?? 3}`} tone="success" />
             )}
+            {cfg?.specNgram && <Pill tooltip="N-gram drafting — repeated text (file rewrites, quoted tool output) is drafted in long runs" label="N-gram" tone="success" />}
+            {cfg?.splitMode === 'tensor' && <Pill tooltip="Tensor split — the cards decode in parallel instead of taking turns" label="Tensor split" tone="accent" />}
+            {cfg?.splitMode === 'row' && <Pill tooltip="Row split across the cards" label="Row split" tone="accent" />}
+            {cfg?.backendSampling && <Pill tooltip="Sampling runs on the GPU — only the chosen token crosses PCIe" label="GPU sampling" tone="info" />}
             {cfg?.contextShift && <Pill tooltip="Context shifting enabled" label="CtxShift" tone="success" />}
             {cfg?.compressMemory && <Pill tooltip="AIMem memory compression enabled" label="AIMem" tone="accent" />}
             {/* Always show the reasoning state so it's unambiguous at a glance */}

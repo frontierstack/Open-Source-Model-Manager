@@ -38,6 +38,60 @@ const adBlockService = require('./services/adBlock');
 const LLAMACPP_UBATCH_DEFAULT = Math.max(128, parseInt(process.env.LLAMACPP_UBATCH_DEFAULT || '512', 10) || 512);
 const LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT = Math.max(1, Math.min(16, parseInt(process.env.LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT || '3', 10) || 3));
 
+// ---- Tensor parallelism (--split-mode tensor), measured 2026-10-04 on the
+// same cards (Qwen3.8-27B Q4_K_M @262k, q4_0 KV, MTP). A layer split runs the
+// cards one after another; a tensor split has both cards read half of every
+// weight at once, so decode went 32.0 → 53.9 tok/s (code), 23.2 → 43.4
+// (prose), 23.5 → 41.0 at 29k context. Cold prefill is the price: 1222 → 650
+// tok/s on a 29k prompt (ubatch size and the all-reduce knobs do not move it).
+//   - all-reduce: llama.cpp defaults to NCCL whenever the image carries it, and
+//     NCCL dies on load on GPUs without P2P ("Cuda failure 'invalid argument'"
+//     in ncclGroupEnd — this host is a VM). The internal all-reduce stages
+//     through pinned host memory and is built for exactly that; it supports 2
+//     cards only (more fall back to a slower generic path).
+//   - draft n-max 2: with the verify pass split across two cards a third
+//     draft token costs more than it returns (prose 37.2 → 43.4 tok/s, code and
+//     JSON +1-2%, identical greedy output); 4 is slower and changes output.
+const LLAMACPP_SPLIT_MODES = ['layer', 'tensor', 'row', 'none'];
+const LLAMACPP_TP_ALLREDUCE = process.env.LLAMACPP_TP_ALLREDUCE || 'internal';
+const LLAMACPP_SPEC_DRAFT_N_MAX_TP_DEFAULT = Math.max(1, Math.min(16, parseInt(process.env.LLAMACPP_SPEC_DRAFT_N_MAX_TP_DEFAULT || '2', 10) || 2));
+
+// '' = llama.cpp's own default (layer). Unknown values throw a 400.
+function normalizeLlamacppSplitMode(value) {
+    if (value === undefined || value === null || value === '' || value === 'auto') return '';
+    const v = String(value).trim().toLowerCase();
+    if (!LLAMACPP_SPLIT_MODES.includes(v)) {
+        const err = new Error(`splitMode must be one of: ${LLAMACPP_SPLIT_MODES.join(', ')}`);
+        err.statusCode = 400;
+        throw err;
+    }
+    return v;
+}
+
+// The --spec-type list llama-server gets. N-gram drafting ('ngram-mod') stacks
+// on top of a model drafter: it only drafts when the output starts repeating
+// text already in the context (a rewritten file, a quoted tool result) and
+// costs nothing otherwise — measured: a 1,024-token file rewrite 57.5 → 191.8
+// tok/s on the 27B and 80 → 459 on the 4B, ordinary prompts unchanged.
+function llamacppSpecTypeList(config) {
+    const list = [];
+    // draft-simple without a draft GGUF cannot start (the entrypoint already
+    // ignored it; the native env binding would not).
+    const usable = config.specType && config.specType !== 'none'
+        && !(config.specType === 'draft-simple' && !config.specDraftModel);
+    if (usable) list.push(config.specType);
+    if (config.specNgram === true) list.push('ngram-mod');
+    return list;
+}
+
+function parseLlamacppSpecTypeList(value) {
+    const parts = String(value || '').split(',').map(s => s.trim()).filter(Boolean);
+    return {
+        specType: parts.find(p => p !== 'ngram-mod' && p !== 'none') || 'none',
+        specNgram: parts.includes('ngram-mod')
+    };
+}
+
 // Prompt-cache RAM (llama-server --cache-ram, MiB). The cache holds saved
 // slot states so a request that switches conversations (Pi ↔ web chat on one
 // slot) restores in seconds instead of re-prefilling; a 100k-token q8_0 entry
@@ -2607,9 +2661,11 @@ async function syncModelInstances() {
                     // --spec-type / --spec-draft-n-max / --spec-draft-model so
                     // the My Models chip shows the running mode correctly after
                     // a webapp recreate.
-                    specType: getEnvValue('LLAMA_SPEC_TYPE') || 'none',
+                    ...parseLlamacppSpecTypeList(getEnvValue('LLAMA_SPEC_TYPE')),
                     specDraftNMax: parseInt(getEnvValue('LLAMA_SPEC_DRAFT_N_MAX') || '3'),
                     specDraftModel: getEnvValue('LLAMA_SPEC_DRAFT_MODEL') || '',
+                    splitMode: getEnvValue('LLAMA_SPLIT_MODE') || '',
+                    backendSampling: getEnvValue('LLAMA_BACKEND_SAMPLING') === 'true',
                     // Which GPUs this container was pinned to, if any (null = all).
                     gpuDevices: normalizeGpuDevices(getEnvValue('MODELSERVER_GPU_DEVICES'), 0)
                 };
@@ -5168,8 +5224,24 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             result = await createSglangInstance(modelName, fullPath, config);
         } else if (backend === 'llamacpp') {
             const gpuCountHere = await getGpuCount();
+            const gpuDevicesHere = normalizeGpuDevices(req.body.gpuDevices, gpuCountHere);
+            let splitMode = normalizeLlamacppSplitMode(req.body.splitMode);
+            const visibleGpusHere = gpuDevicesHere ? gpuDevicesHere.length : gpuCountHere;
+            if (splitMode === 'tensor' && visibleGpusHere < 2) {
+                broadcast({ type: 'log', level: 'warn', message: `[${modelName}] Tensor split needs 2 GPUs and this instance sees ${visibleGpusHere} — loading with the default layer split.` });
+                splitMode = '';
+            } else if (splitMode === 'tensor' && visibleGpusHere !== 2) {
+                broadcast({ type: 'log', level: 'warn', message: `[${modelName}] Tensor split on ${visibleGpusHere} GPUs: llama.cpp's fast all-reduce supports exactly 2 cards, more fall back to a slower path, and the model's heads must divide evenly across the cards. Pin it to 2 GPUs for the measured speedup.` });
+            }
             const config = {
-                gpuDevices: normalizeGpuDevices(req.body.gpuDevices, gpuCountHere),
+                gpuDevices: gpuDevicesHere,
+                splitMode,
+                // GPU-side sampling: only the chosen token comes back over PCIe
+                // instead of the full logit vector (248k floats on Qwen3.x).
+                // Measured +7% decode on a 4B alone on one card. llama.cpp
+                // falls back to CPU sampling under a tensor split.
+                backendSampling: req.body.backendSampling === true,
+                specNgram: req.body.specNgram === true,
                 nGpuLayers: req.body.nGpuLayers ?? -1,
                 contextSize: req.body.contextSize || 4096,
                 contextShift: req.body.contextShift ?? true,
@@ -5201,10 +5273,12 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 // draft-simple}; specDraftModel is a path inside the container
                 // (under /models) and is only used when specType=draft-simple.
                 specType: req.body.specType || 'none',
-                specDraftNMax: req.body.specDraftNMax ?? LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT,
+                specDraftNMax: req.body.specDraftNMax ?? (splitMode === 'tensor' ? LLAMACPP_SPEC_DRAFT_N_MAX_TP_DEFAULT : LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT),
                 specDraftPMin: req.body.specDraftPMin ?? null,
                 specDraftModel: req.body.specDraftModel || ''
             };
+            // A tensor split refuses to run without flash attention.
+            if (splitMode === 'tensor') config.flashAttention = true;
             // GPU layers 0 on a GPU host runs the whole model on the CPU —
             // ~10-50x slower, and as the pair's assistant it times out every
             // brief and job. Allowed (it can be deliberate), but never silent.
@@ -5800,11 +5874,33 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             // baked into the main GGUF (DeepSeek-V3/R1, Qwen3-Next-MTP,
             // Qwen3.5/3.6-MTP — no second model needed). 'draft-simple' =
             // classic speculative with a separate smaller draft GGUF.
-            `LLAMA_SPEC_TYPE=${config.specType || 'none'}`,
+            `LLAMA_SPEC_TYPE=${llamacppSpecTypeList(config).join(',') || 'none'}`,
             `LLAMA_SPEC_DRAFT_N_MAX=${config.specDraftNMax ?? LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT}`
         ];
         if (config.specType === 'draft-simple' && config.specDraftModel) {
             envVars.push(`LLAMA_SPEC_DRAFT_MODEL=${config.specDraftModel}`);
+        }
+        // The knobs below reach llama-server through its OWN env bindings
+        // (LLAMA_ARG_*), so they work on the current llamacpp image: its
+        // entrypoint passes explicit flags only for a single, known spec type
+        // and has no split-mode / backend-sampling flags at all. Editing
+        // entrypoint.sh instead would mark the image changed and make the next
+        // update.sh recompile llama.cpp from a fresh upstream master (~1.5 h,
+        // untested binary). The LLAMA_* twins are what the boot-time sync reads.
+        const specList = llamacppSpecTypeList(config);
+        if (specList.length) {
+            envVars.push(`LLAMA_ARG_SPEC_TYPE=${specList.join(',')}`,
+                `LLAMA_ARG_SPEC_DRAFT_N_MAX=${config.specDraftNMax ?? LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT}`);
+            if (config.specType === 'draft-simple' && config.specDraftModel) {
+                envVars.push(`LLAMA_ARG_SPEC_DRAFT_MODEL=${config.specDraftModel}`);
+            }
+        }
+        if (config.splitMode) {
+            envVars.push(`LLAMA_SPLIT_MODE=${config.splitMode}`, `LLAMA_ARG_SPLIT_MODE=${config.splitMode}`);
+            if (config.splitMode === 'tensor') envVars.push(`GGML_CUDA_ALLREDUCE=${LLAMACPP_TP_ALLREDUCE}`);
+        }
+        if (config.backendSampling === true) {
+            envVars.push('LLAMA_BACKEND_SAMPLING=true', 'LLAMA_ARG_BACKEND_SAMPLING=1');
         }
         // Both knobs are passed twice on purpose: LLAMA_* is what the
         // entrypoint translates into an explicit flag, and LLAMA_ARG_* is
@@ -7769,8 +7865,17 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 presencePenalty: 0.0,
                 frequencyPenalty: 0.0,
                 ctxCheckpoints: 2,
-                swaFull: true               // Eliminates the per-turn re-eval on SWA models
+                swaFull: true,              // Eliminates the per-turn re-eval on SWA models
+                splitMode: '',              // llama.cpp default (layer); 'tensor' for exactly 2 cards below
+                backendSampling: true,      // sample on the GPU: only the token crosses PCIe
+                specNgram: true             // n-gram drafts: free unless the output repeats context
             };
+            // A main model that kept its multi-token-prediction heads (the
+            // "-MTP-" checkpoints) drafts with them; no second model needed.
+            if (/(^|[-_.])mtp([-_.]|$)/i.test(String(modelName || ''))) {
+                llamacppSettings.specType = 'draft-mtp';
+                llamacppSettings.specDraftNMax = LLAMACPP_SPEC_DRAFT_N_MAX_DEFAULT;
+            }
 
             if (gpuCount === 0 || gpuMemoryGB === 0) {
                 // CPU-only mode
@@ -7781,6 +7886,7 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 llamacppSettings.ubatchSize = 256;
                 llamacppSettings.flashAttention = false;
                 llamacppSettings.swaFull = false; // Marginal benefit, can hurt CPU-bound runs
+                llamacppSettings.backendSampling = false;
                 notes.push('No GPU detected — using CPU-only mode');
                 notes.push(`Using ${llamacppSettings.threads} CPU threads`);
                 return res.json({
@@ -7959,6 +8065,26 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                     notes.push(`Cards are imbalanced (${(largestGpuFreeGB - smallestGpuFreeGB).toFixed(1)} GB spread). Even split would waste headroom on the larger card; consider --tensor-split ${ratio} via env var to bias more weight toward the freer card.`);
                 }
             }
+
+            // Multi-GPU split. A layer split runs the cards one after another,
+            // so a second card adds VRAM, not speed; a tensor split has both
+            // cards read half of every weight at once (measured on 2×RTX 5060 Ti:
+            // +65-85% decode). Its fast all-reduce is 2-card only.
+            if (llamacppSettings.nGpuLayers === -1 && gpuCount === 2) {
+                llamacppSettings.splitMode = 'tensor';
+                llamacppSettings.flashAttention = true;
+                llamacppSettings.ubatchSize = 512;
+                llamacppSettings.backendSampling = false; // unsupported under a tensor split
+                if (llamacppSettings.specType === 'draft-mtp') llamacppSettings.specDraftNMax = LLAMACPP_SPEC_DRAFT_N_MAX_TP_DEFAULT;
+                notes.push('Split mode: tensor — both cards decode in parallel (measured +65-85% tok/s vs layer split). Cold prefill of a long prompt runs ~half as fast; cached turns are unaffected.');
+            } else if (llamacppSettings.nGpuLayers === -1 && gpuCount > 2) {
+                notes.push(`Tensor split (the biggest decode lever on multi-GPU) needs exactly 2 cards — pin this model to 2 of the ${gpuCount} GPUs to use it and keep the rest for another model.`);
+            }
+            if (llamacppSettings.specType === 'draft-mtp') {
+                notes.push(`MTP heads detected in the name — speculative decoding on (draft ${llamacppSettings.specDraftNMax} tokens per step)`);
+            }
+            notes.push('N-gram drafting on — speeds up output that repeats text already in context (file rewrites, quoted tool results); no cost otherwise.');
+            if (llamacppSettings.backendSampling) notes.push('GPU sampling on — only the chosen token crosses PCIe instead of the full vocabulary of logits.');
 
             return res.json({
                 settings: llamacppSettings,

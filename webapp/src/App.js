@@ -593,7 +593,15 @@ const App = () => {
         //   'draft-simple' — classic speculation with a separate smaller draft.
         specType: 'none',
         specDraftNMax: 3,
-        specDraftModel: ''
+        specDraftModel: '',
+        // N-gram drafting stacked on the spec type above: drafts only when the
+        // output starts repeating text already in the context.
+        specNgram: false,
+        // Multi-GPU split: '' = llama.cpp default (layer), 'tensor' = both
+        // cards decode in parallel (2 cards only).
+        splitMode: '',
+        // Sample on the GPU (only the chosen token crosses PCIe).
+        backendSampling: false
     });
 
     // Optimal settings state
@@ -6489,7 +6497,7 @@ console.log(chip);`
             '/api/sglang/instances/:name/slots/clear': { method: 'POST', path: '/api/sglang/instances/model_name/slots/clear', note: 'sglang has no explicit KV-slot clearing: this only checks the instance answers (returns { message, note })' },
             '/api/system/reset':                { method: 'POST',   path: '/api/system/reset', body: { confirmation: 'RESET' }, note: 'DESTRUCTIVE: stops every instance AND deletes every downloaded model under /models. confirmation must be exactly "RESET"' },
             '/api/playwright/status':           { method: 'GET',    path: '/api/playwright/status', note: 'Returns { enabled, status, browserPool: { size, maxSize, inUse, available }, features }' },
-            '/api/models/:name/load':           { method: 'POST',   path: '/api/models/model_name/load', body: { backend: 'llamacpp', contextSize: 32768, nGpuLayers: -1, flashAttention: true, cacheTypeK: 'q8_0', cacheTypeV: 'q8_0', parallelSlots: 2, specType: 'none', gpuDevices: [0, 1], compressMemory: false }, note: 'llama.cpp fields: contextSize, nGpuLayers, parallelSlots, flashAttention, cacheTypeK/V, ubatchSize, batchSize, repeatPenalty, specType (none | draft-mtp | draft-simple) + specDraftNMax, gpuDevices, … For sglang send backend: "sglang" with maxModelLen / memFractionStatic / tensorParallelSize / maxRunningRequests. Returns { message, backend, containerId, port, containerName }' },
+            '/api/models/:name/load':           { method: 'POST',   path: '/api/models/model_name/load', body: { backend: 'llamacpp', contextSize: 32768, nGpuLayers: -1, flashAttention: true, cacheTypeK: 'q8_0', cacheTypeV: 'q8_0', parallelSlots: 2, specType: 'none', gpuDevices: [0, 1], compressMemory: false }, note: 'llama.cpp fields: contextSize, nGpuLayers, parallelSlots, flashAttention, cacheTypeK/V, ubatchSize, batchSize, repeatPenalty, specType (none | draft-mtp | draft-simple) + specDraftNMax, specNgram, splitMode (layer | tensor), backendSampling, gpuDevices, … For sglang send backend: "sglang" with maxModelLen / memFractionStatic / tensorParallelSize / maxRunningRequests. Returns { message, backend, containerId, port, containerName }' },
             '/api/system/optimal-settings':     { method: 'POST',   path: '/api/system/optimal-settings', body: { modelFileSize: 4000000000, backend: 'llamacpp', gpuDevices: [0] }, note: 'modelFileSize (bytes) is required; results are under settings (contextSize, nGpuLayers, …); omit backend for sglang settings' },
             '/api/tasks':                       { method: 'GET',    path: '/api/tasks', note: 'Agent tasks: [{ id, agentId, description, status, priority, … }]' },
             '/api/agent/file/read':             { method: 'POST',   path: '/api/agent/file/read', body: { filePath: '/data/notes.txt' }, note: 'Needs the agents permission and allowFileRead. Returns { content, path }. Allowed roots: /models, /data, the app directory, $HOME' },
@@ -7240,7 +7248,12 @@ console.log(chip);`
                 repeatLastN: data.settings.repeatLastN,
                 presencePenalty: data.settings.presencePenalty,
                 frequencyPenalty: data.settings.frequencyPenalty,
-                swaFull: data.settings.swaFull === true
+                swaFull: data.settings.swaFull === true,
+                splitMode: data.settings.splitMode || '',
+                backendSampling: data.settings.backendSampling === true,
+                specNgram: data.settings.specNgram === true,
+                ...(data.settings.specType ? { specType: data.settings.specType } : {}),
+                ...(data.settings.specDraftNMax ? { specDraftNMax: data.settings.specDraftNMax } : {})
             }));
 
             setOptimalSettingsNotes(data.notes || []);
@@ -11445,6 +11458,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftModel</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>""</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-model PATH (only when draft-simple)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cacheRam</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--cache-ram host prompt cache in MiB (blank = sized from the model&apos;s KV state and host RAM, 0 = off)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftPMin</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>unset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-p-min (0–1; minimum draft probability)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>splitMode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>'' (layer)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--split-mode (layer / tensor / row); tensor = both cards decode in parallel, exactly 2 GPUs, ~+65-85% generation</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>backendSampling</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--backend-sampling (sample on the GPU; ignored under a tensor split)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specNgram</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>adds ngram-mod to --spec-type (drafts repeated text, e.g. file rewrites)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuDevices</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>all</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pin to GPU indices, e.g. [0,2] (the container sees only those cards; empty = every card)</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
@@ -13335,6 +13351,23 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             disabled={llamacppLoading}
                         />
 
+                        {(gpuInventory || []).length > 1 && (
+                            <Tooltip title="How the model is spread across several GPUs. Layer: the cards take turns (more VRAM, not more speed). Tensor: both cards read half of every weight at once — measured +65-85% generation speed on 2 cards, with cold prefill of long prompts about half as fast. Tensor needs exactly 2 cards (pick them above)." placement="top-start">
+                                <FormControl size="small">
+                                    <InputLabel>Multi-GPU split</InputLabel>
+                                    <Select
+                                        value={llamacppConfig.splitMode || ''}
+                                        label="Multi-GPU split"
+                                        onChange={e => setLlamacppConfig({ ...llamacppConfig, splitMode: e.target.value })}
+                                    >
+                                        <MenuItem value="">Layer (default — cards take turns)</MenuItem>
+                                        <MenuItem value="tensor">Tensor (parallel — 2 GPUs, fastest generation)</MenuItem>
+                                        <MenuItem value="row">Row (legacy parallel split)</MenuItem>
+                                    </Select>
+                                </FormControl>
+                            </Tooltip>
+                        )}
+
                         <FormControl size="small">
                             <InputLabel>GPU Layers</InputLabel>
                             <Select
@@ -13471,6 +13504,12 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             control={<Switch checked={llamacppConfig.flashAttention} onChange={e => setLlamacppConfig({ ...llamacppConfig, flashAttention: e.target.checked })} />}
                             label="Flash Attention"
                         />
+                        <Tooltip title="Sample the next token on the GPU so only that token crosses PCIe instead of the whole vocabulary of logits (~1 MB per token on Qwen3.x). Measured +7% generation on a model alone on one card. Ignored under a tensor split." placement="top-start">
+                            <FormControlLabel
+                                control={<Switch checked={llamacppConfig.backendSampling === true} onChange={e => setLlamacppConfig({ ...llamacppConfig, backendSampling: e.target.checked })} />}
+                                label="GPU sampling"
+                            />
+                        </Tooltip>
                         <FormControlLabel
                             control={<Switch checked={llamacppConfig.contextShift} onChange={e => setLlamacppConfig({ ...llamacppConfig, contextShift: e.target.checked })} />}
                             label="Context shift (auto-truncate to fit context window)"
@@ -13567,6 +13606,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     />
                                 </Tooltip>
                             )}
+                            <Tooltip title="N-gram drafting (--spec-type ngram-mod), stacked on the mode above: when the output starts repeating text already in the context — a rewritten file, a quoted tool result — whole runs are drafted at once and verified in one pass. Measured: a 1,024-token file rewrite 57 → 192 tok/s on a 27B, 80 → 459 on a 4B. Costs nothing when nothing repeats." placement="top-start">
+                                <FormControlLabel
+                                    sx={{ mt: 1 }}
+                                    control={<Switch checked={llamacppConfig.specNgram === true} onChange={e => setLlamacppConfig({ ...llamacppConfig, specNgram: e.target.checked })} />}
+                                    label="N-gram drafting (repeated text)"
+                                />
+                            </Tooltip>
                         </Box>
                     </Box>
                 </DialogContent>
