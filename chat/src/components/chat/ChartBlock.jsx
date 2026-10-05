@@ -117,7 +117,7 @@ export default function ChartBlock({ spec, summary }) {
     // A series with its own mark that differs from the chart type (or a
     // `combo` spec) is drawn as a ComposedChart: bars, lines and areas on one
     // set of axes, with a second y-axis for series that ask for it.
-    const isCombo = type === 'combo' || (['line', 'bar', 'area'].includes(type)
+    const isCombo = type === 'combo' || spec.combo === true || (['line', 'bar', 'area'].includes(type)
         && resolvedSeries.some(s => s.type && s.type !== type));
     const hasRightAxis = resolvedSeries.some(s => s.yAxis === 'right');
 

@@ -106,6 +106,10 @@ const INTENT_RULES = [
     [/\bvirus\s*total\b|malware|reputation|\b[a-f0-9]{32,64}\b/i, ['virustotal_lookup']],
     [/\bbase ?64\b|decode this/i, ['base64_decode']],
     [/\b(graph|chart|plot|visuali[sz]e|bar chart|line chart|pie chart|scatter)\b/i, ['render_chart']],
+    // Counting / charting the ENTRIES of a page (posts per month, breaches over
+    // time, releases per year) -> count_entries: models reading the text and
+    // counting by eye got every month wrong (81 vs 136 posts on one leak site).
+    [/\b(graph|chart|plot|count|counts|counting|tally|how many|number of|trend|trending|per (?:month|week|day|year|quarter)|by (?:month|week|year|quarter)|monthly|weekly|over time)\b[^.\n]{0,80}\b(posts?|breach\w*|victims?|entries|releases?|incidents?|attacks?|articles?|leaks?|events?|activity|commits?|issues?|cves?|vulnerabilit\w+|listings?|jobs?|reviews?|uploads?|announcements?|outages?|filings?|cases?)\b|\b(posts?|breach\w*|victims?|entries|releases?|incidents?|attacks?|articles?|leaks?|events?|commits?|issues?|cves?|listings?|jobs?|reviews?|uploads?|outages?|filings?|cases?)\b[^.\n]{0,40}\b(per|by|each|every) (?:month|week|day|year|quarter)\b/i, ['count_entries', 'render_chart']],
     [/\b(picture|image|photo|drawing|logo|icon) of\b|show me (a|an) (picture|image|photo)/i, ['find_image']],
     // Image EXTRACTION from a page ("extract/grab the main image from <url>")
     // and screenshot asks — without these the model flails with generic

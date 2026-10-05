@@ -202,7 +202,7 @@ def _content_type_is_html(ct):
 _impersonate_ok = None
 
 
-def _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length):
+def _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length, raw_body=False):
     """One impersonated GET with profile `prof`. Returns (res, refused) where
     refused is True on a bot-status/challenge (caller may rotate fingerprint)."""
     res = {'success': False, 'url': url, 'finalUrl': url, 'layer': 'impersonate', 'profile': prof,
@@ -222,6 +222,10 @@ def _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length):
         pass
     raw = _body_text(page)
     res['bodyHead'] = raw[:6000]
+    if raw_body:
+        # The whole body (HTML, JSON or XML) for the record counter
+        # (services/tally.js) — opt-in, it can be megabytes.
+        res['rawBody'] = raw[:8000000]
     res.update(_html_stats(raw))
     res['anchorsHtml'] = _anchors_html(raw)
     ct = res['headers'].get('content-type', '')
@@ -252,7 +256,7 @@ def _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length):
     return res, False
 
 
-def fetch_impersonate(url, timeout_ms=12000, extract_links=False, profile=None, max_length=50000):
+def fetch_impersonate(url, timeout_ms=12000, extract_links=False, profile=None, max_length=50000, raw_body=False):
     """Impersonated HTTP fetch with FINGERPRINT ROTATION. Many hosts keep
     per-JA3/HTTP2-fingerprint reputations — measured: indeed & reddit 403 the
     chrome fingerprint but 200 the safari/firefox one, so a rotation reads them
@@ -265,7 +269,7 @@ def fetch_impersonate(url, timeout_ms=12000, extract_links=False, profile=None, 
     last = None
     for i, prof in enumerate(order[:3]):
         try:
-            res, refused = _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length)
+            res, refused = _attempt_impersonate(url, prof, timeout_ms, extract_links, max_length, raw_body)
             _impersonate_ok = True
             last = res
             if res.get('success') or not refused:
@@ -899,7 +903,7 @@ class Handler(BaseHTTPRequestHandler):
                 if layer == 'stealth':
                     res = fetch_stealth(url, timeout, links, max_len, bool(body.get('networkIdle')))
                 else:
-                    res = fetch_impersonate(url, timeout, links, body.get('impersonate'), max_len)
+                    res = fetch_impersonate(url, timeout, links, body.get('impersonate'), max_len, bool(body.get('rawBody')))
                 res['ok'] = True
                 return self._send(200, res)
             if self.path.startswith('/search'):

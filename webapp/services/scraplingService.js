@@ -159,10 +159,11 @@ function hideAnchors(r) {
  * bodyHead included) so the caller can classify a refusal.
  */
 async function fetchImpersonated(url, options = {}) {
-    const { timeout = 12000, extractLinks = false, profile = null, maxLength = 50000 } = options;
+    const { timeout = 12000, extractLinks = false, profile = null, maxLength = 50000, rawBody = false } = options;
     try {
         const r = await engineCall('/fetch', {
             url, layer: 'impersonate', timeout, extractLinks, maxLength,
+            ...(rawBody ? { rawBody: true } : {}),
             ...(profile ? { impersonate: profile } : {}),
         }, { timeoutMs: timeout + 15000 });
         return hideAnchors(r);

@@ -49,7 +49,18 @@ function xKeyOf(data, keys) {
     return nonNum || keys[0] || 'x';
 }
 
-function normalizeChartArgs(args) {
+// A running total only when the user asked for one. "A line and bar graph"
+// means a line TRACING THE BAR TOPS (user, 2026-10-05: "the line should be
+// lined up at the top of the bars and flow in the trending direction"); a
+// cumulative line on a second axis floats above the bars and reads as noise.
+const CUMULATIVE_ASK_RE = /\b(cumulative|running (?:total|sum|count)|accumulat\w*|total so far|to date|year[- ]to[- ]date|ytd|grand total over time)\b/i;
+
+const LINE_ON_BARS_RE = /\b(line (?:on|over|at|along|into|in|across|through|on top of) (?:the )?(?:top of )?(?:the )?bars?|line and bars?|bars? and (?:a )?line|line(?:\s*\+\s*|\s*\/\s*)bar|bar(?:\s*\+\s*|\s*\/\s*)line|combo)\b/i;
+
+function normalizeChartArgs(args, opts = {}) {
+    const askText = String(opts.askText || '');
+    const userWantsCumulative = !askText || CUMULATIVE_ASK_RE.test(askText);
+    const notes = [];
     let type = String(args?.type || '').toLowerCase();
     if (type === 'composed' || type === 'mixed' || type === 'bar+line' || type === 'barline') type = 'combo';
     if (!TYPES.includes(type)) {
@@ -91,7 +102,21 @@ function normalizeChartArgs(args) {
             let mark = String(raw.type || raw.mark || '').toLowerCase();
             if (!MARKS.includes(mark)) mark = null;
             const out = { name, dataKey: key };
-            if (raw.cumulative === true) {
+            let wantsCumulative = raw.cumulative === true;
+            // A precomputed running-total column ("cumulative") counts too.
+            const precomputed = !wantsCumulative && /cumul|running|total/i.test(key) && /cumul|running/i.test(`${key} ${name}`);
+            if ((wantsCumulative || precomputed) && !userWantsCumulative) {
+                // Trace the bars instead: the first numeric key another series
+                // (a bar) plots, else this series' own source key.
+                const barKey = (args.series || []).map(x => x && (['dataKey', 'key', 'y', 'field', 'column', 'value'].map(k => x[k]).find(v => typeof v === 'string' && v) || x.name))
+                    .map(k => resolveKey(k, keys)).find(k => k && k !== key && !/cumul|running/i.test(k));
+                notes.push(`"${name}" was a running total, but the user did not ask for one — it now traces the ${barKey || key} values (the tops of the bars).`);
+                if (barKey) out.dataKey = barKey;
+                if (/cumul|running|total/i.test(out.name)) out.name = 'Trend';
+                wantsCumulative = false;
+                out.traceOfBars = true;
+            }
+            if (wantsCumulative) {
                 // Running total, stored in its own column so the chart and the
                 // tooltip show it like any other value.
                 let col = `${key}_cumulative`;
@@ -109,7 +134,10 @@ function normalizeChartArgs(args) {
             }
             if (mark) out.type = mark;
             const axis = String(raw.yAxis || raw.axis || '').toLowerCase();
-            if (axis === 'right' || (raw.cumulative === true && axis !== 'left')) out.yAxis = 'right';
+            // One shared axis by default, so a line over bars meets the bar
+            // tops. A second axis only on request, and never for a line that
+            // plots the same values as a bar series.
+            if (axis === 'right' && !out.traceOfBars) out.yAxis = 'right';
             if (typeof raw.color === 'string') out.color = raw.color;
             series.push(out);
         });
@@ -120,6 +148,16 @@ function normalizeChartArgs(args) {
             };
         }
         if (!series.length) series = null;
+        if (series) {
+            const bars = series.filter(x => x.type === 'bar');
+            const barKeys = new Set(bars.map(x => x.dataKey));
+            // Same values as a bar series (the key itself, or a copied column)
+            // → same axis, so the points sit on the bar tops.
+            const tracesBar = (x) => barKeys.has(x.dataKey) || bars.some(b => data.every(r => toNumber(r[b.dataKey]) === toNumber(r[x.dataKey])));
+            const lineOnBars = LINE_ON_BARS_RE.test(askText);
+            for (const x of series) if (x.yAxis === 'right' && x.type !== 'bar' && (lineOnBars || tracesBar(x))) delete x.yAxis;
+            for (const x of series) delete x.traceOfBars;
+        }
     }
 
     // A combo needs a mark per series; mixed marks on a plain type make it a combo.
@@ -135,8 +173,13 @@ function normalizeChartArgs(args) {
         return { error: `A combo chart needs \`series\`, one per mark, e.g. [{name:"Posts", dataKey:"<key>", type:"bar"}, {name:"Cumulative", dataKey:"<key>", type:"line", cumulative:true}]. The rows have these keys: ${keys.join(', ')}.`, rowKeys: keys };
     }
 
+    // A combo goes out as its first series' mark + combo:true: a chat page
+    // still running an older bundle (no combo renderer) then draws a plain
+    // bar/line chart instead of "Unsupported chart type: combo".
+    const combo = type === 'combo';
     const chartSpec = {
-        type,
+        type: combo ? (series[0].type || 'bar') : type,
+        ...(combo ? { combo: true } : {}),
         title: typeof args?.title === 'string' ? args.title : '',
         xLabel: typeof args?.xLabel === 'string' ? args.xLabel : '',
         yLabel: typeof args?.yLabel === 'string' ? args.yLabel : '',
@@ -150,6 +193,7 @@ function normalizeChartArgs(args) {
         summary: typeof args?.summary === 'string' ? args.summary : '',
         pointCount: data.length,
         truncated,
+        ...(notes.length ? { notes } : {}),
         ...(series ? { drawn: series.map(s => `${s.name}: ${s.type || type}${s.cumulative ? ' (running total)' : ''}${s.yAxis === 'right' ? ', right axis' : ''}`) } : {}),
     };
 }

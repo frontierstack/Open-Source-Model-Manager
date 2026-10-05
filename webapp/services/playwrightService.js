@@ -1369,7 +1369,11 @@ async function fetchUrlContent(url, options = {}) {
         rawHtml = false,
         waitForSelector = null,
         linkFilter = null,
-        find = null
+        find = null,
+        // structured: also return the rendered HTML and the JSON API responses
+        // the page loaded — what a deterministic record counter (services/
+        // tally.js) reads instead of the extracted text.
+        structured = false
     } = options;
 
     let poolEntry = null;
@@ -1639,11 +1643,21 @@ async function fetchUrlContent(url, options = {}) {
             if (published) { const d = new Date(published); published = /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : (isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10)); }
         } catch (_) { published = null; }
         const pagination = await domPagination(page);
+        let structuredOut = null;
+        if (structured) {
+            let html = '';
+            try { html = await page.content(); } catch (_) { html = ''; }
+            structuredOut = {
+                html: html.length > 8_000_000 ? html.slice(0, 8_000_000) : html,
+                apiJson: capturedJsonResponses.map(r => ({ url: r.url, data: r.data })),
+            };
+        }
         return {
             success: true,
             content,
             title,
             url,
+            ...(structuredOut || {}),
             finalUrl: page.url(),
             httpStatus: navStatusOut,
             ...(pagination ? { pagination } : {}),

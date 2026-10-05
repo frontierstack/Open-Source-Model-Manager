@@ -289,6 +289,7 @@ const attachmentStore = require('./services/attachmentStore');
 const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
 const pageObstacles = require('./services/pageObstacles');
 const paginationSvc = require('./services/pagination');
+const tally = require('./services/tally');
 const urlRecovery = require('./services/urlRecovery');
 const logHistory = require('./services/logHistory');
 
@@ -1496,7 +1497,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs or data you did not fetch, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest.`,
         `WEB RESEARCH: generic or off-topic results mean the QUERY was weak (the result's \`relevance\`/\`hint\` say so) — quote the exact name, add one distinguishing detail or a site:, then READ the best page and follow it to the primary source. Try three genuinely different queries before calling something unavailable. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Never guess or retype a URL, and never announce the same plan twice.`,
         `WORK IN BIG STEPS: gather broadly in one call or one script (every file or record at once, as a compact summary), then drill into only what the summary flags. Stop as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING many entries (posts per month, items per category, totals over a long list) is numeric work: never count by eye from a page you read — save the page with download_file and count it with one run_python script, then chart or report those counts.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script.`,
         `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off.`,
         `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
         ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
@@ -1513,7 +1514,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
 // and siblings are in its brief), so jobs share one prompt prefix, and ONE
 // report spec — the worker prelude's "150-300 words + a data table" contradicted
 // the brief's bullet format.
-const LEGWORK_PRELUDE = 'You are a BACKGROUND JOB for the main model, which is writing the answer to the user while you work. Do the ONE job in your brief with your tools — no questions, no waiting, never address the user, never attempt the whole request. Look things up rather than answering from memory. Your FINAL message is the only thing the main model sees: write it in the report format your brief gives, with every URL, path, identifier and number written out in full. Do not create documents or deliverables and never use make_downloadable. To COUNT or tally many entries in a long list (posts per month, items per category), never count by eye: download_file the page into /workspace, count it with one run_python script, and report the counts as a table.';
+const LEGWORK_PRELUDE = 'You are a BACKGROUND JOB for the main model, which is writing the answer to the user while you work. Do the ONE job in your brief with your tools — no questions, no waiting, never address the user, never attempt the whole request. Look things up rather than answering from memory. Your FINAL message is the only thing the main model sees: write it in the report format your brief gives, with every URL, path, identifier and number written out in full. Do not create documents or deliverables and never use make_downloadable. To COUNT or tally the entries on a page (posts per month, items per category), never count by eye: call count_entries with the page url and report its counts as a table.';
 
 function buildDelegatePrelude(delegate) {
     const label = String((delegate && delegate.label) || 'worker').slice(0, 80);
@@ -22533,7 +22534,9 @@ const chatStreamHandlerInner = async (req, res) => {
                 const sel = await toolRouter.selectForTurn({
                     fullCatalog: fullToolCatalog,
                     query: latestUserText,
-                    intentText: intentSystemText,
+                    // A correction/"continue" names none of the tools the
+                    // request it redoes needs — match intents on that too.
+                    intentText: redoInfo ? `${intentSystemText}\n${redoInfo.original}` : intentSystemText,
                     contextSize,
                     profile: routeProfile,
                     stickyNames: toolRouter.getSticky(streamingConversationId, chatMessages),
@@ -27626,7 +27629,7 @@ const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWO
 // own file-analysis calls (see scheduleArtifactLegwork).
 const ARTIFACT_PRODUCER_RE = /^(?:extract_archive|tar_extract|unzip_file|git_clone_shallow|download_file)$/;
 const ARTIFACT_FILE_WORK_RE = /^(?:run_python|run_node|run_bash|grep_code|read_file|list_directory|extract_strings|hex_dump|outline_file|scan_source_files|search_files|extract_archive|tar_extract|unzip_file|read_pdf)$/;
-const LEGWORK_TOOLS = ['web', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi', 'binary_info', 'disassemble', 'decompile', 'unpack_upx'];
+const LEGWORK_TOOLS = ['web', 'count_entries', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi', 'binary_info', 'disassemble', 'decompile', 'unpack_upx'];
 // Output cap for a background job's report round.
 const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
@@ -31205,7 +31208,7 @@ app.use((req, res) => {
                 // read as the whole list is silently wrong data.
                 const cutMatch = /\[\.\.\. (\d+) characters from the MIDDLE of this page were cut — the page is (\d+) characters long/.exec(content);
                 const cut = cutMatch
-                    ? { shownChars: content.length, pageChars: Number(cutMatch[2]), omittedChars: Number(cutMatch[1]), howToContinue: Number(cutMatch[2]) <= 100000 ? `Re-read with maxLength:${Math.min(100000, Number(cutMatch[2]) + 500)} to get the whole page, or find:"<term>" for specific entries. Do not treat the cut part as empty. To COUNT or tally entries (per month, per category), do not count by eye: download_file this URL and count it with one run_python script.` : 'The page is longer than the 100000-char read limit: use find:"<term>" for the entries you need, or mode:"crawl" if it is paginated. Do not treat the cut part as empty. To COUNT or tally entries, download_file this URL and count it with one run_python script.' }
+                    ? { shownChars: content.length, pageChars: Number(cutMatch[2]), omittedChars: Number(cutMatch[1]), howToContinue: Number(cutMatch[2]) <= 100000 ? `Re-read with maxLength:${Math.min(100000, Number(cutMatch[2]) + 500)} to get the whole page, or find:"<term>" for specific entries. Do not treat the cut part as empty. To COUNT or tally entries (per month, per category), do not count by eye: call count_entries with this URL.` : 'The page is longer than the 100000-char read limit: use find:"<term>" for the entries you need, or mode:"crawl" if it is paginated. Do not treat the cut part as empty. To COUNT or tally entries, call count_entries with this URL.' }
                     : null;
                 // The cascade classified what it served (fetchUrlContent attaches
                 // `obstacle` when a login wall / paywall / undismissable overlay /
@@ -31737,7 +31740,7 @@ app.use((req, res) => {
                         'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers yourself and pass them in `data[]`; this renders an interactive chart in one step. ' +
                         'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
                         'Rows: one object per x-value, e.g. [{month:"Jan 2026", posts:8}, …]. Each series names the row key it plots in `dataKey` (default: its `name`). ' +
-                        'COMBO ("bar and line", "line over the bars", "with a cumulative line"): type:"combo" and series like [{name:"Posts", dataKey:"posts", type:"bar"}, {name:"Cumulative", dataKey:"posts", type:"line", cumulative:true}] — cumulative:true plots the running total of that key (computed for you); yAxis:"right" puts a series on a second axis (default for cumulative). ' +
+                        'COMBO ("bar and line graph", "line over the bars"): type:"combo" and series [{name:"Posts", dataKey:"posts", type:"bar"}, {name:"Trend", dataKey:"posts", type:"line"}] — the line plots the SAME values and traces the tops of the bars on one shared axis. Only when the user asks for a running total add cumulative:true (computed for you); yAxis:"right" puts a different measure on a second axis. ' +
                         'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary. A series whose dataKey is not in the rows is an error, not a blank chart.',
                     parameters: {
                         type: 'object',
@@ -31796,7 +31799,7 @@ app.use((req, res) => {
                     ? [...jobs.values()].filter(j => j && (j.status === 'running' || j.status === 'queued' || j.status === 'pending'))
                     : [];
                 const labels = Array.isArray(ctx?._turnToolLabels) ? ctx._turnToolLabels : [];
-                const retrieved = labels.some(l => /^(?:web|web_search|fetch_url|scrapling_fetch|playwright_fetch|playwright_interact|crawl_pages|http_request|fetch_timeseries|read_file|read_xlsx|query_sqlite|run_python|run_node|csv_describe|spreadsheet_query)$/.test(l));
+                const retrieved = labels.some(l => /^(?:web|count_entries|web_search|fetch_url|scrapling_fetch|playwright_fetch|playwright_interact|crawl_pages|http_request|fetch_timeseries|read_file|read_xlsx|query_sqlite|run_python|run_node|csv_describe|spreadsheet_query)$/.test(l));
                 // The flag lives on the turn's job Map: ctx may be a per-call view.
                 if (pending.length && !retrieved && !jobs._chartWaitRefused) {
                     jobs._chartWaitRefused = true;
@@ -31806,7 +31809,151 @@ app.use((req, res) => {
                     };
                 }
             } catch (_) { /* never block a chart on a bookkeeping error */ }
-            return normalizeChartArgs(args);
+            // What the user asked (and, on a correction turn, the request it
+            // redoes): decides whether a line may be a running total.
+            const askText = [ctx?.latestUserText, ctx?._handoffGoal?.userText].filter(x => typeof x === 'string').map(x => leadHandoff.cleanAsk(x)).join('\n');
+            return normalizeChartArgs(args, { askText: askText || 'chart' });
+        },
+    });
+
+    // ----- count_entries ----------------------------------------------------
+    // EXACT counts of a page's dated entries (posts per month, releases per
+    // year…) from the page's own data — embedded JSON, the JSON API it loads,
+    // or one row/card per entry — via services/tally.js. Models reading the
+    // text and counting by eye were wrong on every attempt (81 or less vs the
+    // 136 a leak-site page lists, whole months at zero), even when told to
+    // count with code. Follows the page's real next links for paginated lists.
+    const COUNT_ENTRIES_MAX_PAGES = Math.max(1, parseInt(process.env.COUNT_ENTRIES_MAX_PAGES || '10', 10) || 10);
+    async function fetchRawForCount(url) {
+        // 1. plain GET (HTML, JSON or XML), 2. impersonated GET, 3. rendered page + its API JSON.
+        const asDocs = (body, ct) => {
+            const text = typeof body === 'string' ? body : (body && typeof body === 'object' ? null : String(body || ''));
+            if (body && typeof body === 'object') return { html: '', json: [body] };
+            const t = (text || '').trim();
+            if (/json/i.test(ct || '') || /^[\[{]/.test(t)) { try { return { html: '', json: [JSON.parse(t)] }; } catch (_) { /* fall through */ } }
+            return { html: text || '', json: [] };
+        };
+        const tried = [];
+        try {
+            const r = await axios.get(url, {
+                timeout: 15000, maxContentLength: 20 * 1024 * 1024, responseType: 'text', transformResponse: x => x,
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/json,application/xml;q=0.9,*/*;q=0.8' },
+                validateStatus: st => st < 400,
+            });
+            const d = asDocs(r.data, r.headers['content-type']);
+            if (d.json.length || tally.extractRecords(d)) return { ...d, via: 'http' };
+            tried.push('http:no-records');
+        } catch (e) { tried.push(`http:${e.response ? `HTTP ${e.response.status}` : (e.code || e.message)}`); }
+        if (scraplingService && typeof scraplingService.fetchImpersonated === 'function') {
+            try {
+                const r = await scraplingService.fetchImpersonated(url, { timeout: 15000, rawBody: true });
+                if (r && r.rawBody) {
+                    const d = asDocs(r.rawBody, (r.headers || {})['content-type']);
+                    if (d.json.length || tally.extractRecords(d)) return { ...d, via: 'impersonate' };
+                    tried.push('impersonate:no-records');
+                } else tried.push(`impersonate:${(r && (r.error || r.httpStatus)) || 'no body'}`);
+            } catch (e) { tried.push(`impersonate:${e.message}`); }
+        }
+        if (playwrightService && typeof playwrightService.fetchUrlContent === 'function') {
+            try {
+                const r = await playwrightService.fetchUrlContent(url, { timeout: 25000, waitForJS: true, maxLength: 2000, structured: true });
+                if (r && r.success) return { html: r.html || '', json: (r.apiJson || []).map(x => x.data), via: 'browser' };
+                tried.push(`browser:${(r && r.error) || 'failed'}`);
+            } catch (e) { tried.push(`browser:${e.message}`); }
+        }
+        return { html: '', json: [], via: null, tried };
+    }
+    tools.registerTool({
+        name: 'count_entries',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'count_entries',
+                    description:
+                        'EXACT counts of the dated entries on a page (posts, breaches, releases, incidents, articles) per month/week/day/quarter/year — use it before charting or stating any count. ' +
+                        'Reads the page\'s own data (embedded JSON, the JSON API it loads, RSS/Atom items, or one table row / list item / card per entry) and counts in code, following the page\'s next-page links. ' +
+                        'NEVER count entries by reading a page yourself — long pages are cut and eye-counting is wrong. Pass the listing page `url`; `from`/`to` (e.g. "2026-01", "2026-10") bound the range and every period in it is returned, zeros included; `match` keeps only entries mentioning a term; groupBy:"field" with `field` counts per category. ' +
+                        'The result carries `chartData` [{period, count}] — pass it to render_chart unchanged (add a series with cumulative:true for a running total).',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'The page (or JSON API / RSS feed) that lists the entries.' },
+                            groupBy: { type: 'string', enum: ['month', 'week', 'day', 'quarter', 'year', 'field'], description: 'Period to count by (default month), or field = per value of `field`.' },
+                            field: { type: 'string', description: 'With groupBy:"field": the record field to count by (e.g. "sector", "country").' },
+                            from: { type: 'string', description: 'Start of the range, e.g. "2026-01" or "2026-01-15".' },
+                            to: { type: 'string', description: 'End of the range, e.g. "2026-10".' },
+                            match: { type: 'string', description: 'Only count entries whose title/data mention this term.' },
+                            maxPages: { type: 'integer', minimum: 1, maximum: 20, description: 'Paginated lists: how many pages to follow (default 10).' },
+                        },
+                        required: ['url'],
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!/^https?:\/\//i.test(url)) return { error: 'count_entries needs an http(s) `url` of the page that lists the entries.' };
+            { const b = urlBlockReason(url); if (b) return { error: b }; }
+            { const hb = hostBlockReason(url); if (hb) return { success: false, error: 'bot_protected', message: hb.message || String(hb) }; }
+            const maxPages = Math.min(20, Math.max(1, parseInt(args?.maxPages || COUNT_ENTRIES_MAX_PAGES, 10) || COUNT_ENTRIES_MAX_PAGES));
+            const t0 = Date.now();
+            const all = [];
+            const seen = new Set();
+            let first = null, pagesRead = 0, next = url, stoppedBecause = 'no next page';
+            const visited = new Set();
+            while (next && pagesRead < maxPages) {
+                if (visited.has(next)) { stoppedBecause = 'next page repeats a page already read'; break; }
+                visited.add(next);
+                const raw = await fetchRawForCount(next);
+                const ex = raw.via ? tally.extractRecords(raw) : null;
+                if (!ex) {
+                    if (!first) {
+                        return {
+                            url, success: false, error: 'no_dated_entries',
+                            message: raw.via
+                                ? `No list of dated entries was found on this page (checked embedded JSON, API JSON, feed items and repeated rows/cards with one date each). If the page offers an export (CSV/JSON) or an API, pass that URL; otherwise say the page does not list dated entries — do not estimate counts from the text.`
+                                : `The page could not be read (${(raw.tried || []).join(' → ')}).`,
+                        };
+                    }
+                    stoppedBecause = `page ${pagesRead + 1} had no entries`;
+                    break;
+                }
+                if (!first) first = { ...ex, via: raw.via };
+                pagesRead++;
+                let added = 0;
+                for (const r of ex.records) {
+                    const k = `${r.date}|${r.title || JSON.stringify(r.fields || {}).slice(0, 200)}`;
+                    if (seen.has(k)) continue;
+                    seen.add(k); all.push(r); added++;
+                }
+                if (pagesRead > 1 && added === 0) { stoppedBecause = 'next page added no new entries'; break; }
+                const pg = raw.html ? paginationSvc.paginationFromHtml(raw.html, next) : null;
+                next = pg && pg.next ? pg.next : null;
+                if (next && pagesRead >= maxPages) stoppedBecause = `stopped at maxPages (${maxPages}) — more pages exist`;
+            }
+            const t = tally.tallyRecords(all, { groupBy: args?.groupBy, field: args?.field, from: args?.from, to: args?.to, match: args?.match });
+            console.log(`[count_entries] ${url} → ${all.length} records from ${first.source} (${first.dateField}) via ${first.via}, ${pagesRead} page(s), ${t.total} in range, ${Date.now() - t0}ms`);
+            const label = t.groupBy === 'field' ? (args?.field || 'value') : t.groupBy;
+            return {
+                url,
+                success: true,
+                source: first.source,
+                dateField: first.dateField,
+                ...(first.titleField ? { titleField: first.titleField } : {}),
+                entriesFound: all.length,
+                pagesRead,
+                ...(pagesRead > 1 || /maxPages/.test(stoppedBecause) ? { stoppedBecause } : {}),
+                groupBy: t.groupBy,
+                total: t.total,
+                earliest: t.earliest,
+                latest: t.latest,
+                ...(t.excludedOutsideRange ? { excludedOutsideRange: t.excludedOutsideRange } : {}),
+                ...(t.excludedNoMatch != null ? { excludedNoMatch: t.excludedNoMatch } : {}),
+                counts: t.rows.map(r => ({ period: r.period, count: r.count, ...(r.examples ? { examples: r.examples } : {}) })),
+                chartData: t.rows.map(r => ({ [label === 'month' || label === 'week' || label === 'day' || label === 'quarter' || label === 'year' ? 'period' : label]: r.period, count: r.count })),
+                note: `Exact counts computed from the page's own data (${first.source}). Use these numbers as they are — in the chart and in your text — and do not recount from the page text.`,
+            };
         },
     });
 
