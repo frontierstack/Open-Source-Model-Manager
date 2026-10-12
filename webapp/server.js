@@ -6476,7 +6476,11 @@ async function broadcastSystemMonitoring() {
                 // often just "Command failed: <cmd>" which buries the cause
                 // past the truncation below and misses the NVML match.
                 const errMsg = [err.stderr, err.message].filter(Boolean).join('\n') || String(err);
-                if (/Failed to initialize NVML/i.test(errMsg)) {
+                if (/Driver\/library version mismatch/i.test(errMsg)) {
+                    // The toolkit mounts the host's NVML libraries when the container is
+                    // CREATED; after a host driver upgrade the old ones stay until it is recreated.
+                    gpuError = 'NVIDIA driver/library version mismatch — the host driver changed after this container was created. Recover with: docker compose up -d --force-recreate --no-deps webapp';
+                } else if (/Failed to initialize NVML/i.test(errMsg)) {
                     gpuError = 'NVML init failed inside the container — device cgroup access was dropped (host systemd daemon-reload) or the host driver was upgraded after the container started. Recover with: docker compose restart webapp';
                 } else if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
                     gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
