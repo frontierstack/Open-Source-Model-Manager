@@ -5281,6 +5281,14 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             };
             // A tensor split refuses to run without flash attention.
             if (splitMode === 'tensor') config.flashAttention = true;
+            // llama.cpp cannot sample on the GPU under a tensor split: it logs
+            // "backend sampling not supported with SPLIT_MODE_TENSOR" and
+            // "backend offload failed … using CPU sampler" and samples on the
+            // CPU anyway. Don't ask for it.
+            if (splitMode === 'tensor' && config.backendSampling) {
+                config.backendSampling = false;
+                broadcast({ type: 'log', level: 'info', message: `[${modelName}] GPU sampling is not supported under a tensor split — sampling on the CPU (no speed difference measured).` });
+            }
             // GPU layers 0 on a GPU host runs the whole model on the CPU —
             // ~10-50x slower, and as the pair's assistant it times out every
             // brief and job. Allowed (it can be deliberate), but never silent.

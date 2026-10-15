@@ -13358,7 +13358,16 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     <Select
                                         value={llamacppConfig.splitMode || ''}
                                         label="Multi-GPU split"
-                                        onChange={e => setLlamacppConfig({ ...llamacppConfig, splitMode: e.target.value })}
+                                        onChange={e => {
+                                            const next = { ...llamacppConfig, splitMode: e.target.value };
+                                            // Measured: MTP draft n-max 2 is fastest under a tensor
+                                            // split, 3 under a layer split. Follow the mode unless
+                                            // the user picked another value.
+                                            if (e.target.value === 'tensor' && Number(next.specDraftNMax) === 3) next.specDraftNMax = 2;
+                                            else if (e.target.value !== 'tensor' && llamacppConfig.splitMode === 'tensor' && Number(next.specDraftNMax) === 2) next.specDraftNMax = 3;
+                                            if (e.target.value === 'tensor') next.backendSampling = false;
+                                            setLlamacppConfig(next);
+                                        }}
                                     >
                                         <MenuItem value="">Layer (default — cards take turns)</MenuItem>
                                         <MenuItem value="tensor">Tensor (parallel — 2 GPUs, fastest generation)</MenuItem>
@@ -13506,7 +13515,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                         />
                         <Tooltip title="Sample the next token on the GPU so only that token crosses PCIe instead of the whole vocabulary of logits (~1 MB per token on Qwen3.x). Measured +7% generation on a model alone on one card. Ignored under a tensor split." placement="top-start">
                             <FormControlLabel
-                                control={<Switch checked={llamacppConfig.backendSampling === true} onChange={e => setLlamacppConfig({ ...llamacppConfig, backendSampling: e.target.checked })} />}
+                                control={<Switch checked={llamacppConfig.backendSampling === true && llamacppConfig.splitMode !== 'tensor'} disabled={llamacppConfig.splitMode === 'tensor'} onChange={e => setLlamacppConfig({ ...llamacppConfig, backendSampling: e.target.checked })} />}
                                 label="GPU sampling"
                             />
                         </Tooltip>
