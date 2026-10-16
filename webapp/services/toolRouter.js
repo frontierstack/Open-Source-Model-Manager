@@ -123,6 +123,11 @@ const INTENT_RULES = [
     // calls, ENOSPC ×5, no answer). Anchored to a page/html/canvas/app word so
     // "the search isn't working" does not drag it in.
     [/^(?=[\s\S]*\b(html|page|canvas|animat\w*|browser|react|webpage|web ?app|playwright|puppeteer|chrome|chromium|headless|console)\b)[\s\S]*(\b(test|check|verify|preview|render|open|load|run|debug|try)\b[^.\n]{0,50}\b(in (a |the |my |an? )?(browser|playwright|puppeteer|chrome|chromium|headless)|html (file|page)|\.html\b|web ?page)|\b(isn'?t|not|doesn'?t|won'?t|nothing|no longer|still not|fails? to) (displaying|rendering|showing|loading|working|shows?|renders?|displays?|appears?|loads?|works?)\b|\b(blank|black|empty|white) (page|screen|canvas)\b|\b(page|screen|canvas|animation|animator|app) (is|looks|stays|remains|appears|renders|comes up) (blank|black|empty|white|frozen|dead)\b|\bconsole (error|log|warning)s?\b|\buncaught\b|\breferenceerror\b|\btypeerror\b)/i, ['preview_html']],
+    // Downloading a video ("give me a downloadable link for <youtube url>",
+    // "download this video", "save it as mp4"). Without this the router never
+    // offered download_video and the model hand-rolled yt-dlp in run_python /
+    // run_node, which lacks the JS challenge solver YouTube now requires.
+    [/^(?=[\s\S]*\b(download\w*|save|grab|rip|get me|mp4|offline)\b)[\s\S]*(\b(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|twitch\.tv|tiktok\.com|instagram\.com\/(reel|p)\/|x\.com\/[^\s/]+\/status|twitter\.com\/[^\s/]+\/status|reddit\.com\/r\/[^\s]+\/comments)|\b(video|clip|episode|livestream|stream|reel)s?\b)/i, ['download_video', 'make_downloadable']],
     [/\b(video|clip|movie|footage|trailer)\b|play (me )?a|watch a/i, ['find_video']],
     [/\.(xlsx|xls|csv)\b|spreadsheet|excel/i, ['read_xlsx', 'create_xlsx']],
     [/\btranscri|\.(mp3|wav|m4a|flac|ogg)\b|audio (file|clip)/i, ['transcribe_audio']],

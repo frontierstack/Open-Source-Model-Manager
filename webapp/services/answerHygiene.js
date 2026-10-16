@@ -85,4 +85,57 @@ function stripProcessPreamble(text, { maxRemoved = 400, minRemaining = 40 } = {}
     return { text: lead + rest, removed };
 }
 
-module.exports = { stripProcessPreamble, isProcessSentence };
+// Links in an answer that point at a file no tool delivered this turn.
+// A model whose download / publish step FAILED still wrote "Here's your
+// download link: [x.mp4](/workspace/artifacts/x.mp4)" (measured: the
+// make_downloadable error was in its context, the file never existed). Only
+// a link is judged, never prose, and only when it is plainly undelivered:
+// a /workspace path (never a working URL in the chat) or a link whose file
+// name a FAILED tool call this turn was working on. A name that a tool did
+// deliver as an artifact this turn is never flagged.
+const FILE_LINK_RE = /\]\(\s*<?((?:\/workspace\/|sandbox:\/|\/api\/tool-artifacts\/|\.?\/?artifacts\/)[^)>\s]+)>?\s*\)/gi;
+
+function linkBaseName(target) {
+    let t = String(target || '').split(/[?#]/)[0];
+    try { t = decodeURIComponent(t); } catch (_) { /* keep raw */ }
+    return t.split('/').filter(Boolean).pop() || '';
+}
+
+function findUndeliveredFileLinks(answer, chips) {
+    const text = String(answer || '');
+    const list = Array.isArray(chips) ? chips : [];
+    const delivered = new Set();
+    for (const c of list) {
+        for (const a of (c && Array.isArray(c.artifacts) ? c.artifacts : [])) {
+            if (a && a.name) delivered.add(String(a.name).toLowerCase());
+        }
+    }
+    const failed = list.filter(c => c && c.status === 'failed' && !c.refusal);
+    const out = [];
+    const seen = new Set();
+    let m;
+    FILE_LINK_RE.lastIndex = 0;
+    while ((m = FILE_LINK_RE.exec(text))) {
+        const target = m[1];
+        const name = linkBaseName(target);
+        const key = name.toLowerCase();
+        if (!name || seen.has(key) || delivered.has(key)) continue;
+        seen.add(key);
+        const failedTool = failed.find(c => {
+            const hay = (JSON.stringify(c.args || {}) + ' ' + (c.error || '')).toLowerCase();
+            return hay.includes(key);
+        });
+        const unclickable = /^(\/workspace\/|sandbox:)/i.test(target);
+        if (failedTool || unclickable) {
+            out.push({
+                target,
+                name,
+                failedTool: failedTool ? failedTool.label : null,
+                error: failedTool ? String(failedTool.error || '').slice(0, 200) : null,
+            });
+        }
+    }
+    return out;
+}
+
+module.exports = { stripProcessPreamble, isProcessSentence, findUndeliveredFileLinks };

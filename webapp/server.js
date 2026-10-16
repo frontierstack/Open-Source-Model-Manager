@@ -23770,6 +23770,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
             // (claims "saved/created/wrote ... file" but emitted no tool calls).
             let falseCompletionRetried = false;
             let redoNoWorkRetried = false;
+            let deadLinkRetried = false;
             // One-shot retry latch for the abandoned-research detector
             // (mid-research turn ends "Let me dig deeper..." / "I'll search
             // for X" without emitting the next tool_call).
@@ -26390,6 +26391,41 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     ];
                     continuationCount = 0;
                     continue;
+                }
+
+                // A reply that hands the user a link to a file no tool delivered
+                // (measured: make_downloadable failed "no such file", the lead
+                // still wrote "The video has been downloaded … [Download](
+                // /workspace/artifacts/x.mp4)"). Drop it once and ask for the
+                // file or a plain report of the failure.
+                if (!deadLinkRetried && !req.delegate && !assistantRevising && !holdClientContent) {
+                    const dead = answerHygiene.findUndeliveredFileLinks(fullResponse.slice(roundStart), persistedToolChips);
+                    if (dead.length) {
+                        deadLinkRetried = true;
+                        const dropped = fullResponse.length - roundStart;
+                        const said = fullResponse.slice(roundStart).trim();
+                        fullResponse = fullResponse.slice(0, roundStart);
+                        if (streamingConversationId) {
+                            const job = activeStreamingJobs.get(streamingConversationId);
+                            if (job) job.content = fullResponse;
+                        }
+                        const why = dead.map(d => `"${d.name}"` + (d.failedTool ? ` (${d.failedTool} failed: ${d.error || 'error'})` : ' (a /workspace path is not a download link)')).join('; ');
+                        console.warn(`[Chat Stream] Answer links to undelivered file(s): ${why} — dropped ${dropped} chars and asking again`);
+                        logChatActivity('The answer linked to a file that was never delivered — asking the model to produce it or report the failure', 'warn');
+                        if (clientConnected && dropped > 0) {
+                            try { res.write(`data: ${JSON.stringify({ type: 'content_rewind', content: fullResponse, dropped, reason: 'undelivered_file' })}\n\n`); } catch (_) { clientConnected = false; }
+                        }
+                        currentMessages = [
+                            ...currentMessages,
+                            ...(said ? [{ role: 'assistant', content: said }] : []),
+                            {
+                                role: 'system',
+                                content: `That reply gives the user a link to ${why}, but no tool delivered that file this turn, so the link does not work. Do not claim the file exists and do not trust a report that says it was created. Either produce it now with a tool (download_video for a video URL; make_downloadable only publishes a file that already exists in /workspace), or tell the user plainly what failed and why. A working download appears as a chip from the tool result; never write a /workspace path as a link.`,
+                            },
+                        ];
+                        continuationCount = 0;
+                        continue;
+                    }
                 }
 
                 // The lead is ready to stop, but work it handed to the primary
