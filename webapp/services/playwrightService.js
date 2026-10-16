@@ -1769,80 +1769,455 @@ function normalizeAction(raw) {
     return a;
 }
 
-// Resolve an action's target to a locator: a CSS selector, or the visible
-// text / placeholder / label the model named.
-async function resolveTarget(page, a, timeout) {
-    if (a.selector) {
-        const loc = page.locator(a.selector).first();
-        await loc.waitFor({ state: 'attached', timeout }).catch(() => {});
-        return (await loc.count().catch(() => 0)) ? loc : null;
+// ---- Target resolution -----------------------------------------------------
+// Frames to search for a step's target: the page itself first, then its child
+// frames (a form inside an <iframe> — embedded editors, "try it" sandboxes,
+// third-party checkout/login widgets — is invisible to page-level locators).
+function interactFrames(page) {
+    const main = page.mainFrame();
+    // about:blank frames are kept: editors and "try it" sandboxes write
+    // their document into an iframe that has no src.
+    const kids = page.frames().filter(f => f !== main && !f.isDetached());
+    return [main, ...kids].slice(0, 8);
+}
+
+const escRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const cssQ = (t) => String(t).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+// "First name:" / "Email *" — a label's trailing punctuation is decoration.
+const bareLabel = (t) => String(t).trim().replace(/[\s:*]+$/, '').trim();
+
+// A "selector" that is really a field id, a name, or the visible label: models
+// send {selector:"username"}, {selector:"Login"}, {selector:"Search"}.
+function selectorVariants(sel, { loose = true } = {}) {
+    const s = String(sel).trim();
+    const out = [s];
+    if (/^[A-Za-z][\w-]*$/.test(s)) {
+        out.push(`#${s}`);
+        if (loose) out.push(`[name="${cssQ(s)}"]`, `[id="${cssQ(s)}" i]`);
     }
-    const text = a.byText || a.placeholder || a.label;
+    return out;
+}
+function selectorLooksLikeText(sel) {
+    const s = String(sel).trim();
+    if (!s || s.length > 80) return false;
+    if (/^[#.\[]|[>~+=\[\]()#:]|^\/\/|^(xpath|css|text)=/.test(s)) return false;
+    return true;   // plain words: "Login", "Search", "username", "First name"
+}
+
+async function firstUsable(loc, { allowHidden = false } = {}) {
+    try {
+        const n = Math.min(await loc.count(), 8);
+        let hidden = null;
+        for (let i = 0; i < n; i++) {
+            const one = loc.nth(i);
+            if (await one.isVisible().catch(() => false)) {
+                if (!(await isDisabledControl(one))) return one;
+                if (!hidden) hidden = one;   // disabled but present: last resort
+            } else if (allowHidden && !hidden) hidden = one;
+        }
+        return hidden && allowHidden ? hidden : null;
+    } catch (_) { return null; }
+}
+
+// Strategies in priority order for one frame. Exact matches before partial
+// ones (getByRole's default name match is a SUBSTRING: "Login" also matches
+// "Login with Google"), buttons before links (a header "Login" link sits
+// above the form's "Login" button on most sites and clicking it only reloads
+// the page), and the form the model just filled before the rest of the page.
+// Returns [strong, weak]: every frame is searched for a strong (exact) match
+// before any frame is searched for a weak (partial) one — otherwise "Submit"
+// in a page's own prose beats the real Submit button inside its iframe.
+function textStrategies(scope, a, t, formScope) {
+    const fill = a.type === 'type' || a.type === 'set' || a.type === 'select';
+    const b = bareLabel(t) || t;
+    const exactRe = new RegExp(`^\\s*${escRe(t)}\\s*$`, 'i');
+    const out = [];
+    if (fill) {
+        for (const x of b === t ? [t] : [t, b]) {
+            out.push(scope.getByLabel(x, { exact: true }), scope.getByPlaceholder(x, { exact: true }));
+            for (const role of ['textbox', 'searchbox', 'combobox', 'spinbutton']) out.push(scope.getByRole(role, { name: x, exact: true }));
+        }
+        if (/^[A-Za-z][\w-]*$/.test(b)) out.push(scope.locator(`[name="${cssQ(b)}" i], [id="${cssQ(b)}" i]`));
+        out.push(scope.locator(`input[aria-label="${cssQ(b)}" i], textarea[aria-label="${cssQ(b)}" i], select[aria-label="${cssQ(b)}" i], input[title="${cssQ(b)}" i]`));
+        const weak = [scope.getByLabel(b), scope.getByPlaceholder(b)];
+        for (const role of ['textbox', 'searchbox', 'combobox', 'spinbutton']) weak.push(scope.getByRole(role, { name: b }));
+        return [out, weak];
+    }
+    if (a.type === 'check' || a.type === 'uncheck') {
+        out.push(scope.getByRole('checkbox', { name: t, exact: true }), scope.getByRole('radio', { name: t, exact: true }),
+            scope.getByRole('switch', { name: t, exact: true }), scope.getByLabel(t, { exact: true }));
+        return [out, [scope.getByRole('checkbox', { name: b }), scope.getByRole('radio', { name: b }), scope.getByRole('switch', { name: b }), scope.getByLabel(b)]];
+    }
+    const BUTTONISH = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="image"], input[type="reset"]';
+    if (formScope) out.push(formScope.getByRole('button', { name: t, exact: true }), formScope.locator(BUTTONISH).filter({ hasText: exactRe }));
+    out.push(
+        scope.getByRole('button', { name: t, exact: true }),
+        scope.locator(BUTTONISH).filter({ hasText: exactRe }),
+        scope.locator(`input[type="submit"][value="${cssQ(t)}" i], input[type="button"][value="${cssQ(t)}" i]`),
+        scope.getByRole('link', { name: t, exact: true }),
+        scope.locator('a, [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="treeitem"], summary, label, li').filter({ hasText: exactRe }),
+        scope.getByRole('tab', { name: t, exact: true }),
+        scope.getByRole('menuitem', { name: t, exact: true }),
+        scope.getByRole('option', { name: t, exact: true }),
+        scope.locator(`[aria-label="${cssQ(t)}" i], [title="${cssQ(t)}" i]`),
+        scope.getByText(t, { exact: true }),
+    );
+    return [out, [
+        scope.getByRole('button', { name: t }),
+        scope.getByRole('link', { name: t }),
+        scope.locator(`[aria-label*="${cssQ(t)}" i], [title*="${cssQ(t)}" i]`),
+        scope.getByText(t),
+    ]];
+}
+
+// A control described by the text next to it, with no <label> or ARIA name
+// ("checkbox 1", a "Sort by" caption beside a <select>, "Your city" in a span
+// before an input): mark the nearest control of the wanted kind to that text
+// and return a locator for it. Text after a field (a hint) is penalised
+// against text before/above it (a caption).
+const BOX_CONTROLS = 'input[type=checkbox], input[type=radio], [role=checkbox], [role=radio], [role=switch]';
+const FIELD_CONTROLS = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), textarea, select, [role=combobox], [role=textbox], [contenteditable="true"]';
+async function checkboxNearText(frame, t) { return controlNearText(frame, t, BOX_CONTROLS); }
+async function controlNearText(frame, t, controlSel) {
+    try {
+        const tok = `ms${Math.random().toString(36).slice(2, 9)}`;
+        const hit = await frame.evaluate(([t, tok, controlSel]) => {
+            const want = t.trim().replace(/[\s:*]+$/, '').toLowerCase();
+            const boxes = [...document.querySelectorAll(controlSel)];
+            if (!boxes.length) return false;
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let best = null;
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                const txt = (n.textContent || '').trim().replace(/[\s:*]+$/, '').toLowerCase();
+                if (!txt || (txt !== want && !(txt.includes(want) && txt.length <= want.length + 20))) continue;
+                if (n.parentElement && n.parentElement.closest('script, style, option, button, a')) continue;
+                const host = n.parentElement;
+                const range = document.createRange(); range.selectNodeContents(n);
+                const r = range.getBoundingClientRect();
+                for (const bx of boxes) {
+                    const br = bx.getBoundingClientRect();
+                    if (!br.width && !br.height) continue;
+                    const d = Math.hypot((br.left + br.right) / 2 - (r.left + r.right) / 2, (br.top + br.bottom) / 2 - (r.top + r.bottom) / 2);
+                    const sameBlock = host && (host.contains(bx) || bx.parentElement === host || bx.parentElement === host.parentElement
+                        || (host.parentElement && bx.parentElement && bx.parentElement.parentElement === host.parentElement));
+                    // A caption sits before (left of / above) its control.
+                    const after = br.right < r.left - 4 && Math.abs(br.top - r.top) < 20 || br.bottom < r.top - 4;
+                    const score = d - (sameBlock ? 400 : 0) + (after ? 150 : 0);
+                    if (!best || score < best.score) best = { score, bx };
+                }
+            }
+            if (!best || best.score > 300) return false;
+            best.bx.setAttribute('data-ms-pick', tok);
+            return true;
+        }, [t, tok, controlSel]);
+        return hit ? frame.locator(`[data-ms-pick="${tok}"]`) : null;
+    } catch (_) { return null; }
+}
+
+// Resolve an action's target to a locator: a CSS selector (also read as an
+// id/name/label when it is a bare word), or the visible text / placeholder /
+// label the model named — in the page and then in its frames.
+async function resolveTarget(page, a, timeout, hint = {}) {
+    const deadline = Date.now() + timeout;
+    if (a.selector) {
+        const textLike = selectorLooksLikeText(a.selector);
+        // For a click, a bare word is far more often the button's LABEL than an
+        // id: {selector:"Login"} must not land on <form id="login">. Fields
+        // keep the id/name readings ({selector:"username"} is #username).
+        const clicky = !['type', 'set', 'select', 'check', 'uncheck'].includes(a.type);
+        const sels = selectorVariants(a.selector, { loose: !(clicky && textLike) });
+        // A word that is not a CSS match is most likely a label: do not burn
+        // the whole timeout on the CSS reading before trying the text one.
+        const selDeadline = Date.now() + (textLike ? Math.min(timeout, 900) : timeout);
+        let attached = null, attachedAt = 0;
+        for (;;) {
+            for (const fr of interactFrames(page)) {
+                for (const s of sels) {
+                    let loc;
+                    try { loc = fr.locator(s); await loc.count(); } catch (_) { continue; }   // invalid CSS: try the next reading
+                    const vis = await firstUsable(loc);
+                    if (vis) {
+                        if (s !== sels[0] || fr !== page.mainFrame()) hint.resolvedAs = `${s}${fr !== page.mainFrame() ? ' (inside a frame)' : ''}`;
+                        hint.frame = fr;
+                        return vis;
+                    }
+                    if (!attached && await loc.count().catch(() => 0)) { attached = loc.first(); attachedAt = Date.now(); }
+                }
+            }
+            // Present but hidden (a native <select> behind a custom widget, a
+            // visually-hidden checkbox): still usable for selectOption/check.
+            if (attached && Date.now() - attachedAt > 1500) return attached;
+            if (Date.now() >= selDeadline) break;
+            await page.waitForTimeout(250);
+        }
+        if (attached) return attached;
+        if (!textLike) return null;
+        const t = String(a.selector).trim();
+        const loc = await resolveTarget(page, { ...a, selector: null, byText: t, label: t, placeholder: null }, Math.max(1500, deadline - Date.now()), hint);
+        if (loc) { if (!hint.resolvedAs) hint.resolvedAs = `the element labelled "${t}"`; return loc; }
+        if (clicky) {
+            for (const fr of interactFrames(page)) {
+                for (const s of [`[name="${cssQ(t)}"]`, `[id="${cssQ(t)}" i]`]) {
+                    const vis = await firstUsable(fr.locator(s));
+                    if (vis) { hint.resolvedAs = s; hint.frame = fr; return vis; }
+                }
+            }
+        }
+        return null;
+    }
+    const text = a.byText || a.label || a.placeholder;
     if (!text) return null;
     const t = String(text).trim();
-    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const candidates = a.type === 'type' || a.type === 'select' || a.type === 'set'
-        ? [page.getByPlaceholder(t), page.getByLabel(t), page.getByRole('textbox', { name: t }), page.getByRole('searchbox', { name: t }), page.getByRole('combobox', { name: t })]
-        : [
-            page.locator('a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], summary, label').filter({ hasText: new RegExp(`^\\s*${esc}\\s*$`, 'i') }),
-            page.getByRole('button', { name: t }),
-            page.getByRole('link', { name: t }),
-            page.locator('input[type="submit"], input[type="button"]').and(page.locator(`[value="${t.replace(/"/g, '\\"')}" i]`)),
-            page.getByText(t, { exact: false }),
-        ];
-    const deadline = Date.now() + Math.min(timeout, 6000);
+    const textDeadline = Date.now() + Math.min(timeout, 6000);
+    const allowHidden = a.type === 'check' || a.type === 'uncheck' || a.type === 'select';
     do {
-        for (const c of candidates) {
-            try {
-                const n = Math.min(await c.count(), 6);
-                for (let i = 0; i < n; i++) {
-                    const loc = c.nth(i);
-                    if (await loc.isVisible().catch(() => false)) return loc;
+        let frames = interactFrames(page);
+        // The frame holding the form the model just filled goes first.
+        if (hint.formFrame && frames.includes(hint.formFrame)) frames = [hint.formFrame, ...frames.filter(f => f !== hint.formFrame)];
+        const tiers = frames.map(fr => {
+            const formScope = hint.form && fr === hint.formFrame ? hint.form : null;
+            const [strong, weak] = textStrategies(fr, a, t, formScope);
+            return a.placeholder && !a.byText && !a.label
+                ? [[fr.getByPlaceholder(t, { exact: true }), fr.getByPlaceholder(t), ...strong], weak]
+                : [strong, weak];
+        });
+        for (const tier of [0, 1]) {
+            for (let k = 0; k < frames.length; k++) {
+                for (const c of tiers[k][tier]) {
+                    const loc = await firstUsable(c, { allowHidden });
+                    if (loc) { if (frames[k] !== page.mainFrame()) hint.resolvedAs = 'an element inside a frame'; hint.frame = frames[k]; return loc; }
                 }
-            } catch (_) { /* next strategy */ }
+            }
+        }
+        for (const fr of frames) {
+            const boxy = a.type === 'check' || a.type === 'uncheck' || (a.type === 'set' && /^(true|false|on|off|yes|no|checked|unchecked)$/i.test(String(a.value ?? '')));
+            if (boxy) {
+                const box = await checkboxNearText(fr, t);
+                if (box) { hint.resolvedAs = `the checkbox next to "${t}"`; hint.frame = fr; return box; }
+            } else if (a.type === 'type' || a.type === 'set' || a.type === 'select') {
+                const field = await controlNearText(fr, t, a.type === 'select' ? 'select, [role=combobox], [role=listbox]' : FIELD_CONTROLS);
+                if (field) { hint.resolvedAs = `the field next to "${t}"`; hint.frame = fr; return field; }
+            }
         }
         await page.waitForTimeout(300);
-    } while (Date.now() < deadline);
+    } while (Date.now() < textDeadline);
     return null;
 }
 
 // Visible form fields, buttons and links with a selector that will work —
 // returned when a step fails so the model retries against the page's REAL
-// controls instead of inventing another selector.
+// controls instead of inventing another selector. Fields carry their label,
+// boxes their checked state, selects their options; frames are included.
 async function listControls(page, limit = 30) {
-    try {
-        return await page.evaluate((limit) => {
-            const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
-            const q = (s) => String(s).replace(/"/g, '\\"');
-            const visible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
-            const selectorOf = (el) => {
-                const tag = el.tagName.toLowerCase();
-                if (el.id && !/\d{5,}|^[a-f0-9-]{16,}$/i.test(el.id)) return `#${esc(el.id)}`;
-                const name = el.getAttribute('name'); if (name) return `${tag}[name="${q(name)}"]`;
-                const al = el.getAttribute('aria-label'); if (al) return `${tag}[aria-label="${q(al)}"]`;
-                const ph = el.getAttribute('placeholder'); if (ph) return `${tag}[placeholder="${q(ph)}"]`;
-                const type = el.getAttribute('type'); if (tag === 'input' && type) return `input[type="${q(type)}"]`;
-                return null;
-            };
-            const rows = [];
-            for (const el of document.querySelectorAll('input:not([type=hidden]), textarea, select, button, [role=button], [role=tab], summary, a[href]')) {
-                if (rows.length > 400) break;
-                if (!visible(el)) continue;
-                const tag = el.tagName.toLowerCase();
-                const kind = tag === 'a' ? 'link' : (tag === 'input' || tag === 'textarea') ? 'field' : tag === 'select' ? 'select' : 'button';
-                const text = ((tag === 'input' ? (el.value || '') : (el.innerText || '')) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-                if (kind === 'link' && !text) continue;
-                const row = { kind };
-                if (text) row.text = text;
-                const sel = selectorOf(el); if (sel) row.selector = sel;
-                const ph = el.getAttribute('placeholder'); if (ph) row.placeholder = ph.slice(0, 60);
-                if (kind === 'select') row.options = [...el.options].slice(0, 8).map(o => o.text.trim()).filter(Boolean);
-                rows.push(row);
-            }
-            const order = { field: 0, select: 1, button: 2, link: 3 };
-            return rows.sort((x, y) => order[x.kind] - order[y.kind]).slice(0, limit);
-        }, limit);
-    } catch (_) { return []; }
+    const out = [];
+    for (const fr of interactFrames(page)) {
+        if (out.length >= limit) break;
+        try {
+            const rows = await fr.evaluate((limit) => {
+                const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
+                const q = (s) => String(s).replace(/"/g, '\\"');
+                const visible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+                const selectorOf = (el) => {
+                    const tag = el.tagName.toLowerCase();
+                    if (el.id && !/\d{5,}|^[a-f0-9-]{16,}$/i.test(el.id)) return `#${esc(el.id)}`;
+                    const name = el.getAttribute('name'); if (name) return `${tag}[name="${q(name)}"]`;
+                    const al = el.getAttribute('aria-label'); if (al) return `${tag}[aria-label="${q(al)}"]`;
+                    const ph = el.getAttribute('placeholder'); if (ph) return `${tag}[placeholder="${q(ph)}"]`;
+                    const type = el.getAttribute('type'); if (tag === 'input' && type) return `input[type="${q(type)}"]`;
+                    return null;
+                };
+                const labelOf = (el) => {
+                    const l = (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                    if (l) return l;
+                    const by = el.getAttribute('aria-labelledby');
+                    if (by) return by.split(/\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+                    return '';
+                };
+                const rows = [];
+                for (const el of document.querySelectorAll('input:not([type=hidden]), textarea, select, button, [role=button], [role=combobox], [role=checkbox], [role=tab], summary, a[href]')) {
+                    if (rows.length > 400) break;
+                    if (!visible(el)) continue;
+                    const tag = el.tagName.toLowerCase();
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    const role = el.getAttribute('role');
+                    const kind = tag === 'a' ? 'link'
+                        : (type === 'checkbox' || type === 'radio' || role === 'checkbox') ? 'checkbox'
+                        : (tag === 'input' && /^(submit|button|image|reset)$/.test(type)) ? 'button'
+                        : (tag === 'input' || tag === 'textarea') ? 'field'
+                        : (tag === 'select' || role === 'combobox') ? 'select' : 'button';
+                    const text = ((tag === 'input' ? (kind === 'button' ? el.value : '') : (el.innerText || '')) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+                    if (kind === 'link' && !text) continue;
+                    const row = { kind };
+                    if (text) row.text = text;
+                    const lab = labelOf(el).replace(/\s+/g, ' ').trim().slice(0, 60);
+                    if (lab && lab !== text) row.label = lab;
+                    const sel = selectorOf(el); if (sel) row.selector = sel;
+                    const ph = el.getAttribute('placeholder'); if (ph) row.placeholder = ph.slice(0, 60);
+                    if (kind === 'field' && el.value) row.value = String(el.value).slice(0, 60);
+                    if (kind === 'checkbox') row.checked = !!(el.checked || el.getAttribute('aria-checked') === 'true');
+                    if (tag === 'select') { row.options = [...el.options].slice(0, 12).map(o => o.text.trim()).filter(Boolean); row.value = el.options[el.selectedIndex] ? el.options[el.selectedIndex].text.trim() : ''; }
+                    rows.push(row);
+                }
+                const order = { field: 0, select: 1, checkbox: 2, button: 3, link: 4 };
+                return rows.sort((x, y) => order[x.kind] - order[y.kind]).slice(0, limit);
+            }, limit - out.length);
+            const inFrame = fr !== page.mainFrame();
+            for (const r of rows) out.push(inFrame ? { ...r, inFrame: true } : r);
+        } catch (_) { /* frame gone */ }
+    }
+    return out.slice(0, limit);
+}
+
+// Something covering the target (a newsletter / tour / chat popup that opened
+// after the page loaded — the load-time overlay pass never saw it): find the
+// layer on top of the target's centre and click its close control. Returns
+// null when nothing covers it, else {cleared, desc, via}.
+async function clearBlocker(loc) {
+    return await loc.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) return null;
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (!top || el.contains(top) || top.contains(el)) return null;
+        // Climb to the outermost positioned / dialog layer around what covers it.
+        let layer = top;
+        for (let n = top; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+            const st = getComputedStyle(n);
+            if (st.position === 'fixed' || st.position === 'sticky' || n.getAttribute('role') === 'dialog' || n.getAttribute('aria-modal') === 'true') layer = n;
+        }
+        if (layer.contains(el)) return null;
+        const desc = (layer.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        const CLOSE_TEXT = /^(×|✕|✖|x|close|dismiss|no,? thanks|no thank you|not now|maybe later|later|skip|got it|ok|okay|accept|accept all|i agree|agree|allow all|reject all|decline|continue to site)$/i;
+        const cands = [...layer.querySelectorAll('button, [role=button], a, [aria-label], [title], [class*=close i]')];
+        const pick = cands.find(b => {
+            const lab = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+            const txt = (b.innerText || '').trim();
+            const cls = typeof b.className === 'string' ? b.className : '';
+            return /\b(close|dismiss)\b/i.test(lab) || CLOSE_TEXT.test(txt) || /(^|[\s_-])(close|dismiss)([\s_-]|$)/i.test(cls);
+        });
+        if (!pick) return { cleared: false, desc };
+        pick.click();
+        return { cleared: true, desc, via: (pick.getAttribute('aria-label') || pick.innerText || 'close').trim().slice(0, 40) };
+    }).catch(() => null);
+}
+
+// Before acting on a target: if a layer covers it, close it (once), or try
+// Escape; report what was in the way either way.
+async function unblockTarget(page, loc, entry) {
+    const b = await clearBlocker(loc);
+    if (!b) return;
+    if (b.cleared) {
+        entry.closedOverlay = `${b.via} (covering: "${b.desc.slice(0, 80)}")`;
+        await page.waitForTimeout(400);
+        return;
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(300);
+    const again = await clearBlocker(loc);
+    if (!again) { entry.closedOverlay = `Escape (covering: "${b.desc.slice(0, 80)}")`; return; }
+    if (!again.cleared) entry.blockedBy = again.desc.slice(0, 140);
+}
+
+// ---- What the steps did --------------------------------------------------
+// Visible text lines of the page and its frames. The readable-content
+// extractor keeps articles, lists and tables; the result of an interaction is
+// usually a short line it drops ("You entered: A", "Hello World!", a status
+// banner, a new "Delete" button, a total that updated), so the lines that
+// appeared are reported separately.
+async function visibleLines(page) {
+    const lines = [];
+    await waitForFramesLoaded(page, 3000);
+    for (const fr of interactFrames(page)) {
+        try {
+            let t;
+            try { t = await fr.evaluate(() => (document.body ? document.body.innerText : '') || ''); }
+            catch (_) { await fr.waitForLoadState('load', { timeout: 3000 }).catch(() => {}); t = await fr.evaluate(() => (document.body ? document.body.innerText : '') || ''); }
+            for (const l of t.split('\n')) { const x = l.replace(/\s+/g, ' ').trim(); if (x) lines.push(x); }
+        } catch (_) { /* frame gone */ }
+        if (lines.length > 6000) break;
+    }
+    return lines;
+}
+
+function lineDiff(beforeLines, afterLines) {
+    const count = new Map();
+    for (const l of beforeLines) count.set(l, (count.get(l) || 0) + 1);
+    const added = [];
+    for (const l of afterLines) {
+        const n = count.get(l) || 0;
+        if (n > 0) count.set(l, n - 1); else added.push(l);
+    }
+    let removed = 0;
+    for (const n of count.values()) removed += n;
+    return { added, removed };
+}
+
+// The page signature for interaction: the top document AND its frames (a
+// form submitted inside an iframe changes only the frame).
+async function interactSignature(page) {
+    const parts = [await pageSignature(page)];
+    for (const fr of interactFrames(page).slice(1, 5)) {
+        try {
+            parts.push(await fr.evaluate(() => {
+                const t = (document.body && document.body.innerText) || '';
+                let h = 0;
+                for (let i = 0; i < t.length; i += 5) h = ((h << 5) - h + t.charCodeAt(i)) | 0;
+                return `${location.href}|${t.length}|${h}`;
+            }));
+        } catch (_) {
+            // Mid-navigation the frame has no document to read: a unique token
+            // keeps the settle loop waiting instead of reading it as stable.
+            parts.push(`nav${Date.now()}`);
+        }
+    }
+    return parts.join('#');
+}
+
+// Every frame's own load: page.waitForLoadState only covers the top document,
+// and a form submitted inside an iframe navigates just that frame.
+async function waitForFramesLoaded(page, ms = 5000) {
+    await Promise.all(interactFrames(page).map(f => f.waitForLoadState('load', { timeout: ms }).catch(() => {})));
+}
+
+// Loading indicators on screen. An action that starts one ("Loading…",
+// a spinner, aria-busy, a progress bar) is not done when the page first
+// changes — the result arrives when the indicator goes away.
+async function busyCount(page) {
+    let n = 0;
+    for (const fr of interactFrames(page).slice(0, 4)) {
+        try {
+            n += await fr.evaluate(() => {
+                const vis = (el) => { const r = el.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0)) return false; const st = getComputedStyle(el); return st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0'; };
+                let c = 0;
+                const sel = '[aria-busy="true"], [role="progressbar"], [id*="loading" i], [id*="spinner" i], [class*="spinner" i], [class*="loader" i], [class~="loading" i], [class*="is-loading" i], [class*="skeleton" i]';
+                for (const el of document.querySelectorAll(sel)) { if (c > 20) break; if (el.tagName !== 'IMG' && el.tagName !== 'BODY' && el.tagName !== 'HTML' && vis(el)) c++; }
+                const t = (document.body && document.body.innerText) || '';
+                c += (t.match(/^\s*(loading|searching|please wait|fetching|processing)\b[^\n]{0,30}$/gim) || []).length;
+                return c;
+            });
+        } catch (_) { /* navigating */ }
+    }
+    return n;
+}
+
+// After an action: wait for the page to change (navigation / re-render),
+// then for any loading indicator the action started to clear, then settle.
+async function waitForResult(page, before, busyBefore, maxMs) {
+    let changed = await waitForChange(page, before, maxMs, interactSignature);
+    if (changed) await waitForFramesLoaded(page);
+    let busy = await busyCount(page);
+    if (busy > busyBefore) {
+        const until = Date.now() + Math.max(4000, Math.min(20000, maxMs * 2));
+        while (Date.now() < until) {
+            await page.waitForTimeout(300);
+            busy = await busyCount(page);
+            if (busy <= busyBefore) break;
+        }
+        // The result renders as the indicator goes away; let it settle.
+        const after = await interactSignature(page);
+        if (await waitForChange(page, after, 1200, interactSignature)) changed = true;
+        else if (after !== before) changed = true;
+    }
+    return changed;
 }
 
 // A native <select>'s options are not clickable elements, but "click the
@@ -1934,6 +2309,8 @@ async function interactAndFetch(url, actions = [], options = {}) {
     const snapshots = [];
     let firstLines = null;
     let lastTyped = null;
+    let lastTypedFrame = null;
+    let baselineLines = null;
 
     const snapshot = async (label) => {
         const raw = await extractContent(page, { ...options, maxLength: Math.max(4000, maxLength) });
@@ -1983,6 +2360,8 @@ async function interactAndFetch(url, actions = [], options = {}) {
             if (options.dismissOverlays !== false) await dismissOverlays(page).catch(() => []);
         }
         const sessionPoolEntry = continued ? sess.poolEntry : poolEntry;
+        baselineLines = await visibleLines(page);
+        const baselineUrl = page.url();
 
         let failure = null;
         for (let idx = 0; idx < steps.length; idx++) {
@@ -2000,9 +2379,17 @@ async function interactAndFetch(url, actions = [], options = {}) {
             const actTimeout = Math.max(500, Math.min(60000, parseInt(a.timeout || 8000, 10) || 8000));
             await page.waitForTimeout(randomDelay(80, 200));
             try {
-                const before = await pageSignature(page);
+                const before = await interactSignature(page);
+                const busyBefore = await busyCount(page);
+                const hint = {};
+                if (lastTyped) {
+                    const form = lastTyped.locator('xpath=ancestor::form[1]');
+                    if (await form.count().catch(() => 0)) { hint.form = form; hint.formFrame = lastTypedFrame; }
+                }
+                const settle = (ms) => waitForResult(page, before, busyBefore, ms);
                 const needTarget = async () => {
-                    const loc = await resolveTarget(page, a, actTimeout);
+                    const loc = await resolveTarget(page, a, actTimeout, hint);
+                    if (hint.resolvedAs) entry.resolvedAs = hint.resolvedAs;
                     if (!loc) throw new Error(a.selector
                         ? `selector '${a.selector}' matched nothing visible within ${actTimeout}ms`
                         : (a.byText || a.placeholder || a.label)
@@ -2017,7 +2404,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
                         if (opt) {
                             await chooseOption(opt, actTimeout);
                             entry.as = 'select option';
-                            entry.changed = await waitForChange(page, before, 4000);
+                            entry.changed = await settle(4000);
                             break;
                         }
                         const loc = await needTarget();
@@ -2028,15 +2415,18 @@ async function interactAndFetch(url, actions = [], options = {}) {
                             break;
                         }
                         await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                        await unblockTarget(page, loc, entry);
                         if (a.type === 'dblclick') await loc.dblclick({ timeout: actTimeout });
                         else await loc.click({ timeout: actTimeout });
-                        entry.changed = await waitForChange(page, before, Math.min(actTimeout, 5000));
+                        entry.changed = await settle(Math.min(actTimeout, 5000));
                         break;
                     }
                     case 'hover': {
                         const loc = await needTarget();
+                        await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                        await unblockTarget(page, loc, entry);
                         await loc.hover({ timeout: actTimeout });
-                        entry.changed = await waitForChange(page, before, 1500);
+                        entry.changed = await settle(1500);
                         break;
                     }
                     case 'set':
@@ -2049,7 +2439,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
                             if (tag === 'select') {
                                 try { await loc.selectOption(v, { timeout: actTimeout }); }
                                 catch (_) { await loc.selectOption({ label: v }, { timeout: actTimeout }); }
-                                entry.changed = await waitForChange(page, before, 4000);
+                                entry.changed = await settle(4000);
                                 lastTyped = null;
                                 break;
                             }
@@ -2058,7 +2448,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
                             const opt = await resolveTarget(page, { type: 'click', byText: v }, actTimeout);
                             if (!opt) throw new Error(`option "${v}" not found in the dropdown`);
                             await opt.click({ timeout: actTimeout });
-                            entry.changed = await waitForChange(page, before, 4000);
+                            entry.changed = await settle(4000);
                             break;
                         }
                         if (tag === 'input' || tag === 'textarea' || a.type !== 'set') {
@@ -2066,19 +2456,22 @@ async function interactAndFetch(url, actions = [], options = {}) {
                             if (inputType === 'checkbox' || inputType === 'radio') {
                                 const want = !/^(false|0|off|no|unchecked)$/i.test(String(a.value ?? a.text ?? 'true'));
                                 if (want) await loc.check({ timeout: actTimeout }); else await loc.uncheck({ timeout: actTimeout });
-                                entry.changed = await waitForChange(page, before, 3000);
+                                entry.changed = await settle(3000);
                                 break;
                             }
                         }
                         const text = String(a.text ?? '');
-                        await loc.click({ timeout: actTimeout }).catch(() => {});
+                        await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                        await unblockTarget(page, loc, entry);
+                        await loc.click({ timeout: Math.min(actTimeout, 3000) }).catch(() => {});
                         await loc.fill('', { timeout: actTimeout }).catch(() => {});
                         if (text.length <= 80) await loc.pressSequentially(text, { delay: randomDelay(20, 50), timeout: actTimeout });
                         else await loc.fill(text, { timeout: actTimeout });
                         lastTyped = loc;
+                        lastTypedFrame = hint.frame || page.mainFrame();
                         if (a.submit || a.enter || a.pressEnter) {
                             await loc.press('Enter', { timeout: actTimeout });
-                            entry.changed = await waitForChange(page, before, 8000);
+                            entry.changed = await settle(8000);
                         }
                         break;
                     }
@@ -2086,21 +2479,32 @@ async function interactAndFetch(url, actions = [], options = {}) {
                         const key = String(a.key || 'Enter');
                         if (a.selector || a.byText) await (await needTarget()).press(key, { timeout: actTimeout });
                         else await page.keyboard.press(key);
-                        entry.changed = await waitForChange(page, before, /^enter$/i.test(key) ? 8000 : 1500);
+                        entry.changed = await settle(/^enter$/i.test(key) ? 8000 : 1500);
                         break;
                     }
                     case 'submit': {
                         const loc = a.selector || a.byText ? await needTarget() : lastTyped;
                         if (!loc) throw new Error('submit needs a selector, or a preceding type step');
                         await loc.press('Enter', { timeout: actTimeout });
-                        entry.changed = await waitForChange(page, before, 8000);
+                        entry.changed = await settle(8000);
                         break;
                     }
                     case 'check':
                     case 'uncheck': {
-                        const loc = await needTarget();
-                        if (a.type === 'check') await loc.check({ timeout: actTimeout }); else await loc.uncheck({ timeout: actTimeout });
-                        entry.changed = await waitForChange(page, before, 3000);
+                        let loc = await needTarget();
+                        const checkable = await loc.evaluate(el => el.matches('input[type=checkbox], input[type=radio], [role=checkbox], [role=radio], [role=switch]') || (el.tagName === 'LABEL' && !!el.control)).catch(() => false);
+                        if (!checkable) {
+                            const inner = loc.locator('input[type=checkbox], input[type=radio], [role=checkbox], [role=radio], [role=switch]').first();
+                            if (await inner.count().catch(() => 0)) loc = inner;
+                            else {
+                                const near = (a.byText || a.label) ? await checkboxNearText(hint.frame || page.mainFrame(), String(a.byText || a.label)) : null;
+                                if (!near) throw new Error(`the element ${entry.target || ''} is not a checkbox or radio button, and none sits next to it`);
+                                loc = near;
+                                entry.resolvedAs = `the checkbox next to "${a.byText || a.label}"`;
+                            }
+                        }
+                        if (a.type === 'check') await loc.check({ timeout: actTimeout, force: !(await loc.isVisible().catch(() => false)) }); else await loc.uncheck({ timeout: actTimeout, force: !(await loc.isVisible().catch(() => false)) });
+                        entry.changed = await settle(3000);
                         break;
                     }
                     case 'scroll': {
@@ -2114,20 +2518,30 @@ async function interactAndFetch(url, actions = [], options = {}) {
                             await page.evaluate(() => window.scrollTo(0, 0));
                         } else {
                             await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-                            entry.changed = await waitForChange(page, before, 1500);
+                            entry.changed = await settle(1500);
                         }
                         break;
                     }
                     case 'wait': {
-                        if (a.selector) await page.waitForSelector(a.selector, { timeout: actTimeout });
-                        else if (a.byText) await page.getByText(String(a.byText)).first().waitFor({ timeout: actTimeout });
-                        else await page.waitForTimeout(Math.min(15000, parseInt(a.ms ?? a.waitMs ?? a.wait ?? a.delay ?? a.duration ?? a.sleep ?? a.pause ?? a.timeout ?? 1000, 10) || 1000));
+                        if (a.selector || a.byText) {
+                            // In the page or any of its frames.
+                            const until = Date.now() + actTimeout;
+                            let seen = false;
+                            while (!seen && Date.now() < until) {
+                                for (const fr of interactFrames(page)) {
+                                    const l = a.selector ? fr.locator(a.selector) : fr.getByText(String(a.byText));
+                                    if (await l.first().isVisible().catch(() => false)) { seen = true; break; }
+                                }
+                                if (!seen) await page.waitForTimeout(250);
+                            }
+                            if (!seen) throw new Error(`waited ${actTimeout}ms but ${a.selector ? `'${a.selector}'` : `the text "${a.byText}"`} never appeared`);
+                        } else await page.waitForTimeout(Math.min(15000, parseInt(a.ms ?? a.waitMs ?? a.wait ?? a.delay ?? a.duration ?? a.sleep ?? a.pause ?? a.timeout ?? 1000, 10) || 1000));
                         break;
                     }
                     case 'waitfornavigation': {
                         // A preceding click has very often ALREADY navigated before
                         // this step starts listening; a change-wait covers both.
-                        entry.changed = await waitForChange(page, before, actTimeout);
+                        entry.changed = await settle(actTimeout);
                         if (!entry.changed) await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
                         break;
                     }
@@ -2173,9 +2587,15 @@ async function interactAndFetch(url, actions = [], options = {}) {
             } catch (actionErr) {
                 const raw = String(actionErr?.message || actionErr).split('\n')[0];
                 entry.ok = false;
-                entry.error = /timeout .* exceeded/i.test(raw)
-                    ? `timed out after ${actTimeout}ms — the element is missing, hidden or covered`
-                    : raw.slice(0, 240);
+                const full = String(actionErr?.message || actionErr);
+                const intercept = full.match(/<([a-z0-9-]+)([^>]{0,120})>[^\n]{0,160}?intercepts pointer events/i);
+                entry.error = entry.blockedBy
+                    ? `the element is covered by "${entry.blockedBy}" — close or answer that first (click its button), then retry`
+                    : intercept
+                        ? `the element is covered by another element (<${intercept[1]}${intercept[2].slice(0, 80)}>) — close the overlay first, then retry`
+                        : /timeout .* exceeded/i.test(raw)
+                            ? `timed out after ${actTimeout}ms — the element is missing, hidden or covered`
+                            : raw.slice(0, 240);
                 failure = { index: idx, error: entry.error };
                 break;
             }
@@ -2205,6 +2625,10 @@ async function interactAndFetch(url, actions = [], options = {}) {
         const submittedAfter = lastFill >= 0 && log.slice(lastFill + 1).some(e => e.ok && !e.as && ['click', 'dblclick', 'press', 'submit', 'nextpage'].includes(e.type));
         const unsubmitted = lastFill >= 0 && !submittedAfter && !(steps[lastFill] && (steps[lastFill].submit || steps[lastFill].enter || steps[lastFill].pressEnter)) && !log[lastFill].changed;
         await page.waitForTimeout(randomDelay(150, 300));
+        // Read the page's lines BEFORE extracting readable content: the
+        // extractor takes iframes out of the live document, which would hide
+        // the result of a form submitted inside one.
+        const afterLines = baselineLines ? await visibleLines(page) : null;
         const title = await page.title().catch(() => '');
         const pagination = await domPagination(page);
 
@@ -2222,6 +2646,30 @@ async function interactAndFetch(url, actions = [], options = {}) {
             content = await extractContent(page, options);
         }
 
+        // What the steps changed: lines that are on the page now and were not
+        // before the first step. A wholesale new page (navigation to a
+        // different document) is already the content itself.
+        let pageChanges = null;
+        if (baselineLines) {
+            const d = lineDiff(baselineLines, afterLines);
+            // Navigated to another document: the content already IS that page,
+            // so only a short one (a result/confirmation page) is listed.
+            const navigated = !sameDocUrl(baselineUrl, page.url());
+            if (d.added.length > (navigated ? 25 : 150)) pageChanges = { newPage: true, addedLines: d.added.length, removedLines: d.removed };
+            else if (d.added.length) {
+                const shown = [];
+                let budget = 3500;
+                for (const l of d.added) { const x = l.slice(0, 240); if (budget - x.length < 0) break; shown.push(x); budget -= x.length + 1; }
+                pageChanges = { added: shown, addedLines: d.added.length, removedLines: d.removed };
+                if (!snapshots.length) {
+                    content = `New on the page after your steps (${d.added.length} line${d.added.length === 1 ? '' : 's'} that were not there before):\n`
+                        + shown.map(l => `+ ${l}`).join('\n') + (shown.length < d.added.length ? `\n+ … ${d.added.length - shown.length} more` : '')
+                        + `\n\n${content}`;
+                }
+            } else pageChanges = { added: [], addedLines: 0, removedLines: d.removed };
+        }
+        const noEffect = log.filter(e => e.ok && e.changed === false && ['click', 'dblclick', 'press', 'submit'].includes(e.type) && !e.as).map(e => e.step);
+
         if (sessionKey) {
             keep = true;
             keepInteractSession(sessionKey, { context, page, poolEntry: sessionPoolEntry, startUrl, timer: null });
@@ -2233,6 +2681,10 @@ async function interactAndFetch(url, actions = [], options = {}) {
             finalUrl: page.url(),
             steps: log,
             ...(skippedSteps.length ? { skippedSteps } : {}),
+            ...(pageChanges ? { pageChanges } : {}),
+            // A click that changed nothing usually hit the wrong element: hand
+            // back the real controls so the retry can target one of them.
+            ...(noEffect.length ? { stepsWithoutEffect: noEffect, ...(failure ? {} : { controls: await listControls(page) }) } : {}),
             ...(unsubmitted ? { formNotSubmitted: true } : {}),
             ...(continued ? { continuedFrom: startUrl } : {}),
             ...(sessionKey ? { pageKeptOpen: true } : {}),
@@ -2516,21 +2968,21 @@ async function pageSignature(page) {
 // 300 ms after a click — a search-results page that re-rendered 800 ms later
 // was extracted BEFORE the new results, and the crawler compared page 2 with
 // page 1, found them identical and stopped ("pagination exhausted").
-async function waitForChange(page, before, maxMs = 6000) {
+async function waitForChange(page, before, maxMs = 6000, sigOf = pageSignature) {
     const start = Date.now();
     let changed = false;
     while (Date.now() - start < maxMs) {
         await page.waitForTimeout(200);
-        const now = await pageSignature(page);
+        const now = await sigOf(page);
         if (now && now !== before) { changed = true; break; }
     }
     if (!changed) return false;
     await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-    let last = await pageSignature(page);
+    let last = await sigOf(page);
     const settleStart = Date.now();
     while (Date.now() - settleStart < 3000) {
         await page.waitForTimeout(350);
-        const cur = await pageSignature(page);
+        const cur = await sigOf(page);
         if (cur === last) break;
         last = cur;
     }
