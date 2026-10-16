@@ -1497,7 +1497,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs or data you did not fetch, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest.`,
         `WEB RESEARCH: generic or off-topic results mean the QUERY was weak (the result's \`relevance\`/\`hint\` say so) — quote the exact name, add one distinguishing detail or a site:, then READ the best page and follow it to the primary source. Try three genuinely different queries before calling something unavailable. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Never guess or retype a URL, and never announce the same plan twice.`,
         `WORK IN BIG STEPS: gather broadly in one call or one script (every file or record at once, as a compact summary), then drill into only what the summary flags. Stop as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
         `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off.`,
         `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
         ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
@@ -12481,6 +12481,12 @@ async function executePythonSkill(skill, params, ctx = null) {
                 stdout: run.stdout.slice(0, 2000),
             };
         } catch (sandboxErr) {
+            // User-owned code (hand-written or saved by the model with
+            // save_tool) never runs inside the webapp process.
+            if (skill.userId) {
+                console.warn(`[executePythonSkill] sandbox run failed for user skill "${skill.name}" — not falling back to in-process:`, sandboxErr.message);
+                return { success: false, error: `sandbox unavailable: ${sandboxErr.message}` };
+            }
             console.warn(`[executePythonSkill] sandbox run failed for "${skill.name}", falling back to in-process:`, sandboxErr.message);
             // Fall through to the legacy path below.
         }
@@ -25829,6 +25835,15 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             if (modelRoles.secondary && modelRoles.review !== 'off' && toolEvidenceForChecker.length < 40) {
                                 toolEvidenceForChecker.push({ name: call.function.name || 'tool', purpose: call.purpose || '', failed: !!failedChip, content: String(resultMsg.content || '').slice(0, 6000) });
                             }
+                            // A script that just worked is a candidate for the skills
+                            // library: offer save_tool from here on (it test-runs the
+                            // code again before saving, so a lucky run cannot slip in).
+                            if (!failedChip && !refusalKind && !req.delegate
+                                && (call.function.name === 'run_python' || call.function.name === 'run_node')
+                                && parsedArgsForChip && (String(parsedArgsForChip.code || '').length >= 300 || parsedArgsForChip.codeFile)
+                                && toolCtx._forcedToolNames instanceof Set && !toolCtx._forcedToolNames.has('save_tool')) {
+                                toolCtx._forcedToolNames.add('save_tool');
+                            }
                             // The lead's own finished work, for the assistant's
                             // duplicate screen and follow-up proposals (a job that
                             // repeats a step the lead already did is wasted).
@@ -26338,7 +26353,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 // intent phrase + a creation verb + a concrete artifact target
                 // in the tail, a short turn, and zero tool_calls this round.
                 if (!announcedActionRetried && accumulatedToolCalls.length === 0) {
-                    const trimmed = (fullResponse || '').trim();
+                    // Only THIS round's text: narration from an earlier round
+                    // ("let me fix that and save it") was followed by real tool
+                    // calls, and reading it here re-streamed a finished answer
+                    // (the user saw the whole answer twice).
+                    const trimmed = (fullResponse || '').slice(roundStart).trim();
                     const tail = trimmed.slice(-320);
                     const intent = /\b(?:let\s+me|let['’]?s|i['’]?ll|i\s+will|i\s+can|i\s+am\s+going\s+to|i['’]?m\s+going\s+to|i['’]?m\s+gonna|here['’]?s|now\s+i['’]?ll|now\s+let['’]?s)\b/i;
                     const actionVerb = /\b(?:writ(?:e|ing)|creat(?:e|ing)|generat(?:e|ing)|build(?:ing)?|mak(?:e|ing)|plot(?:t(?:ed|ing))?|graph(?:ing)?|chart(?:ing)?|render(?:ing)?|draw(?:ing)?|produc(?:e|ing)|comput(?:e|ing)|calculat(?:e|ing)|pars(?:e|ing)|run(?:ning)?|execut(?:e|ing)|cod(?:e|ing)|extract(?:ing)?|fix(?:ing)?|implement(?:ing)?|updat(?:e|ing)|edit(?:ing)?|modif(?:y|ying)|rewrit(?:e|ing)|refactor(?:ing)?|appl(?:y|ying)|add(?:ing)?)\b/i;
@@ -34630,6 +34649,206 @@ app.use((req, res) => {
 
     // `resolveSkillPolicy` and `isSkillBlocked` are module-scope — see the
     // helper near the auth destructure at the top of this file.
+
+    // ----- save_tool ---------------------------------------------------------
+    // Lets the model turn code it wrote and ran successfully into a permanent
+    // tool in the account's skills library, so the next task that needs the
+    // same capability calls it instead of re-writing the script. The code is
+    // test-run in the sandbox with the model's example arguments BEFORE it is
+    // saved: a tool that does not work is never added. Saved as a user-owned,
+    // sandboxed skill (public internet, workspace, never in-process), so it
+    // shows up in the Agents tab's skills library where the user can edit,
+    // disable or delete it.
+    const SAVE_TOOL_NAME_RE = /^[a-z][a-z0-9_]{2,47}$/;
+    const SAVE_TOOL_PARAM_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'array', 'object']);
+    function normalizeSavedToolParams(raw) {
+        const out = {};
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+        for (const [k, v] of Object.entries(raw)) {
+            if (!/^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(k)) continue;
+            // Accept the skill hint form ("string?") or a JSON-schema-ish
+            // object ({type, required}) — models send both.
+            let type = 'string', optional = false;
+            if (typeof v === 'string') {
+                optional = v.trim().endsWith('?');
+                type = v.trim().replace(/\?$/, '').toLowerCase() || 'string';
+            } else if (v && typeof v === 'object') {
+                type = String(v.type || 'string').toLowerCase();
+                optional = v.required === false || v.optional === true;
+            }
+            if (type === 'integer') type = 'number';
+            if (!SAVE_TOOL_PARAM_TYPES.has(type)) type = 'string';
+            out[k] = optional ? `${type}?` : type;
+            if (Object.keys(out).length >= 12) break;
+        }
+        return out;
+    }
+    function savedToolResultFailed(r) {
+        if (!r || typeof r !== 'object') return 'returned no result object';
+        if (r.timedOut) return 'timed out';
+        if (r.success === false) return String(r.error || 'returned success:false');
+        if (r.error) return String(r.error);
+        if (typeof r.returncode === 'number' && r.returncode !== 0) return `exited with code ${r.returncode}`;
+        return null;
+    }
+    tools.registerTool({
+        name: 'save_tool',
+        build(ctx) {
+            if (!checkPermission(ctx && ctx.apiKeyData, 'agents')) return null;
+            if (!ctx || !ctx.userId) return null;
+            if (ctx.delegateDepth > 0) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'save_tool',
+                    description:
+                        'Save code that worked this turn as a permanent reusable tool in the skills library, so future tasks can call it directly instead of rewriting it. ' +
+                        'Use it when a script you wrote solved something likely to come up again (a converter, a scraper for a site, a parser for a file format, an API client) or when the user asks to save/keep it as a tool. ' +
+                        'The code must be Python defining `def execute(params): ... return {"success": True, ...}`; it is test-run with `testArgs` first and only saved if that run succeeds. ' +
+                        'Do not save one-off scripts, and never put secrets (API keys, passwords, tokens) in the code — take them as parameters.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            name: { type: 'string', description: 'snake_case tool name, 3-48 chars, describing the capability (e.g. "extract_pdf_tables"), not the task.' },
+                            description: { type: 'string', description: 'One sentence saying WHEN to use the tool and what it returns. This is what future turns see.' },
+                            parameters: { type: 'object', description: 'Map of argument name to type: "string" | "number" | "boolean" | "array" | "object"; append "?" for optional, e.g. {"url":"string","limit":"number?"}.' },
+                            code: { type: 'string', description: 'Complete Python source with `def execute(params):` returning a JSON-serializable dict with a `success` key. Read arguments with params.get(...). Files go under /workspace (outputs for the user under /workspace/artifacts/).' },
+                            testArgs: { type: 'object', description: 'Real example arguments for the test run that proves the tool works (use the inputs that just worked).' },
+                            usage: { type: 'string', description: 'Optional notes shown to the model when the tool is first used: argument formats, limits, gotchas.' },
+                            replace: { type: 'boolean', description: 'Overwrite your own saved tool with the same name (to fix or improve it).' },
+                        },
+                        required: ['name', 'description', 'code', 'testArgs'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            args = args || {};
+            if (!checkPermission(ctx && ctx.apiKeyData, 'agents')) {
+                return { success: false, error: 'You do not have permission to add tools (agents permission required).' };
+            }
+            const userId = ctx && ctx.userId;
+            if (!userId) return { success: false, error: 'save_tool needs a signed-in account.' };
+            const name = String(args.name || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (!SAVE_TOOL_NAME_RE.test(name)) {
+                return { success: false, error: `invalid name "${args.name}": use 3-48 chars of lowercase letters, digits and underscores, starting with a letter.` };
+            }
+            const description = String(args.description || '').replace(/\s+/g, ' ').trim();
+            if (description.length < 20) return { success: false, error: 'description is required: one sentence saying when to use the tool and what it returns.' };
+            const code = String(args.code || '');
+            if (!/^\s*def\s+execute\s*\(\s*params\b/m.test(code)) {
+                return { success: false, error: 'code must be Python that defines `def execute(params):` at the top level and returns a dict. A run_node / bash script has to be ported to Python first (subprocess can still call node or other programs).' };
+            }
+            if (code.length > 60000) return { success: false, error: `code is ${code.length} chars; keep a saved tool under 60000.` };
+            // A credential baked into a library tool would be shared with every
+            // later call (and visible in the Agents tab). Refuse obvious ones.
+            const secretHit = code.match(/\b(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\d{8,10}:[A-Za-z0-9_-]{35})\b/);
+            if (secretHit) {
+                return { success: false, error: 'the code contains what looks like a credential (API key / token). Take it as a parameter instead of hard-coding it.' };
+            }
+            const testArgs = (args.testArgs && typeof args.testArgs === 'object' && !Array.isArray(args.testArgs)) ? args.testArgs : null;
+            if (!testArgs) return { success: false, error: 'testArgs is required: the example arguments that prove the tool works.' };
+            const parameters = normalizeSavedToolParams(args.parameters);
+            for (const k of Object.keys(testArgs)) {
+                if (!(k in parameters)) parameters[k] = typeof testArgs[k] === 'number' ? 'number?' : typeof testArgs[k] === 'boolean' ? 'boolean?' : Array.isArray(testArgs[k]) ? 'array?' : (testArgs[k] && typeof testArgs[k] === 'object') ? 'object?' : 'string?';
+            }
+
+            // Name collisions: a built-in/native tool can never be shadowed; a
+            // skill can only be replaced by its owner and only on request.
+            if (tools.toolRegistry.has(name)) {
+                return { success: false, error: `"${name}" is a built-in tool. Pick a different name.` };
+            }
+            const allSkills = await loadSkills();
+            const existingIdx = allSkills.findIndex(s => safeToolName(s.name) === name || s.name === name);
+            const existing = existingIdx >= 0 ? allSkills[existingIdx] : null;
+            if (existing) {
+                if (!existing.userId) return { success: false, error: `"${name}" is a built-in skill. Pick a different name.` };
+                if (existing.userId !== userId) return { success: false, error: `"${name}" already belongs to another account. Pick a different name.` };
+                if (!args.replace) return { success: false, error: `You already have a tool named "${name}". Pass replace:true to overwrite it, or pick a different name.`, existing: { description: existing.description, parameters: existing.parameters } };
+            }
+
+            // Test run: always in the sandbox, never in-process (this is model
+            // code), in the conversation's workspace so the test inputs that just
+            // worked resolve to the same files.
+            const sandbox = require('./services/sandboxRunner');
+            const started = Date.now();
+            let test;
+            try {
+                const run = await sandbox.runPythonSkill({
+                    code,
+                    params: testArgs,
+                    network: 'allowlist',
+                    allowlist: ['*'],
+                    workspace: true,
+                    pathNormalize: true,
+                    timeoutMs: 120_000,
+                    memory: '1g',
+                    cpus: '1.0',
+                    toolName: name,
+                    userId,
+                    conversationId: ctx.conversationId || null,
+                    workspaceBucket: ctx.workspaceBucket || null,
+                });
+                sandbox.cleanupRun(run.runId).catch(() => {});
+                test = run.timedOut ? { success: false, timedOut: true, error: 'timed out after 120 s' }
+                    : (run.result && typeof run.result === 'object') ? run.result
+                    : { success: false, error: run.parseError || (run.stderr ? run.stderr.slice(-1500) : 'the code printed no JSON result') };
+            } catch (e) {
+                return { success: false, error: `the test run could not start: ${e.message}` };
+            }
+            const testSecs = Math.round((Date.now() - started) / 100) / 10;
+            const failure = savedToolResultFailed(test);
+            if (failure) {
+                return {
+                    success: false,
+                    error: `not saved: the test run failed (${failure.slice(0, 600)}). Fix the code and call save_tool again; only working tools are saved.`,
+                    testResult: JSON.stringify(test).slice(0, 1500),
+                };
+            }
+
+            const usage = String(args.usage || '').trim().slice(0, 1500);
+            const now = new Date().toISOString();
+            const skill = {
+                ...(existing || {}),
+                id: existing ? existing.id : crypto.randomBytes(16).toString('hex'),
+                name,
+                description: description.slice(0, 300),
+                type: 'tool',
+                parameters,
+                code,
+                systemPrompt: usage,
+                userId,
+                enabled: true,
+                sandbox: true,
+                network: 'allowlist',
+                allowlist: ['*'],
+                workspace: true,
+                timeoutMs: 120_000,
+                memory: '1g',
+                createdBy: 'model',
+                createdFrom: ctx.conversationId ? { conversationId: ctx.conversationId } : undefined,
+                testedAt: now,
+                testArgs,
+                createdAt: existing ? existing.createdAt : now,
+                updatedAt: now,
+            };
+            if (existing) allSkills[existingIdx] = skill; else allSkills.push(skill);
+            await saveSkills(allSkills);
+            // Usable for the rest of this turn too.
+            try { if (ctx._forcedToolNames instanceof Set) ctx._forcedToolNames.add(name); } catch (_) { /* best effort */ }
+            console.log(`[save_tool] ${existing ? 'updated' : 'saved'} "${name}" for ${userId} (test ${testSecs}s, ${code.length} chars, params: ${Object.keys(parameters).join(', ') || 'none'})`);
+            logUserActivity(userId, `Tools: the model ${existing ? 'updated' : 'saved'} the tool "${name}" to your skills library`);
+            return {
+                success: true,
+                saved: name,
+                replaced: !!existing,
+                parameters,
+                testSeconds: testSecs,
+                testResult: JSON.stringify(test).slice(0, 600),
+                note: `Saved to the skills library. "${name}" is available now and in future chats; the user can edit, disable or delete it in the Agents tab. Tell the user in one line that you saved it.`,
+            };
+        },
+    });
 
     // ----- record_learning -------------------------------------------------
     // Lets the model add ONE lesson to the core memory of a THEME of work

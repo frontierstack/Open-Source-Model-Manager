@@ -123,6 +123,9 @@ const INTENT_RULES = [
     // calls, ENOSPC ×5, no answer). Anchored to a page/html/canvas/app word so
     // "the search isn't working" does not drag it in.
     [/^(?=[\s\S]*\b(html|page|canvas|animat\w*|browser|react|webpage|web ?app|playwright|puppeteer|chrome|chromium|headless|console)\b)[\s\S]*(\b(test|check|verify|preview|render|open|load|run|debug|try)\b[^.\n]{0,50}\b(in (a |the |my |an? )?(browser|playwright|puppeteer|chrome|chromium|headless)|html (file|page)|\.html\b|web ?page)|\b(isn'?t|not|doesn'?t|won'?t|nothing|no longer|still not|fails? to) (displaying|rendering|showing|loading|working|shows?|renders?|displays?|appears?|loads?|works?)\b|\b(blank|black|empty|white) (page|screen|canvas)\b|\b(page|screen|canvas|animation|animator|app) (is|looks|stays|remains|appears|renders|comes up) (blank|black|empty|white|frozen|dead)\b|\bconsole (error|log|warning)s?\b|\buncaught\b|\breferenceerror\b|\btypeerror\b)/i, ['preview_html']],
+    // Saving working code as a reusable tool ("save that as a tool", "add it
+    // to the tools library", "make this a skill so you can reuse it").
+    [/\b(save|keep|store|add|turn|make|register|create)\b[^.\n]{0,40}\b(as |into |to |in )?(a |an |the |my |your )?(new )?(reusable )?(tool|skill)s?\b(?! ?(call|calls|use|output|result))|\b(tools?|skills?) (library|catalog)\b/i, ['save_tool']],
     // Downloading a video ("give me a downloadable link for <youtube url>",
     // "download this video", "save it as mp4"). Without this the router never
     // offered download_video and the model hand-rolled yt-dlp in run_python /
