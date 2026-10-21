@@ -704,7 +704,7 @@ const LEGWORK_RULE = [
 // brief with a LEGWORK section it wrote "- none" under a plan full of searches
 // on every ask tried — and the lead no longer reads a brief, so the only thing
 // this call has to produce is the jobs.
-function buildLegworkTask({ userText, leadModel, context = '', hostNote = '' }) {
+function buildLegworkTask({ userText, leadModel, context = '', hostNote = '', instructions = '' }) {
     return [
         `${leadModel || 'The main model'} is about to answer the request below. You are the faster model of the pair and will run background LOOKUPS for it while it writes.`,
         'You have NO tools in this step and must not answer the request.',
@@ -713,7 +713,9 @@ function buildLegworkTask({ userText, leadModel, context = '', hostNote = '' }) 
         'THE REQUEST:',
         askForFirstPass(userText, 3000),
         '',
-        'List 1 to 3 background jobs, one for each independent question the answer needs LOOKED UP on the web now: current facts, versions, releases, prices, news, benchmarks, or what several sources say. Each job is a web search plus reading the pages that answer it, and must be about the user\'s request itself — not a side topic, not the writing, not code the main model will write.',
+        ...(instructions && String(instructions).trim() ? ['', 'THE USER\'S STANDING INSTRUCTIONS (jobs must respect their limits on tools, sources and scope):', String(instructions).trim().slice(0, 1500)] : []),
+        '',
+        'List one background job for each DISTINCT question in the request that needs LOOKING UP on the web now (current facts, versions, releases, prices, news, what several sources say) — at most 3. A request for ONE fact is ONE job; a request naming three products is up to three jobs, one per product. Never add a job for something the user did not ask about (a changelog, specs, benchmarks, alternatives, background) and never split one fact into several jobs. Each job is a web search plus reading the pages that answer it — not the writing, not code the main model will write.',
         JOB_RULE,
         ...(hostNote ? [hostNote] : []),
         'Reply with ONLY this section, nothing else:',
@@ -905,10 +907,17 @@ const SINGLE_READ_VERB = /\b(read|open|fetch|extract|summari[sz]e|list|view|show
 const MULTI_STEP_VERB = /\b(search|find|look\s*up|research|compare|gather|collect|investigate|identify|determine|survey|cross[- ]check|verify against|which|latest|current|versions?|releases?|prices?|analy[sz]e|decompile|disassemble|deobfuscate|decode|iocs?|indicators?|custom actions?|embedded|every|all (?:urls|domains|ips|strings|scripts|files))\b/i;
 // The whole ask is reading one linked page or one /workspace file ("summarize
 // <url>", "read /workspace/x.log") — nothing a background job could add.
+// A question ABOUT the one linked page ("what does this page say the default
+// port is?") is the same single read — it named no read verb, so it was
+// planned as three background jobs that each fetched that one page.
+const PAGE_REF_RE = /\b(?:this|the|that)\s+(?:page|article|post|doc|docs|documentation|link|readme|site|blog\s+post|file|thread|issue|pr|pull\s+request)\b|\baccording\s+to\s+(?:it|this|the\s+(?:page|article|docs?))\b/i;
 function isSingleReadAsk(text) {
     const ask = cleanAsk(text);
     if (!ask || RESEARCH_RE.test(ask.replace(/https?:\/\/\S+/g, ' ')) || LOOKUP_NEED_RE.test(ask.replace(/https?:\/\/\S+/g, ' '))) return false;
-    return isSingleReadJob(ask);
+    if (isSingleReadJob(ask)) return true;
+    const refs = (ask.match(/https?:\/\/\S+/g) || []).length + (ask.match(/\/workspace\/[A-Za-z0-9._\/-]+/g) || []).length;
+    const words = ask.replace(/https?:\/\/\S+|\/workspace\/[A-Za-z0-9._\/-]+/g, ' ');
+    return refs === 1 && PAGE_REF_RE.test(words) && !MULTI_STEP_VERB.test(words) && words.split(/\s+/).filter(Boolean).length <= 30;
 }
 
 function isSingleReadJob(task) {
@@ -989,7 +998,7 @@ function parsePlan(brief) {
 // it did not know the user's goal, the lead's plan, what its sibling jobs
 // cover (so two jobs researched the same thing) or what was already found
 // (so it re-found it). This frames the task as ONE part of shared work.
-function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], leadModel, budgetLine, context = '' }) {
+function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], leadModel, budgetLine, context = '', instructions = '' }) {
     const L = [];
     if (budgetLine) L.push(budgetLine);
     L.push(`You are running ONE background job for ${leadModel || 'the main model'}, which is writing the answer to the user's request while you work. Your report is the only thing it will see from you.`);
@@ -997,6 +1006,10 @@ function buildJobBrief({ job, goal, plan = [], siblings = [], findings = [], lea
     // results in a per-slot context window.
     if (context) L.push('', 'THE CONVERSATION SO FAR (context only):', String(context).trim().slice(0, 700));
     if (goal) L.push('', 'THE USER\'S GOAL:', String(goal).trim().slice(0, 1200));
+    // The user's standing instructions bind the job too — a persona that rules
+    // out web search, a source or a domain was invisible to the assistant —
+    // but their answer-style rules are for the main model's final answer.
+    if (instructions && String(instructions).trim()) L.push('', 'THE USER\'S STANDING INSTRUCTIONS — their limits on tools, sources, sites and scope apply to THIS JOB; their rules on tone and answer format are for the final answer, not your report:', String(instructions).trim().slice(0, 1500));
     if (plan.length) L.push('', 'THE MAIN MODEL\'S PLAN:', ...plan.slice(0, 6).map((st, i) => `${i + 1}. ${String(st).slice(0, 200)}`));
     // Other jobs by identity (two jobs may share a derived name); a failed or
     // cancelled job covers nothing, so it is not listed as covered.

@@ -1492,13 +1492,15 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `Today is ${today}. Your training data ends before today, so what you remember as upcoming or latest may be out of date: for anything time-sensitive (latest, current, new, prices, versions, releases) look it up, search with the current year, prefer dated ${year} sources over memory, and never present a past event as still to come.`,
         `PRIORITY: the user's instructions — their system prompt and their messages — come first; these runtime rules come second; background notes (memory, hints, tool advice) come last. When a rule here conflicts with what the user asked, follow the user. Anything the user forbids (a tool, a format, a topic, a length) is off-limits for the whole turn.`,
         `ANSWER OR LOOK UP: answer directly when you reliably know the answer — general knowledge, explanations, reasoning, arithmetic, writing or editing text and code. Use a tool only when it adds something you cannot produce: current or external facts (\`web\`: search, or read a URL), exact data to look up or compute, a file to read, or a file to produce. When the user explicitly asks you to search, open a URL, run code or create a file, do it with the matching tool even if you know the answer. When unsure whether your knowledge is current, look it up rather than guess.`,
-        `YOUR REPLY starts with the answer itself — never with your process ("I now have…", "All the results are in", "Here's what I found:", "I know this one"). Lead with the direct answer, then the supporting detail. Unless the user asked for a format, fit it to the content: a table for comparing several items, a numbered list for steps, prose for explanations. In the final answer, do not talk about these rules, your tools, background jobs or the other model unless the user asks how you worked.`,
+        `HOW TO WORK WITH TOOLS: first decide what the finished answer needs (which facts, files or outputs) and the most direct source for each. Make the call that gets the most of it in one step — gather broadly (every file or record at once, as a compact summary) and put independent calls in the same response. After each result ask: can I answer now? If yes, stop calling tools and answer. If not, name the ONE thing still missing and get only that. A result you already have stays in your context: never repeat a call that succeeded — re-reading the same page, re-downloading the same URL or re-running the same check returns the same thing.`,
+        `WHEN A CALL FAILS OR COMES BACK EMPTY: read the error and any \`hint\`, \`obstacle\` or \`note\` in the result — they usually name the next step; do that. Never re-send a call that failed with the same arguments, and do not try a third variation of an approach that failed twice: change the route — a different tool, a different source (the official site or docs, the project's GitHub, a package registry or API, an archived copy), or a different way to get the same fact. A page that is missing, blocked or empty is a finding, not a dead end: say so in one line and answer from what you could get, marking anything you could not confirm. When the user asked about one SPECIFIC page, file, article or item and it does not exist or cannot be reached, say that FIRST and never pass a different one off as it — a closest match may be offered only when clearly labelled as a different item.`,
+        `WEB RESEARCH: a search query is 2–6 plain keywords — the exact name plus what you want ("Kubernetes release notes", "pandas latest version PyPI", "Steam Deck OLED battery life"). No OR chains, no stacked quotes, no past years; add the current year only when the ask is about recent events. Then READ the best one to three results (\`read:N\`, or \`url\`) — snippets are leads, not sources. For versions, releases, prices and specs go to the primary source (the official site, the registry, GitHub releases). Generic or off-topic results mean the QUERY was weak (\`relevance\`/\`hint\` say so): quote the exact name, add one distinguishing detail or a site:. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Try three genuinely different queries before calling something unavailable. Never guess or retype a URL — copy it from the user or a result.`,
+        `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs, numbers or data you did not get from a tool, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest. When sources disagree, say which says what.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), downloads (download_file), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. If it fails, read the traceback and fix that line; do not start over. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
+        `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off. PDFs are rendered from static HTML or markdown: scripts do NOT run in them, so compute every number first (yourself, or with one run_python call) and write the values into the document — never leave them to JavaScript.`,
+        `YOUR REPLY starts with the answer itself — never with your process ("I now have…", "All the results are in", "Here's what I found:", "Based on my research"). Lead with the direct answer, then the supporting detail. Unless the user asked for a format, fit it to the content: a table for comparing several items, a numbered list for steps, prose for explanations. Cite the URLs you used when the answer rests on web sources. In the final answer, do not talk about these rules, your tools, background jobs or the other model unless the user asks how you worked.`,
+        `BEFORE YOU SEND the final answer, check it against the user's request: every part answered, the exact number of items asked for, the requested format, length, language and tone, nothing they excluded, sources if they asked for them, files delivered with make_downloadable. Fix what is missing. If part of the request could not be done, say which part and why in one line — never present a guess as a finding.`,
         `NARRATION: every tool takes an optional \`purpose\` argument — always fill it with one short line (≤ 20 words) on what the call is for; it is shown to the user as live progress. You may also write one short line before a tool call; it must be followed by the actual call in the same response. Narration goes before tool calls only, never into the final answer.`,
-        `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs or data you did not fetch, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest.`,
-        `WEB RESEARCH: generic or off-topic results mean the QUERY was weak (the result's \`relevance\`/\`hint\` say so) — quote the exact name, add one distinguishing detail or a site:, then READ the best page and follow it to the primary source. Try three genuinely different queries before calling something unavailable. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Never guess or retype a URL, and never announce the same plan twice.`,
-        `WORK IN BIG STEPS: gather broadly in one call or one script (every file or record at once, as a compact summary), then drill into only what the summary flags. Stop as soon as you can answer; if two attempts return the same information, you already have it.`,
-        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
-        `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off.`,
         `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
         ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
     ].join('\n');
@@ -18875,7 +18877,22 @@ function parseProhibitedToolNames(text, knownNames) {
         }
         if (re.lastIndex === m.index) re.lastIndex++;  // guard against zero-width
     }
+    // "Do not use web search" / "never search the web" names no tool, so the
+    // token rule above (rightly) skips it — and the rule went unenforced for
+    // the lead AND for the background jobs, which never see the persona. The
+    // phrase is specific enough to act on: it bans the SEARCH op only, so a URL
+    // the user hands over can still be read. A conditional ("unless I ask",
+    // "except …") keeps it advisory.
+    if (known.has('web_search') && webSearchBanned(text)) prohibited.add(knownNames.find(n => n.toLowerCase() === 'web_search') || 'web_search');
     return prohibited;
+}
+const WEB_SEARCH_BAN_RE = /\b(?:do ?n[o'’]?t|never|must ?n[o'’]?t|must not|should ?n[o'’]?t|should not|may not|avoid|no|without)\s+(?:ever\s+)?(?:use\s+|using\s+|do(?:ing)?\s+|run(?:ning)?\s+|perform(?:ing)?\s+|make\s+|making\s+)?(?:any\s+|the\s+)?(?:web|internet|online|google)\s+search(?:es|ing)?\b|\b(?:do ?n[o'’]?t|never|must not|should not)\s+(?:ever\s+)?search\s+(?:the\s+)?(?:web|internet|online)\b|\b(?:do ?n[o'’]?t|never|must not|should not)\s+(?:use|call|run)\s+[a-z0-9_]+(?:\s*,\s*[a-z0-9_]+)*\s*,?\s+(?:or|nor|and)\s+(?:any\s+)?(?:web|internet|online)\s+search(?:es|ing)?\b/i;
+function webSearchBanned(text) {
+    const t = String(text || '');
+    const m = WEB_SEARCH_BAN_RE.exec(t);
+    if (!m) return false;
+    const after = t.slice(m.index + m[0].length, m.index + m[0].length + 60);
+    return !/^[^.\n]*\b(?:unless|except|without (?:asking|permission)|until)\b/i.test(after);
 }
 
 // Streaming chat endpoint - Server-Sent Events (SSE)
@@ -21802,8 +21819,15 @@ const chatStreamHandlerInner = async (req, res) => {
         // the same rule at the end of the latest user message narrated 8/8.
         // Appended (the /no_think switch stays first); the user message is
         // new each turn, so the prompt-cache prefix is untouched.
-        if (hideReasoning && !req.delegate && latestUserMsgIdx >= 0 && fullToolCatalog.length) {
-            const narrNote = '\n\n[SYSTEM: Before each tool call, write one short visible sentence: what you know so far and what you are doing next. Then make the call. Your final answer starts with the answer itself — never with a sentence about your process or your results arriving.]';
+        // The same placement carries the end-of-turn requirements check: the
+        // BEFORE YOU SEND rule in the prelude is the system-prompt slot these
+        // models under-follow, and a count/format/length/exclusion miss is the
+        // commonest instruction-following failure.
+        const narrateHere = hideReasoning && fullToolCatalog.length;
+        if (!req.delegate && latestUserMsgIdx >= 0) {
+            const narrNote = '\n\n[SYSTEM: ' + (narrateHere
+                ? 'Before each tool call, write one short visible sentence: what you know so far and what you are doing next. Then make the call. Your final answer starts with the answer itself — never with a sentence about your process or your results arriving. '
+                : '') + 'Before you send your final answer, silently check it meets every explicit requirement of the request above — each part answered, the exact count, format, length, language, anything excluded, sources if asked.]';
             const um = chatMessages[latestUserMsgIdx];
             if (typeof um.content === 'string') um.content = um.content + narrNote;
             else if (Array.isArray(um.content)) {
@@ -22038,6 +22062,7 @@ const chatStreamHandlerInner = async (req, res) => {
         let leadFileWorkCalls = 0;
         let pendingJobsNote = null;
         let silentRoundReminders = 0;
+        let failureReminders = 0;
         let msiRedirects = 0;
         const leadStepLog = [];
         // The file/URL/query a step worked on — what makes a later job with the
@@ -22204,7 +22229,8 @@ const chatStreamHandlerInner = async (req, res) => {
             ? (req.delegate.handoffGoal || null)
             : { userText: redoInfo
                 ? leadHandoff.askForFirstPass(`${redoInfo.original}\n\nThe user's correction of the previous attempt: ${latestUserText}`, 1500)
-                : leadHandoff.askForFirstPass(latestUserText, 1500), context: handoffContext, plan: [] };
+                : leadHandoff.askForFirstPass(latestUserText, 1500), context: handoffContext, plan: [],
+                instructions: (userInstructionText || '').slice(0, 2500) };
 
         // --- First pass by the assistant model, when a hand-off engaged ------
         // The fast model restates the task, gathers anything cheap, and hands
@@ -22220,6 +22246,7 @@ const chatStreamHandlerInner = async (req, res) => {
         // it and the lead starts at once — measured 1-3 s saved on those turns.
         const firstPassSkip = handoff.engaged
             ? (handoff.toolsForbidden ? 'the user ruled out tools or searching'
+                : (webSearchBanned(handoff.userInstructions) && !handoff.artifact) ? 'the user\'s instructions rule out web search'
                 : handoff.singleRead ? 'one page or file to read — the lead reads it itself, no assistant'
                 : !handoff.legwork ? 'legwork is switched off'
                 : !handoff.firstPass ? 'first pass is switched off'
@@ -22272,7 +22299,7 @@ const chatStreamHandlerInner = async (req, res) => {
                     try {
                         const r = await Promise.race([
                             requestModelCompletion({
-                                messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: redoInfo ? `${redoInfo.original}\n\nThe user says the previous attempt was wrong or unfinished: ${leadHandoff.cleanAsk(latestUserText)}` : latestUserText, leadModel: handoff.secondary, context: handoffContext }) }],
+                                messages: [{ role: 'user', content: leadHandoff.buildLegworkTask({ userText: redoInfo ? `${redoInfo.original}\n\nThe user says the previous attempt was wrong or unfinished: ${leadHandoff.cleanAsk(latestUserText)}` : latestUserText, leadModel: handoff.secondary, context: handoffContext , instructions: userInstructionText }) }],
                                 model: handoff.primary, temperature: 0.2, maxTokens: HANDOFF_QUICK_BRIEF_TOKENS, disableThinking: true,
                             }),
                             new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
@@ -22474,10 +22501,14 @@ const chatStreamHandlerInner = async (req, res) => {
         // toolCtx so a hallucinated call is refused at dispatch. Runs AFTER the
         // pre-flights so anything they force-included is also stripped.
         try {
-            const sysText = (Array.isArray(inputMessages) ? inputMessages : [])
+            // A background job or worker has no system prompt of its own: the
+            // USER'S instructions arrive with the delegation, and their tool
+            // bans bind the job exactly as they bind the turn that started it.
+            const sysText = [...(Array.isArray(inputMessages) ? inputMessages : [])
                 .filter(m => m && m.role === 'system')
                 .map(m => typeof m.content === 'string' ? m.content
-                    : (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''))
+                    : (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : '')),
+                ...(req.delegate && req.delegate.userInstructions ? [req.delegate.userInstructions] : [])]
                 .join('\n');
             // Match against the FULL registry, not just the visible catalog: the web
             // retrieval tools (web_search / fetch_url / scrapling_fetch /
@@ -24493,6 +24524,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     // (potentially large) skills file is read once per request
                     // instead of once per round. policyCache memoizes per name.
                     const toolResultMessages = [];
+                    // Calls that RAN and failed this round (refusals excluded —
+                    // the guards word those themselves).
+                    const roundFailedCalls = [];
                     // Skill prompts collected this round — emitted as one
                     // transient system message after the tool results so the
                     // model's next turn sees per-tool behavior rules.
@@ -25520,6 +25554,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 recFailed = !!(parsedRes && (parsedRes.error || parsedRes.success === false
                                     || (typeof parsedRes.returncode === 'number' && parsedRes.returncode !== 0)
                                     || (typeof parsedRes.exitCode === 'number' && parsedRes.exitCode !== 0)));
+                                if (recFailed) roundFailedCalls.push(recName);
                                 if (parsedRes && typeof parsedRes === 'object') {
                                     // Path tools echo the auto-resolved directory —
                                     // record it so N garbled paths → one target is
@@ -26114,6 +26149,20 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         silentRoundReminders += 1;
                         narrationReminder = { role: 'system', content: '[Before your next tool call, write one short visible sentence for the user: what these results showed and what you are doing next.]' };
                     }
+                    // A failed call is where the turn adapts or spirals: the
+                    // saved turns show a failed download re-tried three ways
+                    // with the same URL, the same 404 path re-guessed, the
+                    // same OR-chain query re-sent after a refusal. One line next
+                    // to the results (the slot these models follow) asks for a
+                    // change of route; bounded per turn, never on a round the
+                    // loop guards already answered with a checkpoint.
+                    let failureReminder = null;
+                    if (roundFailedCalls.length && !pendingLoopCheckpoint && failureReminders < FAILURE_REMINDER_MAX) {
+                        failureReminders += 1;
+                        const names = [...new Set(roundFailedCalls)].slice(0, 3).join(', ');
+                        console.log(`[Chat Stream] Failed-call reminder ${failureReminders}/${FAILURE_REMINDER_MAX}: ${names}`);
+                        failureReminder = { role: 'system', content: `[${names} failed. Read its error and any hint, then change the route: a different tool, source or argument — never the same call again. If this part cannot be done, continue with the rest and say so in your answer.]` };
+                    }
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -26127,6 +26176,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         ...(idleMsg ? [idleMsg] : []),
                         ...(jobsNote ? [jobsNote] : []),
                         ...(narrationReminder ? [narrationReminder] : []),
+                        ...(failureReminder ? [failureReminder] : []),
                         ...(pendingLoopCheckpoint ? [pendingLoopCheckpoint] : []),
                     ];
                     if (pendingLoopCheckpoint) pendingLoopCheckpoint = null;
@@ -27717,6 +27767,7 @@ const PERSONA_RESTATE_MAX_CHARS = Math.max(200, parseInt(process.env.PERSONA_RES
 // fires after HANDOFF_ARTIFACT_AFTER_CALLS of the lead's own file-work calls.
 // Per-turn cap on the "say what you are doing" reminders a thinking-off model
 // gets after a silent tool round.
+const FAILURE_REMINDER_MAX = Math.max(0, parseInt(process.env.FAILURE_REMINDER_MAX || '4', 10) || 0);
 const NARRATION_REMINDER_MAX = Math.max(0, parseInt(process.env.NARRATION_REMINDER_MAX || '12', 10) || 0);
 const HANDOFF_ARTIFACT_BATCHES = Math.max(0, parseInt(process.env.HANDOFF_ARTIFACT_BATCHES || '2', 10) || 0);
 const HANDOFF_ARTIFACT_MIN_FILES = Math.max(1, parseInt(process.env.HANDOFF_ARTIFACT_MIN_FILES || '6', 10) || 6);
@@ -27912,6 +27963,7 @@ function startAssistantJobs(ctx, items, model, { origin = null } = {}) {
                         leadModel: ctx.model,
                         siblings: [...jobs.values()].map(j => ({ id: j.id, name: j.name, task: j.task, status: j.status })),
                         findings: [...jobs.values()].filter(j => j.status === 'done' && !j.duplicateOf && j.result && j.result.answer).map(j => ({ name: j.name, text: j.result.answer })),
+                        instructions: (ctx._handoffGoal && ctx._handoffGoal.instructions) || '',
                         budgetLine: `[BACKGROUND JOB — budget: at most ${ASSISTANT_JOB_MAX_ROUNDS} rounds, about ${Math.round(ASSISTANT_JOB_TIMEOUT_MS / 60000)} minute(s); aim for 2-4 tool calls in all (one search plus the one or two pages that answer it). Then reply with your report. Do not attempt the user's whole request.]`,
                     }),
                     label: job.name,
@@ -27996,7 +28048,7 @@ function startAssistantJobs(ctx, items, model, { origin = null } = {}) {
     return dispatched;
 }
 
-async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null, handoffGoal = null, kind = null }) {
+async function runDelegatedTurn({ parentReq, task, label, siblings, model, reasoningEffort, modelRoles, workspaceBucket, depth, maxRounds, signal, onEvent, assistantModel = null, assistantMaxJobs = null, assistantMaxParallel = null, timeoutMs = null, handoffGoal = null, kind = null, userInstructions = null }) {
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
     if (signal) {
@@ -28030,6 +28082,7 @@ async function runDelegatedTurn({ parentReq, task, label, siblings, model, reaso
             label, siblings, workspaceBucket: workspaceBucket || null, depth: (depth || 0) + 1, maxRounds: maxRounds || null, signal: controller.signal,
             kind: kind || null,
             handoffGoal: handoffGoal || null,
+            userInstructions: userInstructions || (handoffGoal && handoffGoal.instructions) || null,
             // With an explicit time limit (background jobs), stop tools early
             // enough to write the report before the hard cutoff.
             softDeadlineAt: Number(timeoutMs) > 0 ? startedAt + Math.max(15000, Number(timeoutMs) - ASSISTANT_JOB_SYNTH_RESERVE_MS) : null,
@@ -35758,6 +35811,8 @@ app.use((req, res) => {
                         workspaceBucket: ctx.workspaceBucket,
                         depth: ctx.delegateDepth || 0,
                         signal: ctx.abortSignal,
+                        // Worker agents obey the user's tool bans like the parent.
+                        userInstructions: (ctx._handoffGoal && ctx._handoffGoal.instructions) || null,
                         onEvent: (ev) => {
                             if (ev.kind === 'tool_start') {
                                 st.calls += 1;
