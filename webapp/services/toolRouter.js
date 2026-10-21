@@ -170,6 +170,11 @@ const INTENT_RULES = [
     // router didn't advertise download_file — reasons "I don't have download_file"
     // and dead-ends (observed on an npm-package malware review).
     [/\b(download|fetch|grab|pull|retrieve|save|get)\b[\s\S]{0,40}?\b(tarball|\.tgz|\.tar\b|\.zip|\.gz|package|archive|repo|repositor|binary|dependenc|module|source|npm|pypi|gem|crate)\b|registry\.npmjs\.org|files\.pythonhosted\.org|codeload\.github|\.tgz(\b|$)/i, ['download_file', 'extract_archive']],
+    // VS Code extensions: download_vsix resolves the id/link to the package
+    // (Marketplace, Open VSX, any version or platform). Without it the model
+    // hand-builds gallery API URLs or scrapes the extension page.
+    [/\.vsix\b|\bvsix\b|\b(?:vs ?code|visual studio code|vscodium|cursor|open ?vsx)\b[\s\S]{0,30}?\bextensions?\b|\bextensions?\b[\s\S]{0,30}?\b(?:for|from|in) (?:vs ?code|visual studio code|vscodium|open ?vsx)\b|marketplace\.visualstudio\.com|open-vsx\.org|vscode:extension\//i,
+        ['download_vsix', 'extract_archive', 'scan_source_files', 'grep_code']],
     // Package / repo static-analysis & malware-review workflow: get the files,
     // unpack, grep across them, read, decode base64. Forces the whole path so a
     // "review this npm package for malware" turn never strands on a missing tool.

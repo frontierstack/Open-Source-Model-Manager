@@ -27746,7 +27746,7 @@ const LEGWORK_SALVAGE_EVIDENCE_CHARS = Math.max(2000, parseInt(process.env.LEGWO
 // own file-analysis calls (see scheduleArtifactLegwork).
 const ARTIFACT_PRODUCER_RE = /^(?:extract_archive|tar_extract|unzip_file|git_clone_shallow|download_file)$/;
 const ARTIFACT_FILE_WORK_RE = /^(?:run_python|run_node|run_bash|grep_code|read_file|list_directory|extract_strings|hex_dump|outline_file|scan_source_files|search_files|extract_archive|tar_extract|unzip_file|read_pdf)$/;
-const LEGWORK_TOOLS = ['web', 'count_entries', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi', 'binary_info', 'disassemble', 'decompile', 'unpack_upx'];
+const LEGWORK_TOOLS = ['web', 'count_entries', 'read_file', 'list_directory', 'search_files', 'grep_code', 'outline_file', 'scan_source_files', 'read_pdf', 'run_python', 'download_file', 'download_vsix', 'extract_archive', 'extract_strings', 'base64_decode', 'hex_dump', 'inspect_msi', 'binary_info', 'disassemble', 'decompile', 'unpack_upx'];
 // Output cap for a background job's report round.
 const JOB_REPORT_MAX_TOKENS = Math.max(256, parseInt(process.env.JOB_REPORT_MAX_TOKENS || '900', 10) || 900);
 const ASSISTANT_AWAIT_AFTER_DELIVERY_MS = Math.max(0, parseInt(process.env.ASSISTANT_AWAIT_AFTER_DELIVERY_MS || '20000', 10) || 0);
@@ -29337,6 +29337,8 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // download_video writes the .mp4 into /workspace/artifacts/ (yt-dlp) — needs
     // the workspace mount so the file persists and surfaces as a download chip.
     'download_video',
+    // download_vsix saves the extension package into /workspace/artifacts/.
+    'download_vsix',
     // archives — names match the actual entries in default-skills.json
     // (`tar_extract`/`tar_create`/`unzip_file`/`zip_files`). The previous
     // `create_archive`/`extract_archive` entries were dead names: no
@@ -29445,6 +29447,7 @@ const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
     download_html:   { allowlist: ['*'], note: 'fetches a page HTML into the workspace; user-supplied URLs' },
     download_video:  { allowlist: ['*'], note: 'yt-dlp download of user-supplied video URLs (pip-installs yt-dlp on first use)' },
+    download_vsix:   { allowlist: ['marketplace.visualstudio.com', '*.vsassets.io', 'open-vsx.org', '*.open-vsx.org', '*.eclipsecontent.org', 'openvsxorg.blob.core.windows.net'], note: 'VS Code extension packages from the Marketplace and Open VSX (and their CDNs)' },
     parse_rss:       { allowlist: ['*'], note: 'fetches an RSS/Atom feed URL and parses it to items; user-supplied feed URLs' },
     send_file:       { allowlist: ['*'], note: 'uploads a workspace file to telegram/slack/user URL' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
@@ -31432,6 +31435,17 @@ app.use((req, res) => {
                     message: `web was called with the stub query "${a.query}" — that is not a search. If you meant to CHANGE a file, call replace_lines (edit a line range) or create_file (write it whole); to look something up, pass the real search terms.`,
                 };
             }
+            // A VS Code extension page is the listing, not the package: when the
+            // user wants the extension itself the model read the page with web
+            // and then had nothing to analyse. Point it at download_vsix.
+            const withVsixHint = (res, u) => {
+                const m = /^https?:\/\/(?:marketplace\.visualstudio\.com\/items\?(?:[^#]*&)?itemName=([\w.-]+)|open-vsx\.org\/extension\/([\w-]+)\/([\w.-]+))/i.exec(String(u || ''));
+                if (!m || !res || typeof res !== 'object') return res;
+                const id = m[1] || `${m[2]}.${m[3]}`;
+                if (!ctx._forcedToolNames) ctx._forcedToolNames = new Set();
+                ctx._forcedToolNames.add('download_vsix');
+                return { ...res, extensionHint: `This is the listing page of the VS Code extension ${id}. To get the extension package itself (to install it offline or review its code), call download_vsix with extension="${id}" — do not build Marketplace download URLs by hand.` };
+            };
             const run = (name, routedArgs) => {
                 const def = reg.get(name);
                 if (!def || typeof def.execute !== 'function') return Promise.resolve({ error: `web: inner tool "${name}" unavailable` });
@@ -31813,7 +31827,7 @@ app.use((req, res) => {
                 };
             };
             if (a.url && isBinaryDocUrl(a.url) && (mode === 'interact' || mode === 'crawl')) {
-                return { mode: 'read', ...(await readOne(a.url)) };
+                return withVsixHint({ mode: 'read', ...(await readOne(a.url)) }, a.url);
             }
             if (mode === 'interact') {
                 if (!a.url && !ctx._interactSession) return { error: 'web mode:"interact" requires a url and an actions[] array' };
@@ -31836,7 +31850,7 @@ app.use((req, res) => {
                 const results = await Promise.all(list.map(u => readOne(u).catch(e => ({ url: u, success: false, error: String(e && e.message || e) }))));
                 return { mode: 'read', results };
             }
-            if (a.url) return { mode: 'read', ...(await readOne(a.url)) };
+            if (a.url) return withVsixHint({ mode: 'read', ...(await readOne(a.url)) }, a.url);
             return { error: 'web: provide `query` to search or `url`/`urls` to read.' };
         },
     });
