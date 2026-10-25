@@ -700,6 +700,7 @@ const App = () => {
     const [toolsSearchQuery, setToolsSearchQuery] = useState('');
     const [toolsEnabledFilter, setToolsEnabledFilter] = useState('all'); // all | enabled | disabled
     const [toolsTypeFilter, setToolsTypeFilter] = useState('all'); // 'all' or specific type
+    const [toolsOriginFilter, setToolsOriginFilter] = useState('all'); // 'all' | 'default' | 'user' | 'model'
     // Tools Library opens collapsed — the catalog is long enough that the
     // tab landed on a wall of cards; collapsing keeps the page scannable
     // and the user opts in when they actually want to browse.
@@ -12430,7 +12431,10 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     {agentSubTab === 0 && (() => {
                                                         const toolTypes = Array.from(new Set(skills.map(s => s.type).filter(Boolean)));
                                                         const q = toolsSearchQuery.trim().toLowerCase();
+                                                        const toolOrigin = (skill) => skill.origin || (skill.createdBy === 'model' ? 'model' : skill.userId ? 'user' : 'default');
+                                                        const originCounts = skills.reduce((acc, s) => { const o = toolOrigin(s); acc[o] = (acc[o] || 0) + 1; return acc; }, {});
                                                         const filteredTools = skills.filter(skill => {
+                                                            if (toolsOriginFilter !== 'all' && toolOrigin(skill) !== toolsOriginFilter) return false;
                                                             if (toolsEnabledFilter === 'enabled' && skill.enabled === false) return false;
                                                             if (toolsEnabledFilter === 'disabled' && skill.enabled !== false) return false;
                                                             if (toolsTypeFilter !== 'all' && skill.type !== toolsTypeFilter) return false;
@@ -12536,6 +12540,18 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                                                 <ToggleButton value="enabled">Enabled</ToggleButton>
                                                                                 <ToggleButton value="disabled">Disabled</ToggleButton>
                                                                             </ToggleButtonGroup>
+                                                                            <ToggleButtonGroup
+                                                                                value={toolsOriginFilter}
+                                                                                exclusive
+                                                                                size="small"
+                                                                                onChange={(e, v) => { if (v !== null) setToolsOriginFilter(v); }}
+                                                                                sx={{ flexWrap: 'wrap', '& .MuiToggleButton-root': { textTransform: 'none' } }}
+                                                                            >
+                                                                                <ToggleButton value="all">All tags</ToggleButton>
+                                                                                <ToggleButton value="default">Default ({originCounts.default || 0})</ToggleButton>
+                                                                                <ToggleButton value="user">User created ({originCounts.user || 0})</ToggleButton>
+                                                                                <ToggleButton value="model">Model created ({originCounts.model || 0})</ToggleButton>
+                                                                            </ToggleButtonGroup>
                                                                             {toolTypes.length > 0 && (
                                                                                 <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', ml: { xs: 0, sm: 1 } }}>
                                                                                     <Chip
@@ -12577,7 +12593,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                                                                     <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
                                                                                                         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{skill.name}</Typography>
                                                                                                         {(() => {
-                                                                                                            const origin = skill.origin || (skill.createdBy === 'model' ? 'model' : skill.userId ? 'user' : 'default');
+                                                                                                            const origin = toolOrigin(skill);
                                                                                                             const tag = {
                                                                                                                 default: { label: 'Default', title: 'Ships with the model server', sx: { color: 'var(--text-secondary)', borderColor: 'var(--border-primary)' } },
                                                                                                                 user: { label: 'User created', title: 'Created by a user', sx: { color: 'var(--accent-primary)', borderColor: 'var(--accent-primary)', bgcolor: 'var(--accent-muted)' } },
