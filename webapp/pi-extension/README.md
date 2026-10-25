@@ -135,6 +135,17 @@ cp modelserver.ts package.json ~/.pi/agent/extensions/modelserver/
 | `MODELSERVER_API_KEY` | — | Bearer-mode API key (required) |
 | `MODELSERVER_INSECURE_TLS` | auto for localhost/RFC-1918 | `1` to accept self-signed certs |
 | `MODELSERVER_INCLUDE_LOCAL_SHADOW` | off | `1` to also register file/git/code-nav/shell skills (default off — they execute inside the webapp container's `/workspace`, not your local `$PWD`, which surprises most users) |
+| `MODELSERVER_COMPACTION` | on | `0` to leave compaction entirely to Pi (see *Compaction* below) |
+| `MODELSERVER_PRESUMMARIZE_AT` | `0.5` | Fraction of Pi's compaction threshold at which the older part of the session starts being summarized in the background |
+| `MODELSERVER_PRESUMMARIZE_MIN_CHARS` | `20000` | Smallest amount of new (serialized) conversation worth a background update |
+
+## Compaction
+
+Pi compacts when its context passes `contextWindow - reserveTokens`. Three things make that rare and fast with the model server:
+
+- **The right window.** With two models paired, Pi's default model is the fast one, whose own slot is small. The server tells this extension the window the PAIR can serve (capped by the server's `PI_CONTEXT_WINDOW_MAX`, default 131072) and moves any request that outgrows the fast model to the one that fits. Before, Pi compacted at ~49k tokens on a 262k lead and, since the compacted prompt was still over that line, on almost every turn.
+- **Background summary.** Once the context passes `MODELSERVER_PRESUMMARIZE_AT` of the threshold, the older part of the session is summarized on a model with a free slot — never the one the agent is working on — and kept up to date while the lead keeps working.
+- **Compaction itself** sends only what the background summary has not covered yet to `POST /api/pi/summarize`: fastest free model, thinking off, chunked to its window, the split-turn prefix in parallel. Same summary format as Pi's, plus a line per file/command/page recording what it showed. If anything fails, Pi's own compaction runs (the server still moves it to the fast model and turns thinking off).
 
 ## Notes
 

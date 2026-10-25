@@ -12226,6 +12226,193 @@ app.get('/api/pi/pair', requireAuth, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Pi compaction summaries on the fast model ───────────────────────────────
+// The Pi extension answers Pi's compaction hook by sending the serialized
+// conversation here (and, while the lead keeps working, pre-summarizes the
+// older part of the session in the background). The server picks the model:
+// the fastest one with a free slot, chunked to its per-request window, thinking
+// off. Same output format as Pi's own summarizer, so a session can mix both.
+const PI_SUMMARY_SYSTEM_PROMPT = 'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.';
+const PI_SUMMARY_FORMAT = `## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [What each file, command, search or page that was read actually SHOWED, in a line each, when later work depends on it — the original output is discarded with this summary]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages. Record what was LEARNED, not only what was done: "Read X" without its finding is useless once X's content is gone.`;
+const PI_SUMMARY_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n${PI_SUMMARY_FORMAT}`;
+const PI_SUMMARY_UPDATE_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+${PI_SUMMARY_FORMAT}`;
+const PI_TURN_PREFIX_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
+
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
+
+## Original Request
+[What did the user ask for?]
+
+## Progress So Far
+- [Key decisions and work completed in these messages]
+
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
+- [What each file, command or page that was read actually SHOWED, in a line each — the original output is discarded]
+
+Only summarize information explicitly present above. Do not infer or recreate later messages.`;
+const PI_SUMMARY_MAX_TOKENS = Math.max(1024, parseInt(process.env.PI_SUMMARY_MAX_TOKENS || '6144', 10) || 6144);
+// Per-call input cap. Every extra chunk costs a full rewrite of the running
+// summary (~15 s on the 4B), so chunks are as large as the window allows and
+// split evenly (measured: 29k tokens as 28k + 1k took 47 s, as one chunk ~22 s).
+const PI_SUMMARY_CHUNK_TOKENS = Math.max(4000, parseInt(process.env.PI_SUMMARY_CHUNK_TOKENS || '48000', 10) || 48000);
+const PI_SUMMARY_CHARS_PER_TOKEN = 3.0; // conservative: tool output, code and paths tokenize dense
+const piSummaryBackground = new Set(); // key ids with a background summary running
+
+async function pickPiSummaryModel(req, { background }) {
+    const keyId = req.apiKeyData?.id;
+    const sessionModel = keyId ? piSessionModel.get(keyId)?.model : null;
+    // The pair's primary is the fast model by configuration — the one signal
+    // that is there right after a restart, before any speed was measured.
+    let fast = null;
+    try { const pr = await resolvePiPairRoles(req); if (pr.enabled) fast = pr.roles.primary; } catch (_) { /* no pair */ }
+    const scored = chatCapacity().models.map((c) => {
+        const inst = modelInstances.get(c.name);
+        return { name: c.name, inst, free: Number(c.free) || 0, tps: Number(c.tokensPerSecond) || 0, win: piWindowOf(inst) };
+    }).filter(x => x.inst && x.win >= 8192)
+        // Background work never takes the slot the lead is working in, and
+        // never queues behind a busy model.
+        .filter(x => !background || (x.free > 0 && x.name !== sessionModel))
+        .sort((a, b) => ((b.free > 0) - (a.free > 0))
+            || ((b.name === fast) - (a.name === fast))
+            || (b.tps - a.tps)
+            || (a.win - b.win));
+    return scored[0] || null;
+}
+
+// Split serialized conversation text into chunks of at most maxChars, on the
+// message boundaries Pi's serializer writes ("\n\n[User]: …").
+function splitPiConversation(text, maxChars) {
+    if (text.length <= maxChars) return [text];
+    // Aim for even sizes: a tiny trailing chunk costs a whole summary rewrite.
+    const target = Math.ceil(text.length / Math.ceil(text.length / maxChars));
+    const parts = text.split(/\n\n(?=\[(?:User|Assistant|Tool result|Assistant thinking|Assistant tool calls)[\]:])/);
+    const chunks = [];
+    let cur = '';
+    for (let p of parts) {
+        while (p.length > maxChars) {
+            if (cur) { chunks.push(cur); cur = ''; }
+            chunks.push(p.slice(0, maxChars));
+            p = p.slice(maxChars);
+        }
+        if (cur && ((cur.length + 2 + p.length > target && cur.length >= target / 2) || cur.length + 2 + p.length > maxChars)) { chunks.push(cur); cur = ''; }
+        cur = cur ? `${cur}\n\n${p}` : p;
+    }
+    if (cur) {
+        const last = chunks[chunks.length - 1];
+        if (last && cur.length < target / 4 && last.length + 2 + cur.length <= maxChars) chunks[chunks.length - 1] = `${last}\n\n${cur}`;
+        else chunks.push(cur);
+    }
+    return chunks;
+}
+
+async function piSummaryCall(model, userText, maxTokens) {
+    const messages = [{ role: 'system', content: PI_SUMMARY_SYSTEM_PROMPT }, { role: 'user', content: userText }];
+    const strip = (s) => String(s || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s\S]*?<\/think>/i, '').trim();
+    let r = await requestModelCompletion({ messages, model, maxTokens, disableThinking: true, temperature: 0.3 });
+    if (r.finishReason === 'length' || !strip(r.content)) {
+        // One retry, asked to be shorter. A cut-off summary must never become
+        // the session's only record of what happened.
+        messages[1] = { role: 'user', content: `${userText}\n\nYour previous attempt was cut off for length. Keep the whole summary under 1,200 words.` };
+        r = await requestModelCompletion({ messages, model, maxTokens, disableThinking: true, temperature: 0.3 });
+        if (r.finishReason === 'length' || !strip(r.content)) throw new Error(r.finishReason === 'length' ? 'summary hit the length limit twice' : 'summary came back empty');
+    }
+    return strip(r.content);
+}
+
+app.post('/api/pi/summarize', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) return res.status(403).json({ error: 'Query permission required' });
+    const b = req.body || {};
+    const conversation = typeof b.conversation === 'string' ? b.conversation : '';
+    const previousSummary = typeof b.previousSummary === 'string' && b.previousSummary.trim() ? b.previousSummary : null;
+    const mode = b.mode === 'turn_prefix' ? 'turn_prefix' : 'history';
+    const background = b.background === true;
+    const customInstructions = typeof b.customInstructions === 'string' ? b.customInstructions.slice(0, 2000) : '';
+    if (!conversation.trim()) return res.status(400).json({ error: 'conversation is required' });
+    if (conversation.length > 8 * 1024 * 1024) return res.status(413).json({ error: 'conversation too large' });
+    const keyId = req.apiKeyData?.id || req.userId || 'anon';
+    if (background && piSummaryBackground.has(keyId)) return res.status(409).json({ error: 'busy', note: 'a background summary is already running for this agent' });
+    const pick = await pickPiSummaryModel(req, { background });
+    if (!pick) return res.status(background ? 409 : 503).json({ error: background ? 'busy' : 'no model', note: background ? 'no free model besides the one the agent is working on' : 'no running model can summarize' });
+    if (background) piSummaryBackground.add(keyId);
+    let aborted = false;
+    res.on('close', () => { if (!res.writableEnded) aborted = true; });
+    const started = Date.now();
+    try {
+        const maxOut = Math.min(PI_SUMMARY_MAX_TOKENS, Math.max(1024, Number(b.maxTokens) || PI_SUMMARY_MAX_TOKENS));
+        const summaryTokens = (s) => Math.ceil(String(s || '').length / PI_SUMMARY_CHARS_PER_TOKEN);
+        // Every chunk after the first carries the running summary (up to
+        // maxOut tokens), so size them all for that.
+        const carried = Math.max(summaryTokens(previousSummary), maxOut);
+        const chunkTokens = Math.min(PI_SUMMARY_CHUNK_TOKENS, pick.win - maxOut - 1500 - carried - summaryTokens(customInstructions));
+        if (chunkTokens < 2000) throw new Error(`model window too small to summarize (${pick.win} tokens)`);
+        const chunks = splitPiConversation(conversation, Math.floor(chunkTokens * PI_SUMMARY_CHARS_PER_TOKEN));
+        const extra = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : '';
+        let summary = previousSummary;
+        if (mode === 'turn_prefix' && chunks.length === 1) {
+            summary = await piSummaryCall(pick.name, `# Conversation\n${chunks[0]}\n\n# Instructions\n${PI_TURN_PREFIX_PROMPT}`, Math.min(maxOut, 4096));
+        } else {
+            for (const chunk of chunks) {
+                if (aborted) throw new Error('client went away');
+                const prompt = `<conversation>\n${chunk}\n</conversation>\n\n`
+                    + (summary ? `<previous-summary>\n${summary}\n</previous-summary>\n\n${PI_SUMMARY_UPDATE_PROMPT}` : PI_SUMMARY_PROMPT)
+                    + extra;
+                summary = await piSummaryCall(pick.name, prompt, maxOut);
+            }
+        }
+        const seconds = Math.round((Date.now() - started) / 100) / 10;
+        const inTok = Math.round(conversation.length / PI_SUMMARY_CHARS_PER_TOKEN);
+        console.log(`[Pi/Compact] ${background ? 'background ' : ''}${mode === 'turn_prefix' ? 'turn-prefix ' : ''}summary on ${pick.name}: ~${inTok} tokens in ${chunks.length} chunk(s)${previousSummary ? ' + previous summary' : ''} → ${summary.length} chars in ${seconds}s`);
+        if (!background) logUserActivity(req.userId || keyId, `Pi compaction: summarized ~${Math.round(inTok / 1000)}k tokens on ${pick.name} in ${seconds}s`);
+        res.json({ summary, model: pick.name, seconds, chunks: chunks.length, inputTokens: inTok });
+    } catch (e) {
+        console.warn(`[Pi/Compact] ${background ? 'background ' : ''}summary failed on ${pick.name}: ${e.message}`);
+        if (!res.headersSent) res.status(502).json({ error: e.message, model: pick.name });
+    } finally {
+        if (background) piSummaryBackground.delete(keyId);
+    }
+});
+
 function piJobRow(j) {
     return {
         id: j.id, name: j.name, model: j.model || null, status: j.status, calls: j.calls || 0,
@@ -16482,6 +16669,53 @@ function piFollowUpLegwork(entry) {
 // model is a cold re-prefill of all of it (~20 s on the 14B, ~60 s on the 27B).
 const piSessionModel = new Map();
 const PI_STICKY_DOWN_TOKENS = Math.max(0, parseInt(process.env.PI_STICKY_DOWN_TOKENS || '12000', 10) || 0);
+
+// ── Pi's compaction point ───────────────────────────────────────────────────
+// Pi compacts when its context passes `contextWindow - reserveTokens` of the
+// model IT selected, and it selects the first /v1/models entry: the pair's
+// fast primary (here a 4B: 131k over 2 slots = 65,536 per request). The work
+// itself is routed to the lead (262k). So Pi compacted at ~49k tokens on a
+// model that had 213k free — and since system prompt + tools + summary + the
+// kept tail already came to ~53k real tokens, EVERY turn compacted again
+// (measured 2026-10-25: 4B summary 17-114 s, then an 88 s full re-prefill of
+// 53k tokens on the 27B, request after request). For a Pi caller the pair's
+// members therefore advertise the window the pair can actually serve (the
+// router sends a request that does not fit the fast model to one that does),
+// capped at PI_CONTEXT_WINDOW_MAX so a session does not run a 262k model to
+// its last token (decode slows with depth, and a compaction that large is
+// minutes of prefill). 0 = no cap.
+const PI_CONTEXT_WINDOW_MAX = (() => {
+    const v = parseInt(process.env.PI_CONTEXT_WINDOW_MAX ?? '131072', 10);
+    return Number.isFinite(v) && v >= 0 ? v : 131072;
+})();
+// Room a Pi request needs on the model it runs on: input + a useful reply.
+const PI_FIT_MIN_COMPLETION = 2048;
+function piRequestTokens(body) {
+    try { return Math.ceil(v1ContextGuard.countRequestChars(body) / 3.6) + v1ContextGuard.V1_CTX_MARGIN_TOKENS; } catch (_) { return 0; }
+}
+function piWindowOf(inst) {
+    try { return v1ContextGuard.effectiveContextSize(inst) || 0; } catch (_) { return 0; }
+}
+// The window Pi should plan against for a model: the largest window among
+// the running pair members when the model belongs to an active pair, its own
+// otherwise; then the cap.
+function piAdvertisedWindow(inst, pairRoles) {
+    let w = piWindowOf(inst);
+    const name = piInstanceName(inst);
+    if (pairRoles && w && (name === pairRoles.primary || name === pairRoles.secondary)) {
+        for (const n of [pairRoles.primary, pairRoles.secondary]) {
+            const other = modelInstances.get(n);
+            if (other && other.status === 'running') w = Math.max(w, piWindowOf(other));
+        }
+    }
+    return PI_CONTEXT_WINDOW_MAX > 0 && w > PI_CONTEXT_WINDOW_MAX ? PI_CONTEXT_WINDOW_MAX : w;
+}
+function isPiSummarizerBody(body) {
+    const m0 = Array.isArray(body?.messages) ? body.messages[0] : null;
+    if (!m0 || m0.role !== 'system') return false;
+    const t = typeof m0.content === 'string' ? m0.content : (Array.isArray(m0.content) ? m0.content.map(p => p?.text || '').join('\n') : '');
+    return /^You are a (?:context )?summarization assistant/i.test(t.trim());
+}
 
 function piPreviousTexts(messages) {
     // The previous USER message (the task before this one) and the last
@@ -30178,11 +30412,18 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 // first entry as its default (Pi does) then starts on the fast
                 // model, and the pair hands real work up from there.
                 let ordered = instances;
+                let pairRolesForWindow = null;
                 try {
                     const pr = req.apiKeyData ? await resolvePiPairRoles(req) : null;
                     const primaryName = pr && pr.enabled ? pr.roles.primary : null;
                     if (primaryName) ordered = [...instances].sort((a, b) => (piInstanceName(b) === primaryName) - (piInstanceName(a) === primaryName));
+                    if (pr && pr.enabled) pairRolesForWindow = pr.roles;
                 } catch (_) { /* keep the Map order */ }
+                // Pi's extension (it says so in a header) compacts against this
+                // number and its requests are re-routed when they outgrow the
+                // model — see PI_CONTEXT_WINDOW_MAX. Every other client, other
+                // bearer harnesses included, gets the raw per-request window.
+                const agentCaller = req.apiKeyData?.bearerOnly === true && String(req.get('x-modelserver-client') || '').toLowerCase() === 'pi-extension';
                 const settled = await Promise.allSettled(ordered.map(async (inst) => {
                     const host = instanceHost(inst);
                     const port = inst.internalPort || inst.port;
@@ -30191,10 +30432,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     // across --parallel slots, so reporting the raw contextSize
                     // on a multi-slot instance makes clients (Pi's
                     // auto-compaction math) overshoot the real window.
-                    const ctx = v1ContextGuard.effectiveContextSize(inst)
+                    const servedCtx = v1ContextGuard.effectiveContextSize(inst)
                         || inst.config?.contextSize
                         || inst.config?.maxModelLen
                         || null;
+                    const ctx = (agentCaller && servedCtx) ? (piAdvertisedWindow(inst, pairRolesForWindow) || servedCtx) : servedCtx;
                     const entries = Array.isArray(upstream.data?.data) ? upstream.data.data : [];
                     // Concurrency per model, so a harness can see how many
                     // agents a model serves at once (llama.cpp's own /props
@@ -30210,7 +30452,10 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         // Set after spread so a backend-supplied stale default
                         // (32768) doesn't override our authoritative value.
                         context_window: ctx,
-                        max_tokens: Math.max(1024, Math.floor(ctx / 8)),
+                        // What ONE request gets on this model itself (the
+                        // pair router moves a request that outgrows it).
+                        served_context_window: servedCtx,
+                        max_tokens: Math.max(1024, Math.floor(servedCtx / 8)),
                         ...capFields,
                         meta: { ...(m.meta && typeof m.meta === 'object' ? m.meta : {}), total_slots: slots },
                     } : { ...m, ...capFields, meta: { ...(m.meta && typeof m.meta === 'object' ? m.meta : {}), total_slots: slots } }));
@@ -30306,6 +30551,44 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     }
                 }
             } catch (e) { console.warn('[Pi/Pair] skipped:', e.message); }
+        }
+
+        // ── Pi: a request must run on a model that can hold it ──────────────
+        // Pi plans against the pair's window (see PI_CONTEXT_WINDOW_MAX), so a
+        // long session — or Pi's compaction summarizer — can outgrow the fast
+        // primary's slot. Move it to the pair member that fits instead of
+        // letting the context guard reject it (Pi would compact again) or,
+        // for a summary, cut the middle out of the conversation being summed.
+        const piSummarizer = piClient && isPiSummarizerBody(req.body);
+        if (req.method === 'POST' && req.path === '/v1/chat/completions' && piClient && Array.isArray(req.body?.messages)) {
+            try {
+                const need = piRequestTokens(req.body);
+                if (need && need + PI_FIT_MIN_COMPLETION > piWindowOf(firstInstance)) {
+                    const pr = await resolvePiPairRoles(req);
+                    const fits = (pr.enabled ? [pr.roles.primary, pr.roles.secondary] : [])
+                        .map(n => modelInstances.get(n))
+                        .filter(i => i && i.status === 'running' && i !== firstInstance && need + PI_FIT_MIN_COMPLETION <= piWindowOf(i))
+                        .sort((a, b) => piWindowOf(a) - piWindowOf(b));
+                    if (fits.length) {
+                        const from = piInstanceName(firstInstance);
+                        firstInstance = fits[0];
+                        targetHost = instanceHost(firstInstance);
+                        targetPort = firstInstance.internalPort || firstInstance.port;
+                        targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
+                        if (firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId) req.body.model = firstInstance.config.hfRepoId;
+                        const to = piInstanceName(firstInstance);
+                        if (!piSummarizer && req.apiKeyData?.id) piSessionModel.set(req.apiKeyData.id, { model: to, at: Date.now() });
+                        console.log(`[Pi/Pair] ${piSummarizer ? 'summary' : 'request'} (~${need} tokens) does not fit ${from} (${piWindowOf(modelInstances.get(from))} per request) — running it on ${to}`);
+                    }
+                }
+            } catch (e) { console.warn('[Pi/Pair] fit check skipped:', e.message); }
+        }
+        // Pi's summarizer wants the summary, not a reasoning trace: on a
+        // thinking model the trace ran 2-8k tokens (17-114 s on the 4B) and
+        // a trace that hit max_tokens made Pi reject the summary as truncated.
+        if (piSummarizer && req.method === 'POST' && !(req.body.chat_template_kwargs && 'enable_thinking' in req.body.chat_template_kwargs)) {
+            req.body.chat_template_kwargs = { ...(req.body.chat_template_kwargs || {}), enable_thinking: false };
+            console.log(`[Pi/Compact] summary request on ${piInstanceName(firstInstance)} (~${piRequestTokens(req.body)} tokens), thinking off`);
         }
 
         // ── Pi memory bridge ────────────────────────────────────────────────

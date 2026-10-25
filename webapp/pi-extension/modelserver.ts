@@ -86,6 +86,10 @@ interface ModelInfo {
     id: string;
     name?: string;
     context_window?: number;
+    // What one request gets on this model itself; context_window can be larger
+    // for a model in a two-model pair (the server routes a request that
+    // outgrows it to the other model). Absent on older servers.
+    served_context_window?: number;
     max_tokens?: number;
 }
 
@@ -825,9 +829,17 @@ export default async function (pi: ExtensionAPI) {
 
     // 1) Register the model server as an OpenAI-compatible provider.
     try {
-        const r = await authedFetch("/v1/models");
+        // The header tells the server this is Pi, which compacts against the
+        // advertised window: for a two-model pair that is the window the pair
+        // can serve, not the fast model's own slot.
+        const r = await authedFetch("/v1/models", { headers: { "X-Modelserver-Client": "pi-extension" } });
         if (r.ok) {
             const payload = await r.json() as { data?: ModelInfo[] };
+            const served = new Map<string, number>();
+            for (const m of payload.data || []) {
+                const w = Number(m.served_context_window ?? m.context_window);
+                if (Number.isFinite(w) && w > 0) served.set(m.id, w);
+            }
             const models = (payload.data || []).map((m) => ({
                 id: m.id,
                 name: m.name ?? m.id,
@@ -841,7 +853,7 @@ export default async function (pi: ExtensionAPI) {
             // points Pi at, and Pi sends the SAME catalog whichever one that
             // is — so budget against the SMALLEST window on offer.
             for (const m of models) {
-                const w = Number(m.contextWindow);
+                const w = Number(served.get(m.id) ?? m.contextWindow);
                 if (Number.isFinite(w) && w > 0) smallestContextWindow = Math.min(smallestContextWindow, w);
             }
             (pi as any).registerProvider("modelserver", {
@@ -861,6 +873,238 @@ export default async function (pi: ExtensionAPI) {
         }
     } catch (e) {
         console.error("[modelserver] failed to register provider:", e);
+    }
+
+    // ---- compaction on the fast model ----------------------------------------
+    // Pi's own compaction summarizes with the session's model, from scratch,
+    // with that model's reasoning on, while the agent waits. Instead:
+    //   1. While the lead works, the older part of the session is summarized in
+    //      the BACKGROUND on a model with a free slot (never the one the agent is
+    //      working on — the server enforces that), and kept up to date as the
+    //      session grows (a rolling summary).
+    //   2. When Pi compacts, only the messages the background summary has not
+    //      covered yet are summarized (usually a few), plus the split-turn
+    //      prefix IN PARALLEL — on the fastest free model, thinking off,
+    //      chunked to that model's window (POST /api/pi/summarize).
+    // Same summary format as Pi's. Any failure falls back to Pi's own
+    // compaction. MODELSERVER_COMPACTION=0 turns all of this off;
+    // MODELSERVER_PRESUMMARIZE_AT (default 0.5) is the fraction of Pi's
+    // compaction threshold at which background summarizing starts.
+    if (process.env.MODELSERVER_COMPACTION !== "0") {
+        try {
+            let piSerialize: ((msgs: any[]) => string) | null = null;
+            try {
+                const mod: any = await import("@earendil-works/pi-coding-agent");
+                if (typeof mod?.serializeConversation === "function" && typeof mod?.convertToLlm === "function") {
+                    piSerialize = (msgs: any[]) => mod.serializeConversation(mod.convertToLlm(msgs));
+                }
+            } catch { /* older Pi: use the local serializer */ }
+            const textOf = (c: any): string => typeof c === "string" ? c
+                : Array.isArray(c) ? c.filter((p: any) => p && p.type === "text").map((p: any) => p.text || "").join("\n") : "";
+            // Mirrors Pi's serializeConversation (tool results cut to 2000 chars).
+            const localSerialize = (msgs: any[]): string => {
+                const out: string[] = [];
+                for (const m of msgs) {
+                    if (!m) continue;
+                    if (m.role === "assistant" && Array.isArray(m.content)) {
+                        const think = m.content.filter((b: any) => b?.type === "thinking").map((b: any) => b.thinking || "");
+                        const text = textOf(m.content);
+                        const calls = m.content.filter((b: any) => b?.type === "toolCall")
+                            .map((b: any) => `${b.name}(${Object.entries(b.arguments || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})`);
+                        if (think.length) out.push(`[Assistant thinking]: ${think.join("\n")}`);
+                        if (text) out.push(`[Assistant]: ${text}`);
+                        if (calls.length) out.push(`[Assistant tool calls]: ${calls.join("; ")}`);
+                    } else if (m.role === "toolResult") {
+                        const t = textOf(m.content);
+                        if (t) out.push(`[Tool result]: ${t.length > 2000 ? `${t.slice(0, 2000)}\n\n[... ${t.length - 2000} more characters truncated]` : t}`);
+                    } else if (m.role === "bashExecution") {
+                        out.push(`[User]: ran \`${m.command || ""}\`${m.output ? `\n${String(m.output).slice(0, 2000)}` : ""}`);
+                    } else if (m.role === "compactionSummary" || m.role === "branchSummary") {
+                        if (m.summary) out.push(`[User]: (summary of earlier work)\n${m.summary}`);
+                    } else {
+                        const t = textOf(m.content);
+                        if (t) out.push(`[User]: ${t}`);
+                    }
+                }
+                return out.join("\n\n");
+            };
+            const serialize = (msgs: any[]): string => {
+                if (piSerialize) { try { return piSerialize(msgs); } catch { /* fall through */ } }
+                return localSerialize(msgs);
+            };
+            const msgKey = (m: any): string => `${m?.role}|${m?.timestamp ?? ""}|${m?.toolCallId ?? m?.id ?? ""}`;
+            const msgChars = (m: any): number => {
+                try { return JSON.stringify(m?.content ?? m?.summary ?? "").length; } catch { return 0; }
+            };
+
+            type Summarized = { summary: string; model: string; seconds: number };
+            const summarizeRemote = async (body: any, signal?: AbortSignal): Promise<Summarized> => {
+                const r = await authedFetch("/api/pi/summarize", { method: "POST", body: JSON.stringify(body), signal });
+                const data: any = await r.json().catch(() => ({}));
+                if (!r.ok || typeof data?.summary !== "string" || !data.summary.trim()) {
+                    const err: any = new Error(data?.error || `HTTP ${r.status}`);
+                    err.status = r.status;
+                    throw err;
+                }
+                return { summary: data.summary, model: String(data.model || ""), seconds: Number(data.seconds) || 0 };
+            };
+
+            const PRESUMMARIZE_AT = Math.min(0.95, Math.max(0.1, Number(process.env.MODELSERVER_PRESUMMARIZE_AT) || 0.5));
+            // Below this much new (serialized) text a background update is not
+            // worth a model call: Pi's own compaction of it takes seconds anyway.
+            const BG_MIN_NEW_CHARS = Math.max(1000, Number(process.env.MODELSERVER_PRESUMMARIZE_MIN_CHARS) || 20000);
+            // Pi's compaction settings (global, then project — Pi merges them the
+            // same way); refreshed from the real values at every compaction.
+            let settings = { reserveTokens: 16384, keepRecentTokens: 20000 };
+            for (const file of [
+                join(process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "agent"), "settings.json"),
+                join(process.cwd(), ".pi", "settings.json"),
+            ]) {
+                try {
+                    const c = JSON.parse(fs.readFileSync(file, "utf8"))?.compaction || {};
+                    if (Number.isFinite(c.reserveTokens)) settings.reserveTokens = c.reserveTokens;
+                    if (Number.isFinite(c.keepRecentTokens)) settings.keepRecentTokens = c.keepRecentTokens;
+                } catch { /* missing or unreadable: keep the defaults */ }
+            }
+            // The rolling background summary: `summary` covers `keys` (the
+            // session's messages after the last compaction, in order) on top of
+            // `base` (that compaction's summary).
+            let bg: { base: string | undefined; keys: string[]; summary: string; model: string } | null = null;
+            let bgRun: Promise<void> | null = null;
+            let bgPauseUntil = 0;
+            let compactions = 0;
+
+            const sessionMessages = (ctx: any): { base: string | undefined; msgs: any[] } | null => {
+                const sm = ctx?.sessionManager;
+                if (!sm || typeof sm.buildSessionProjection !== "function") return null;
+                const all = sm.buildSessionProjection()?.messages;
+                if (!Array.isArray(all)) return null;
+                let base: string | undefined;
+                let msgs: any[] = [];
+                for (const m of all) {
+                    if (!m || m.role === "system") continue;
+                    if (m.role === "compactionSummary") { base = m.summary; msgs = []; continue; }
+                    msgs.push(m);
+                }
+                return { base, msgs };
+            };
+            const coversPrefix = (msgs: any[], keys: string[]): boolean =>
+                keys.length <= msgs.length && keys.every((k, i) => msgKey(msgs[i]) === k);
+
+            const presummarize = async (ctx: any) => {
+                if (bgRun || Date.now() < bgPauseUntil) return;
+                const usage = ctx?.getContextUsage?.();
+                if (!usage || !usage.tokens || !usage.contextWindow) return;
+                const threshold = usage.contextWindow - settings.reserveTokens;
+                if (threshold <= 0 || usage.tokens < threshold * PRESUMMARIZE_AT) return;
+                const snap = sessionMessages(ctx);
+                if (!snap) return;
+                // Leave out what Pi will keep verbatim (with margin: Pi's cut is
+                // estimated at chars/4, ours too, plus a turn boundary).
+                let keepChars = (settings.keepRecentTokens * 1.3 + 2000) * 4;
+                let cut = snap.msgs.length;
+                while (cut > 0 && keepChars > 0) { cut--; keepChars -= msgChars(snap.msgs[cut]); }
+                const prefix = snap.msgs.slice(0, cut);
+                const reuse = bg && bg.base === snap.base && coversPrefix(prefix, bg.keys) ? bg : null;
+                const fresh = prefix.slice(reuse ? reuse.keys.length : 0);
+                if (!fresh.length) return;
+                const conversation = serialize(fresh);
+                if (conversation.length < BG_MIN_NEW_CHARS) return;
+                const seq = compactions;
+                bgRun = (async () => {
+                    try {
+                        const r = await summarizeRemote({ conversation, previousSummary: reuse ? reuse.summary : snap.base, background: true });
+                        if (seq !== compactions) return; // a compaction landed meanwhile: stale
+                        bg = { base: snap.base, keys: [...(reuse ? reuse.keys : []), ...fresh.map(msgKey)], summary: r.summary, model: r.model };
+                    } catch (e: any) {
+                        // 409 = no free model besides the lead right now.
+                        bgPauseUntil = Date.now() + (e?.status === 409 ? 20000 : 90000);
+                    } finally { bgRun = null; }
+                })();
+            };
+
+            pi.on("turn_end", (_e: any, ctx: any) => { void presummarize(ctx).catch(() => { /* best effort */ }); });
+            pi.on("session_compact", () => { compactions++; bg = null; });
+            pi.on("session_start", () => { bg = null; });
+
+            pi.on("session_before_compact", async (event: any, ctx: any) => {
+                const prep = event?.preparation;
+                if (!prep) return undefined;
+                if (prep.settings) settings = { reserveTokens: prep.settings.reserveTokens ?? settings.reserveTokens, keepRecentTokens: prep.settings.keepRecentTokens ?? settings.keepRecentTokens };
+                const signal: AbortSignal | undefined = event.signal;
+                const started = Date.now();
+                try {
+                    // A background run that is nearly done is worth a short wait.
+                    if (bgRun) await Promise.race([bgRun, new Promise((r) => setTimeout(r, 20000))]);
+                    const msgs: any[] = Array.isArray(prep.messagesToSummarize) ? prep.messagesToSummarize : [];
+                    const prefixMsgs: any[] = prep.isSplitTurn && Array.isArray(prep.turnPrefixMessages) ? prep.turnPrefixMessages : [];
+                    const custom = typeof event.customInstructions === "string" && event.customInstructions.trim() ? event.customInstructions : undefined;
+                    // Everything Pi drops: earlier turns, then (split turn) the
+                    // start of the current one. A long agent task is usually ONE
+                    // turn, so the background summary mostly covers the latter.
+                    const all = [...msgs, ...prefixMsgs];
+                    const models = new Set<string>();
+                    const run = (body: any) => summarizeRemote(body, signal).then((r) => { models.add(r.model); return r.summary; });
+                    let summary: string;
+                    let reused = 0;
+                    if (!custom && bg && bg.base === prep.previousSummary && bg.keys.length && coversPrefix(all, bg.keys)) {
+                        // One rolling summary: the background one + what came after it.
+                        reused = bg.keys.length;
+                        const rest = all.slice(reused);
+                        summary = rest.length ? await run({ conversation: serialize(rest), previousSummary: bg.summary }) : bg.summary;
+                    } else {
+                        // Nothing usable in the background: earlier turns and the
+                        // current turn's start in PARALLEL (Pi does them in series).
+                        const history = msgs.length
+                            ? run({ conversation: serialize(msgs), previousSummary: prep.previousSummary, customInstructions: custom })
+                            : Promise.resolve(prep.previousSummary ?? "No prior history.");
+                        const turnPrefix = prefixMsgs.length ? run({ conversation: serialize(prefixMsgs), mode: "turn_prefix" }) : Promise.resolve(null);
+                        const [hist, pre] = await Promise.all([history, turnPrefix]);
+                        summary = pre ? `${hist}\n\n---\n\n**Turn Context (split turn):**\n\n${pre}` : hist;
+                    }
+                    // File lists, as Pi's own compaction appends them. Pi only
+                    // carries lists forward from ITS compactions, so ours carry
+                    // the previous extension compaction's lists themselves.
+                    const read = new Set<string>(prep.fileOps?.read || []);
+                    const modified = new Set<string>([...(prep.fileOps?.written || []), ...(prep.fileOps?.edited || [])]);
+                    const entries: any[] = Array.isArray(event.branchEntries) ? event.branchEntries : [];
+                    for (let i = entries.length - 1; i >= 0; i--) {
+                        const e = entries[i];
+                        if (e?.type !== "compaction") continue;
+                        if (e.fromHook && e.details) {
+                            for (const f of e.details.readFiles || []) read.add(f);
+                            for (const f of e.details.modifiedFiles || []) modified.add(f);
+                        }
+                        break;
+                    }
+                    const modifiedFiles = [...modified].sort();
+                    const readFiles = [...read].filter((f) => !modified.has(f)).sort();
+                    const sections: string[] = [];
+                    if (readFiles.length) sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
+                    if (modifiedFiles.length) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
+                    if (sections.length) summary += `\n\n${sections.join("\n\n")}`;
+                    const secs = Math.round((Date.now() - started) / 100) / 10;
+                    if (ctx?.hasUI) {
+                        ctx.ui.notify(`Compacted in ${secs}s on ${[...models].join(" + ") || "the background summary"}`
+                            + (reused ? ` (${reused} of ${all.length} messages already summarized in the background)` : ""), "info");
+                    }
+                    return {
+                        compaction: {
+                            summary,
+                            firstKeptEntryId: prep.firstKeptEntryId,
+                            tokensBefore: prep.tokensBefore,
+                            details: { readFiles, modifiedFiles },
+                        },
+                    };
+                } catch (e: any) {
+                    if (signal?.aborted) return undefined;
+                    console.error(`[modelserver] fast compaction failed (${e?.message || e}); using Pi's own compaction`);
+                    return undefined;
+                }
+            });
+        } catch (e) {
+            console.error("[modelserver] compaction hooks not installed:", (e as Error).message);
+        }
     }
 
     // 2) Pull the skill catalog and expose each as a Pi tool.
