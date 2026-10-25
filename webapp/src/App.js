@@ -12576,6 +12576,15 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                                                                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 0.5, gap: 1 }}>
                                                                                                     <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
                                                                                                         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{skill.name}</Typography>
+                                                                                                        {(() => {
+                                                                                                            const origin = skill.origin || (skill.createdBy === 'model' ? 'model' : skill.userId ? 'user' : 'default');
+                                                                                                            const tag = {
+                                                                                                                default: { label: 'Default', title: 'Ships with the model server', sx: { color: 'var(--text-secondary)', borderColor: 'var(--border-primary)' } },
+                                                                                                                user: { label: 'User created', title: 'Created by a user', sx: { color: 'var(--accent-primary)', borderColor: 'var(--accent-primary)', bgcolor: 'var(--accent-muted)' } },
+                                                                                                                model: { label: 'Model created', title: 'Saved by a model with save_tool', sx: { color: 'var(--info, #60a5fa)', borderColor: 'var(--info, #60a5fa)' } },
+                                                                                                            }[origin];
+                                                                                                            return tag ? <Chip label={tag.label} title={tag.title} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.65rem', ...tag.sx }} /> : null;
+                                                                                                        })()}
                                                                                                         {skill.type && <Chip label={skill.type} size="small" sx={{ height: 18, fontSize: '0.65rem' }} />}
                                                                                                         {!isEnabled && <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />}
                                                                                                     </Box>

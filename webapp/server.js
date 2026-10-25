@@ -9407,6 +9407,23 @@ app.delete('/api/markdown-skills/:id', requireAuth, async (req, res) => {
 });
 
 // List all skills
+// Where a skill came from, for the Tools Library tags: 'default' = shipped in
+// default-skills.json (managed, no owner), 'model' = saved by the save_tool
+// native tool, 'user' = everything else. Not persisted — derived per read.
+let _defaultSkillNames = null;
+function skillOrigin(skill) {
+    if (skill.createdBy === 'model') return 'model';
+    if (!_defaultSkillNames) {
+        try {
+            const tpl = JSON.parse(fsSync.readFileSync(path.join(__dirname, 'default-skills.json'), 'utf8'));
+            _defaultSkillNames = new Set((Array.isArray(tpl) ? tpl : []).map(s => s.name));
+        } catch (_) {
+            return skill.userId ? 'user' : 'default';
+        }
+    }
+    return (!skill.userId && _defaultSkillNames.has(skill.name)) ? 'default' : 'user';
+}
+
 app.get('/api/skills', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'agents')) {
@@ -9416,7 +9433,7 @@ app.get('/api/skills', requireAuth, async (req, res) => {
     try {
         const skills = await loadSkills();
         const userSkills = filterByUserId(skills, req.userId);
-        res.json(userSkills);
+        res.json(userSkills.map(s => ({ ...s, origin: skillOrigin(s) })));
     } catch (error) {
         console.error('Error loading skills:', error);
         res.status(500).json({ error: 'Failed to load skills' });
