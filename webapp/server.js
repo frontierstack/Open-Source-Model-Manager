@@ -16419,7 +16419,10 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
         const lastAsk = piLastAskByKey.get(keyId);
         const userText = v1LatestUserText(req.body?.messages || []) || (lastAsk && lastAsk.text) || '';
         entry = { taskKey, lead, assistant, keyId, userId: req.userId || keyId, userText, lastSeenAt: Date.now(), activeWaits: 0, ctx: newPiAssistantCtx(req, keyId, lead) };
-        entry.ctx._handoffGoal = { userText: leadHandoff.askForFirstPass(entry.userText, 1500), context: leadHandoff.buildConversationContext(req.body?.messages || []), plan: (lastAsk && lastAsk.text === userText && lastAsk.plan) || [] };
+        entry.ctx._handoffGoal = { userText: leadHandoff.askForFirstPass(entry.userText, 1500), context: leadHandoff.buildConversationContext(req.body?.messages || []), plan: (lastAsk && lastAsk.text === userText && lastAsk.plan) || [],
+            // A web-search ban in the ask binds the jobs too (they never see
+            // the user's message, only their brief).
+            instructions: webSearchBanned(entry.userText) ? leadHandoff.cleanAsk(entry.userText).slice(0, 1500) : '' };
         entry.ctx._onAssistantSettled = (job) => { if (job && job.status !== 'cancelled' && job.status !== 'failed') piFollowUpLegwork(entry); };
         piAssistantByKey.set(keyId, entry);
     }
@@ -16490,7 +16493,7 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
     const targetModel = pairRequested ? roles.primary : requested;
     const piMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const prev = piPreviousTexts(piMessages);
-    const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running, hasHistory: piMessages.some(m => m && m.role === 'assistant'), previousText: prev.previousText, lastAssistantText: prev.lastAssistantText });
+    const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running, hasHistory: piMessages.some(m => m && m.role === 'assistant'), previousText: prev.previousText, lastAssistantText: prev.lastAssistantText, hostAgent: true });
     // Sticky per session: moving DOWN to the primary re-prefills the whole
     // session there, which only pays when the context is still small; moving
     // UP for real work always happens (one cold prefill, then warm).
@@ -16506,6 +16509,11 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
     }
     const offered = piOfferedToolNames(req.body);
     const toolsOffered = offered.has('ask_assistant');
+    // A Pi job can only search the web (it runs on the server), so an ask
+    // about the user's own machine, or one that rules out web search, has no
+    // job to give it.
+    const hostLocal = leadHandoff.isHostLocalAsk(latestUserText);
+    const webBanned = webSearchBanned(latestUserText);
     const piContext = leadHandoff.buildConversationContext(piMessages);
     if (!plan.engaged && plan.partner && plan.runOn === plan.partner) plan.partner = plan.runOn === roles.secondary ? roles.primary : roles.secondary;
     const out = { taskKey, runOn: plan.runOn || targetModel, engaged: !!plan.engaged, lead: null, assistant: null, note: null, reason: plan.reason, jobs: [] };
@@ -16522,7 +16530,8 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
         const piFirstPassSkip = !plan.firstPass ? 'first pass off'
             : !toolsOffered ? 'Pi offered no ask_assistant tool'
             : !plan.legwork ? 'legwork off'
-            : leadHandoff.forbidsTools(latestUserText) ? 'the user ruled out tools or searching'
+            : leadHandoff.forbidsTools(latestUserText) || webBanned ? 'the user ruled out tools or searching'
+            : hostLocal ? 'the task is on the user\'s own machine, which jobs cannot see'
             : !leadHandoff.needsLookup(latestUserText) ? 'nothing to look up' : null;
         if (!piFirstPassSkip) {
             try {
@@ -16555,13 +16564,15 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
             legworkAvailable: toolsOffered && plan.legwork, startedJobs: started.map(d => ({ name: d.name, task: (proposed.find(p => p.name === d.name) || {}).task || '' })), quick: true,
             retrieval: leadHandoff.isRetrievalShaped(latestUserText),
         }) : '';
-        const toolsLine = (toolsOffered && plan.legwork)
+        const toolsLine = (hostLocal || webBanned)
+            ? `You lead this task on ${out.lead}. It is about THIS machine${webBanned ? ' and the user ruled out web search' : ''}: do it with your own tools here. ${out.assistant} works on the server and cannot see this machine, so do not hand it any part of this task.`
+            : (toolsOffered && plan.legwork)
             ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it a lookup that takes several steps (a web search plus reading the pages that answer it, comparing sources, checking current versions or docs) and returns immediately; finished results are appended to your next tool result. It works on the SERVER: it cannot see files or run commands on this machine, so do those yourself. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
             : `You lead this task on ${out.lead}.`;
         out.note = `${PI_PAIR_MARKER} — two models on this task; runtime context, not part of the user's message]\n${briefNote ? briefNote + '\n\n' : ''}${toolsLine}`;
         logUserActivity(userId, `Pi two models: ${out.lead} leads` + (brief ? `, ${out.assistant} planned in ${secs}s` : '') + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
         console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${piFirstPassSkip ? `skipped (${piFirstPassSkip})` : `${brief.length}ch ${secs}s`} jobs=${out.jobs.length} ask_assistant=${toolsOffered ? 'offered' : 'NOT offered by the Pi extension'}`);
-    } else if (plan.partner && plan.partnerLegwork && toolsOffered) {
+    } else if (plan.partner && plan.partnerLegwork && toolsOffered && !hostLocal && !webBanned) {
         out.lead = out.runOn;
         out.assistant = plan.partner;
         { const keyId = req.apiKeyData?.id; if (keyId) piLastAskByKey.set(keyId, { text: latestUserText, plan: [], at: Date.now() }); }

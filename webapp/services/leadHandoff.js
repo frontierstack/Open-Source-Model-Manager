@@ -299,6 +299,25 @@ const GO_AHEAD_RE = /\b(do it|go ahead|proceed|continue|carry on|keep going|try 
 // The user said not to use tools / the web on this turn.
 const NO_TOOLS_RE = /\b(?:no|without|don'?t (?:use|do|run|perform)|do not (?:use|do|run|perform)|never use|avoid)\s+(?:any\s+)?(?:the\s+)?(?:tools?|web(?:\s*search(?:es|ing)?)?|search(?:es|ing)?|internet|browsing|looking (?:it |this |that )?up|lookups?|online (?:search(?:es)?|sources?))\b/i;
 
+// "no tools", "don't use any tools" — every tool, not just the web.
+const ALL_TOOLS_BANNED_RE = /\b(?:no|without|don'?t (?:use|run)|do not (?:use|run)|never use|avoid)\s+(?:any\s+)?(?:the\s+)?tools?\b/i;
+
+// The ask is about the USER'S OWN MACHINE: its files, settings, history,
+// installed programs. A Pi background job runs on the server and can only
+// search the web, so it has nothing to contribute — before this, "find the ssh
+// username for 10.0.0.15 on my computer" started a server job that web-searched
+// the IP. Possessive or demonstrative + a machine noun, or a local path.
+const HOST_LOCAL_RE = new RegExp([
+    String.raw`\b(?:on|in|from|of|across|inside)\s+(?:my|this|the local|our)\s+(?:own\s+)?(?:computer|machine|pc|laptop|desktop|workstation|host|box|system|server|drives?|disks?|hard ?drive|filesystem|file system|home (?:dir(?:ectory)?|folder)|user (?:profile|folder))\b`,
+    String.raw`\b(?:this|my)\s+(?:computer|machine|pc|laptop|desktop|workstation)\b`,
+    String.raw`\b(?:locally|local (?:files?|machine|disk|drive|config(?:uration)?s?|settings))\b`,
+    String.raw`\bmy\s+(?:local\s+)?(?:files?|folders?|downloads|documents|desktop|registry|ssh (?:config|keys?|known.?hosts)|shell history|bash history|powershell history|environment variables|installed (?:apps?|programs?|software))\b`,
+    String.raw`(?:^|[\s'"\`(])(?:[A-Za-z]:[\\/]|~[\\/]|%(?:USERPROFILE|APPDATA|LOCALAPPDATA|PROGRAMDATA)%|\$(?:HOME|USERPROFILE|APPDATA)\b|\/(?:c|mnt\/c)\/Users\/)`,
+].join('|'), 'i');
+function isHostLocalAsk(text) {
+    return HOST_LOCAL_RE.test(cleanAsk(text));
+}
+
 function forbidsTools(text) {
     const ask = cleanAsk(text);
     return NO_TOOLS_RE.test(ask) || stripNegatedTools(ask).toolsForbidden;
@@ -439,7 +458,7 @@ function isRetrievalShaped(text) {
  * Is this an EASY turn — one the fast primary should answer alone?
  * @returns {{easy:boolean, reason:string}}
  */
-function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHistory = false, previousText = null, lastAssistantText = null } = {}) {
+function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHistory = false, previousText = null, lastAssistantText = null, hostAgent = false } = {}) {
     const ask = cleanAsk(text);
     if (!ask) return { easy: true, reason: 'empty ask' };
     if (EXPLICIT_RE.test(ask)) return { easy: false, reason: 'user asked for the models to work together' };
@@ -472,7 +491,12 @@ function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHis
     if (verdict.smallBuild) return { easy: true, reason: 'a small piece of code or text' };
     // The user ruled out tools: nothing to delegate, so the pair adds only
     // latency — unless it is a long piece of writing.
-    if (verdict.toolsForbidden && words <= 40 && !LONG_DEMAND.test(ask) && !MULTI_STEP2.test(ask)) {
+    // On a host agent (Pi) "no web searches" leaves every tool that matters —
+    // its own shell on the user's machine — so the ask is still tool work.
+    // Measured 2026-10-25: "find the ssh username for 10.0.0.15 on my computer,
+    // no web searches" went to the 4B as an easy turn and made 32 blind bash
+    // calls on a Windows host it took for Linux.
+    if (verdict.toolsForbidden && (!hostAgent || ALL_TOOLS_BANNED_RE.test(ask)) && words <= 40 && !LONG_DEMAND.test(ask) && !MULTI_STEP2.test(ask)) {
         return { easy: true, reason: 'tools ruled out and nothing long to write' };
     }
     // Questions — one-hop or not — need world knowledge or a lookup, and a
@@ -501,7 +525,7 @@ function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHis
  *   reason: string, substantial: boolean
  * }}
  */
-function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds, hasHistory = false, previousText = null, lastAssistantText = null, secondaryBusy = false, redoText = null } = {}) {
+function planHandoff({ roles, targetModel, userText, mode, running, hasAttachments, attachmentKinds, hasHistory = false, previousText = null, lastAssistantText = null, secondaryBusy = false, redoText = null, hostAgent = false } = {}) {
     const r = roles || {};
     const m = MODES.includes(mode) ? mode : (MODES.includes(r.mode) ? r.mode : 'auto');
     const loaded = running instanceof Set ? running : new Set(Array.isArray(running) ? running : []);
@@ -511,7 +535,7 @@ function planHandoff({ roles, targetModel, userText, mode, running, hasAttachmen
     const secondary = r.secondary || null;
     const requested = targetModel || null;
     let verdict = isSubstantialWork({ text: userText, hasAttachments, attachmentKinds, previousText, lastAssistantText });
-    let easy = isEasyTurn({ text: userText, hasAttachments, attachmentKinds, hasHistory, previousText, lastAssistantText });
+    let easy = isEasyTurn({ text: userText, hasAttachments, attachmentKinds, hasHistory, previousText, lastAssistantText, hostAgent });
     // A correction ("I still don't see the line") or "continue" redoes the
     // request it refers to: plan it as that request, not as its own words.
     if (redoText && !verdict.substantial) {
@@ -1318,6 +1342,7 @@ module.exports = {
     isSingleReadJob,
     isSingleReadAsk,
     isHostFileJob,
+    isHostLocalAsk,
     buildPartnerPrelude,
     buildJobPartnerLine,
     cleanAsk,

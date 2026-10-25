@@ -330,6 +330,79 @@ const MAX_LISTED_WORKSPACE_FILES = 40;
  * here survives compaction by construction.
  */
 /**
+ * THIS MACHINE — the host Pi's own read / write / edit / bash act on.
+ *
+ * Pi's system prompt names the working directory but never the operating
+ * system, and our sandbox doctrine below describes a LINUX /workspace at
+ * length. On a Windows host the model therefore drove Git Bash as if it were
+ * Linux (measured 2026-10-25: /home/Tay, /root/.ssh, `%APPDATA%` inside bash,
+ * the same known_hosts grep three times — 32 calls, no answer). The facts are
+ * read once at load, so the block is byte-identical on every request.
+ */
+export type HostInfo = {
+    platform: string; release: string; user: string; home: string;
+    shell: "git-bash" | "bash" | "wsl" | "native";
+    windowsUsers?: string[]; distro?: string;
+};
+
+export function detectHostInfo(): HostInfo {
+    const platform = process.platform;
+    let user = "";
+    try { user = os.userInfo().username; } catch { /* no passwd entry */ }
+    const info: HostInfo = { platform, release: os.release(), user, home: os.homedir(), shell: "native" };
+    if (platform === "win32") {
+        // Same order Pi uses to pick its bash (utils/shell.js): Git Bash in
+        // the standard locations, else whatever bash is on PATH.
+        const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean) as string[];
+        info.shell = roots.some(r => { try { return fs.existsSync(join(r, "Git", "bin", "bash.exe")); } catch { return false; } }) ? "git-bash" : "bash";
+    } else if (platform === "linux") {
+        try {
+            const v = fs.readFileSync("/proc/version", "utf8");
+            if (/microsoft|wsl/i.test(v)) {
+                info.shell = "wsl";
+                try {
+                    info.windowsUsers = fs.readdirSync("/mnt/c/Users")
+                        .filter(n => !/^(?:Public|Default|Default User|All Users|desktop\.ini|WsiAccount)$/i.test(n)).slice(0, 4);
+                } catch { /* C: not mounted */ }
+            }
+        } catch { /* no /proc */ }
+        try {
+            const m = /^PRETTY_NAME="?([^"\n]+)"?/m.exec(fs.readFileSync("/etc/os-release", "utf8"));
+            if (m) info.distro = m[1];
+        } catch { /* minimal image */ }
+    }
+    return info;
+}
+
+export function renderHostBlock(h: HostInfo): string {
+    const L: string[] = [];
+    L.push("[THIS MACHINE — where your own read / write / edit / ls / grep / bash run]");
+    if (h.platform === "win32") {
+        const build = Number((h.release.split(".")[2]) || 0);
+        const win = build >= 22000 ? "Windows 11" : "Windows 10";
+        const posixHome = h.home.replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`).replace(/\\/g, "/");
+        L.push(`${win} (build ${build || h.release})${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
+        L.push(`Your bash tool is ${h.shell === "git-bash" ? "Git Bash (MSYS2)" : "a POSIX bash"} running ON WINDOWS — this is not a Linux machine:`);
+        L.push(`- ${h.home} is ${posixHome} (~ works). Linux paths such as /home, /root, /etc/ssh, /var/log do not exist here; do not probe them.`);
+        L.push("- %VAR% is cmd syntax and does NOT expand in bash. Use $USERPROFILE, $APPDATA, $LOCALAPPDATA, $PROGRAMDATA (they hold Windows paths; `cygpath -u \"$APPDATA\"` converts one).");
+        L.push("- Windows tools work from bash: `powershell.exe -NoProfile -Command '…'` (single quotes, so bash leaves $ alone), `reg query`, `cmd //c …`. Git Bash rewrites a /flag into a path — prefix such commands with MSYS_NO_PATHCONV=1, e.g. `MSYS_NO_PATHCONV=1 reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /s`.");
+        L.push("- Programs keep their settings and history in %APPDATA% (Roaming), %LOCALAPPDATA%, %PROGRAMDATA% and the registry (HKCU\\Software, HKLM\\SOFTWARE), not in dotfiles. Shell history: ~/.bash_history (Git Bash) and $APPDATA/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt (PowerShell). OpenSSH: ~/.ssh and C:\\ProgramData\\ssh.");
+    } else if (h.shell === "wsl") {
+        const wu = h.windowsUsers && h.windowsUsers.length ? h.windowsUsers.map(u => `/mnt/c/Users/${u}`).join(", ") : "/mnt/c/Users/<name>";
+        L.push(`Linux under WSL on a Windows PC${h.distro ? ` (${h.distro})` : ""}${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
+        L.push(`- Windows drives are mounted at /mnt/<letter> (C: = /mnt/c). The Windows user profile is ${wu}: Windows programs keep their settings and history THERE (AppData/Roaming, AppData/Local), not in ${h.home}.`);
+        L.push("- Windows tools run from this shell: powershell.exe, cmd.exe, reg.exe (e.g. `powershell.exe -NoProfile -Command '…'`).");
+    } else if (h.platform === "darwin") {
+        L.push(`macOS (Darwin ${h.release})${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
+        L.push("- Programs keep settings in ~/Library/Application Support and ~/Library/Preferences (`defaults read <domain>`); BSD tools, so GNU-only flags may fail.");
+    } else {
+        L.push(`${h.distro || `${h.platform} ${h.release}`}${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
+    }
+    L.push("- A search that came back empty is an answer for that place: look somewhere else instead of re-running it with another spelling.");
+    return L.join("\n");
+}
+
+/**
  * PREFIX-CACHE SPLIT (don't regress). The block used to be ONE string in the
  * system prompt, inventory included. Pi resends the whole history on every LLM
  * call and llama.cpp (like every server) reuses its KV cache only for the
@@ -556,7 +629,9 @@ export default async function (pi: ExtensionAPI) {
             unreachable: !inv,
         });
     };
-    const staticSandboxBlock = renderSandboxStaticBlock({ hostHasWorkspaceDir });
+    let hostBlock = "";
+    try { hostBlock = renderHostBlock(detectHostInfo()) + "\n\n"; } catch (e) { console.error("[modelserver] host detection failed:", (e as Error).message); }
+    const staticSandboxBlock = hostBlock + renderSandboxStaticBlock({ hostHasWorkspaceDir });
 
     // Never let a slow or broken server break the user's turn: on any failure the
     // block is simply omitted for that turn. The system-prompt part is STATIC
@@ -1191,6 +1266,7 @@ export default async function (pi: ExtensionAPI) {
             let ownCallsThisRun = 0;
             let dispatchedThisRun = false;
             let nudgedThisRun = false;
+            let runSeq = 0;
 
             const renderResults = (results: any[]): string => {
                 const parts = results.map((j) => j.status === "done"
@@ -1323,29 +1399,44 @@ export default async function (pi: ExtensionAPI) {
             pi.on("agent_start", (_e: any, ctx: any) => {
                 if (ctx) uiCtx = ctx;
                 ownCallsThisRun = 0; dispatchedThisRun = false; nudgedThisRun = false;
+                runSeq++;
                 if (pollTimer) clearInterval(pollTimer);
                 pollTimer = setInterval(() => { void poll(false).catch(() => {}); }, 3000);
                 (pollTimer as any).unref?.();
             });
             // Results that land after the lead has already answered would be
-            // lost — start one follow-up turn carrying them so the answer is
-            // revised with the legwork in hand (bounded: waits up to 90 s).
-            pi.on("agent_end", async (_e: any, ctx: any) => {
+            // lost, so one follow-up turn carries them in. Pi AWAITS agent_end
+            // handlers before it reports the run finished, and this used to
+            // wait for pending jobs right here (up to 90 s): after every answer
+            // with a job still running the agent sat "working" with nothing on
+            // screen, and after an Esc it waited, then started a turn with the
+            // results anyway. Now the handler returns at once and the wait runs
+            // in the background; the follow-up is sent only if the run was not
+            // aborted and no new run has started (a new run picks the results
+            // up on its next tool result instead).
+            pi.on("agent_end", (event: any, ctx: any) => {
                 if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
                 if (ctx) uiCtx = ctx;
-                try {
-                    let data = await poll(false);
-                    if (!data || !data.active || ((data.pending || 0) + (data.undelivered || 0)) === 0) { updateStatus(data); return; }
-                    if (data.pending) data = await poll(true, 90000);
-                    else data = await poll(true);
-                    const results = (data && data.results) || [];
-                    if (!results.length) return;
-                    (pi as any).sendMessage({
-                        customType: "modelserver-assistant-results",
-                        content: `${renderResults(results)}\n\nThese arrived after your answer. Revise the answer so it uses them — correct anything they contradict and fill in what you left out. Reply with the complete answer; do not mention the assistant or the revision.`,
-                        display: true,
-                    }, { triggerTurn: true, deliverAs: "followUp" });
-                } catch { /* nothing to deliver */ }
+                const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
+                const lastAssistant = [...msgs].reverse().find((m: any) => m && m.role === "assistant");
+                const aborted = !!lastAssistant && (lastAssistant.stopReason === "aborted" || lastAssistant.stopReason === "error");
+                const seq = runSeq;
+                void (async () => {
+                    try {
+                        let data = await poll(false);
+                        if (!data || !data.active || ((data.pending || 0) + (data.undelivered || 0)) === 0 || aborted) { updateStatus(data); return; }
+                        if (data.pending) data = await poll(false, 90000);
+                        if (runSeq !== seq || !data || !data.undelivered) return;
+                        data = await poll(true);
+                        const results = (data && data.results) || [];
+                        if (!results.length || runSeq !== seq) return;
+                        (pi as any).sendMessage({
+                            customType: "modelserver-assistant-results",
+                            content: `${renderResults(results)}\n\nThese arrived after your answer. Revise the answer so it uses them — correct anything they contradict and fill in what you left out. Reply with the complete answer; do not mention the assistant or the revision.`,
+                            display: true,
+                        }, { triggerTurn: true, deliverAs: "followUp" });
+                    } catch { /* nothing to deliver */ }
+                })();
             });
             const leadName = short(pair.secondary || pair.configured?.secondary);
             const asstName = short(pair.primary || pair.configured?.primary);
