@@ -313,6 +313,7 @@ const reasoningEffort = require('./services/reasoningEffort');
 const modelRolesSvc = require('./services/modelRoles');
 const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
+const piLoopGuard = require('./services/piLoopGuard');
 const leadHandoff = require('./services/leadHandoff');
 const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
@@ -30589,6 +30590,20 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         if (piSummarizer && req.method === 'POST' && !(req.body.chat_template_kwargs && 'enable_thinking' in req.body.chat_template_kwargs)) {
             req.body.chat_template_kwargs = { ...(req.body.chat_template_kwargs || {}), enable_thinking: false };
             console.log(`[Pi/Compact] summary request on ${piInstanceName(firstInstance)} (~${piRequestTokens(req.body)} tokens), thinking off`);
+        }
+
+        // ── Repeated-tool-call backstop (agents) ────────────────────────────
+        // An agent that re-issues one tool call with an unchanging result
+        // loops until its context fills (Pi: 409 identical `wait <pid>` calls
+        // in 500 s). Note on the latest tool result, then a forced reply.
+        if (req.method === 'POST' && req.path === '/v1/chat/completions' && piClient && !piSummarizer && Array.isArray(req.body?.messages)) {
+            try {
+                const lg = piLoopGuard.applyLoopGuard(req.body, { clientGuard: req.get('x-modelserver-loop-guard') === '1' });
+                if (lg) {
+                    console.log(`[Pi/Loop] ${authName}: ${lg.name} returned the same result ${lg.count}× — ${lg.action === 'force' ? 'tools off for this reply' : 'note added'}`);
+                    if (lg.action === 'force') logUserActivity(req.userId || req.apiKeyData?.id, `Pi loop guard: ${lg.name} repeated ${lg.count}× with the same result — asked for an answer with tools off`);
+                }
+            } catch (e) { console.warn('[Pi/Loop] check skipped:', e.message); }
         }
 
         // ── Pi memory bridge ────────────────────────────────────────────────

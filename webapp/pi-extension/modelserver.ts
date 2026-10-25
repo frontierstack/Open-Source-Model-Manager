@@ -551,6 +551,7 @@ export default async function (pi: ExtensionAPI) {
     // register FIRST so they work even when the server is unreachable or
     // the API key is missing.
     registerInteractiveShellTools(pi);
+    registerLoopGuard(pi);
 
     if (!apiKey) {
         console.warn("[modelserver] MODELSERVER_API_KEY not set; skill catalog and provider registration skipped.");
@@ -866,6 +867,10 @@ export default async function (pi: ExtensionAPI) {
                 // name) and every model call 401s.
                 apiKey: "$MODELSERVER_API_KEY",
                 api: "openai-completions",
+                // Tells the server this client runs its own loop guard (it can
+                // time each call; the server cannot), so the server only steps
+                // in once a repeat has already been blocked here.
+                ...(process.env.MODELSERVER_LOOP_GUARD === "0" ? {} : { headers: { "X-Modelserver-Loop-Guard": "1" } }),
                 models
             });
         } else {
@@ -2259,4 +2264,162 @@ function summarize(payload: any): string {
     } catch {
         return String(payload);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Loop guard. A model can re-issue the SAME tool call forever when its result
+// never changes: Pi's bash starts a fresh shell for every call, so
+// `wait <pid>` on a process started by an earlier call fails at once (exit
+// 127, "not a child of this shell") and a "wait … || echo still running"
+// check prints "still running" until the context fills up — measured 409
+// identical calls in 500 s. Nothing in Pi stops that. Identical call + identical
+// result is the signal: first a note on the result, then the repeat is blocked
+// with the reason. Never `terminate` (that ends the run with no answer); the
+// server's /v1 backstop forces a text answer if the model keeps going.
+// ---------------------------------------------------------------------------
+
+export const LOOP_GUARD_MARK = "[modelserver loop guard]";
+
+function stableStringify(v: unknown): string {
+    if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
+    if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
+}
+
+export function loopCallKey(toolName: string, input: unknown): string {
+    return `${toolName}\u0000${stableStringify(input ?? {})}`;
+}
+
+/** Result text with our own notes removed, whitespace collapsed and digit runs
+ *  masked — a counter or a timestamp must not make a stuck call look new. */
+export function loopOutcomeSig(content: unknown, isError?: boolean): string {
+    const parts = Array.isArray(content) ? content : [];
+    let text = parts.map((p: any) => (p && p.type === "text" ? String(p.text || "") : p && p.type ? `<${p.type}>` : "")).join("\n");
+    const at = text.indexOf(LOOP_GUARD_MARK);
+    if (at >= 0) text = text.slice(0, at);
+    text = text.replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+    return `${isError ? "E" : "O"}:${text.length > 4000 ? text.slice(0, 2000) + text.slice(-2000) : text}`;
+}
+
+/** Why a bash command can never see shell state from an earlier call, or "". */
+export function bashFreshShellHint(command: string): string {
+    const c = String(command || "");
+    // Started a background job in THIS call: wait/jobs refer to it legitimately.
+    const bare = c.replace(/&&|\|&|\d?>&\d?|&>>?|<&\d?/g, " ");
+    const startsChild = /&/.test(bare) || /\bnohup\b|\bsetsid\b|\bStart-Process\b/.test(c);
+    const usesJobState = /\b(?:wait|fg|bg|disown)\b(?:\s+(?:-\w+\s+)*(?:\$\{?\w+\}?|%\d*|\d+))?|\bjobs\b|\bkill\s+%/.test(c);
+    if (usesJobState && !startsChild) {
+        return "Each bash call runs in a NEW shell. `wait`, `jobs`, `fg` and `%N` only see processes started in the SAME call, " +
+            "so this command cannot tell you whether a process from an earlier call has finished (wait returns 127 at once). " +
+            "To check a PID from an earlier call use `kill -0 <pid> 2>/dev/null && echo running || echo finished` (or `ps -p <pid>`); " +
+            "to wait for it, start and wait in ONE call, or keep a persistent shell with shell_open + shell_exec.";
+    }
+    const assigned = new Set(Array.from(c.matchAll(/(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_]\w*)=/g)).map((m) => m[1]));
+    const loopVars = new Set(Array.from(c.matchAll(/\b(?:for|read)\s+(?:-\w+\s+)*([A-Za-z_]\w*)/g)).map((m) => m[1]));
+    const used = Array.from(c.matchAll(/\$\{?([A-Za-z_]\w*)/g)).map((m) => m[1])
+        .filter((v) => !assigned.has(v) && !loopVars.has(v) && !/^(?:HOME|PATH|USER|USERNAME|PWD|OLDPWD|SHELL|TMP|TEMP|TMPDIR|HOSTNAME|LANG|TERM|RANDOM|SECONDS|LINENO|BASH\w*|PPID|UID|EUID|IFS|OSTYPE|MSYSTEM|APPDATA|LOCALAPPDATA|USERPROFILE|PROGRAMFILES|SYSTEMROOT|WINDIR|COMPUTERNAME|PI_\w+|MODELSERVER_\w+)$/.test(v));
+    if (used.length) {
+        return `Each bash call runs in a NEW shell, so variables set in an earlier call are gone here ($${Array.from(new Set(used)).slice(0, 3).join(", $")} is empty unless the environment sets it). ` +
+            "Put the literal value in the command, set and use the variable in ONE call, or keep a persistent shell with shell_open + shell_exec.";
+    }
+    return "";
+}
+
+type LoopEntry = { key: string; sig: string; ms: number };
+
+export function createLoopGuard(opts: { noteAt?: number; blockAt?: number; slowNoteAt?: number; slowBlockAt?: number; slowMs?: number } = {}) {
+    const NOTE_AT = opts.noteAt ?? 3;          // identical call+result, fast
+    const BLOCK_AT = opts.blockAt ?? 5;
+    const SLOW_NOTE_AT = opts.slowNoteAt ?? 6; // a call that really waits (polling)
+    const SLOW_BLOCK_AT = opts.slowBlockAt ?? 12;
+    const SLOW_MS = opts.slowMs ?? 3000;
+    let history: LoopEntry[] = [];
+    const started = new Map<string, { key: string; at: number }>();
+    const blocks = new Map<string, number>();
+    const hinted = new Set<string>();
+
+    const repeats = (key: string, sig: string) => history.filter((h) => h.key === key && h.sig === sig);
+    const lastSigOf = (key: string) => { for (let i = history.length - 1; i >= 0; i--) if (history[i].key === key) return history[i].sig; return null; };
+    const preview = (sig: string) => { const t = sig.slice(2); return t.length > 160 ? `${t.slice(0, 160)}…` : t || "(no output)"; };
+
+    return {
+        reset() { history = []; started.clear(); blocks.clear(); hinted.clear(); },
+        onCall(toolCallId: string, toolName: string, input: unknown): { block: true; reason: string } | undefined {
+            const key = loopCallKey(toolName, input);
+            started.set(toolCallId, { key, at: Date.now() });
+            const sig = lastSigOf(key);
+            if (sig == null) return;
+            const same = repeats(key, sig);
+            const slow = same.length > 0 && same.every((h) => h.ms >= SLOW_MS);
+            if (same.length < (slow ? SLOW_BLOCK_AT : BLOCK_AT)) return;
+            const n = (blocks.get(key) || 0) + 1;
+            blocks.set(key, n);
+            started.delete(toolCallId);
+            const hint = toolName === "bash" ? bashFreshShellHint(String((input as any)?.command || "")) : "";
+            return {
+                block: true,
+                reason: `${LOOP_GUARD_MARK} Not run: this exact ${toolName} call already ran ${same.length} times and returned the same result every time ` +
+                    `("${preview(sig)}"). Running it again cannot change that.` + (hint ? ` ${hint}` : "") +
+                    ` If you are waiting for something, wait INSIDE one call (e.g. "sleep 10;" before the check) or tell the user it is still running; otherwise do something that can reveal new information, or tell the user what you found and what is still unknown. Never kill, stop or delete anything just to end a wait.` +
+                    (n > 1 ? ` (blocked ${n} times — answer the user now.)` : ""),
+            };
+        },
+        onResult(toolCallId: string, toolName: string, input: unknown, content: unknown, isError?: boolean): string {
+            const s = started.get(toolCallId);
+            started.delete(toolCallId);
+            const key = s?.key ?? loopCallKey(toolName, input);
+            const ms = s ? Date.now() - s.at : 0;
+            const sig = loopOutcomeSig(content, isError);
+            history.push({ key, sig, ms });
+            if (history.length > 400) history = history.slice(-300);
+            const same = repeats(key, sig);
+            const slow = same.every((h) => h.ms >= SLOW_MS);
+            const notes: string[] = [];
+            // First sight of a bash command that can never observe earlier
+            // shell state: say so right away, before it becomes a loop.
+            if (toolName === "bash") {
+                const hint = bashFreshShellHint(String((input as any)?.command || ""));
+                if (hint && !hinted.has(key) && (same.length >= 2 || /\b(?:wait|jobs|fg)\b/.test(String((input as any)?.command || "")))) {
+                    hinted.add(key);
+                    notes.push(hint);
+                }
+            }
+            const noteAt = slow ? SLOW_NOTE_AT : NOTE_AT;
+            const blockAt = slow ? SLOW_BLOCK_AT : BLOCK_AT;
+            if (same.length >= noteAt) {
+                notes.push(slow
+                    ? `This identical call has now returned the same result ${same.length} times over ${Math.round(same.reduce((a, h) => a + h.ms, 0) / 1000)} s. If you are waiting for something, check that it is still alive and making progress; if nothing is changing, stop polling and report the status to the user (never kill or delete anything just to end a wait). It will be blocked after ${blockAt} identical results.`
+                    : `This identical call has now returned the same result ${same.length} times. Repeating it will not change the result; it will be blocked after ${blockAt}. If you are waiting for something, wait INSIDE one call (e.g. "sleep 10;" before the check) or tell the user it is still running; otherwise change the approach or answer with what you have. Never kill, stop or delete anything just to end a wait.`);
+            }
+            return notes.length ? `\n\n${LOOP_GUARD_MARK} ${notes.join(" ")}` : "";
+        },
+    };
+}
+
+function registerLoopGuard(pi: ExtensionAPI): void {
+    if (process.env.MODELSERVER_LOOP_GUARD === "0") return;
+    const num = (v: string | undefined, d: number) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
+    const guard = createLoopGuard({
+        noteAt: num(process.env.MODELSERVER_LOOP_NOTE_AT, 3),
+        blockAt: num(process.env.MODELSERVER_LOOP_BLOCK_AT, 5),
+        slowBlockAt: num(process.env.MODELSERVER_LOOP_SLOW_BLOCK_AT, 12),
+    });
+    // These wait by design; an unchanged answer from them is not a loop.
+    const exempt = new Set(["ask_assistant", "await_assistant"]);
+    pi.on("agent_start", () => { guard.reset(); });
+    pi.on("tool_call", (event: any) => {
+        try {
+            if (exempt.has(event.toolName)) return;
+            return guard.onCall(String(event.toolCallId), String(event.toolName), event.input);
+        } catch { return; }
+    });
+    pi.on("tool_result", (event: any) => {
+        try {
+            if (exempt.has(event.toolName)) return;
+            const note = guard.onResult(String(event.toolCallId), String(event.toolName), event.input, event.content, event.isError);
+            if (!note) return;
+            return { content: [...(event.content || []), { type: "text", text: note }] };
+        } catch { return; }
+    });
 }
