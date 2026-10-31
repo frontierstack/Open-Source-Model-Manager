@@ -379,7 +379,7 @@ const docNavItemSx = (active) => ({
 const DOC_SECTIONS = [
     { id: 'quick-start',     label: 'Quick Start'         },
     { id: 'api-builder',     label: 'API Code Builder'    },
-    { id: 'pi-setup',        label: 'Pi setup'            },
+    { id: 'omp-setup',       label: 'omp setup'           },
     { id: 'automation',      label: 'Automation'          },
     { id: 'web-search',      label: 'Web Search & Fetch'  },
     { id: 'sandbox-skills',  label: 'Sandbox Skills'      },
@@ -611,7 +611,7 @@ const App = () => {
 
     // API Keys state
     const [apiKeys, setApiKeys] = useState([]);
-    // Pi-setup picker: which bearer key to embed in the install one-liner
+    // omp-setup picker: which bearer key to embed in the install one-liner
     const [piSelectedKeyId, setPiSelectedKeyId] = useState('');
     const [piRevealKey, setPiRevealKey] = useState(true); // default revealed: the snippet is meant to be copied as-is
     const [newKeyName, setNewKeyName] = useState('');
@@ -833,6 +833,8 @@ const App = () => {
         // n8n was removed in favor of the first-party Automation engine —
         // redirect stale-localStorage users to the new section.
         if (saved === 'n8n') return 'automation';
+        // Pi (pi.dev) was replaced by omp (omp.sh).
+        if (saved === 'pi-setup') return 'omp-setup';
         // Guard against a removed section id lingering in localStorage (e.g.
         // a dropped section) so users don't land on a blank panel.
         if (saved && DOC_SECTIONS.some(s => s.id === saved)) return saved;
@@ -3401,7 +3403,7 @@ response = requests.post(
         'permissions': ['query', 'models'],
         'rateLimitRequests': 60,     # requests per minute
         'rateLimitTokens': 100000,   # tokens per day
-        'bearerOnly': False          # True = Bearer key (Pi), no secret
+        'bearerOnly': False          # True = Bearer key (omp), no secret
     },
     verify=False
 )
@@ -3451,7 +3453,7 @@ fetch('${baseUrl}/api/api-keys', {
     permissions: ['query', 'models'],
     rateLimitRequests: 60,   // requests per minute
     rateLimitTokens: 100000, // tokens per day
-    bearerOnly: false        // true = Bearer key (Pi), no secret
+    bearerOnly: false        // true = Bearer key (omp), no secret
   })
 })
 .then(res => res.json())
@@ -4507,7 +4509,7 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}\`, {
                 curl: `# List CORE MEMORY: one living memory per theme of work (research, coding,
 # data analysis, documents, media, security, automations, general) with its
 # playbook, stats, proven approach, lessons, things to avoid and your own
-# guidance. Shared by web chat and Pi (same account).
+# guidance. Shared by web chat and omp (same account).
 curl -k -X GET "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -5169,56 +5171,56 @@ fetch('${baseUrl}/api/model-configs', {
 .then(configs => console.log(configs))
 .catch(err => console.error(err));`
             },
-            '/api/pi/install': {
-                curl: `# Bash-pipeable installer. Self-corrects: MITM TLS, missing/old Node
-# (NodeSource → nvm fallback), missing Pi, missing curl, broken sudo.
-# Idempotent.
+            '/api/omp/install': {
+                curl: `# Bash-pipeable omp installer: prebuilt omp binary (no Node), the
+# modelserver extension, config.yml defaults, PATH + env in your shell rc.
+# Handles self-signed / MITM TLS. Idempotent.
 
 # Auth required — bearer-mode API key (Authorization: Bearer …).
 export MODELSERVER_API_KEY="your_bearer_key"
 curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/install | bash && source ~/.bashrc
+  ${baseUrl}/api/omp/install | bash && source ~/.bashrc
 # (source ~/.bashrc activates pi in the current shell — the piped
 #  installer runs in a child bash and can't modify your shell's PATH)`,
                 python: `import os, subprocess, requests
 
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-script = requests.get(f'${baseUrl}/api/pi/install', headers=H, verify=False).text
+script = requests.get(f'${baseUrl}/api/omp/install', headers=H, verify=False).text
 
 # Run the installer. The script is idempotent.
 env = {**os.environ, 'MODELSERVER_API_KEY': os.environ['MODELSERVER_API_KEY']}
 subprocess.run(['bash', '-c', script], check=True, env=env)`,
-                powershell: `# On Windows prefer the NATIVE installer (no WSL): /api/pi/install.ps1
+                powershell: `# On Windows prefer the NATIVE installer (no WSL): /api/omp/install.ps1
 # — see that endpoint in this picker. To run the bash one under WSL anyway:
 $env:MODELSERVER_API_KEY = "your_bearer_key"
-$script = Invoke-RestMethod -Uri "${baseUrl}/api/pi/install" \`
+$script = Invoke-RestMethod -Uri "${baseUrl}/api/omp/install" \`
   -Headers @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" } \`
   -SkipCertificateCheck
 $script | wsl bash -c "MODELSERVER_API_KEY=$env:MODELSERVER_API_KEY bash"`,
                 javascript: `// Fetch the script, then exec via Node's child_process.
 import { execSync } from 'node:child_process';
-const r = await fetch('${baseUrl}/api/pi/install', {
+const r = await fetch('${baseUrl}/api/omp/install', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
 const script = await r.text();
 execSync(script, { stdio: 'inherit', shell: '/bin/bash', env: process.env });`
             },
-            '/api/pi/install.ps1': {
+            '/api/omp/install.ps1': {
                 curl: `# Native Windows PowerShell installer (no WSL). Fetch the raw script:
 curl -sk -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/install.ps1 -o install.ps1
+  ${baseUrl}/api/omp/install.ps1 -o install.ps1
 # Then on the Windows box:
 #   powershell -ExecutionPolicy Bypass -File .\\install.ps1`,
                 python: `import os, requests
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-script = requests.get(f'${baseUrl}/api/pi/install.ps1', headers=H, verify=False).text
+script = requests.get(f'${baseUrl}/api/omp/install.ps1', headers=H, verify=False).text
 open('install.ps1', 'w').write(script)
 # Run on Windows: powershell -ExecutionPolicy Bypass -File .\\install.ps1`,
                 powershell: `# One-shot native Windows install (no WSL, no admin). Works on both
 # Windows PowerShell 5.1 and PowerShell 7+ (self-signed cert handled —
 # 5.1 fetches via curl.exe/SChannel; compiled cert-policy fallback).
 $env:MODELSERVER_API_KEY = "your_bearer_key"
-$installerUrl = "${baseUrl}/api/pi/install.ps1"
+$installerUrl = "${baseUrl}/api/omp/install.ps1"
 $authHeaders = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }
 if ($PSVersionTable.PSVersion.Major -ge 6) {
     Invoke-RestMethod $installerUrl -Headers $authHeaders -SkipCertificateCheck | Invoke-Expression
@@ -5232,42 +5234,42 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
     Invoke-RestMethod $installerUrl -Headers $authHeaders | Invoke-Expression
 }`,
                 javascript: `// Fetch the PowerShell installer source (run it on a Windows box).
-const r = await fetch('${baseUrl}/api/pi/install.ps1', {
+const r = await fetch('${baseUrl}/api/omp/install.ps1', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
 console.log(await r.text());`
             },
-            '/api/pi/extension/modelserver.ts': {
-                curl: `# Raw TypeScript source for the bundled Pi extension that registers this
+            '/api/omp/extension/modelserver.ts': {
+                curl: `# Raw TypeScript source for the bundled omp extension that registers this
 # server as an OpenAI-compatible provider and proxies the skill catalog.
 # Auth required.
 curl -sk -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/extension/modelserver.ts \\
-  -o ~/.pi/agent/extensions/modelserver/modelserver.ts`,
+  ${baseUrl}/api/omp/extension/modelserver.ts \\
+  -o ~/.omp/agent/extensions/modelserver/modelserver.ts`,
                 python: `import requests, os
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-src = requests.get(f'${baseUrl}/api/pi/extension/modelserver.ts', headers=H, verify=False).text
+src = requests.get(f'${baseUrl}/api/omp/extension/modelserver.ts', headers=H, verify=False).text
 print(src[:400])`,
                 powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
-Invoke-WebRequest -Uri "${baseUrl}/api/pi/extension/modelserver.ts" -Headers $h \`
-  -SkipCertificateCheck -OutFile "$HOME\\.pi\\agent\\extensions\\modelserver\\modelserver.ts"`,
-                javascript: `const r = await fetch('${baseUrl}/api/pi/extension/modelserver.ts', {
+Invoke-WebRequest -Uri "${baseUrl}/api/omp/extension/modelserver.ts" -Headers $h \`
+  -SkipCertificateCheck -OutFile "$HOME\\.omp\\agent\\extensions\\modelserver\\modelserver.ts"`,
+                javascript: `const r = await fetch('${baseUrl}/api/omp/extension/modelserver.ts', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
 const src = await r.text();
 console.log(src.slice(0, 400));`
             },
-            '/api/pi/extension/package.json': {
-                curl: `# Manifest for the bundled Pi extension (declares the typebox dep that
-# Pi's npm install --omit=dev will pull in).
+            '/api/omp/extension/package.json': {
+                curl: `# Manifest for the bundled omp extension (its "omp.extensions" entry is how
+# omp finds modelserver.ts; no dependencies to install).
 curl -sk -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/extension/package.json`,
+  ${baseUrl}/api/omp/extension/package.json`,
                 python: `import requests, os
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-print(requests.get(f'${baseUrl}/api/pi/extension/package.json', headers=H, verify=False).json())`,
+print(requests.get(f'${baseUrl}/api/omp/extension/package.json', headers=H, verify=False).json())`,
                 powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
-Invoke-RestMethod -Uri "${baseUrl}/api/pi/extension/package.json" -Headers $h -SkipCertificateCheck | ConvertTo-Json`,
-                javascript: `const pkg = await fetch('${baseUrl}/api/pi/extension/package.json', {
+Invoke-RestMethod -Uri "${baseUrl}/api/omp/extension/package.json" -Headers $h -SkipCertificateCheck | ConvertTo-Json`,
+                javascript: `const pkg = await fetch('${baseUrl}/api/omp/extension/package.json', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 }).then(r => r.json());
 console.log(pkg.name, pkg.version);`
@@ -6439,7 +6441,7 @@ console.log(chip);`
             '/api/agents/:id/delete':           { method: 'DELETE', path: '/api/agents/agent_id' },
             '/api/agents/:id/regenerate-key':   { method: 'POST',   path: '/api/agents/agent_id/regenerate-key', note: 'Returns { apiKey } — a new agent key; the old one stops working immediately' },
             // API keys (admin)
-            '/api/api-keys/create':             { method: 'POST',   path: '/api/api-keys', body: { name: 'Pi terminal agent', permissions: ['query', 'agents'], bearerOnly: true }, note: 'bearerOnly:true is required for Pi and any Authorization: Bearer caller' },
+            '/api/api-keys/create':             { method: 'POST',   path: '/api/api-keys', body: { name: 'omp terminal agent', permissions: ['query', 'agents'], bearerOnly: true }, note: 'bearerOnly:true is required for omp and any Authorization: Bearer caller' },
             '/api/api-keys/:id':                { method: 'PUT',    path: '/api/api-keys/key_id', body: { name: 'Renamed key', permissions: ['query'] } },
             '/api/api-keys/:id/delete':         { method: 'DELETE', path: '/api/api-keys/key_id' },
             '/api/api-keys/:id/revoke':         { method: 'POST',   path: '/api/api-keys/key_id/revoke' },
@@ -6527,10 +6529,10 @@ console.log(chip);`
             '/api/models/:name/partial':        { method: 'DELETE', path: '/api/models/model_name/partial', note: 'Deletes an incomplete download; refused while it is downloading or loaded' },
             '/api/agent-workspaces/clear':      { method: 'DELETE', path: '/api/agent-workspaces', note: 'Deletes every workspace you may manage (admins: ALL users)' },
             '/api/automations/:id/runs/delete': { method: 'DELETE', path: '/api/automations/workflow_id/runs', note: 'Clears the run history of one automation' },
-            // Pi two-model pair
-            '/api/pi/pair':                     { method: 'GET',    path: '/api/pi/pair', note: 'Whether the two-model pair is configured/active for Pi, with the reason when it is not' },
-            '/api/pi/assistant/jobs':           { method: 'POST',   path: '/api/pi/assistant/jobs', body: { requests: [{ name: 'release notes', task: 'Find the latest Node.js LTS release and summarize its changes' }] }, note: 'Bearer key only; jobs run on the assistant model in the key sandbox' },
-            '/api/pi/assistant/jobs/get':       { method: 'GET',    path: '/api/pi/assistant/jobs?wait=30000', note: 'Returns settled results once (peek=1 leaves them undelivered); wait = ms to wait for the first result' },
+            // omp two-model pair
+            '/api/omp/pair':                     { method: 'GET',    path: '/api/omp/pair', note: 'Whether the two-model pair is configured/active for omp, with the reason when it is not' },
+            '/api/omp/assistant/jobs':           { method: 'POST',   path: '/api/omp/assistant/jobs', body: { requests: [{ name: 'release notes', task: 'Find the latest Node.js LTS release and summarize its changes' }] }, note: 'Bearer key only; jobs run on the assistant model in the key sandbox' },
+            '/api/omp/assistant/jobs/get':       { method: 'GET',    path: '/api/omp/assistant/jobs?wait=30000', note: 'Returns settled results once (peek=1 leaves them undelivered); wait = ms to wait for the first result' },
         };
 
         // PS 7+ ignores ServicePointManager entirely (needs -SkipCertificateCheck),
@@ -9853,7 +9855,7 @@ console.log(chip);`
                                                                         size="small"
                                                                         label="Disabled Skills"
                                                                         placeholder="Block specific tools (optional)"
-                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key (e.g. disable file-write skills for a read-only Pi key)."
+                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key (e.g. disable file-write skills for a read-only omp key)."
                                                                     />
                                                                 )}
                                                             />
@@ -10362,7 +10364,7 @@ console.log(chip);`
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
                                                     <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: 'var(--text-primary)' }}>AI Chat</strong> for web • <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> for terminal • <strong style={{ color: 'var(--text-primary)' }}>API</strong> for code
+                                                        <strong style={{ color: 'var(--text-primary)' }}>AI Chat</strong> for web • <strong style={{ color: 'var(--text-primary)' }}>omp</strong> for terminal • <strong style={{ color: 'var(--text-primary)' }}>API</strong> for code
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -10397,9 +10399,9 @@ console.log(chip);`
                                                             <TableCell sx={{ color: 'var(--text-secondary)' }}>Web chat interface with streaming</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>Pi</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" {baseUrl}/api/pi/install | bash</TableCell>
-                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal agent (see Pi setup)</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>omp</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" {baseUrl}/api/omp/install | bash</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal agent (see omp setup)</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--success)' }}>Direct API</TableCell>
@@ -10420,7 +10422,7 @@ console.log(chip);`
                                         <Box sx={{ mt: 2, p: 1.75, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.82rem', mb: 0.5 }}>It remembers and gets faster ✨</Typography>
                                             <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-                                                As you work (web <em>or</em> Pi), the assistant keeps one living <strong style={{ color: 'var(--text-primary)' }}>core memory</strong> per kind of work — research, coding, security analysis, data analysis, documents, media, automations. Each finished task updates that theme&apos;s stats, proven approach and lessons, and from the second task on the model rewrites the theme&apos;s playbook. The next task of the same kind starts from it, so repeat work needs fewer tool calls. A plain question or greeting recalls nothing. Browse, pause, add your own guidance to, or reset a theme in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab; turn it off with the <strong style={{ color: 'var(--text-primary)' }}>Core memory</strong> switch in the chat app&apos;s Settings. Pi shares the same memory.
+                                                As you work (web <em>or</em> omp), the assistant keeps one living <strong style={{ color: 'var(--text-primary)' }}>core memory</strong> per kind of work — research, coding, security analysis, data analysis, documents, media, automations. Each finished task updates that theme&apos;s stats, proven approach and lessons, and from the second task on the model rewrites the theme&apos;s playbook. The next task of the same kind starts from it, so repeat work needs fewer tool calls. A plain question or greeting recalls nothing. Browse, pause, add your own guidance to, or reset a theme in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab; turn it off with the <strong style={{ color: 'var(--text-primary)' }}>Core memory</strong> switch in the chat app&apos;s Settings. omp shares the same memory.
                                             </Typography>
                                         </Box>
 
@@ -10605,14 +10607,14 @@ console.log(chip);`
                                                             <MenuItem value="/api/api-keys/:id/delete">DELETE /api/api-keys/:id - Delete API Key</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Pi (Terminal Agent) ───</MenuItem>
-                                                            <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
-                                                            <MenuItem value="/api/pi/install.ps1">GET /api/pi/install.ps1 - Pi auto-installer for native Windows (PowerShell, no WSL)</MenuItem>
-                                                            <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
-                                                            <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
-                                                            <MenuItem value="/api/pi/pair">GET /api/pi/pair - Two-Model Pair Status for Pi</MenuItem>
-                                                            <MenuItem value="/api/pi/assistant/jobs">POST /api/pi/assistant/jobs - Hand Jobs to the Assistant Model</MenuItem>
-                                                            <MenuItem value="/api/pi/assistant/jobs/get">GET /api/pi/assistant/jobs - Poll / Await Assistant Results</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── omp (Terminal Agent) ───</MenuItem>
+                                                            <MenuItem value="/api/omp/install">GET /api/omp/install - omp auto-installer (curl | bash)</MenuItem>
+                                                            <MenuItem value="/api/omp/install.ps1">GET /api/omp/install.ps1 - omp auto-installer for native Windows (PowerShell, no WSL)</MenuItem>
+                                                            <MenuItem value="/api/omp/extension/modelserver.ts">GET /api/omp/extension/modelserver.ts - omp extension source</MenuItem>
+                                                            <MenuItem value="/api/omp/extension/package.json">GET /api/omp/extension/package.json - omp extension manifest</MenuItem>
+                                                            <MenuItem value="/api/omp/pair">GET /api/omp/pair - Two-Model Pair Status for omp</MenuItem>
+                                                            <MenuItem value="/api/omp/assistant/jobs">POST /api/omp/assistant/jobs - Hand Jobs to the Assistant Model</MenuItem>
+                                                            <MenuItem value="/api/omp/assistant/jobs/get">GET /api/omp/assistant/jobs - Poll / Await Assistant Results</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Sandbox Workspaces ───</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces">GET /api/agent-workspaces - List Sandbox Workspaces</MenuItem>
                                                             <MenuItem value="/api/agent-workspaces/file">GET/POST /api/agent-workspaces/file - Download / Upload Workspace File</MenuItem>
@@ -10725,16 +10727,16 @@ console.log(chip);`
                                 )}
 
 
-                                {/* Pi setup */}
-                                {activeDocSection === 'pi-setup' && (
+                                {/* omp setup */}
+                                {activeDocSection === 'omp-setup' && (
 
                                 <Box sx={docSectionSx}>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Pi setup</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Install Pi (pi.dev) and connect it to this server</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>omp setup</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Install omp (omp.sh) and connect it to this server</Typography>
                                             </Box>
                                         </Box>
 
@@ -10744,7 +10746,7 @@ console.log(chip);`
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
+                                                <strong style={{ color: 'var(--text-primary)' }}>omp</strong> (oh-my-pi, <a href="https://omp.sh" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>omp.sh</a>) is a third-party coding agent for the terminal — a fork of Pi with a native core, shipped as one self-contained binary. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as an omp tool. It replaces the earlier Pi (pi.dev) integration; the old <code>/api/pi/*</code> links still work and now install omp.
                                             </Typography>
                                         </Box>
 
@@ -10759,8 +10761,8 @@ console.log(chip);`
                                             const keyDisplay = selectedKey
                                                 ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
                                                 : '<your-bearer-key>';
-                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
-                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash && source ~/.bashrc`;
+                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/omp/install | bash && source ~/.bashrc`;
+                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/omp/install | bash && source ~/.bashrc`;
                                             // Native Windows (no WSL). Three branches, most robust first:
                                             // PS 7+ uses -SkipCertificateCheck; 5.1 fetches with curl.exe
                                             // (ships with Win10 1803+, talks SChannel directly — immune to
@@ -10772,7 +10774,7 @@ console.log(chip);`
                                             // pasted block as ONE statement instead of erroring line-by-line.
                                             const buildPsCmd = (key) => [
                                                 `$env:MODELSERVER_API_KEY = "${key}"`,
-                                                `$installerUrl = "${baseUrl}/api/pi/install.ps1"`,
+                                                `$installerUrl = "${baseUrl}/api/omp/install.ps1"`,
                                                 `$authHeaders = @{ Authorization = "Bearer $($env:MODELSERVER_API_KEY)" }`,
                                                 `if ($PSVersionTable.PSVersion.Major -ge 6) {`,
                                                 `    Invoke-RestMethod $installerUrl -Headers $authHeaders -SkipCertificateCheck | Invoke-Expression`,
@@ -10799,7 +10801,7 @@ console.log(chip);`
                                                                     No bearer-mode keys yet.
                                                                 </Typography>
                                                                 <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                                                                    Open the <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Pi sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
+                                                                    Open the <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (omp sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
                                                                 </Typography>
                                                             </Box>
                                                         ) : (
@@ -10835,7 +10837,7 @@ console.log(chip);`
                                                                 </Box>
                                                                 {missingAgents && (
                                                                     <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--warning)' }}>
-                                                                        ⚠ This key lacks the <code>agents</code> permission. Pi will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
+                                                                        ⚠ This key lacks the <code>agents</code> permission. omp will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
                                                                     </Typography>
                                                                 )}
                                                             </>
@@ -10862,7 +10864,7 @@ console.log(chip);`
                                                                 : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                            One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
+                                                            Installs the official prebuilt <code>omp</code> binary into <code>~/.local/bin</code> (checksum-verified; no Node, npm or Bun needed), the modelserver extension into <code>~/.omp/agent/extensions/modelserver</code> (nothing to <code>npm install</code> — omp bundles what it needs), sets this server&apos;s models as omp&apos;s default / smol / slow roles in <code>~/.omp/agent/config.yml</code>, turns off omp&apos;s local-server probes, and adds <code>PATH</code> + <code>MODELSERVER_BASE_URL</code> to your shell rc. Handles self-signed / MITM TLS via <code>~/.curlrc</code> and checks the key before installing anything. Idempotent — safe to re-run. <code>OMP_INSTALL_REMOVE_PI=1</code> also removes an old Pi install.
                                                         </Typography>
                                                     </Box>
 
@@ -10878,13 +10880,13 @@ console.log(chip);`
                                                             )}
                                                         </Box>
                                                         <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'var(--text-secondary)' }}>
-                                                            Installs Pi natively on Windows — no WSL, no admin required. Paste into any PowerShell window (Windows PowerShell 5.1 or PowerShell 7+; the <code>if/else</code> handles the self-signed certificate on both):
+                                                            Installs omp natively on Windows — no WSL, no admin required. Paste into any PowerShell window (Windows PowerShell 5.1 or PowerShell 7+; the <code>if/else</code> handles the self-signed certificate on both):
                                                         </Typography>
                                                         <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
                                                             <span>{psCmdReveal}</span>
                                                         </Box>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                            The script installs and configures everything end-to-end: Node ≥ 22.19 (winget LTS, falling back to a no-admin zip install into <code>%LOCALAPPDATA%\Programs</code> with a user-PATH entry), Git for Windows if missing (winget, falling back to a portable Git install that bundles Git Bash — the real bash Pi&apos;s shell tool needs, wired in via <code>shellPath</code> so it never falls back to the WSL shim), the Pi CLI (npm globals are per-user on Windows — no elevation), the modelserver extension + its Typebox deps, <code>%USERPROFILE%\.pi\agent\settings.json</code>, and persists <code>MODELSERVER_BASE_URL</code> / <code>MODELSERVER_API_KEY</code> / <code>NODE_TLS_REJECT_UNAUTHORIZED</code> to your user environment — so new terminals need nothing: just run <code>pi</code>. Idempotent — safe to re-run.
+                                                            The script installs and configures everything end-to-end: the official prebuilt <code>omp.exe</code> into <code>%LOCALAPPDATA%\omp</code> on your user PATH (no Node, npm or Bun), the modelserver extension into <code>%USERPROFILE%\.omp\agent\extensions\modelserver</code>, this server&apos;s models as omp&apos;s default roles in <code>config.yml</code>, and persists <code>MODELSERVER_BASE_URL</code> / <code>MODELSERVER_API_KEY</code> to your user environment — so new terminals need nothing: just run <code>omp</code>. omp uses Git Bash when Git for Windows is installed and its own built-in shell otherwise (a <code>shellPath</code> pointing at the WSL launcher shim is removed). Idempotent — safe to re-run.
                                                         </Typography>
                                                     </Box>
                                                 </>
@@ -10894,7 +10896,9 @@ console.log(chip);`
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
+                                                <span>{`omp                       # interactive; picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY
+omp -p "Reply with OK"     # one-shot check (add --mode json for an event stream)
+omp --model modelserver/<model-name>   # pick a loaded model; /model switches inside omp`}</span>
                                             </Box>
                                         </Box>
 
@@ -10902,18 +10906,18 @@ console.log(chip);`
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; ids are the model names (e.g. <code>modelserver/Qwen3.5-4B</code>…); pick any loaded model with <code>/model</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>shell / SSH</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Seven <strong style={{ color: 'var(--text-primary)' }}>local</strong> session tools — <code>ssh_connect</code>, <code>shell_open</code>, <code>shell_exec</code>, <code>shell_send</code>, <code>shell_read</code>, <code>shell_close</code>, <code>shell_list</code> — hold a persistent interactive PTY open across turns (SSH password prompts, REPLs, <code>docker exec -it</code>, live <code>tail -f</code>, control keys like ctrl-c). Run in the Pi process, so they work even without the model server; no native modules needed.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>workspace</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Each key gets a persistent server-side sandbox workspace (<code>agent-&lt;keyId&gt;</code>). Real host-file path args are auto-uploaded (≤1GB) and rewritten to <code>/workspace/&lt;name&gt;</code>; <code>workspace_get</code> pulls files back to the host, <code>workspace_put</code> pushes one up, and <code>workspace_list</code> shows what is in there. Sandbox shell skills are prefixed (<code>sandbox_bash</code>, <code>sandbox_python</code>, …) so they are never confused with Pi&apos;s own host tools. Browse/manage it in the <strong style={{ color: 'var(--text-primary)' }}>Sandbox Workspace</strong> tab.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>compaction</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>The extension re-injects a live sandbox inventory into Pi&apos;s system prompt every turn, so a <code>/compact</code> that discards old tool output cannot make the agent believe its uploaded files are gone. Two filesystems stay distinct: Pi&apos;s own <code>read</code>/<code>write</code>/<code>bash</code> act on <strong style={{ color: 'var(--text-primary)' }}>your host</strong>, server skills act on the <strong style={{ color: 'var(--text-primary)' }}>sandbox</strong>.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>shell / SSH</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Seven <strong style={{ color: 'var(--text-primary)' }}>local</strong> session tools — <code>ssh_connect</code>, <code>shell_open</code>, <code>shell_exec</code>, <code>shell_send</code>, <code>shell_read</code>, <code>shell_close</code>, <code>shell_list</code> — hold a persistent interactive PTY open across turns (SSH password prompts, REPLs, <code>docker exec -it</code>, live <code>tail -f</code>, control keys like ctrl-c). Run in the omp process, so they work even without the model server; no native modules needed.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>workspace</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Each key gets a persistent server-side sandbox workspace (<code>agent-&lt;keyId&gt;</code>). Real host-file path args are auto-uploaded (≤1GB) and rewritten to <code>/workspace/&lt;name&gt;</code>; <code>workspace_get</code> pulls files back to the host, <code>workspace_put</code> pushes one up, and <code>workspace_list</code> shows what is in there. Sandbox shell skills are prefixed (<code>sandbox_bash</code>, <code>sandbox_python</code>, …) so they are never confused with omp&apos;s own host tools. Browse/manage it in the <strong style={{ color: 'var(--text-primary)' }}>Sandbox Workspace</strong> tab.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>compaction</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Compactions are summarized on the pair&apos;s FAST model (in the background as the session grows), and the extension re-injects a live sandbox inventory into omp&apos;s system prompt every turn, so a <code>/compact</code> that discards old tool output cannot make the agent believe its uploaded files are gone. Two filesystems stay distinct: omp&apos;s own <code>read</code>/<code>write</code>/<code>bash</code> act on <strong style={{ color: 'var(--text-primary)' }}>your host</strong>, server skills act on the <strong style={{ color: 'var(--text-primary)' }}>sandbox</strong>.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Pi&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>omp shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from omp&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                             <Box sx={{ mt: 1.25, p: 1.25, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 1, border: '1px solid var(--accent-muted)' }}>
                                                 <Typography sx={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-                                                    <strong style={{ color: 'var(--text-primary)' }}>One persona across web + Pi:</strong> create the bearer key while signed in to the web UI so it&apos;s tied to your account — then Pi and the web chat share the <em>same</em> memory/persona (manage it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab). A key created without a session falls back to its own isolated memory. Don&apos;t share one bearer token across people — a shared token is a shared identity and a shared memory bucket.
+                                                    <strong style={{ color: 'var(--text-primary)' }}>One persona across web + omp:</strong> create the bearer key while signed in to the web UI so it&apos;s tied to your account — then omp and the web chat share the <em>same</em> memory/persona (manage it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab). A key created without a session falls back to its own isolated memory. Don&apos;t share one bearer token across people — a shared token is a shared identity and a shared memory bucket.
                                                 </Typography>
                                             </Box>
                                         </Box>
@@ -10921,19 +10925,19 @@ console.log(chip);`
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
                                             <Typography variant="caption" sx={{ display: 'block', color: 'var(--text-secondary)', mb: 1 }}>
-                                                Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
+                                                Don&apos;t want to pipe to bash? Install omp yourself (<code>curl -fsSL https://omp.sh/install | sh</code>), drop <code>modelserver.ts</code> + <code>package.json</code> into <code>~/.omp/agent/extensions/modelserver/</code>, and pick the model with <code>/model</code>:
                                             </Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`# Auto-installer (raw bash; what /api/pi/install serves)
-${baseUrl}/api/pi/extension/install.sh
+                                                <span>{`# Auto-installer (raw bash; what /api/omp/install serves)
+${baseUrl}/api/omp/extension/install.sh
 
-# Windows auto-installer (raw PowerShell; what /api/pi/install.ps1 serves)
-${baseUrl}/api/pi/extension/install.ps1
+# Windows auto-installer (raw PowerShell; what /api/omp/install.ps1 serves)
+${baseUrl}/api/omp/extension/install.ps1
 
 # Individual extension files (auth required on all of these)
-${baseUrl}/api/pi/extension/modelserver.ts
-${baseUrl}/api/pi/extension/package.json
-${baseUrl}/api/pi/extension/README.md`}</span>
+${baseUrl}/api/omp/extension/modelserver.ts
+${baseUrl}/api/omp/extension/package.json
+${baseUrl}/api/omp/extension/README.md`}</span>
                                             </Box>
                                         </Box>
 
@@ -11614,7 +11618,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/turns</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start a parallel turn on a free slot (202 <code>{`{ jobId }`}</code>; 409 = queue it) / poll it (<code>?live=1</code>)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/turns/:jobId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Claim a finished parallel turn / cancel a running one</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/capacity</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-model slots / busy / free (used to start a second message in parallel)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Core memory (one per theme of work) — list themes / set a theme&apos;s guidance <code>{`{ theme, notes }`}</code> / clear all (account-scoped, shared across web + Pi)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Core memory (one per theme of work) — list themes / set a theme&apos;s guidance <code>{`{ theme, notes }`}</code> / clear all (account-scoped, shared across web + omp)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get one theme / edit notes, pause (<code>enabled</code>) or add a <code>lesson</code> / reset the theme</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/recall</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Preview what an ask would recall (<code>{`{ text }`}</code> → theme + memory block)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
@@ -11707,8 +11711,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/move</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Move/rename file</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sandbox workspaces (agents + webchat sessions; admins see all) / DEL clears every workspace you may manage (admins: all users&apos;)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/:owner/:bucket</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a sandbox workspace</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download / upload a file in the caller&apos;s agent workspace (Pi host⇆workspace bridge; API-key callers only)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/inventory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>File inventory of the caller&apos;s agent workspace (Pi injects this into its system prompt so sandbox state survives compaction)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download / upload a file in the caller&apos;s agent workspace (omp host⇆workspace bridge; API-key callers only)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-workspaces/inventory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>File inventory of the caller&apos;s agent workspace (the omp extension injects this into its system prompt so sandbox state survives compaction)</TableCell></TableRow>
 
                                                     {/* Automation Permission */}
                                                     <TableRow>
@@ -11792,20 +11796,20 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/capacity</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Parallel slots per loaded model — how many agents can run at once (for agent harnesses)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other sglang/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
 
-                                                    {/* Pi Terminal Agent */}
+                                                    {/* omp Terminal Agent */}
                                                     <TableRow>
                                                         <TableCell colSpan={3} sx={{ bgcolor: 'rgba(168, 85, 247, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: 'var(--text-primary)' }} />
-                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Pi Terminal Agent (bearer-only auth)</Typography>
+                                                                <Chip label="omp" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: 'var(--text-primary)' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>omp Terminal Agent (bearer-only auth)</Typography>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install.ps1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PowerShell auto-installer for native Windows — no WSL, no admin. Installs Node (winget → zip), git, Pi, the extension, and persists env user-scope.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh, install.ps1</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/pair</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Two-model pairing status for Pi (configured / active / reason)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/assistant/jobs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi ask_assistant / await_assistant — dispatch background jobs / collect results (<code>?wait=ms</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/omp/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Installs the prebuilt omp binary, the extension and config; handles MITM TLS. Also served at /api/pi/install (legacy).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/omp/install.ps1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PowerShell auto-installer for native Windows — no WSL, no admin. Installs omp.exe, the extension and config, and persists env user-scope. Also served at /api/pi/install.ps1 (legacy).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/omp/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh, install.ps1</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/omp/pair</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Two-model pairing status for omp (configured / active / reason)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/omp/assistant/jobs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>omp ask_assistant / await_assistant — dispatch background jobs / collect results (<code>?wait=ms</code>)</TableCell></TableRow>
 
                                                 </TableBody>
                                             </Table>
@@ -12341,7 +12345,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                     <>
                                         {/* Section 1: Agents (one per API key) */}
                                         <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 1, mb: 1 }}>
-                                            Agents <Typography component="span" variant="body2" color="text.secondary">— one workspace per API key (Pi / bearer / key+secret)</Typography>
+                                            Agents <Typography component="span" variant="body2" color="text.secondary">— one workspace per API key (omp / bearer / key+secret)</Typography>
                                         </Typography>
                                         {agentRows.length
                                             ? renderWsTable(agentRows)

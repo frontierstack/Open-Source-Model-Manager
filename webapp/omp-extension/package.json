@@ -1,0 +1,14 @@
+{
+  "name": "@modelserver/omp-extension",
+  "version": "0.2.0",
+  "description": "omp (oh-my-pi, https://omp.sh) extension that registers the model server as a provider and exposes its skill catalog as tools.",
+  "private": true,
+  "type": "module",
+  "main": "modelserver.ts",
+  "omp": {
+    "extensions": ["./modelserver.ts"]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*"
+  }
+}

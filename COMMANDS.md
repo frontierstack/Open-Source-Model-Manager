@@ -586,7 +586,7 @@ curl -sk -X DELETE "$BASE/api/automations/<id>" -H "$AUTH"
 
 # Run it — SSE stream (live node events) ...
 curl -sk -N -X POST "$BASE/api/automations/<id>/run" -H "$AUTH"
-# ... or run-sync (final JSON only — use this for scripts / Pi)
+# ... or run-sync (final JSON only — use this for scripts / omp)
 curl -sk -X POST "$BASE/api/automations/<id>/run-sync" -H "$AUTH"
 
 # Run history

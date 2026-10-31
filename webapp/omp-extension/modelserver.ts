@@ -1,35 +1,37 @@
-// Model Server extension for Pi (https://pi.dev).
+// Model Server extension for omp (https://omp.sh — oh-my-pi).
 //
 // On load, this extension:
 //   1. Registers the local model server as an OpenAI-compatible provider
 //      named "modelserver", populated from /v1/models.
 //   2. Fetches /api/skills with the user's bearer key and registers every
-//      enabled skill as a Pi tool. Each tool's execute handler proxies to
+//      enabled skill as an omp tool. Each tool's execute handler proxies to
 //      /api/skills/:name/execute, so the 120+ default skills become callable
 //      from any conversation.
 //
-// Required env vars (set before launching `pi`):
+// Required env vars (set before launching `omp`):
 //   MODELSERVER_BASE_URL   e.g. https://localhost:3001
 //   MODELSERVER_API_KEY    bearer-mode key created in the API Keys tab
 //
 // Optional:
 //   MODELSERVER_INSECURE_TLS=1         accept self-signed certs (default for
 //                                      localhost / RFC-1918 addresses)
-//   MODELSERVER_INCLUDE_LOCAL_SHADOW=1 also register skills that shadow Pi's
+//   MODELSERVER_INCLUDE_LOCAL_SHADOW=1 also register skills that shadow omp's
 //                                      built-in local tools (read_file,
 //                                      list_directory, git_status, run_*, …).
-//                                      Off by default so Pi operates on the
-//                                      user's $PWD via Pi's own bash/read/
+//                                      Off by default so omp operates on the
+//                                      user's $PWD via its own bash/read/
 //                                      edit/write — the modelserver versions
 //                                      target /workspace inside the webapp
 //                                      container, which is rarely what you
-//                                      want when running pi as a CLI agent.
+//                                      want when running omp as a CLI agent.
+//
+// omp is a fork of Pi (pi-coding-agent); "Pi" in the comments below refers to
+// the agent runtime both share. The server-side routes keep their /api/pi/*
+// names (aliased as /api/omp/*).
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-// Pi migrated from `@sinclair/typebox` 0.34 to the rebranded `typebox` 1.x in
-// 0.69.0; new extensions should import from `typebox` (the legacy
-// `@sinclair/typebox` root alias still works but is deprecated). The Type
-// builder API and emitted JSON-Schema shape are identical for what we use.
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+// omp resolves `typebox` to its bundled TypeBox shim, so the extension needs no
+// node_modules of its own (and no Node/npm on the user's machine).
 import { Type } from "typebox";
 import * as fs from "fs";
 import * as os from "os";
@@ -256,7 +258,7 @@ export function resolveHostPath(input: string): { path: string; note?: string } 
         throw new Error(
             `"${input}" is a Windows path, but this machine has no ${letter.toUpperCase()}: drive mounted ` +
             `(checked ${WIN_MOUNT_PREFIXES.map((x) => x + letter).join(", ")}). ` +
-            `Pi is running on ${process.platform}; give a path that exists here, ` +
+            `omp is running on ${process.platform}; give a path that exists here, ` +
             `e.g. ${join(os.homedir(), "Desktop", "file.ext")}. Writing the Windows path verbatim ` +
             `would create one oddly-named file in the current directory instead of delivering it.`
         );
@@ -272,7 +274,7 @@ export function resolveHostPath(input: string): { path: string; note?: string } 
     return { path: resolvePath(p) };
 }
 
-/** Does this path exist on the machine pi is running on? */
+/** Does this path exist on the machine omp is running on? */
 export function existsOnHost(p: string): boolean {
     try { fs.statSync(p); return true; } catch { return false; }
 }
@@ -386,10 +388,13 @@ export function renderHostBlock(h: HostInfo): string {
         const win = build >= 22000 ? "Windows 11" : "Windows 10";
         const posixHome = h.home.replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`).replace(/\\/g, "/");
         L.push(`${win} (build ${build || h.release})${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
-        L.push(`Your bash tool is ${h.shell === "git-bash" ? "Git Bash (MSYS2)" : "a POSIX bash"} running ON WINDOWS — this is not a Linux machine:`);
+        // omp runs Git Bash when it is installed (its installer sets shellPath),
+        // otherwise its own built-in bash-compatible shell.
+        L.push(`Your bash tool is ${h.shell === "git-bash" ? "Git Bash (MSYS2)" : "omp's built-in bash-compatible shell"} running ON WINDOWS — this is not a Linux machine:`);
         L.push(`- ${h.home} is ${posixHome} (~ works). Linux paths such as /home, /root, /etc/ssh, /var/log do not exist here; do not probe them.`);
         L.push("- %VAR% is cmd syntax and does NOT expand in bash. Use $USERPROFILE, $APPDATA, $LOCALAPPDATA, $PROGRAMDATA (they hold Windows paths; `cygpath -u \"$APPDATA\"` converts one).");
-        L.push("- Windows tools work from bash: `powershell.exe -NoProfile -Command '…'` (single quotes, so bash leaves $ alone), `reg query`, `cmd //c …`. Git Bash rewrites a /flag into a path — prefix such commands with MSYS_NO_PATHCONV=1, e.g. `MSYS_NO_PATHCONV=1 reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /s`.");
+        L.push("- Windows tools work from bash: `powershell.exe -NoProfile -Command '…'` (single quotes, so bash leaves $ alone), `reg query`, `cmd //c …`."
+            + (h.shell === "git-bash" ? " Git Bash rewrites a /flag into a path — prefix such commands with MSYS_NO_PATHCONV=1, e.g. `MSYS_NO_PATHCONV=1 reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /s`." : ""));
         L.push("- Programs keep their settings and history in %APPDATA% (Roaming), %LOCALAPPDATA%, %PROGRAMDATA% and the registry (HKCU\\Software, HKLM\\SOFTWARE), not in dotfiles. Shell history: ~/.bash_history (Git Bash) and $APPDATA/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt (PowerShell). OpenSSH: ~/.ssh and C:\\ProgramData\\ssh.");
     } else if (h.shell === "wsl") {
         const wu = h.windowsUsers && h.windowsUsers.length ? h.windowsUsers.map(u => `/mnt/c/Users/${u}`).join(", ") : "/mnt/c/Users/<name>";
@@ -542,7 +547,25 @@ export function appendToLatestUserMessage(messages: any[], text: string): boolea
     return false;
 }
 
-export default async function (pi: ExtensionAPI) {
+// omp registers extension tools as "discoverable" by default: they leave the
+// request's tools array and are reached through its `xd://` read/write device
+// protocol. Local models do not drive that protocol (measured: the two-model
+// handover tools never reached the server), and this catalog is already
+// budgeted to the model's window — so every tool here stays top-level.
+function withEssentialTools(api: ExtensionAPI): ExtensionAPI {
+    return new Proxy(api as any, {
+        get(target, prop) {
+            if (prop === "registerTool") {
+                return (def: any) => target.registerTool({ loadMode: "essential", ...def });
+            }
+            const value = target[prop];
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    }) as ExtensionAPI;
+}
+
+export default async function (ompApi: ExtensionAPI) {
+    const pi = withEssentialTools(ompApi);
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
     const apiKey = process.env.MODELSERVER_API_KEY;
 
@@ -645,7 +668,11 @@ export default async function (pi: ExtensionAPI) {
         try {
             turnInventoryBlock = await renderTurnInventoryBlock();
             justCompacted = false;
-            return { systemPrompt: `${event.systemPrompt}\n\n${staticSandboxBlock}` };
+            // omp hands the system prompt over as an array of sections (Pi used a
+            // single string); append ours as one more section either way.
+            return Array.isArray(event.systemPrompt)
+                ? { systemPrompt: [...event.systemPrompt, staticSandboxBlock] }
+                : { systemPrompt: `${event.systemPrompt}\n\n${staticSandboxBlock}` };
         } catch (e) {
             console.error("[modelserver] sandbox state injection failed:", (e as Error).message);
             return undefined;
@@ -833,17 +860,22 @@ export default async function (pi: ExtensionAPI) {
         // The header tells the server this is Pi, which compacts against the
         // advertised window: for a two-model pair that is the window the pair
         // can serve, not the fast model's own slot.
-        const r = await authedFetch("/v1/models", { headers: { "X-Modelserver-Client": "pi-extension" } });
+        const r = await authedFetch("/v1/models", { headers: { "X-Modelserver-Client": "omp-extension" } });
         if (r.ok) {
             const payload = await r.json() as { data?: ModelInfo[] };
             const served = new Map<string, number>();
             for (const m of payload.data || []) {
                 const w = Number(m.served_context_window ?? m.context_window);
-                if (Number.isFinite(w) && w > 0) served.set(m.id, w);
+                if (Number.isFinite(w) && w > 0) served.set(/^\/models\/([^/]+)\//.exec(m.id)?.[1] || m.id, w);
             }
+            // llama.cpp advertises its model FILE PATH as the id
+            // (/models/<name>/<file>.gguf); the server routes the bare <name>
+            // just as well, and `--model modelserver/<name>` is what a person
+            // types. sglang ids (HF repo ids) and `auto` pass through.
+            const friendlyId = (id: string) => /^\/models\/([^/]+)\//.exec(id)?.[1] || id;
             const models = (payload.data || []).map((m) => ({
-                id: m.id,
-                name: m.name ?? m.id,
+                id: friendlyId(m.id),
+                name: m.name ?? friendlyId(m.id),
                 reasoning: false,
                 input: ["text"] as const,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -859,13 +891,11 @@ export default async function (pi: ExtensionAPI) {
             }
             (pi as any).registerProvider("modelserver", {
                 baseUrl: `${baseUrl}/v1`,
-                // Pi resolves `apiKey` as a config-value template: a leading
-                // `$` (or `${VAR}`) interpolates the environment variable; a
-                // bare string is treated as a LITERAL. So this MUST be
-                // "$MODELSERVER_API_KEY" — without the `$`, Pi would send
-                // `Authorization: Bearer MODELSERVER_API_KEY` (the literal
-                // name) and every model call 401s.
-                apiKey: "$MODELSERVER_API_KEY",
+                // omp resolves `apiKey` as: `!cmd` → command output, else an
+                // environment variable of EXACTLY that name, else the literal
+                // text. (Pi wanted "$MODELSERVER_API_KEY"; under omp that
+                // `$` form would be sent verbatim and every call 401s.)
+                apiKey: "MODELSERVER_API_KEY",
                 api: "openai-completions",
                 // Tells the server this client runs its own loop guard (it can
                 // time each call; the server cannot), so the server only steps
@@ -899,11 +929,11 @@ export default async function (pi: ExtensionAPI) {
         try {
             let piSerialize: ((msgs: any[]) => string) | null = null;
             try {
-                const mod: any = await import("@earendil-works/pi-coding-agent");
+                const mod: any = await import("@oh-my-pi/pi-coding-agent");
                 if (typeof mod?.serializeConversation === "function" && typeof mod?.convertToLlm === "function") {
                     piSerialize = (msgs: any[]) => mod.serializeConversation(mod.convertToLlm(msgs));
                 }
-            } catch { /* older Pi: use the local serializer */ }
+            } catch { /* not exported by this omp build: use the local serializer */ }
             const textOf = (c: any): string => typeof c === "string" ? c
                 : Array.isArray(c) ? c.filter((p: any) => p && p.type === "text").map((p: any) => p.text || "").join("\n") : "";
             // Mirrors Pi's serializeConversation (tool results cut to 2000 chars).
@@ -944,7 +974,7 @@ export default async function (pi: ExtensionAPI) {
 
             type Summarized = { summary: string; model: string; seconds: number };
             const summarizeRemote = async (body: any, signal?: AbortSignal): Promise<Summarized> => {
-                const r = await authedFetch("/api/pi/summarize", { method: "POST", body: JSON.stringify(body), signal });
+                const r = await authedFetch("/api/omp/summarize", { method: "POST", body: JSON.stringify(body), signal });
                 const data: any = await r.json().catch(() => ({}));
                 if (!r.ok || typeof data?.summary !== "string" || !data.summary.trim()) {
                     const err: any = new Error(data?.error || `HTTP ${r.status}`);
@@ -958,19 +988,21 @@ export default async function (pi: ExtensionAPI) {
             // Below this much new (serialized) text a background update is not
             // worth a model call: Pi's own compaction of it takes seconds anyway.
             const BG_MIN_NEW_CHARS = Math.max(1000, Number(process.env.MODELSERVER_PRESUMMARIZE_MIN_CHARS) || 20000);
-            // Pi's compaction settings (global, then project — Pi merges them the
-            // same way); refreshed from the real values at every compaction.
-            let settings = { reserveTokens: 16384, keepRecentTokens: 20000 };
-            for (const file of [
-                join(process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "agent"), "settings.json"),
-                join(process.cwd(), ".pi", "settings.json"),
-            ]) {
-                try {
-                    const c = JSON.parse(fs.readFileSync(file, "utf8"))?.compaction || {};
-                    if (Number.isFinite(c.reserveTokens)) settings.reserveTokens = c.reserveTokens;
-                    if (Number.isFinite(c.keepRecentTokens)) settings.keepRecentTokens = c.keepRecentTokens;
-                } catch { /* missing or unreadable: keep the defaults */ }
-            }
+            // omp's compaction trigger, mirrored from its resolveThresholdTokens:
+            // an explicit thresholdTokens wins, then thresholdPercent of the
+            // window, else window − reserve (reserve = reserveTokens, default
+            // 16384, never under 15% of the window). The real settings arrive
+            // with every compaction (preparation.settings); until the first one
+            // the defaults apply (config.yml is YAML — not worth a parser here).
+            let settings: { reserveTokens?: number; keepRecentTokens: number; thresholdPercent?: number; thresholdTokens?: number } = { keepRecentTokens: 20000 };
+            const compactionThreshold = (window: number): number => {
+                const t = Number(settings.thresholdTokens);
+                if (Number.isFinite(t) && t > 0 && t < window) return t;
+                const pct = Number(settings.thresholdPercent);
+                if (Number.isFinite(pct) && pct > 0 && pct <= 100) return Math.floor(window * pct / 100);
+                const reserve = Math.max(Number(settings.reserveTokens) || 16384, Math.floor(window * 0.15));
+                return window - reserve;
+            };
             // The rolling background summary: `summary` covers `keys` (the
             // session's messages after the last compaction, in order) on top of
             // `base` (that compaction's summary).
@@ -979,19 +1011,28 @@ export default async function (pi: ExtensionAPI) {
             let bgPauseUntil = 0;
             let compactions = 0;
 
+            // The session as the model sees it: the last compaction's summary
+            // plus the messages from its first kept entry on. omp exposes the
+            // branch as entries (root → leaf); a compaction entry names the
+            // first entry it kept, which sits EARLIER in the branch.
             const sessionMessages = (ctx: any): { base: string | undefined; msgs: any[] } | null => {
                 const sm = ctx?.sessionManager;
-                if (!sm || typeof sm.buildSessionProjection !== "function") return null;
-                const all = sm.buildSessionProjection()?.messages;
-                if (!Array.isArray(all)) return null;
+                if (!sm || typeof sm.getBranch !== "function") return null;
+                const entries = sm.getBranch();
+                if (!Array.isArray(entries)) return null;
                 let base: string | undefined;
-                let msgs: any[] = [];
-                for (const m of all) {
-                    if (!m || m.role === "system") continue;
-                    if (m.role === "compactionSummary") { base = m.summary; msgs = []; continue; }
-                    msgs.push(m);
+                let list: { id: string; m: any }[] = [];
+                for (const e of entries) {
+                    if (!e) continue;
+                    if (e.type === "compaction") {
+                        base = e.summary;
+                        const at = list.findIndex((x) => x.id === e.firstKeptEntryId);
+                        list = at >= 0 ? list.slice(at) : [];
+                        continue;
+                    }
+                    if (e.type === "message" && e.message && e.message.role !== "system") list.push({ id: e.id, m: e.message });
                 }
-                return { base, msgs };
+                return { base, msgs: list.map((x) => x.m) };
             };
             const coversPrefix = (msgs: any[], keys: string[]): boolean =>
                 keys.length <= msgs.length && keys.every((k, i) => msgKey(msgs[i]) === k);
@@ -1000,7 +1041,7 @@ export default async function (pi: ExtensionAPI) {
                 if (bgRun || Date.now() < bgPauseUntil) return;
                 const usage = ctx?.getContextUsage?.();
                 if (!usage || !usage.tokens || !usage.contextWindow) return;
-                const threshold = usage.contextWindow - settings.reserveTokens;
+                const threshold = compactionThreshold(usage.contextWindow);
                 if (threshold <= 0 || usage.tokens < threshold * PRESUMMARIZE_AT) return;
                 const snap = sessionMessages(ctx);
                 if (!snap) return;
@@ -1035,7 +1076,12 @@ export default async function (pi: ExtensionAPI) {
             pi.on("session_before_compact", async (event: any, ctx: any) => {
                 const prep = event?.preparation;
                 if (!prep) return undefined;
-                if (prep.settings) settings = { reserveTokens: prep.settings.reserveTokens ?? settings.reserveTokens, keepRecentTokens: prep.settings.keepRecentTokens ?? settings.keepRecentTokens };
+                if (prep.settings) settings = {
+                    reserveTokens: prep.settings.reserveTokens ?? settings.reserveTokens,
+                    keepRecentTokens: prep.settings.keepRecentTokens ?? settings.keepRecentTokens,
+                    thresholdPercent: prep.settings.thresholdPercent,
+                    thresholdTokens: prep.settings.thresholdTokens,
+                };
                 const signal: AbortSignal | undefined = event.signal;
                 const started = Date.now();
                 try {
@@ -1076,7 +1122,7 @@ export default async function (pi: ExtensionAPI) {
                     for (let i = entries.length - 1; i >= 0; i--) {
                         const e = entries[i];
                         if (e?.type !== "compaction") continue;
-                        if (e.fromHook && e.details) {
+                        if ((e.fromExtension || e.fromHook) && e.details) {
                             for (const f of e.details.readFiles || []) read.add(f);
                             for (const f of e.details.modifiedFiles || []) modified.add(f);
                         }
@@ -1103,7 +1149,7 @@ export default async function (pi: ExtensionAPI) {
                     };
                 } catch (e: any) {
                     if (signal?.aborted) return undefined;
-                    console.error(`[modelserver] fast compaction failed (${e?.message || e}); using Pi's own compaction`);
+                    console.error(`[modelserver] fast compaction failed (${e?.message || e}); using omp's own compaction`);
                     return undefined;
                 }
             });
@@ -1232,7 +1278,7 @@ export default async function (pi: ExtensionAPI) {
 
         // What this tool will actually cost on the wire.
         const schemaCost = toolName.length + description.length
-            + JSON.stringify(params || {}).length
+            + (JSON.stringify(params || {}) || "").length
             + (promptSnippet ? promptSnippet.length : 0);
         if (schemaCharsUsed + schemaCost > schemaCharBudget) {
             skippedBudget++;
@@ -1405,7 +1451,7 @@ export default async function (pi: ExtensionAPI) {
                 "Use it to deliver outputs that server skills produced — e.g. after create_pdf, " +
                 "workspace_get('artifacts/report.pdf', '~/Desktop/report.pdf'). " +
                 "workspacePath is relative to /workspace (rendered files land under 'artifacts/'). " +
-                "hostPath must be valid on the machine pi is running on; if that is WSL, a Windows " +
+                "hostPath must be valid on the machine omp is running on; if that is WSL, a Windows " +
                 "path like C:\\Users\\you\\Desktop is translated to /mnt/c/... automatically. " +
                 "The reverse direction is automatic — when you pass a host path to a server skill " +
                 "(read_pdf, create_pdf contentFile, transform_image, …) the file is uploaded for you.",
@@ -1480,8 +1526,8 @@ export default async function (pi: ExtensionAPI) {
         // pair is actually running.
         let pair: any = null;
         try {
-            const pr = await authedFetch("/api/pi/pair", { signal: AbortSignal.timeout(8000) });
-            if (!pr.ok) throw new Error(`GET /api/pi/pair -> HTTP ${pr.status}`);
+            const pr = await authedFetch("/api/omp/pair", { signal: AbortSignal.timeout(8000) });
+            if (!pr.ok) throw new Error(`GET /api/omp/pair -> HTTP ${pr.status}`);
             pair = await pr.json();
         } catch (e: any) {
             console.error(`[modelserver] could not read the two-model setup at load (${e && e.message ? e.message : e}) — registering the handover tools anyway`);
@@ -1557,7 +1603,7 @@ export default async function (pi: ExtensionAPI) {
                 if (!deliver) q.set("peek", "1");
                 if (waitMs) q.set("wait", String(waitMs));
                 if (ids && ids.length) q.set("ids", ids.join(","));
-                const r = await authedFetch(`/api/pi/assistant/jobs?${q.toString()}`, { signal: AbortSignal.timeout(waitMs ? waitMs + 10000 : 4000) });
+                const r = await authedFetch(`/api/omp/assistant/jobs?${q.toString()}`, { signal: AbortSignal.timeout(waitMs ? waitMs + 10000 : 4000) });
                 if (!r.ok) return null;
                 const data: any = await r.json();
                 lastPoll = Date.now();
@@ -1580,7 +1626,7 @@ export default async function (pi: ExtensionAPI) {
                 }),
                 async execute(_id: string, args: any, signal: AbortSignal | undefined, _u: any, ctx: any) {
                     if (ctx) uiCtx = ctx;
-                    const r = await authedFetch("/api/pi/assistant/jobs", { method: "POST", body: JSON.stringify(args || {}), signal });
+                    const r = await authedFetch("/api/omp/assistant/jobs", { method: "POST", body: JSON.stringify(args || {}), signal });
                     const data: any = await r.json().catch(() => ({}));
                     if (!r.ok) throw new Error(`[ask_assistant] ${data.note || data.error || `HTTP ${r.status}`}`);
                     outstanding += (data.dispatched || []).length;
@@ -1704,12 +1750,12 @@ export default async function (pi: ExtensionAPI) {
         console.warn(
             `[modelserver] registered ${registered} tool(s) (~${Math.round(schemaCharsUsed / 4)} tokens of schema); `
             + `skipped ${skippedBudget} to fit the SMALLEST loaded model's context (${smallestContextWindow} tokens). `
-            + `Pi sends one catalog whichever model you pick, so the smallest one sets the budget: `
+            + `omp sends one catalog whichever model you pick, so the smallest one sets the budget: `
             + `unload it, or set MODELSERVER_TOOL_BUDGET (fraction of the window, default 0.18; 0 disables the cap) to register more.`
         );
     }
     if (skippedShadow > 0) {
-        console.warn(`[modelserver] skipped ${skippedShadow} skill(s) that shadow Pi's local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);
+        console.warn(`[modelserver] skipped ${skippedShadow} skill(s) that shadow omp's local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);
     }
     void registered;
 }
@@ -2225,7 +2271,7 @@ function describeArtifacts(parsed: any, insecure: boolean): string {
     }
     lines.push("");
     lines.push(
-        `Replace <DEST_PATH> with a directory that exists on the machine pi is running on. ` +
+        `Replace <DEST_PATH> with a directory that exists on the machine omp is running on. ` +
         `workspace_get creates parent dirs, translates a Windows path to its /mnt/... mount ` +
         `when running under WSL, verifies the bytes landed, and needs no auth handling — ` +
         `prefer it over curl.`

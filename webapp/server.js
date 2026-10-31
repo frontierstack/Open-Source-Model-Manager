@@ -11901,7 +11901,7 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
             try {
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] ${req.apiKeyData.name || 'key'} → skill ${skillName}`,
+                    message: `[omp/API] ${req.apiKeyData.name || 'key'} → skill ${skillName}`,
                     level: 'info',
                     targetUserId: req.userId
                 });
@@ -11951,7 +11951,7 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
                 const ok = !(result && result.success === false);
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] skill ${skillName} ${ok ? 'completed' : 'failed'}`,
+                    message: `[omp/API] skill ${skillName} ${ok ? 'completed' : 'failed'}`,
                     level: ok ? 'success' : 'warning',
                     targetUserId: req.userId
                 });
@@ -12208,7 +12208,7 @@ app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
 // empty rather than materializing a directory.
 // ── Pi two-model endpoints (used by the Pi extension's ask_assistant /
 // await_assistant tools and its status widget; see planPiPair).
-app.get('/api/pi/pair', requireAuth, async (req, res) => {
+app.get(['/api/omp/pair', '/api/pi/pair'], requireAuth, async (req, res) => {
     try {
         const info = await resolvePiPairRoles(req);
         const { roles, configured, enabled, reason, missing, running } = info;
@@ -12361,7 +12361,7 @@ async function piSummaryCall(model, userText, maxTokens) {
     return strip(r.content);
 }
 
-app.post('/api/pi/summarize', requireAuth, async (req, res) => {
+app.post(['/api/omp/summarize', '/api/pi/summarize'], requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'query')) return res.status(403).json({ error: 'Query permission required' });
     const b = req.body || {};
     const conversation = typeof b.conversation === 'string' ? b.conversation : '';
@@ -12403,11 +12403,11 @@ app.post('/api/pi/summarize', requireAuth, async (req, res) => {
         }
         const seconds = Math.round((Date.now() - started) / 100) / 10;
         const inTok = Math.round(conversation.length / PI_SUMMARY_CHARS_PER_TOKEN);
-        console.log(`[Pi/Compact] ${background ? 'background ' : ''}${mode === 'turn_prefix' ? 'turn-prefix ' : ''}summary on ${pick.name}: ~${inTok} tokens in ${chunks.length} chunk(s)${previousSummary ? ' + previous summary' : ''} → ${summary.length} chars in ${seconds}s`);
-        if (!background) logUserActivity(req.userId || keyId, `Pi compaction: summarized ~${Math.round(inTok / 1000)}k tokens on ${pick.name} in ${seconds}s`);
+        console.log(`[omp/Compact] ${background ? 'background ' : ''}${mode === 'turn_prefix' ? 'turn-prefix ' : ''}summary on ${pick.name}: ~${inTok} tokens in ${chunks.length} chunk(s)${previousSummary ? ' + previous summary' : ''} → ${summary.length} chars in ${seconds}s`);
+        if (!background) logUserActivity(req.userId || keyId, `omp compaction: summarized ~${Math.round(inTok / 1000)}k tokens on ${pick.name} in ${seconds}s`);
         res.json({ summary, model: pick.name, seconds, chunks: chunks.length, inputTokens: inTok });
     } catch (e) {
-        console.warn(`[Pi/Compact] ${background ? 'background ' : ''}summary failed on ${pick.name}: ${e.message}`);
+        console.warn(`[omp/Compact] ${background ? 'background ' : ''}summary failed on ${pick.name}: ${e.message}`);
         if (!res.headersSent) res.status(502).json({ error: e.message, model: pick.name });
     } finally {
         if (background) piSummaryBackground.delete(keyId);
@@ -12422,7 +12422,7 @@ function piJobRow(j) {
     };
 }
 
-app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
+app.post(['/api/omp/assistant/jobs', '/api/pi/assistant/jobs'], requireAuth, async (req, res) => {
     try {
         const keyId = req.apiKeyData?.id;
         if (!keyId) return res.status(400).json({ error: 'An API key is required' });
@@ -12453,7 +12453,7 @@ app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
         }
         const dispatched = startAssistantJobs(entry.ctx, fresh, entry.assistant);
         const jobs = [...entry.ctx._assistantJobs.values()];
-        logUserActivity(req.userId || keyId, `Pi assistant: ${entry.lead} handed ${dispatched.length} job(s) to ${entry.assistant} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
+        logUserActivity(req.userId || keyId, `omp assistant: ${entry.lead} handed ${dispatched.length} job(s) to ${entry.assistant} — ${dispatched.map(d => `"${d.name}"`).join(', ')}`);
         res.json({
             success: dispatched.length > 0,
             assistant: entry.assistant,
@@ -12468,7 +12468,7 @@ app.post('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
+app.get(['/api/omp/assistant/jobs', '/api/pi/assistant/jobs'], requireAuth, async (req, res) => {
     try {
         const keyId = req.apiKeyData?.id;
         const entry = keyId ? piAssistantByKey.get(keyId) : null;
@@ -12502,7 +12502,7 @@ app.get('/api/pi/assistant/jobs', requireAuth, async (req, res) => {
                 });
             }
             if (results.length) {
-                logUserActivity(req.userId || keyId, `Pi assistant: delivered ${results.length} result(s) to ${entry.lead} — ${results.map(r => `"${r.name}" (${r.status})`).join(', ')}`);
+                logUserActivity(req.userId || keyId, `omp assistant: delivered ${results.length} result(s) to ${entry.lead} — ${results.map(r => `"${r.name}" (${r.status})`).join(', ')}`);
                 piFollowUpLegwork(entry);
             }
         }
@@ -16380,7 +16380,7 @@ const PI_MEMORY_RESERVE = 2048;      // headroom for the response
 const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorded — anti-double-record guard
 
 // Marker the Pi extension uses when it appends the live sandbox inventory to
-// the latest user message (see pi-extension/modelserver.ts `context` hook).
+// the latest user message (see omp-extension/modelserver.ts `context` hook).
 // Everything from the marker on is runtime context, not the user's ask — strip
 // it before memory retrieval / activity classification so the listing never
 // dilutes the embedding.
@@ -16444,7 +16444,7 @@ function v1PersonaCacheSet(key, result) {
 // spans many requests), routes the task's requests to the lead, appends a
 // byte-stable note to the latest user message (the prefix-cache-friendly
 // slot), and auto-starts the brief's legwork on the other model. The Pi
-// extension provides ask_assistant / await_assistant (→ /api/pi/assistant/jobs)
+// extension provides ask_assistant / await_assistant (→ /api/omp/assistant/jobs)
 // and folds finished results into its next tool result.
 const PI_PAIR_TASK_TTL_MS = 2 * 60 * 60 * 1000;
 const piPairTasks = new Map();        // taskKey -> { at, plan } | { at, pending: Promise }
@@ -16478,13 +16478,17 @@ function piInstanceName(instance) {
 // Iris (correctly) switched worker agents off. Recognise Pi by what only the
 // extension puts on the wire: its own tools, its runtime markers, or Pi's
 // compaction-summarizer prompt.
+// The coding agent's compaction-summarizer system prompt: omp's ("Summarize
+// user–AI coding-assistant conversations…") and legacy Pi's ("You are a context
+// summarization assistant…"). One brand-new single-shot prompt — never a task turn.
+const AGENT_SUMMARIZER_RE = /^(?:You are a (?:context )?summarization assistant|Summarize user\s*[–—-]\s*AI coding[- ]assistant conversations)/i;
 const PI_EXTENSION_TOOL_NAMES = new Set(['workspace_get', 'workspace_list', 'workspace_put', 'ask_assistant', 'await_assistant', 'shell_exec', 'shell_open', 'shell_send', 'ssh_connect']);
 function isPiClientRequest(body) {
     if (!body || !Array.isArray(body.messages)) return false;
     if (Array.isArray(body.tools) && body.tools.some(t => PI_EXTENSION_TOOL_NAMES.has(t?.function?.name || t?.name))) return true;
     const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(p => p?.text || '').join('\n') : '');
     const sys = body.messages[0]?.role === 'system' ? textOf(body.messages[0].content) : '';
-    if (/^You are a (?:context )?summarization assistant/i.test(sys.trim())) return true;
+    if (AGENT_SUMMARIZER_RE.test(sys.trim())) return true;
     for (const m of body.messages) {
         const t = textOf(m?.content);
         if (t && (t.includes(PI_SANDBOX_INVENTORY_MARKER) || t.includes(PI_PAIR_MARKER))) return true;
@@ -16572,7 +16576,7 @@ function piPairReasonText({ reason, missing }) {
         case 'same_model':
             return 'the primary and secondary name the SAME model - the pair needs two different models.';
         case 'model_not_loaded':
-            return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not loaded - load ${missing.length > 1 ? 'them' : 'it'} and delegation starts working (no need to restart Pi).`;
+            return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not loaded - load ${missing.length > 1 ? 'them' : 'it'} and delegation starts working (no need to restart omp).`;
         default:
             return 'no primary/secondary pair is configured - set both in the Models tab (Model roles).';
     }
@@ -16613,7 +16617,7 @@ function piAssistantEntry(req, taskKey, lead, assistant) {
     if (entry && entry.taskKey !== taskKey) {
         const pending = [...entry.ctx._assistantJobs.values()].filter(assistantQueue.isPending);
         if (pending.length) {
-            try { entry.ctx._assistantJobs._queue && entry.ctx._assistantJobs._queue.cancelPending('a new Pi task started'); } catch (_) {}
+            try { entry.ctx._assistantJobs._queue && entry.ctx._assistantJobs._queue.cancelPending('a new omp task started'); } catch (_) {}
             entry.ctx._abort();
         }
         entry = null;
@@ -16659,8 +16663,8 @@ function piFollowUpLegwork(entry) {
             if (!proposed.length) return;
             entry.followUps = (entry.followUps || 0) + 1;
             const started = startAssistantJobs(entry.ctx, proposed, entry.assistant, { origin: 'followup' });
-            logUserActivity(entry.userId, `Pi two models: follow-up batch ${entry.followUps} — ${entry.assistant} took ${started.length} more job(s): ${started.map(d => `"${d.name}"`).join(', ')}`);
-            console.log(`[Pi/Pair] follow-up batch ${entry.followUps}: ${started.map(d => d.name).join(' | ')}`);
+            logUserActivity(entry.userId, `omp two models: follow-up batch ${entry.followUps} — ${entry.assistant} took ${started.length} more job(s): ${started.map(d => `"${d.name}"`).join(', ')}`);
+            console.log(`[omp/Pair] follow-up batch ${entry.followUps}: ${started.map(d => d.name).join(' | ')}`);
         }).catch(() => { entry.followUpInFlight = false; });
     } catch (_) { entry.followUpInFlight = false; }
 }
@@ -16715,7 +16719,7 @@ function isPiSummarizerBody(body) {
     const m0 = Array.isArray(body?.messages) ? body.messages[0] : null;
     if (!m0 || m0.role !== 'system') return false;
     const t = typeof m0.content === 'string' ? m0.content : (Array.isArray(m0.content) ? m0.content.map(p => p?.text || '').join('\n') : '');
-    return /^You are a (?:context )?summarization assistant/i.test(t.trim());
+    return AGENT_SUMMARIZER_RE.test(t.trim());
 }
 
 function piPreviousTexts(messages) {
@@ -16780,7 +16784,7 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
         // 1-1.5 s brief that nothing could use), legwork is off, or the user
         // ruled out searching.
         const piFirstPassSkip = !plan.firstPass ? 'first pass off'
-            : !toolsOffered ? 'Pi offered no ask_assistant tool'
+            : !toolsOffered ? 'omp offered no ask_assistant tool'
             : !plan.legwork ? 'legwork off'
             : leadHandoff.forbidsTools(latestUserText) || webBanned ? 'the user ruled out tools or searching'
             : hostLocal ? 'the task is on the user\'s own machine, which jobs cannot see'
@@ -16795,7 +16799,7 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
                     new Promise(resolve => setTimeout(() => resolve(null), HANDOFF_QUICK_BRIEF_MS)),
                 ]);
                 brief = r && typeof r.content === 'string' ? r.content.trim() : '';
-            } catch (e) { console.warn('[Pi/Pair] brief failed:', e.message); }
+            } catch (e) { console.warn('[omp/Pair] brief failed:', e.message); }
         }
         const secs = Math.round((Date.now() - t0) / 100) / 10;
         const proposed = (brief && plan.legwork && toolsOffered) ? leadHandoff.parseLegwork(brief).filter(j => !leadHandoff.isHostFileJob(j.task)) : [];
@@ -16822,8 +16826,8 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
             ? `You lead this task on ${out.lead}; ${out.assistant} is your assistant. ask_assistant hands it a lookup that takes several steps (a web search plus reading the pages that answer it, comparing sources, checking current versions or docs) and returns immediately; finished results are appended to your next tool result. It works on the SERVER: it cannot see files or run commands on this machine, so do those yourself. Before you give your FINAL answer, call await_assistant if any job is still running, so the answer uses its results.`
             : `You lead this task on ${out.lead}.`;
         out.note = `${PI_PAIR_MARKER} — two models on this task; runtime context, not part of the user's message]\n${briefNote ? briefNote + '\n\n' : ''}${toolsLine}`;
-        logUserActivity(userId, `Pi two models: ${out.lead} leads` + (brief ? `, ${out.assistant} planned in ${secs}s` : '') + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
-        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${piFirstPassSkip ? `skipped (${piFirstPassSkip})` : `${brief.length}ch ${secs}s`} jobs=${out.jobs.length} ask_assistant=${toolsOffered ? 'offered' : 'NOT offered by the Pi extension'}`);
+        logUserActivity(userId, `omp two models: ${out.lead} leads` + (brief ? `, ${out.assistant} planned in ${secs}s` : '') + (out.jobs.length ? ` and started ${out.jobs.length} job(s): ${out.jobs.map(n => `"${n}"`).join(', ')}` : ''));
+        console.log(`[omp/Pair] task ${taskKey.slice(-8)}: lead=${out.lead} assistant=${out.assistant} brief=${piFirstPassSkip ? `skipped (${piFirstPassSkip})` : `${brief.length}ch ${secs}s`} jobs=${out.jobs.length} ask_assistant=${toolsOffered ? 'offered' : 'NOT offered by the omp extension'}`);
     } else if (plan.partner && plan.partnerLegwork && toolsOffered && !hostLocal && !webBanned) {
         out.lead = out.runOn;
         out.assistant = plan.partner;
@@ -16832,9 +16836,9 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
         out.note = `${PI_PAIR_MARKER} — two models loaded; runtime context, not part of the user's message]\n`
             + leadHandoff.buildPartnerPrelude({ partnerModel: out.assistant, partnerIsStronger: out.assistant === roles.secondary, maxParallel: effectiveAssistantParallel(out.assistant) })
             + ' Results of ask_assistant are appended to your next tool result; call await_assistant before your final answer if a job is still running.';
-        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: solo on ${out.lead}, partner ${out.assistant} (${plan.reason})`);
+        console.log(`[omp/Pair] task ${taskKey.slice(-8)}: solo on ${out.lead}, partner ${out.assistant} (${plan.reason})`);
     } else {
-        console.log(`[Pi/Pair] task ${taskKey.slice(-8)}: solo on ${out.runOn} (${plan.reason})`);
+        console.log(`[omp/Pair] task ${taskKey.slice(-8)}: solo on ${out.runOn} (${plan.reason})`);
     }
     return out;
 }
@@ -16845,13 +16849,13 @@ async function planPiPair(req, requestedInstance) {
     if (!keyId || !Array.isArray(messages) || !messages.length) return null;
     const sys0 = messages[0]?.role === 'system' ? messages[0].content : '';
     const sysText = typeof sys0 === 'string' ? sys0 : (Array.isArray(sys0) ? sys0.map(p => p?.text || '').join('\n') : '');
-    if (/^You are a (?:context )?summarization assistant/i.test(sysText.trim())) {
+    if (AGENT_SUMMARIZER_RE.test(sysText.trim())) {
         // Pi's compaction summarizer: a brand-new prompt (the serialized
         // conversation), so it is a cold prefill wherever it runs — ~3x faster
         // on the fast primary. No pair note, no memory (both skip it anyway).
         const sp = await resolvePiPairRoles(req);
         if (sp.enabled && sp.roles.primary && modelInstances.has(sp.roles.primary) && piInstanceName(requestedInstance) === sp.roles.secondary) {
-            return { taskKey: null, runOn: sp.roles.primary, engaged: false, lead: null, assistant: null, note: null, reason: 'Pi summarizer on the fast model', jobs: [] };
+            return { taskKey: null, runOn: sp.roles.primary, engaged: false, lead: null, assistant: null, note: null, reason: 'omp summarizer on the fast model', jobs: [] };
         }
         return null;
     }
@@ -16878,7 +16882,7 @@ async function planPiPair(req, requestedInstance) {
     if (hit) return hit.plan || (hit.pending ? hit.pending : null);
     const pending = buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText, pair })
         .then((plan) => { piPairTasks.set(taskKey, { at: Date.now(), plan }); return plan; })
-        .catch((e) => { piPairTasks.delete(taskKey); console.warn('[Pi/Pair] planning failed:', e.message); return null; });
+        .catch((e) => { piPairTasks.delete(taskKey); console.warn('[omp/Pair] planning failed:', e.message); return null; });
     piPairTasks.set(taskKey, { at: now, pending });
     return pending;
 }
@@ -16916,7 +16920,7 @@ async function injectPersonaForV1(req, instance) {
     const sys0c = messages[0]?.role === 'system' ? messages[0].content : null;
     const sys0Text = typeof sys0c === 'string' ? sys0c
         : (Array.isArray(sys0c) ? sys0c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
-    if (/^You are a (?:context )?summarization assistant/i.test(sys0Text.trim())) return null;
+    if (AGENT_SUMMARIZER_RE.test(sys0Text.trim())) return null;
 
     // Activity hint = the tools the model used BEFORE this task's user message
     // + the ask. Deliberately excludes the current task's own tool rounds: the
@@ -17056,7 +17060,7 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = nul
         });
         await coreMemory.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
-        console.warn('[Pi/Memory] activity record failed:', e.message);
+        console.warn('[omp/Memory] activity record failed:', e.message);
     } finally {
         v1RecordInFlight.delete(lockKey);
     }
@@ -30181,13 +30185,17 @@ function sanitizeHost(hostHeader) {
 }
 
 // ============================================================================
-// Pi (pi.dev) auto-config — returns a settings.json snippet, the bundled
+// omp (omp.sh) auto-config — serves the installers and the bundled
 // extension files, and a copy-paste install script that drops the extension
-// at ~/.pi/agent/extensions/modelserver/. The caller's host header is the
+// at ~/.omp/agent/extensions/modelserver/. The caller's host header is the
 // canonical base URL, sanitized through sanitizeHost above.
 // ============================================================================
 
-const PI_EXTENSION_DIR = path.join(__dirname, 'pi-extension');
+// The coding-agent integration is omp (https://omp.sh — oh-my-pi, a fork of Pi).
+// Routes are served under /api/omp/*; the old /api/pi/* paths stay as aliases so
+// an existing one-liner or an already-installed extension keeps working (the
+// /api/pi installers now install omp).
+const PI_EXTENSION_DIR = path.join(__dirname, 'omp-extension');
 const PI_INSTALL_SCRIPT_PATH = path.join(PI_EXTENSION_DIR, 'install.sh');
 const PI_INSTALL_PS1_PATH = path.join(PI_EXTENSION_DIR, 'install.ps1');
 
@@ -30206,9 +30214,9 @@ async function buildPiInstallScript(baseUrl) {
 }
 
 // Bash-pipeable installer. Curl this with the bearer key and pipe to
-// bash — the script handles MITM TLS, missing/old Node, missing Pi,
-// missing curl, broken sudo, and is idempotent across re-runs.
-app.get('/api/pi/install', requireAuth, async (req, res) => {
+// bash — the script installs omp (prebuilt binary, no Node needed), the
+// extension and its config; handles MITM TLS and is idempotent across re-runs.
+app.get(['/api/omp/install', '/api/pi/install'], requireAuth, async (req, res) => {
     try {
         const baseUrl = piBaseUrlForRequest(req);
         const script = await buildPiInstallScript(baseUrl);
@@ -30222,9 +30230,9 @@ app.get('/api/pi/install', requireAuth, async (req, res) => {
 
 // PowerShell-pipeable installer for native Windows (no WSL). Fetch with
 // Invoke-RestMethod + the bearer key and pipe to Invoke-Expression — the
-// script handles self-signed TLS, missing/old Node (winget → no-admin zip),
-// missing git, missing Pi, and persists env user-scope. Idempotent.
-app.get('/api/pi/install.ps1', requireAuth, async (req, res) => {
+// script handles self-signed TLS, installs omp + git, and persists env
+// user-scope. Idempotent.
+app.get(['/api/omp/install.ps1', '/api/pi/install.ps1'], requireAuth, async (req, res) => {
     try {
         const baseUrl = piBaseUrlForRequest(req);
         const raw = await fs.readFile(PI_INSTALL_PS1_PATH, 'utf8');
@@ -30236,7 +30244,7 @@ app.get('/api/pi/install.ps1', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
+app.get(['/api/omp/extension/:file', '/api/pi/extension/:file'], requireAuth, async (req, res) => {
     const allowed = new Set(['modelserver.ts', 'package.json', 'README.md', 'install.sh', 'install.ps1']);
     const file = req.params.file;
     if (!allowed.has(file)) {
@@ -30261,7 +30269,7 @@ app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
         res.setHeader('Content-Type', contentType);
         res.send(content);
     } catch (err) {
-        console.error('[pi-extension] read failed:', err);
+        console.error('[omp-extension] read failed:', err);
         res.status(500).json({ error: 'Failed to read extension file' });
     }
 });
@@ -30424,7 +30432,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 // number and its requests are re-routed when they outgrow the
                 // model — see PI_CONTEXT_WINDOW_MAX. Every other client, other
                 // bearer harnesses included, gets the raw per-request window.
-                const agentCaller = req.apiKeyData?.bearerOnly === true && String(req.get('x-modelserver-client') || '').toLowerCase() === 'pi-extension';
+                const agentCaller = req.apiKeyData?.bearerOnly === true && /^(?:omp|pi)-extension$/.test(String(req.get('x-modelserver-client') || '').toLowerCase());
                 const settled = await Promise.allSettled(ordered.map(async (inst) => {
                     const host = instanceHost(inst);
                     const port = inst.internalPort || inst.port;
@@ -30516,7 +30524,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 const toolCount = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] ${authName} → ${req.method} ${req.path} (${msgCount} msgs${toolCount ? `, ${toolCount} tools` : ''}${isStreaming ? ', stream' : ''})`,
+                    message: `[omp/API] ${authName} → ${req.method} ${req.path} (${msgCount} msgs${toolCount ? `, ${toolCount} tools` : ''}${isStreaming ? ', stream' : ''})`,
                     level: 'info',
                     targetUserId: req.userId
                 });
@@ -30537,7 +30545,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 if (pairPlan) {
                     const leadInst = pairPlan.runOn ? modelInstances.get(pairPlan.runOn) : null;
                     if (leadInst && leadInst.status === 'running' && leadInst !== firstInstance) {
-                        console.log(`[Pi/Pair] routing ${authName}'s request from ${piInstanceName(firstInstance)} to ${pairPlan.runOn}`);
+                        console.log(`[omp/Pair] routing ${authName}'s request from ${piInstanceName(firstInstance)} to ${pairPlan.runOn}`);
                         firstInstance = leadInst;
                         targetHost = instanceHost(firstInstance);
                         targetPort = firstInstance.internalPort || firstInstance.port;
@@ -30551,7 +30559,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         else if (Array.isArray(um.content)) req.body.messages[li] = { ...um, content: [...um.content, { type: 'text', text: `\n\n${pairPlan.note}` }] };
                     }
                 }
-            } catch (e) { console.warn('[Pi/Pair] skipped:', e.message); }
+            } catch (e) { console.warn('[omp/Pair] skipped:', e.message); }
         }
 
         // ── Pi: a request must run on a model that can hold it ──────────────
@@ -30579,17 +30587,17 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         if (firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId) req.body.model = firstInstance.config.hfRepoId;
                         const to = piInstanceName(firstInstance);
                         if (!piSummarizer && req.apiKeyData?.id) piSessionModel.set(req.apiKeyData.id, { model: to, at: Date.now() });
-                        console.log(`[Pi/Pair] ${piSummarizer ? 'summary' : 'request'} (~${need} tokens) does not fit ${from} (${piWindowOf(modelInstances.get(from))} per request) — running it on ${to}`);
+                        console.log(`[omp/Pair] ${piSummarizer ? 'summary' : 'request'} (~${need} tokens) does not fit ${from} (${piWindowOf(modelInstances.get(from))} per request) — running it on ${to}`);
                     }
                 }
-            } catch (e) { console.warn('[Pi/Pair] fit check skipped:', e.message); }
+            } catch (e) { console.warn('[omp/Pair] fit check skipped:', e.message); }
         }
         // Pi's summarizer wants the summary, not a reasoning trace: on a
         // thinking model the trace ran 2-8k tokens (17-114 s on the 4B) and
         // a trace that hit max_tokens made Pi reject the summary as truncated.
         if (piSummarizer && req.method === 'POST' && !(req.body.chat_template_kwargs && 'enable_thinking' in req.body.chat_template_kwargs)) {
             req.body.chat_template_kwargs = { ...(req.body.chat_template_kwargs || {}), enable_thinking: false };
-            console.log(`[Pi/Compact] summary request on ${piInstanceName(firstInstance)} (~${piRequestTokens(req.body)} tokens), thinking off`);
+            console.log(`[omp/Compact] summary request on ${piInstanceName(firstInstance)} (~${piRequestTokens(req.body)} tokens), thinking off`);
         }
 
         // ── Repeated-tool-call backstop (agents) ────────────────────────────
@@ -30600,10 +30608,10 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             try {
                 const lg = piLoopGuard.applyLoopGuard(req.body, { clientGuard: req.get('x-modelserver-loop-guard') === '1' });
                 if (lg) {
-                    console.log(`[Pi/Loop] ${authName}: ${lg.name} returned the same result ${lg.count}× — ${lg.action === 'force' ? 'tools off for this reply' : 'note added'}`);
-                    if (lg.action === 'force') logUserActivity(req.userId || req.apiKeyData?.id, `Pi loop guard: ${lg.name} repeated ${lg.count}× with the same result — asked for an answer with tools off`);
+                    console.log(`[omp/Loop] ${authName}: ${lg.name} returned the same result ${lg.count}× — ${lg.action === 'force' ? 'tools off for this reply' : 'note added'}`);
+                    if (lg.action === 'force') logUserActivity(req.userId || req.apiKeyData?.id, `omp loop guard: ${lg.name} repeated ${lg.count}× with the same result — asked for an answer with tools off`);
                 }
-            } catch (e) { console.warn('[Pi/Loop] check skipped:', e.message); }
+            } catch (e) { console.warn('[omp/Loop] check skipped:', e.message); }
         }
 
         // ── Pi memory bridge ────────────────────────────────────────────────
@@ -30633,9 +30641,9 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 ]);
                 if (injected && injected.count) {
                     logUserActivity(piMemId,
-                        `Pi memory: recalled the ${injected.label} core memory (${injected.runs} task${injected.runs === 1 ? '' : 's'}, ${injected.tokens} tok)`);
+                        `omp memory: recalled the ${injected.label} core memory (${injected.runs} task${injected.runs === 1 ? '' : 's'}, ${injected.tokens} tok)`);
                 }
-            } catch (e) { console.warn('[Pi/Memory] injection skipped:', e.message); }
+            } catch (e) { console.warn('[omp/Memory] injection skipped:', e.message); }
         }
 
         // ── /v1 context guard (all API callers) ─────────────────────────────
@@ -30666,7 +30674,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     try {
                         broadcast({
                             type: 'log',
-                            message: `[Pi/API] Context guard: ${detail}`,
+                            message: `[omp/API] Context guard: ${detail}`,
                             level: guard.action === 'reject' ? 'warning' : 'info',
                             targetUserId: req.userId,
                         });
@@ -30682,7 +30690,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 try {
                     broadcast({
                         type: 'log',
-                        message: `[Pi/API] Context ~${Math.round((guard.estTokens / guard.effCtx) * 100)}% full (${guard.estTokens}/${guard.effCtx} est tokens) — Pi auto-compaction expected soon`,
+                        message: `[omp/API] Context ~${Math.round((guard.estTokens / guard.effCtx) * 100)}% full (${guard.estTokens}/${guard.effCtx} est tokens) — omp auto-compaction expected soon`,
                         level: 'info',
                         targetUserId: req.userId,
                     });
@@ -30837,7 +30845,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     try {
                         broadcast({
                             type: 'log',
-                            message: `[Pi/API] Generation ran past the context window (${lastSeenTotalTokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
+                            message: `[omp/API] Generation ran past the context window (${lastSeenTotalTokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
                             level: 'warning',
                             targetUserId: req.userId,
                         });
@@ -30854,7 +30862,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         try {
                             broadcast({
                                 type: 'log',
-                                message: `[Pi/API] ${req.apiKeyData.name} ← ${lastSeenTotalTokens} tokens`,
+                                message: `[omp/API] ${req.apiKeyData.name} ← ${lastSeenTotalTokens} tokens`,
                                 level: 'success',
                                 targetUserId: req.userId
                             });
@@ -30885,7 +30893,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     try {
                         broadcast({
                             type: 'log',
-                            message: `[Pi/API] Generation ran past the context window (${tokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
+                            message: `[omp/API] Generation ran past the context window (${tokens} > ${proxyEffCtx} tokens) — earliest context (system prompt) was shifted out; response quality may be degraded`,
                             level: 'warning',
                             targetUserId: req.userId,
                         });
@@ -30908,7 +30916,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     try {
                         broadcast({
                             type: 'log',
-                            message: `[Pi/API] ${req.apiKeyData.name} ← ${tokens} tokens`,
+                            message: `[omp/API] ${req.apiKeyData.name} ← ${tokens} tokens`,
                             level: 'success',
                             targetUserId: req.userId
                         });

@@ -2,7 +2,7 @@
 
 > **A Production-Ready MLOps Platform for Large Language Models**
 
-Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, an autonomous AI agent system, and a [Pi (pi.dev)](https://pi.dev) terminal coding agent that talks to it over the OpenAI-compatible endpoint.
+Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, an autonomous AI agent system, and an [omp (omp.sh)](https://omp.sh) terminal coding agent that talks to it over the OpenAI-compatible endpoint.
 
 <p align="center">
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-24.0%2B-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
@@ -10,7 +10,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
   <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.9-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="https://pi.dev"><img src="https://img.shields.io/badge/Pi-pi.dev-8b5cf6?style=flat-square" alt="Pi (pi.dev)"></a>
+  <a href="https://omp.sh"><img src="https://img.shields.io/badge/omp-omp.sh-8b5cf6?style=flat-square" alt="omp (omp.sh)"></a>
 </p>
 
 ---
@@ -42,7 +42,7 @@ Each model can be **pinned to specific GPUs** at load time. By default a model i
 - **Auto-Download Chips** — Any file a sandboxed skill writes to `/workspace/artifacts/` is auto-promoted into a download chip in the chat (mtime-filtered so prior turns don't re-surface); `make_downloadable` promotes existing workspace files explicitly
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
 - **AIMem Memory Compression** — Compresses older conversation history to reduce token usage, speeding up inference and lowering VRAM consumption during long conversations
-- **Account Memory & Persona** — The assistant learns per account: preferences, durable facts, and *experience* (the tool path that worked for each kind of task), consolidating instead of sprawling and injecting only what's relevant each turn. Shared across the web chat and Pi; browse/edit/clear it in the **Memory** tab
+- **Account Memory & Persona** — The assistant learns per account: preferences, durable facts, and *experience* (the tool path that worked for each kind of task), consolidating instead of sprawling and injecting only what's relevant each turn. Shared across the web chat and omp; browse/edit/clear it in the **Memory** tab
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
@@ -125,20 +125,21 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
   <em>The model decides to call <code>web_search</code>, reads the results, and follows up with <code>scrapling_fetch</code> to pull a full page — each call appears as a clickable chip below the response.</em>
 </p>
 
-### Pi (pi.dev) — Terminal UI
+### omp (omp.sh) — Terminal UI
 
-The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`), a third-party minimal coding harness — we don't ship our own TUI, we wire Pi in. Install Pi once, drop in the bundled extension, and any model loaded in **My Models** becomes a Pi-driven coding agent backed by the 130+ skills the webapp already exposes.
+The terminal experience for this project is **[omp](https://omp.sh)** (oh-my-pi), a third-party coding agent — a fork of Pi (pi.dev, which it replaces here) with a native core, shipped as one self-contained binary. We don't ship our own TUI, we wire omp in: one installer puts the prebuilt `omp` binary on your PATH (no Node or npm), drops in the bundled extension, and any model loaded in **My Models** becomes an omp-driven coding agent backed by the 130+ skills the webapp already exposes.
 
-- **Pi handles the local FS** — read/write/bash/edit/grep run on the user's `$PWD` via Pi's built-ins, not on the server's `/workspace`
-- **Skills surface as Pi tools** — the bundled extension at `webapp/pi-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
-- **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Pi's status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
-- **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Pi turn instead of sitting at `0/max`
-- **Persistent shell & SSH sessions** — first-party Pi tools (`ssh_connect`, `shell_open`, `shell_exec`, `shell_send`, `shell_read`, `shell_close`, `shell_list`) hold a real interactive PTY open across turns — SSH logins with password prompts, REPLs, `docker exec -it`, live `tail -f`, control keys (ctrl-c/-d/…) — with no native modules required (works even when the model server is unreachable)
-- **Shared account memory** — Pi turns read and write the same persona/experience memory as the web chat (create the bearer key while signed in so it's tied to your account)
-- **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
-- **Catalog sized to the model** — Pi sends its whole tool catalog on every request, and the full skill set is ~27k tokens of schema and system prompt, which simply does not fit a small-context model. The extension budgets the catalog against the smallest loaded model's context window (`MODELSERVER_TOOL_BUDGET`, default 18%; `0` disables the cap) and trims in priority order — interpreters, file reading and search, fetch, archive and delivery tools first — so a small model gets a working agent instead of a request the server has to reject
-- **Multi-model aware** — `/v1/models` lists every running instance so Pi can address any of them by id, across both backends; llama.cpp advertises the GGUF file path, sglang the HuggingFace repo id
-- **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
+- **omp handles the local FS** — read/write/bash/edit/grep run on the user's `$PWD` via omp's built-ins, not on the server's `/workspace`
+- **Skills surface as omp tools** — the bundled extension at `webapp/omp-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
+- **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window` (for a two-model pair, the window the pair can serve), so omp compacts against the loaded model's true ceiling
+- **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every omp turn
+- **Two models on one task** — with a primary/secondary pair configured, substantial omp tasks run on the stronger model while the faster one runs background jobs (`ask_assistant` / `await_assistant`); compaction summaries run on the fast model
+- **Persistent shell & SSH sessions** — first-party tools (`ssh_connect`, `shell_open`, `shell_exec`, `shell_send`, `shell_read`, `shell_close`, `shell_list`) hold a real interactive PTY open across turns — SSH logins with password prompts, REPLs, `docker exec -it`, live `tail -f`, control keys (ctrl-c/-d/…) — with no native modules required (works even when the model server is unreachable)
+- **Shared account memory** — omp turns read and write the same core memory as the web chat (create the bearer key while signed in so it's tied to your account)
+- **Bearer-mode API key required** — the extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
+- **Catalog sized to the model** — omp sends its whole tool catalog on every request, and the full skill set is ~27k tokens of schema and system prompt, which simply does not fit a small-context model. The extension budgets the catalog against the smallest loaded model's context window (`MODELSERVER_TOOL_BUDGET`, default 18%; `0` disables the cap) and trims in priority order — interpreters, file reading and search, fetch, archive and delivery tools first
+- **Multi-model aware** — `/v1/models` lists every running instance; the extension registers them under their model names (`modelserver/<name>`), across both backends
+- **Auto-config in Docs tab** ("omp setup") — the Linux/macOS/WSL and native-Windows install one-liners are pre-baked with your API key + endpoint
 
 ### Automation — Workflow Engine
 
@@ -306,29 +307,26 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 
 > Tip: drag the left-nav items to reorder them — your layout is saved per user.
 
-### Pi (pi.dev) — terminal coding agent
+### omp (omp.sh) — terminal coding agent
 
 ```bash
-# Install Pi (once) — https://pi.dev
-npm install -g @earendil-works/pi-coding-agent
-
-# Open the webapp Docs tab → "Pi setup" → copy the settings.json snippet
-# (it bakes in your API key + the local /v1 endpoint), drop it at:
-#   ~/.pi/agent/settings.json
-
-# Install the bundled skill-catalog extension (one-liner shown in Docs tab —
-# pulls webapp/pi-extension/modelserver.ts to ~/.pi/agent/extensions/modelserver/)
-curl -sk https://localhost:3001/api/pi/install | bash && source ~/.bashrc
+# Docs tab → "omp setup" shows this one-liner with your key filled in.
+export MODELSERVER_API_KEY="<bearer-mode key from the API Keys tab>"
+curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
+  https://localhost:3001/api/omp/install | bash && source ~/.bashrc
 
 # Run from any project directory
-pi
+omp                       # interactive
+omp -p "Reply with OK"    # one-shot check
 ```
 
-The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
+The installer puts the official prebuilt `omp` binary in `~/.local/bin` (no Node/npm/Bun), the extension in `~/.omp/agent/extensions/modelserver/`, and sets the server's models as omp's default roles in `~/.omp/agent/config.yml`. Native Windows (no WSL, no admin): the Docs tab's PowerShell one-liner runs `/api/omp/install.ps1`. The old `/api/pi/install` links still work and now install omp; `OMP_INSTALL_REMOVE_PI=1` also removes an old Pi install.
 
-> **Set the env vars before `pi`.** The extension reads `MODELSERVER_API_KEY` (a **bearer-mode** key from the API Keys tab) and `MODELSERVER_BASE_URL` at startup — without the key it skips provider + skill registration. The installer appends `MODELSERVER_BASE_URL` to your shell rc, but keep `MODELSERVER_API_KEY` exported in your shell (don't commit it).
+The extension auto-fetches the user's enabled skills on startup and registers each as an omp tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. omp handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other. Details: [`webapp/omp-extension/README.md`](webapp/omp-extension/README.md).
+
+> **Set the env vars before `omp`.** The extension reads `MODELSERVER_API_KEY` (a **bearer-mode** key from the API Keys tab) and `MODELSERVER_BASE_URL` at startup — without the key it skips provider + skill registration. The installer appends `MODELSERVER_BASE_URL` to your shell rc, but keep `MODELSERVER_API_KEY` exported in your shell (don't commit it).
 >
-> **Troubleshooting — `401 "Invalid or inactive Bearer token"` on the model call** (but skills still work): you have a **stale extension** from an older install. Older copies registered the provider with `apiKey: "MODELSERVER_API_KEY"` (the env-var *name*), which current Pi sends as a literal token. The shipped extension uses `apiKey: "$MODELSERVER_API_KEY"` (leading `$` = env-var reference) — **re-run `curl -sk …/api/pi/install | bash` to refresh it.** Re-running the installer after any Pi upgrade is the general fix for a stale extension.
+> **Troubleshooting — `401` on the model call** (but skills still work): a stale extension. omp reads a provider `apiKey` as an environment-variable NAME (`MODELSERVER_API_KEY`); the Pi-era `$MODELSERVER_API_KEY` form is sent literally. Re-run the installer to refresh the extension.
 
 ### API
 
@@ -386,7 +384,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           ┌───────────────┼──────────────┼──────────────┼───────────────┐
           │               ▼              ▼              ▼               │
           │  ┌────────────────────┐ ┌──────────┐ ┌───────────────┐     │
-          │  │   Webapp  :3001   │ │Chat :3002│ │  Pi  (pi.dev) │     │
+          │  │   Webapp  :3001   │ │Chat :3002│ │  omp (omp.sh) │     │
           │  │                    │ │          │ │   Terminal UI │     │
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
@@ -452,8 +450,8 @@ docker stats                        # Container resource usage
 
 ---
 
-**Pi returns nothing and exits 0**
-The model's context window is too small for the tool catalog. `pi -p` renders the error as empty output; `--mode json` shows it. The extension trims the catalog automatically — if you still hit it, lower `MODELSERVER_TOOL_BUDGET` or point Pi at a larger model.
+**omp returns nothing**
+The model's context window is too small for the tool catalog. `omp -p --mode json` shows the error. The extension trims the catalog automatically — if you still hit it, lower `MODELSERVER_TOOL_BUDGET` or point omp at a larger model (`--model modelserver/<name>`).
 
 **A model answers that isn't the one you asked for**
 A `model` id that matches no running instance is served by the first one loaded. Check the server log for `matched no running instance` — it names what you sent and what is actually available. Use the exact id from `GET /v1/models`.
@@ -483,7 +481,7 @@ MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) | [sglang](https://github.com/sgl-project/sglang) | [HuggingFace](https://huggingface.co/) | [Pi (pi.dev)](https://pi.dev) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
+[llama.cpp](https://github.com/ggerganov/llama.cpp) | [sglang](https://github.com/sgl-project/sglang) | [HuggingFace](https://huggingface.co/) | [omp (omp.sh)](https://omp.sh) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
 
 ---
 

@@ -16,7 +16,7 @@
 //      the error entirely.
 //
 //   3. When the INPUT alone cannot fit, the request must fail with an error
-//      the client's auto-compaction recognizes. Pi (pi.dev) matches
+//      the client's auto-compaction recognizes. Pi (pi.dev) and omp (omp.sh) match
 //      "exceeds the available context size" (llama.cpp's wording) and
 //      compacts + retries automatically — so the synthetic rejection reuses
 //      that exact phrasing. Rejection is deliberately conservative: it only
