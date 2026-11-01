@@ -306,6 +306,7 @@ const embeddingEngine = require('./services/embeddingEngine');
 // conversations (replaces the old per-conversation store). Storage only — the
 // extraction heuristics live in this file.
 const coreMemory = require('./services/coreMemory');
+const episodeIndex = require('./services/episodeIndex');
 const experienceMemory = require('./services/experienceMemory');
 const toolRouter = require('./services/toolRouter');
 const toolIndex = require('./services/toolIndex');
@@ -16312,6 +16313,13 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
             episode, theme, convId: conversationId || null, recalled, taskKey, provisional,
         });
         if (!res) return;
+        // Every eligible episode also goes into the account's vector archive,
+        // which outlives the 8 recent episodes core memory keeps per theme.
+        episodeIndex.archiveEpisode(userId, {
+            episode, theme, convId: conversationId || null, taskKey,
+            approachText: experienceMemory.renderApproach(episode.approach),
+            tools: experienceMemory.approachTools(episode.approach),
+        }).catch(e => console.warn('[Memory] episode archive failed:', e.message));
         const oc = experienceMemory.renderOutcome(episode.outcome);
         const bits = [];
         if (res.newBest) bits.push('new best approach');
@@ -16341,23 +16349,59 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // writing.
     try { query = leadHandoff.stripNegatedToolClauses(query) || query; } catch (_) { /* keep the raw query */ }
     if (!query.trim()) return null;
+    // Similar past tasks from the vector archive get up to ~40% of the budget
+    // (at most 400 tokens); the theme block gets the rest. Both are bounded, so
+    // the injected text stays the same size however large the archive grows.
+    const cls = coreMemory.classifyTheme({ toolLabels, userText: query, attachmentKinds, hasTools: toolLabels.length > 0 });
+    let themeRec = null;
+    try { themeRec = cls ? await coreMemory.peekBestApproach(userId, cls.theme) : null; } catch (_) { themeRec = null; }
+    let similar = [];
+    try {
+        similar = await episodeIndex.recallSimilar(userId, {
+            query, theme: cls ? cls.theme : null, excludeConvId: currentConvId,
+            skipApproach: themeRec ? episodeIndex.redactSecrets(themeRec).slice(0, 320) : '',
+        });
+    } catch (e) { console.warn('[Memory] similar-task recall failed:', e.message); similar = []; }
+    const simBudget = Math.min(400, Math.floor(tokenBudget * 0.4));
     let rec = null;
-    try { rec = await coreMemory.recall(userId, { userText: query, attachmentKinds, toolLabels, tokenBudget }); }
-    catch (e) { console.warn('[Memory] recall failed:', e.message); return null; }
-    if (!rec || !rec.block) return null;
-    console.log(`[Memory] Recalling the ${rec.label} core memory (${rec.runs} tasks, ${rec.tokens} tokens) conv=${currentConvId || '-'}`);
+    try {
+        rec = await coreMemory.recall(userId, {
+            userText: query, attachmentKinds, toolLabels,
+            tokenBudget: similar.length ? Math.max(200, tokenBudget - simBudget) : tokenBudget,
+        });
+    } catch (e) { console.warn('[Memory] recall failed:', e.message); rec = null; }
+    const sim = similar.length ? episodeIndex.renderSimilar(similar, simBudget, { standalone: !(rec && rec.block) }) : { text: '', used: [] };
+    if (!(rec && rec.block) && !sim.text) return null;
+    if (sim.used.length) {
+        console.log(`[Memory] Similar past tasks: ${sim.used.map(m => `${m.score.toFixed(2)} "${m.task.slice(0, 50)}"`).join(' | ')} conv=${currentConvId || '-'}`);
+    }
+    const simTools = [...new Set(sim.used.flatMap(m => m.tools || []))];
+    if (!(rec && rec.block)) {
+        const tokens = coreMemory.estimateTokens(sim.text);
+        return {
+            block: sim.text, count: sim.used.length, theme: null, label: 'Similar past tasks', id: null,
+            runs: sim.used.length, bestCalls: null, steps: [], tools: simTools, tokens,
+            similar: sim.used.map(m => ({ task: m.task, score: m.score, theme: m.theme })),
+            previews: [`${sim.used.length} similar past task${sim.used.length === 1 ? '' : 's'}`],
+        };
+    }
+    const block = sim.text ? `${rec.block}\n${sim.text}` : rec.block;
+    const tokens = coreMemory.estimateTokens(block);
+    console.log(`[Memory] Recalling the ${rec.label} core memory (${rec.runs} tasks, ${tokens} tokens${sim.used.length ? `, +${sim.used.length} similar` : ''}) conv=${currentConvId || '-'}`);
     return {
-        block: rec.block,
-        count: 1,
+        block,
+        count: 1 + sim.used.length,
         theme: rec.theme,
         label: rec.label,
         id: rec.id,
         runs: rec.runs,
         bestCalls: rec.bestCalls,
         steps: rec.steps,
-        tools: rec.tools,
-        tokens: rec.tokens,
-        previews: [`${rec.label} core memory (${rec.runs} task${rec.runs === 1 ? '' : 's'})`],
+        tools: [...new Set([...(rec.tools || []), ...simTools])],
+        tokens,
+        similar: sim.used.map(m => ({ task: m.task, score: m.score, theme: m.theme })),
+        previews: [`${rec.label} core memory (${rec.runs} task${rec.runs === 1 ? '' : 's'})`]
+            .concat(sim.used.length ? [`${sim.used.length} similar past task${sim.used.length === 1 ? '' : 's'}`] : []),
     };
 }
 
@@ -20071,10 +20115,14 @@ const chatStreamHandlerInner = async (req, res) => {
                     );
                     if (memoryResult && memoryResult.block) {
                         recalledCore = memoryResult;
-                        logUserActivity(chatUserId,
-                            `Memory: recalled the ${memoryResult.label} core memory (${memoryResult.runs} task${memoryResult.runs === 1 ? '' : 's'}` +
-                            (memoryResult.bestCalls != null ? `, best ${memoryResult.bestCalls} call${memoryResult.bestCalls === 1 ? '' : 's'}` : '') +
-                            `, ${memoryResult.tokens} tok)`);
+                        const simNote = (memoryResult.similar && memoryResult.similar.length)
+                            ? `${memoryResult.similar.length} similar past task${memoryResult.similar.length === 1 ? '' : 's'} (${memoryResult.similar.map(m => m.score.toFixed(2)).join(', ')})`
+                            : '';
+                        logUserActivity(chatUserId, memoryResult.theme
+                            ? `Memory: recalled the ${memoryResult.label} core memory (${memoryResult.runs} task${memoryResult.runs === 1 ? '' : 's'}` +
+                              (memoryResult.bestCalls != null ? `, best ${memoryResult.bestCalls} call${memoryResult.bestCalls === 1 ? '' : 's'}` : '') +
+                              (simNote ? `, + ${simNote}` : '') + `, ${memoryResult.tokens} tok)`
+                            : `Memory: recalled ${simNote} (${memoryResult.tokens} tok)`);
                         // PLACEMENT (don't regress): prepend the block to the
                         // LATEST USER MESSAGE (same slot as the workspace
                         // pre-flight notes), NOT the leading system message.
@@ -31061,6 +31109,7 @@ app.get('/api/memories', requireAuth, async (req, res) => {
             memories: list.map(publicCoreMemory),
             themes: coreMemory.allThemes(),
             accountId: own,
+            episodeArchive: await episodeIndex.count(own).catch(() => 0),
             isAdmin,
             model: 'core-memory',
         });
@@ -31132,6 +31181,7 @@ app.delete('/api/memories/:id', requireAuth, async (req, res) => {
         const found = await resolveOwnedCoreMemory(req);
         if (!found) return res.status(404).json({ error: 'memory not found' });
         await coreMemory.remove(found.userId, found.rec.id);
+        await episodeIndex.removeTheme(found.userId, found.rec.theme).catch(e => console.warn('[Memory] episode archive reset failed:', e.message));
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -31142,7 +31192,8 @@ app.delete('/api/memories/:id', requireAuth, async (req, res) => {
 app.delete('/api/memories', requireAuth, async (req, res) => {
     try {
         const removed = await coreMemory.clearAll(memAccountId(req));
-        res.json({ success: true, removed });
+        const episodes = await episodeIndex.clearAll(memAccountId(req)).catch(e => { console.warn('[Memory] episode archive clear failed:', e.message); return 0; });
+        res.json({ success: true, removed, episodes });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -31154,7 +31205,7 @@ app.post('/api/memories/recall', requireAuth, async (req, res) => {
         const text = String(req.body?.text || req.body?.query || '').trim();
         if (!text) return res.status(400).json({ error: 'text is required' });
         const cls = coreMemory.classifyTheme({ userText: text, hasTools: false });
-        const rec = await coreMemory.recall(memAccountId(req), { userText: text, tokenBudget: parseInt(req.body?.tokenBudget, 10) || MEMORY_RETRIEVAL_TOKEN_BUDGET });
+        const rec = await retrieveRelevantMemories(memAccountId(req), null, text, parseInt(req.body?.tokenBudget, 10) || MEMORY_RETRIEVAL_TOKEN_BUDGET);
         res.json({ theme: cls ? cls.theme : null, label: cls ? cls.label : null, scores: cls ? cls.scores : {}, recalled: rec });
     } catch (e) {
         res.status(500).json({ error: e.message });

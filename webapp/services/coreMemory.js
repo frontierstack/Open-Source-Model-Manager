@@ -701,7 +701,16 @@ async function recall(userId, { userText = '', attachmentKinds = new Set(), tool
     };
 }
 
+/** The theme's proven approach rendered as text ('' when none). */
+async function peekBestApproach(userId, themeKey) {
+    const shard = await readShard(userId);
+    const rec = findByTheme(shard, themeKey);
+    if (!rec || rec.enabled === false || !rec.bestApproach || !rec.bestApproach.steps) return '';
+    return experienceMemory.renderApproach(rec.bestApproach.steps);
+}
+
 module.exports = {
+    peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
     recordEpisode, addLesson, setNotes, setEnabled, remove, clearAll,
