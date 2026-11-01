@@ -3686,8 +3686,13 @@ function isSkillBlocked(policy, skillName) {
 // Check if any users exist (for first admin setup)
 app.get('/api/auth/has-users', hasUsersRateLimiter, async (req, res) => {
     try {
+        // Only answers while the instance is unclaimed (the first-admin setup
+        // screen needs that). Once any account exists the endpoint looks
+        // absent, so it no longer confirms to anonymous callers that this
+        // server has users.
         const hasUsers = await hasAnyUsers();
-        res.json({ hasUsers });
+        if (hasUsers) return res.status(404).json({ error: 'Not found' });
+        res.json({ hasUsers: false });
     } catch (error) {
         console.error('Check users error:', error);
         res.status(500).json({ error: 'Failed to check users' });
@@ -11339,7 +11344,13 @@ app.post('/api/automations/:id/webhook-token', requireAuth, async (req, res) => 
         const token = crypto.randomBytes(24).toString('hex');
         workflows[idx] = { ...workflows[idx], webhookToken: token, updatedAt: new Date().toISOString() };
         await saveWorkflows(workflows);
-        res.json({ token, url: `/api/automations/webhook/${token}` });
+        res.json({
+            token,
+            url: '/api/automations/webhook',
+            header: 'X-Webhook-Token',
+            // For senders that cannot set a custom header.
+            legacyUrl: `/api/automations/webhook/${token}`
+        });
     } catch (error) {
         console.error('Error generating webhook token:', error);
         res.status(500).json({ error: 'Failed to generate webhook token' });
@@ -11350,13 +11361,22 @@ app.post('/api/automations/:id/webhook-token', requireAuth, async (req, res) => 
 // the workflow owner. No requireAuth (external services call this); the global
 // CSRF check is cookie-auth-only so token callers are exempt. Fires in the
 // background and returns 202 so the caller isn't blocked on the run.
-app.post('/api/automations/webhook/:token', webhookRateLimiter, async (req, res) => {
-    const token = req.params.token;
+// Preferred form: POST /api/automations/webhook with the token in the
+// X-Webhook-Token header, so it never lands in proxy/access logs or browser
+// history. The token-in-URL form stays for senders that cannot set headers.
+function webhookTokenMatches(stored, given) {
+    if (typeof stored !== 'string' || typeof given !== 'string') return false;
+    const a = Buffer.from(stored), b = Buffer.from(given);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+app.post(['/api/automations/webhook', '/api/automations/webhook/:token'], webhookRateLimiter, async (req, res) => {
+    const headerToken = req.get('x-webhook-token');
+    const token = (headerToken && headerToken.trim()) || req.params.token;
     if (!token || token.length < 24) return res.status(404).json({ error: 'Not found' });
     try {
         const workflows = await loadWorkflows();
         const wf = workflows.find(w =>
-            w.webhookToken === token && w.enabled && !w.archived &&
+            webhookTokenMatches(w.webhookToken, token) && w.enabled && !w.archived &&
             (w.nodes || []).some(n => n.type === 'trigger.webhook')
         );
         if (!wf) return res.status(404).json({ error: 'No active automation for this webhook' });

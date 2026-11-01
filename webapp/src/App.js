@@ -2344,6 +2344,7 @@ streamChat('Write a short poem about coding', 'your_bearer_token');`
 curl -k -X GET ${baseUrl}/api/auth/has-users`,
                 python: `import requests
 
+# Answers only on an unclaimed server; returns 404 once any account exists
 response = requests.get(
     '${baseUrl}/api/auth/has-users',
     verify=False
@@ -6337,7 +6338,7 @@ console.log(run);`
             '/api/automations/:id/webhook-token': {
                 curl: `# Bearer Token Authentication
 # Mint (or rotate) the public webhook token for an automation.
-# The returned token gates POST ${baseUrl}/api/automations/webhook/:token
+# Send the returned token as X-Webhook-Token to POST ${baseUrl}/api/automations/webhook
 curl -k -X POST ${baseUrl}/api/automations/AUTOMATION_ID/webhook-token \\
   -H "Authorization: Bearer your_bearer_token"`,
                 python: `import requests
@@ -6348,7 +6349,7 @@ response = requests.post(
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
-print(response.json())  # { token, url }`,
+print(response.json())  # { token, url, header, legacyUrl }`,
                 powershell: `$headers = @{
     "Authorization" = "Bearer your_bearer_token"
 }
@@ -6360,32 +6361,35 @@ const resp = await fetch('${baseUrl}/api/automations/AUTOMATION_ID/webhook-token
   method: 'POST',
   headers
 }).then(r => r.json());
-console.log(resp);  // { token, url }`
+console.log(resp);  // { token, url, header, legacyUrl }`
             },
             '/api/automations/webhook/:token': {
                 curl: `# Public endpoint — no auth header. The token (minted via
 # POST /api/automations/:id/webhook-token) gates access; the workflow
 # runs as its owner; the trigger input is { body, query, receivedAt }
 # (read fields as {{input.body.<field>}}). Needs an enabled workflow with a
-# trigger.webhook node. Returns 202.
-curl -k -X POST ${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN \\
+# trigger.webhook node. Returns 202. Senders that cannot set headers may use
+# POST /api/automations/webhook/WEBHOOK_TOKEN (the token then shows up in logs).
+curl -k -X POST ${baseUrl}/api/automations/webhook \\
+  -H "X-Webhook-Token: WEBHOOK_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{ "event": "deploy-finished", "status": "ok" }'`,
                 python: `import requests
 
 # Public endpoint — no auth header; the token gates access
 requests.post(
-    '${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN',
+    '${baseUrl}/api/automations/webhook',
+    headers={'X-Webhook-Token': 'WEBHOOK_TOKEN'},
     json={'event': 'deploy-finished', 'status': 'ok'},
     verify=False
 )  # 202 Accepted — runs in the background`,
                 powershell: `# Public endpoint — no auth header; the token gates access
 $body = @{ event = "deploy-finished"; status = "ok" } | ConvertTo-Json
-Invoke-RestMethod -Uri "${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN" -Method Post -Body $body -ContentType "application/json"`,
+Invoke-RestMethod -Uri "${baseUrl}/api/automations/webhook" -Method Post -Headers @{ "X-Webhook-Token" = "WEBHOOK_TOKEN" } -Body $body -ContentType "application/json"`,
                 javascript: `// Public endpoint — no auth header; the token gates access
-await fetch('${baseUrl}/api/automations/webhook/WEBHOOK_TOKEN', {
+await fetch('${baseUrl}/api/automations/webhook', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'X-Webhook-Token': 'WEBHOOK_TOKEN' },
   body: JSON.stringify({ event: 'deploy-finished', status: 'ok' })
 });  // 202 Accepted — runs in the background`
             },
@@ -11089,7 +11093,8 @@ GET    ${baseUrl}/api/automations/events      # per-user SSE stream of live run 
 
 # Public webhook trigger (unauthenticated, token-gated, runs as the owner)
 POST   ${baseUrl}/api/automations/:id/webhook-token  # mint/rotate the token (authed)
-POST   ${baseUrl}/api/automations/webhook/:token
+POST   ${baseUrl}/api/automations/webhook        # token in X-Webhook-Token header
+POST   ${baseUrl}/api/automations/webhook/:token # fallback for senders without custom headers
 
 # Chips — custom node-setting building blocks (require auth)
 GET    ${baseUrl}/api/chips                 # list

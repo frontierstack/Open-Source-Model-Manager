@@ -328,7 +328,7 @@ function FlowEditor({ showSnackbar, models }) {
     const [running, setRunning] = useState(false);
     const [runId, setRunId] = useState(null);
     const [runResult, setRunResult] = useState(null);
-    const [webhookUrl, setWebhookUrl] = useState('');
+    const [webhookUrl, setWebhookUrl] = useState(null);
     const [copied, setCopied] = useState(false);
     // palette category collapse state — all categories start collapsed by default
     const [collapsedCats, setCollapsedCats] = useState(() => Object.fromEntries(CATEGORY_ORDER.map(c => [c, true])));
@@ -876,7 +876,13 @@ function FlowEditor({ showSnackbar, models }) {
             });
             if (!res.ok) throw new Error('Failed to generate token');
             const d = await res.json();
-            setWebhookUrl(`${window.location.origin}${d.url}`);
+            const origin = window.location.origin;
+            setWebhookUrl({
+                url: `${origin}${d.url}`,
+                header: d.header || 'X-Webhook-Token',
+                token: d.token,
+                legacyUrl: d.legacyUrl ? `${origin}${d.legacyUrl}` : '',
+            });
         } catch (err) { notify(err.message, 'error'); }
     }, [selected]);
 
@@ -1531,7 +1537,7 @@ function FlowEditor({ showSnackbar, models }) {
                         webhookUrl={webhookUrl}
                         onGenWebhook={genWebhook}
                         copied={copied}
-                        onCopyWebhook={() => { navigator.clipboard?.writeText(webhookUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                        onCopyWebhook={(text) => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
                         customChips={customChips}
                         onOpenChipBuilder={() => setChipBuilderOpen(true)}
                     />
@@ -2291,10 +2297,18 @@ function ScheduleChips({ d, onChange }) {
     );
 }
 function WebhookChip({ ctx }) {
+    const w = ctx.webhookUrl;
+    const box = { wordBreak: 'break-all', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 };
+    const curl = w ? `curl -X POST '${w.url}' -H '${w.header}: ${w.token}' -H 'Content-Type: application/json' -d '{}'` : '';
     return (<div className="cf-sec">
-        <button className="cf-add" onClick={ctx.onGenWebhook}><span className="cf-add__plus">+</span> Generate webhook URL</button>
-        {ctx.webhookUrl && <div className="cf-hint" style={{ wordBreak: 'break-all', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>{ctx.webhookUrl} <button className="cf-add" style={{ marginTop: 6 }} onClick={ctx.onCopyWebhook}>{ctx.copied ? 'Copied' : 'Copy'}</button></div>}
-        <div className="cf-hint">POST to this URL to trigger the workflow; the request body becomes the run input.</div>
+        <button className="cf-add" onClick={ctx.onGenWebhook}><span className="cf-add__plus">+</span> {w ? 'Rotate webhook token' : 'Generate webhook token'}</button>
+        {w && <div className="cf-hint" style={box}>
+            <div><b>URL:</b> {w.url}</div>
+            <div><b>Header:</b> {w.header}: {w.token}</div>
+            <button className="cf-add" style={{ marginTop: 6 }} onClick={() => ctx.onCopyWebhook(curl)}>{ctx.copied ? 'Copied' : 'Copy curl command'}</button>
+            {w.legacyUrl && <div style={{ marginTop: 8 }}>Sender can't set headers? Use <span style={{ fontFamily: 'monospace' }}>{w.legacyUrl}</span> instead (the token then appears in logs).</div>}
+        </div>}
+        <div className="cf-hint">POST to the URL with the token in the {w ? w.header : 'X-Webhook-Token'} header; the request body becomes the run input. Rotating invalidates the old token.</div>
     </div>);
 }
 
