@@ -16738,6 +16738,15 @@ function piFollowUpLegwork(entry) {
 // model is a cold re-prefill of all of it (~20 s on the 14B, ~60 s on the 27B).
 const piSessionModel = new Map();
 const PI_STICKY_DOWN_TOKENS = Math.max(0, parseInt(process.env.PI_STICKY_DOWN_TOKENS || '12000', 10) || 0);
+// The context size at which the PRIMARY last served each session, so we know how
+// much a move back to it would have to prefill. The user's intent is that easy
+// work goes to the fast primary — that only pays if the primary is still warm
+// for this session (history only appends, so its cached prefix is reusable and
+// only the delta re-prefills). Above this COLD delta on a primary that has not
+// served this session, the warm secondary answers the easy turn faster, so it
+// stays there. Measured: the 4B prefills ~4200 tok/s, so 24k ≈ 5.7 s cold.
+const piPrimaryWarm = new Map();
+const PI_STICKY_EASY_COLD_TOKENS = Math.max(0, parseInt(process.env.PI_STICKY_EASY_COLD_TOKENS || '24000', 10) || 0);
 
 // ── Pi's compaction point ───────────────────────────────────────────────────
 // Pi compacts when its context passes `contextWindow - reserveTokens` of the
@@ -16814,18 +16823,36 @@ async function buildPiPairPlan(req, requestedInstance, { taskKey, latestUserText
     const piMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const prev = piPreviousTexts(piMessages);
     const plan = leadHandoff.planHandoff({ roles, targetModel, userText: latestUserText, mode: roles.mode, running, hasHistory: piMessages.some(m => m && m.role === 'assistant'), previousText: prev.previousText, lastAssistantText: prev.lastAssistantText, hostAgent: true });
-    // Sticky per session: moving DOWN to the primary re-prefills the whole
-    // session there, which only pays when the context is still small; moving
-    // UP for real work always happens (one cold prefill, then warm).
+    // Sticky per session: once the session is warm on the secondary and the
+    // context is big, moving a turn back to the primary re-prefills there.
+    // But an EASY turn is exactly what the user wants on the fast primary, and
+    // the primary prefills ~6x faster AND usually already holds this session's
+    // prefix from earlier easy turns (history only appends), so it answers as
+    // fast or faster and frees the secondary's single slot. So:
+    //   - a NON-easy solo turn (e.g. an 'auto'-mode lookup) stays on the warm
+    //     secondary — moving a big context to the weaker model to reason over
+    //     is doubly bad;
+    //   - an EASY turn goes to the primary, UNLESS the primary is COLD for this
+    //     session (it has not served it) AND the cold prefill would be large
+    //     enough that the warm secondary clearly wins. The first easy turn in a
+    //     small-context session warms the primary, so this stays rare.
     const keyIdForSession = req.apiKeyData?.id;
     if (pairRequested && keyIdForSession) {
         const was = piSessionModel.get(keyIdForSession);
         const estTokens = Math.round(JSON.stringify(piMessages).length / 3.6);
         if (was && was.model === roles.secondary && plan.runOn === roles.primary && estTokens > PI_STICKY_DOWN_TOKENS) {
-            plan.runOn = roles.secondary;
-            plan.reason = `${plan.reason}; kept on ${roles.secondary} (session context ~${Math.round(estTokens / 1000)}k tokens — moving would re-prefill it)`;
+            const warm = piPrimaryWarm.get(keyIdForSession);
+            const toPrefill = warm ? Math.max(0, estTokens - warm.ctx) : estTokens;
+            const costlyColdPrimary = toPrefill > PI_STICKY_EASY_COLD_TOKENS;
+            if (!plan.easy || costlyColdPrimary) {
+                plan.runOn = roles.secondary;
+                plan.reason = `${plan.reason}; kept on ${roles.secondary} (${plan.easy ? `primary cold for this session, ~${Math.round(toPrefill / 1000)}k to prefill` : `session context ~${Math.round(estTokens / 1000)}k tokens`} — moving would re-prefill it)`;
+            }
         }
         piSessionModel.set(keyIdForSession, { model: plan.runOn, at: Date.now() });
+        // Remember where the primary last saw this session, so a later easy
+        // turn knows how much a return to it would cost.
+        if (plan.runOn === roles.primary) piPrimaryWarm.set(keyIdForSession, { ctx: estTokens, at: Date.now() });
     }
     const offered = piOfferedToolNames(req.body);
     const toolsOffered = offered.has('ask_assistant');
