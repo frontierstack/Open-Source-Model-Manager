@@ -51,6 +51,13 @@ function stripSystemNotes(text) {
     return out;
 }
 const SYSTEM_NOTE_RE = { [Symbol.replace]: (str) => stripSystemNotes(str) };
+// omp/Pi wrap the user's ask with a harness reminder (today's date + cwd,
+// "Do not repeat this information") injected on EVERY turn. Left in, it sits
+// at the FRONT of the ask and defeats every leading-anchored detector —
+// "git status" arrives as "<system-reminder>…</system-reminder> git status",
+// so the greeting / single-command / dev-operation checks never match and the
+// turn is (wrongly) treated as substantial. Strip the whole block.
+const SYS_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/gi;
 // The chat wraps an upload as "=== FILE n: name ===\n<content>\n=== END FILE n ===".
 // Strip the WHOLE block: its contents are the user's data, not their request,
 // and a pasted source file is full of build verbs and artifact nouns.
@@ -58,6 +65,7 @@ const FILE_BLOCK_RE = /===\s*FILE\s+\d+\b[\s\S]*?(?:===\s*END\s+FILE\s+\d+\s*===
 
 function cleanAsk(text) {
     return String(text || '')
+        .replace(SYS_REMINDER_RE, ' ')
         .replace(SYSTEM_NOTE_RE, ' ')
         .replace(FILE_BLOCK_RE, ' ')
         .replace(/^\/(no_?think|think)\b/i, ' ')
@@ -302,6 +310,58 @@ const NO_TOOLS_RE = /\b(?:no|without|don'?t (?:use|do|run|perform)|do not (?:use
 // "no tools", "don't use any tools" — every tool, not just the web.
 const ALL_TOOLS_BANNED_RE = /\b(?:no|without|don'?t (?:use|run)|do not (?:use|run)|never use|avoid)\s+(?:any\s+)?(?:the\s+)?tools?\b/i;
 
+// ── Host-agent operational tasks stay on the fast model ──────────────────────
+// A terminal agent's (omp) turns are overwhelmingly SINGLE operations — run a
+// command, read a file, check git/system state, make one small edit — where
+// the model orchestrates one tool call and reports. Those do not need the
+// slower, stronger model; the heavy lifting a coding agent routes up is a
+// multi-file build/refactor, a real debugging hunt, a codebase audit, or
+// design work (all caught by isSubstantialWork). Before this, `always` mode
+// sent EVERY non-greeting omp turn to the 27B: a week of logs had 0 of 13
+// operational turns ("git status", "run the tests", "what branch am I on?",
+// "cat package.json", "what is 17*23?") run on the 4B. The detector is
+// POSITIVE (only a clear operational signal routes to the fast model) so an
+// ambiguous or reasoning-heavy ask still falls through to the strong model.
+const DEV_OP_VERB_RE = /^(?:please\s+|can you\s+|could you\s+|pls\s+|go\s+(?:ahead\s+)?(?:and\s+)?)?(?:re-?)?(?:run|exec(?:ute)?|test|lint|typecheck|type-?check|build|rebuild|compile|bundle|format|reformat|install|reinstall|uninstall|update|upgrade|bump|pin|add|remove|rm|delete|drop|rename|mv|move|cp|copy|touch|mkdir|create|make|write|append|edit|set|export|unset|enable|disable|start|stop|restart|reload|launch|boot|kill|terminate|pause|resume|deploy|publish|push|pull|fetch|clone|checkout|switch|commit|stage|unstage|stash|pop|merge|rebase|revert|reset|tag|cherry-?pick|diff|log|blame|status|show|list|ls|display|print|echo|cat|head|tail|read|open|view|dump|grep|rg|ag|find|locate|count|check|verify|ping|curl|wget|download|tar|zip|unzip|extract|chmod|chown|which|whereis|env|printenv|ps|top|df|du|free|uptime|date|whoami|pwd|cd|source|npm|npx|yarn|pnpm|pip3?|poetry|cargo|rustc|go|gofmt|docker|docker-compose|make|cmake|node|deno|bun|python3?|ruby|java|javac|mvn|gradle|bash|sh|zsh|git|gh|kubectl|helm|terraform|systemctl|service|journalctl|brew|apt|apt-get|yum|dnf|pacman)\b/i;
+// A question about this machine / repo / project state — resolves to one command.
+const LOCAL_STATE_RE = /\b(branch(?:es)?|commit(?:s|ted)?|HEAD|git|repo|repositor(?:y|ies)|director(?:y|ies)|folders?|cwd|paths?|files?|dirs?|workspace|processe?s?|ports?|disk|space|memory|ram|cpu|pid|container|docker|services?|daemon|versions?|installed|running|listening|staged|unstaged|untracked|modified|remotes?|origin|upstream|logs?|tests?|builds?|node_modules|dependenc(?:y|ies)|packages?|env(?:ironment)?|variables?|time|date|clock|here|current|this (?:repo|project|dir|directory|folder|file|machine|computer|branch|package)|\.(?:js|jsx|ts|tsx|py|json|ya?ml|md|txt|go|rs|sh|c|cpp|h|java|rb|php|html|css|toml|lock|cfg|ini|env|gitignore))\b/i;
+const LOCAL_STATE_Q_RE = /^(?:please\s+)?(?:what(?:'s| is| are)?|which|where(?:'s| is| are)?|is|are|does|do|how (?:much|many|big|large|long|old)|can i|do i|am i|show|list|tell me|give me)\b/i;
+// A heavy tail even after an operational verb — a defect hunt or a
+// project-wide change. (Bare "all/every" is NOT here: "stage all changes",
+// "commit all", "show all branches" are trivial; the real heavy asks are
+// caught by the specific nouns and by isSubstantialWork.)
+const DEV_OP_HEAVY_TAIL_RE = /\b(entire|across (?:the|all)|throughout|breaking changes|refactor\w*|re-?architect\w*|migrat\w*|overhaul|redesign|rewrit\w*|memory leak|leaks?\b|race condition|deadlock|regression|flaky|intermittent\w*|\bbugs?\b|crash\w*|segfault|stack overflow|null pointer|memory corruption|data race|root ?cause|all (?:the )?(?:callers?|usages?|references?|tests?|files?|modules?|components?|breaking))\b/i;
+// Configuration / scaffolding verbs that lead a multi-part setup task — not a
+// single operation ("set up CI with lint, test and deploy").
+const SETUP_LEAD_RE = /^(?:please\s+|can you\s+|could you\s+)?(?:set ?up|configure|provision|scaffold|bootstrap|integrate|wire up)\b/i;
+
+// Arithmetic possibly wrapped in question scaffolding: "what is 17*23?",
+// "compute 2^10", "how much is 5% of 200".
+function isArithmetic(ask) {
+    let t = String(ask || '').trim().replace(/\?+\s*$/, '').trim();
+    t = t.replace(/^(?:what(?:'s| is| are)?|whats|calculate|compute|eval(?:uate)?|how much is|solve|the answer to|tell me)\s+/i, '').trim();
+    t = t.replace(/\s*=\s*$/, '').trim();
+    if (ARITH_RE.test(t) && /\d/.test(t) && /[+\-*/x×÷^%]/.test(t)) return true;
+    // Word operators: "17 times 23", "5 plus 3", "100 divided by 4".
+    if (/^\(?\d[\d,.\s]*\)?\s*(?:times|multiplied by|plus|minus|less|divided by|over|modulo|mod|to the power of|percent of|%\s*of)\s+\(?\d/i.test(t)) return true;
+    return false;
+}
+
+// Is this a single, quick terminal operation (vs heavy lifting or a knowledge
+// question)? Called only after isSubstantialWork said NOT substantial, so the
+// multi-file / analysis / build-an-artifact work is already filtered out.
+function isDevOperation({ ask, words }) {
+    if (MULTI_STEP2.test(ask) || /\bthen\b/i.test(ask)) return false;   // a plan, not one op
+    if ((ask.match(/\band\b/gi) || []).length > 1) return false;        // several ops chained
+    if ((ask.match(/,/g) || []).length >= 2) return false;             // a list of things to do
+    if (SETUP_LEAD_RE.test(ask)) return false;                         // multi-part setup, not one op
+    if (DEV_OP_HEAVY_TAIL_RE.test(ask)) return false;                   // heavy tail after the verb
+    if (words > 20) return false;
+    if (DEV_OP_VERB_RE.test(ask)) return 'a single operation to run';
+    if (words <= 14 && LOCAL_STATE_Q_RE.test(ask) && LOCAL_STATE_RE.test(ask)) return 'a question about local/repo state';
+    return false;
+}
+
 // The ask is about the USER'S OWN MACHINE: its files, settings, history,
 // installed programs. A Pi background job runs on the server and can only
 // search the web, so it has nothing to contribute — before this, "find the ssh
@@ -466,7 +526,7 @@ function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHis
     if (URL_RE.test(ask)) return { easy: false, reason: 'names a link' };
     if (SECURITY_RE.test(ask)) return { easy: false, reason: 'security work' };
     const words = ask.split(/\s+/).filter(Boolean).length;
-    if (ARITH_RE.test(ask) && /\d/.test(ask)) return { easy: true, reason: 'arithmetic' };
+    if (isArithmetic(ask)) return { easy: true, reason: 'arithmetic' };
     if (GO_AHEAD_RE.test(ask)) return { easy: false, reason: 'resumes earlier work' };
     if (words <= 10 && GREETING_RE.test(ask) && !BUILD_VERB.test(ask) && !ANALYSIS_VERB.test(ask) && !FORECAST_RE.test(ask)) {
         return { easy: true, reason: 'greeting or acknowledgement' };
@@ -498,6 +558,16 @@ function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHis
     // calls on a Windows host it took for Linux.
     if (verdict.toolsForbidden && (!hostAgent || ALL_TOOLS_BANNED_RE.test(ask)) && words <= 40 && !LONG_DEMAND.test(ask) && !MULTI_STEP2.test(ask)) {
         return { easy: true, reason: 'tools ruled out and nothing long to write' };
+    }
+    // On a terminal agent a non-substantial turn is almost always a single
+    // operation — run a command, read a file, check git/system state, make one
+    // small edit. Keep those on the fast model. Gated on hostAgent so web-chat
+    // routing is untouched, and on !toolsForbidden so the careful handling
+    // above still sends an open-ended "find X on my machine, no web search" to
+    // the strong model.
+    if (hostAgent && !verdict.toolsForbidden) {
+        const op = isDevOperation({ ask, words });
+        if (op) return { easy: true, reason: op };
     }
     // Questions — one-hop or not — need world knowledge or a lookup, and a
     // wrong fact is worse than a slower right one (see the measurements above).
