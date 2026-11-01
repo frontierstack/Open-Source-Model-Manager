@@ -326,13 +326,28 @@ async function clearAll(userId) {
     });
 }
 
+/** Archived episodes, newest first, optionally for one theme. */
+async function listEpisodes(userId, { theme = null, limit = 500 } = {}) {
+    let arc = await readArchive(userId);
+    if (!arc.backfilled) {
+        await serial(userId, async () => {
+            arc = await readArchive(userId);
+            if (await ensureBackfilled(userId, arc)) await writeArchive(userId, arc);
+        });
+    }
+    const all = Object.values(arc.episodes)
+        .filter(r => !theme || r.theme === theme)
+        .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    return { total: all.length, episodes: all.slice(0, Math.max(1, Math.min(limit, 2000))) };
+}
+
 async function count(userId) {
     const arc = await readArchive(userId);
     return Object.keys(arc.episodes).length;
 }
 
 module.exports = {
-    archiveEpisode, recallSimilar, renderSimilar, removeTheme, clearAll, count,
+    archiveEpisode, recallSimilar, renderSimilar, removeTheme, clearAll, count, listEpisodes,
     // pure, exported for tests
     cleanTask, redactSecrets, stripRuntimeTags, toRecord, toolsFromApproachText,
     MIN_SIM, MIN_SIM_NO_THEME, ROOT,

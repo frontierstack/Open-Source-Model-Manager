@@ -31138,6 +31138,21 @@ app.post('/api/memories', requireAuth, async (req, res) => {
     }
 });
 
+// The account's archive of past tasks (the vector index behind "similar past
+// tasks"), newest first. Admins may read another account's with ?userId=.
+app.get('/api/memories/episodes', requireAuth, async (req, res) => {
+    try {
+        const own = memAccountId(req);
+        const userId = (req.query.userId && callerIsAdmin(req)) ? String(req.query.userId) : own;
+        const theme = req.query.theme ? String(req.query.theme) : null;
+        const limit = parseInt(req.query.limit, 10) || 500;
+        const out = await episodeIndex.listEpisodes(userId, { theme, limit });
+        res.json({ success: true, userId, theme, ...out });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/memories/:id', requireAuth, async (req, res) => {
     try {
         const found = await resolveOwnedCoreMemory(req);

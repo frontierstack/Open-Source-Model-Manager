@@ -117,6 +117,10 @@ export default function MemoryPanel() {
     const [testText, setTestText] = React.useState('');
     const [testResult, setTestResult] = React.useState(null);
     const [testing, setTesting] = React.useState(false);
+    // Archive of past tasks for the selected theme (the vector index the
+    // "similar past tasks" recall searches).
+    const [archive, setArchive] = React.useState({ key: null, total: 0, episodes: [], loading: false, error: null });
+    const [archiveAll, setArchiveAll] = React.useState(false);
 
     const loadMemories = React.useCallback(async ({ silent = false } = {}) => {
         if (!silent) setLoading(true);
@@ -175,6 +179,31 @@ export default function MemoryPanel() {
         setShowHistory(false);
     }, [selectedKey, selected?.rec?.notes]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    const loadArchive = React.useCallback(async (row) => {
+        if (!row) return;
+        setArchive((a) => ({ ...a, key: row.key, loading: true, error: null }));
+        try {
+            const qs = new URLSearchParams({ theme: row.theme.key });
+            if (row.ownerName && row.userId) qs.set('userId', row.userId);
+            const r = await jsonFetch(`/api/memories/episodes?${qs}`);
+            setArchive({ key: row.key, total: r.total || 0, episodes: r.episodes || [], loading: false, error: null });
+        } catch (e) {
+            setArchive({ key: row.key, total: 0, episodes: [], loading: false, error: e.message });
+        }
+    }, []);
+
+    React.useEffect(() => {
+        setArchiveAll(false);
+        if (selected) loadArchive(selected);
+    }, [selectedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Keep the archive in step with the theme's own refreshes (a finished task
+    // bumps its run count).
+    const selectedRuns = selected?.rec?.stats?.runs;
+    React.useEffect(() => {
+        if (selected && archive.key === selected.key && !archive.loading) loadArchive(selected);
+    }, [selectedRuns]); // eslint-disable-line react-hooks/exhaustive-deps
+
     const saveNotes = async () => {
         if (!selected) return;
         setSavingNotes(true);
@@ -217,6 +246,7 @@ export default function MemoryPanel() {
         try {
             await jsonFetch(`/api/memories/${selected.rec.id}`, { method: 'DELETE' });
             await loadMemories({ silent: true });
+            loadArchive(selected);
         } catch (e) { setError(e.message); }
     };
 
@@ -359,13 +389,33 @@ export default function MemoryPanel() {
                         {testResult && (
                             <div className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
                                 {testResult.error ? <span style={{ color: '#ef4444' }}>{testResult.error}</span>
-                                    : !testResult.theme ? 'No theme — nothing would be recalled for this ask.'
                                     : (
                                         <>
-                                            <span>Theme: <b>{testResult.label}</b>. </span>
-                                            {testResult.recalled
+                                            {!testResult.theme
+                                                ? <span>No theme matches this ask{testResult.recalled ? '.' : ' — nothing would be recalled.'} </span>
+                                                : <span>Theme: <b>{testResult.label}</b>. </span>}
+                                            {testResult.recalled && testResult.recalled.theme
                                                 ? <span>The {testResult.recalled.label} core memory would be recalled ({testResult.recalled.runs} task{testResult.recalled.runs === 1 ? '' : 's'}, ~{testResult.recalled.tokens} tokens).</span>
-                                                : <span>That theme has no memory yet, so nothing would be injected.</span>}
+                                                : testResult.theme && !testResult.recalled
+                                                    ? <span>That theme has no memory yet, and no past task is similar enough, so nothing would be injected.</span>
+                                                    : testResult.recalled
+                                                        ? <span>Only similar past tasks would be recalled (~{testResult.recalled.tokens} tokens).</span>
+                                                        : null}
+                                            {testResult.recalled?.similar?.length ? (
+                                                <div className="mt-1.5">
+                                                    <div className="mb-1 text-[0.66rem] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Similar past tasks</div>
+                                                    <ul className="space-y-1">
+                                                        {testResult.recalled.similar.map((m, i) => (
+                                                            <li key={i} className="flex items-baseline gap-1.5">
+                                                                <Chip tone="accent" title="Similarity to this ask">{`${Math.round(m.score * 100)}%`}</Chip>
+                                                                <span className="min-w-0 flex-1 truncate" title={m.task}>{m.task}</span>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            ) : testResult.recalled ? (
+                                                <div className="mt-1" style={{ color: 'var(--text-tertiary)' }}>No past task is similar enough to add.</div>
+                                            ) : null}
                                         </>
                                     )}
                             </div>
@@ -525,6 +575,48 @@ export default function MemoryPanel() {
                                     </ul>
                                 </Section>
                             ) : null}
+
+                            <Section
+                                title={`Past tasks archive${archive.key === selected.key && archive.total ? ` · ${archive.total}` : ''}`}
+                                hint="Every finished task of this kind, kept beyond the recent few above. When a new ask is close to one of these, the one or two most similar are recalled with this memory."
+                            >
+                                {archive.key !== selected.key || (archive.loading && !archive.episodes.length) ? (
+                                    <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                                        <SpinnerIcon size={13} className="animate-spin" /> Loading…
+                                    </div>
+                                ) : archive.error ? (
+                                    <div className="text-xs" style={{ color: '#ef4444' }}>{archive.error}</div>
+                                ) : !archive.episodes.length ? (
+                                    <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>No archived tasks yet — tasks that finish cleanly are added here.</div>
+                                ) : (
+                                    <>
+                                        <ul className="space-y-1.5">
+                                            {(archiveAll ? archive.episodes : archive.episodes.slice(0, 8)).map((e) => (
+                                                <li key={e.id} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-primary)' }}>
+                                                    <div className="flex items-baseline gap-2">
+                                                        <div className="min-w-0 flex-1 truncate text-sm" title={e.task}>{e.task}</div>
+                                                        <span className="shrink-0 text-[0.66rem]" style={{ color: 'var(--text-tertiary)' }}>{relativeTime(e.at)}</span>
+                                                    </div>
+                                                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                                                        {e.calls != null && <Chip>{`${e.calls} call${e.calls === 1 ? '' : 's'}`}</Chip>}
+                                                        {e.seconds ? <Chip>{fmtSeconds(e.seconds)}</Chip> : null}
+                                                        {(e.tools || []).slice(0, 4).map((t) => <Chip key={t} tone="outline">{t}</Chip>)}
+                                                    </div>
+                                                    {e.approach && <div className="mt-1 font-mono text-[0.7rem] leading-relaxed" style={{ color: 'var(--text-tertiary)', wordBreak: 'break-word' }}>{e.approach}</div>}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                        {archive.episodes.length > 8 && (
+                                            <button
+                                                type="button" onClick={() => setArchiveAll((v) => !v)}
+                                                className="mt-2 text-xs font-medium" style={{ color: 'var(--accent-primary)' }}
+                                            >
+                                                {archiveAll ? 'Show fewer' : `Show all ${archive.episodes.length}`}
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+                            </Section>
                         </>
                     )}
                 </div>
