@@ -19808,9 +19808,11 @@ const chatStreamHandlerInner = async (req, res) => {
             }
         }
 
-        // Use container name for Docker network communication
-        const targetHost = instanceHost(targetInstance);
-        const targetPort = targetInstance.internalPort || targetInstance.port;
+        // Use container name for Docker network communication. `let`: a solo
+        // turn the fast model keeps failing at moves to the strong one
+        // mid-turn (see the escalation check in the tool loop).
+        let targetHost = instanceHost(targetInstance);
+        let targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Register the streaming job IMMEDIATELY so refresh / conversation
         // switch-back can see that work is in flight. Prep work (memory
@@ -22426,6 +22428,10 @@ const chatStreamHandlerInner = async (req, res) => {
         let pendingJobsNote = null;
         let silentRoundReminders = 0;
         let failureReminders = 0;
+        // On-the-fly escalation (same rule as omp's /v1 path, piStruggle.js):
+        // failed calls this turn, and the current run of them in a row.
+        let escalationFails = 0, escalationStreak = 0, escalatedFrom = null;
+        const escalationLastErrors = [];
         let msiRedirects = 0;
         const leadStepLog = [];
         // The file/URL/query a step worked on — what makes a later job with the
@@ -25918,6 +25924,11 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     || (typeof parsedRes.returncode === 'number' && parsedRes.returncode !== 0)
                                     || (typeof parsedRes.exitCode === 'number' && parsedRes.exitCode !== 0)));
                                 if (recFailed) roundFailedCalls.push(recName);
+                                if (recFailed) {
+                                    escalationFails++; escalationStreak++;
+                                    escalationLastErrors.push(`${recName}: ${String(parsedRes.error || parsedRes.stderr || parsedRes.message || '').split('\n')[0].slice(0, 100)}`);
+                                    if (escalationLastErrors.length > 3) escalationLastErrors.shift();
+                                } else escalationStreak = 0;
                                 if (parsedRes && typeof parsedRes === 'object') {
                                     // Path tools echo the auto-resolved directory —
                                     // record it so N garbled paths → one target is
@@ -26526,6 +26537,42 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         console.log(`[Chat Stream] Failed-call reminder ${failureReminders}/${FAILURE_REMINDER_MAX}: ${names}`);
                         failureReminder = { role: 'system', content: `[${names} failed. Read its error and any hint, then change the route: a different tool, source or argument — never the same call again. If this part cannot be done, continue with the rest and say so in your answer.]` };
                     }
+                    // ── Hand the turn to the strong model when the fast one
+                    // keeps failing ──────────────────────────────────────────
+                    // Decided from this turn's own results, not from the topic:
+                    // a solo turn on the pair PRIMARY whose executed calls failed
+                    // PI_ESCALATE_FAIL_STREAK times in a row (or _TOTAL in all)
+                    // continues on the loaded SECONDARY, which sees everything
+                    // so far. Once per turn; never on a delegated/sidecar turn.
+                    let escalationMsg = null;
+                    if (!escalatedFrom && !req.delegate && !req.sidecar && process.env.PI_ESCALATE !== '0'
+                        && handoff && !handoff.engaged && handoff.secondaryLoaded
+                        && handoff.secondaryLoaded !== targetModel && modelRoles.primary === targetModel
+                        && (escalationStreak >= piStruggle.FAIL_STREAK || escalationFails >= piStruggle.FAIL_TOTAL)) {
+                        const strongInst = modelInstances.get(handoff.secondaryLoaded);
+                        if (strongInst && strongInst.status === 'running') {
+                            escalatedFrom = targetModel;
+                            targetModel = handoff.secondaryLoaded;
+                            targetInstance = strongInst;
+                            targetHost = instanceHost(targetInstance);
+                            targetPort = targetInstance.internalPort || targetInstance.port;
+                            retargetBusy(req, targetModel);
+                            if (toolCtx) {
+                                toolCtx.model = targetModel;
+                                // The fast model is now the one to hand legwork to.
+                                if (toolCtx.assistantModel === targetModel) toolCtx.assistantModel = escalatedFrom;
+                            }
+                            const why = `${escalationFails} failed call${escalationFails === 1 ? '' : 's'}${escalationStreak > 1 ? `, ${escalationStreak} in a row` : ''}`;
+                            console.log(`[Chat Stream] Escalating turn from ${escalatedFrom} to ${targetModel}: ${why} — last: ${escalationLastErrors.slice(-1)[0] || '?'}`);
+                            try { broadcast({ type: 'log', level: 'info', targetUserId: req.userId, message: `[Chat] ${escalatedFrom} struggling (${why}) — ${targetModel} takes over the turn` }); } catch (_) { /* */ }
+                            const chip = openHandoffChip({
+                                type: 'native_tool_call', label: 'escalate', name: 'escalate', args: { from: escalatedFrom, to: targetModel },
+                                purpose: `Handing the task to ${targetModel} after ${why}`, model: targetModel, _startedAt: Date.now(),
+                            });
+                            closeHandoffChip(chip, { result: { from: escalatedFrom, to: targetModel, failedCalls: escalationFails, lastErrors: escalationLastErrors.slice() } });
+                            escalationMsg = { role: 'system', content: `[You are ${targetModel}, taking over this turn from ${escalatedFrom} after ${why}. Any earlier instruction about consulting a stronger model refers to you. Read why those calls failed, change the approach rather than the spelling, and finish the user's request.]` };
+                        }
+                    }
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -26534,6 +26581,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             tool_calls: safeToolCalls,
                         },
                         ...toolResultMessages,
+                        ...(escalationMsg ? [escalationMsg] : []),
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
                         ...(assistantMsg ? [assistantMsg] : []),
                         ...(idleMsg ? [idleMsg] : []),
