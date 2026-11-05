@@ -26569,7 +26569,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 type: 'native_tool_call', label: 'escalate', name: 'escalate', args: { from: escalatedFrom, to: targetModel },
                                 purpose: `Handing the task to ${targetModel} after ${why}`, model: targetModel, _startedAt: Date.now(),
                             });
-                            closeHandoffChip(chip, { result: { from: escalatedFrom, to: targetModel, failedCalls: escalationFails, lastErrors: escalationLastErrors.slice() } });
+                            closeHandoffChip(chip, { purpose: `Handed the task to ${targetModel} after ${why}`, result: { from: escalatedFrom, to: targetModel, failedCalls: escalationFails, lastErrors: escalationLastErrors.slice() } });
                             escalationMsg = { role: 'system', content: `[You are ${targetModel}, taking over this turn from ${escalatedFrom} after ${why}. Any earlier instruction about consulting a stronger model refers to you. Read why those calls failed, change the approach rather than the spelling, and finish the user's request.]` };
                         }
                     }

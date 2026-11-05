@@ -115,7 +115,7 @@ export default function ToolCallBlock({ tool }) {
     // The two-model hand-off chips — the brief the primary hands over and the
     // queue of jobs handed back. Their own icon so the exchange between the
     // two models is picked out of a long tool list at a glance.
-    const isHandoff = type === 'native_tool_call' && (label === 'first_pass' || label === 'ask_assistant' || label === 'await_assistant');
+    const isHandoff = type === 'native_tool_call' && (label === 'first_pass' || label === 'ask_assistant' || label === 'await_assistant' || label === 'escalate');
     const IconComponent =
         isHandoff ? ArrowLeftRight :
         (type === 'native_tool_call' && label === 'web') ? Globe :
@@ -130,6 +130,7 @@ export default function ToolCallBlock({ tool }) {
     const toolName =
         type === 'web_search' ? 'web.search'
             : type === 'url_fetch' ? 'web.fetch'
+            : (type === 'native_tool_call' && label === 'escalate') ? 'hand-off to stronger model'
             : type === 'native_tool_call' ? label
             : label.toLowerCase().replace(/\s+/g, '.');
 

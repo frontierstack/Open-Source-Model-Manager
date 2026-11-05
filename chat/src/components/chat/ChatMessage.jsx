@@ -84,6 +84,7 @@ const TOOL_VERBS = {
     first_pass: 'Planning lookups',
     ask_assistant: 'Handing work to the other model',
     await_assistant: 'Waiting on the other model',
+    escalate: 'Handing the task to the stronger model',
 };
 function verbFor(t) {
     const name = (t && (t.label || t.name)) || '';

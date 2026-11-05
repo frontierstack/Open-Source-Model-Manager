@@ -58,6 +58,7 @@ const VERBS = {
     first_pass:        ['Planning lookups',        'Planned lookups'],
     ask_assistant:     ['Handing work to the other model', 'Handed work to the other model'],
     await_assistant:   ['Waiting on the other model', 'Waited on the other model'],
+    escalate:          ['Handing the task to the stronger model', 'Handed the task to the stronger model'],
 };
 
 function humanize(name) {
