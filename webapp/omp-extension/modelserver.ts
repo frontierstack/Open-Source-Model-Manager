@@ -393,14 +393,16 @@ export function renderHostBlock(h: HostInfo): string {
         L.push(`Your bash tool is ${h.shell === "git-bash" ? "Git Bash (MSYS2)" : "omp's built-in bash-compatible shell"} running ON WINDOWS — this is not a Linux machine:`);
         L.push(`- ${h.home} is ${posixHome} (~ works). Linux paths such as /home, /root, /etc/ssh, /var/log do not exist here; do not probe them.`);
         L.push("- %VAR% is cmd syntax and does NOT expand in bash. Use $USERPROFILE, $APPDATA, $LOCALAPPDATA, $PROGRAMDATA (they hold Windows paths; `cygpath -u \"$APPDATA\"` converts one).");
-        L.push("- Windows tools work from bash: `powershell.exe -NoProfile -Command '…'` (single quotes, so bash leaves $ alone), `reg query`, `cmd //c …`."
+        L.push("- For PowerShell use the `powershell` tool (script as-is, no bash quoting); never wrap a PowerShell pipeline in `powershell.exe -Command \"…\"` inside bash — bash eats $_ and runs pipes outside the quotes itself.");
+        L.push("- Installed software: Store/UWP apps = `Get-AppxPackage | Where-Object { -not $_.IsFramework -and $_.SignatureKind -eq 'Store' }` (Name, Version, PackageFamilyName; -AllUsers needs admin) or `winget list --source msstore`; desktop programs = the Uninstall keys `HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*`, its WOW6432Node twin and HKCU's, or `winget list`.");
+        L.push("- Other Windows tools from bash: `reg query`, `cmd //c …`."
             + (h.shell === "git-bash" ? " Git Bash rewrites a /flag into a path — prefix such commands with MSYS_NO_PATHCONV=1, e.g. `MSYS_NO_PATHCONV=1 reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /s`." : ""));
         L.push("- Programs keep their settings and history in %APPDATA% (Roaming), %LOCALAPPDATA%, %PROGRAMDATA% and the registry (HKCU\\Software, HKLM\\SOFTWARE), not in dotfiles. Shell history: ~/.bash_history (Git Bash) and $APPDATA/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt (PowerShell). OpenSSH: ~/.ssh and C:\\ProgramData\\ssh.");
     } else if (h.shell === "wsl") {
         const wu = h.windowsUsers && h.windowsUsers.length ? h.windowsUsers.map(u => `/mnt/c/Users/${u}`).join(", ") : "/mnt/c/Users/<name>";
         L.push(`Linux under WSL on a Windows PC${h.distro ? ` (${h.distro})` : ""}${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
         L.push(`- Windows drives are mounted at /mnt/<letter> (C: = /mnt/c). The Windows user profile is ${wu}: Windows programs keep their settings and history THERE (AppData/Roaming, AppData/Local), not in ${h.home}.`);
-        L.push("- Windows tools run from this shell: powershell.exe, cmd.exe, reg.exe (e.g. `powershell.exe -NoProfile -Command '…'`).");
+        L.push("- Windows tools run from this shell: cmd.exe, reg.exe. For PowerShell use the `powershell` tool (script as-is, no bash quoting).");
     } else if (h.platform === "darwin") {
         L.push(`macOS (Darwin ${h.release})${h.user ? `, user "${h.user}"` : ""}, home ${h.home}.`);
         L.push("- Programs keep settings in ~/Library/Application Support and ~/Library/Preferences (`defaults read <domain>`); BSD tools, so GNU-only flags may fail.");
@@ -574,6 +576,7 @@ export default async function (ompApi: ExtensionAPI) {
     // register FIRST so they work even when the server is unreachable or
     // the API key is missing.
     registerInteractiveShellTools(pi);
+    registerPowerShellTool(pi);
     registerLoopGuard(pi);
 
     if (!apiKey) {
@@ -1986,6 +1989,95 @@ const SHELL_DOCTRINE =
     "(passwords, y/n prompts, REPL input, ctrl-c); shell_read polls a long-running " +
     "command. Sessions persist across your turns until shell_close.";
 
+/**
+ * POWERSHELL TOOL (2026-11-05, don't regress). On a Windows host the model
+ * drove PowerShell THROUGH bash: `powershell.exe -Command "… $_.Name …"` —
+ * bash expands $_ inside double quotes (to its last argument), and a pipe
+ * outside the quotes (`… 2>&1 | Select-String`) runs the cmdlet in bash
+ * ("command not found: Select-String"). Every retry changed the quoting, so
+ * no repeat guard fired, and the "list my Store apps" turn never produced the
+ * table. This tool takes the script VERBATIM and hands it to powershell.exe as
+ * -EncodedCommand (UTF-16LE base64), so no shell ever re-parses it.
+ */
+export function powershellAvailable(): boolean {
+    if (process.env.MODELSERVER_POWERSHELL_EXE) return true;   // test override (e.g. pwsh on Linux)
+    if (process.platform === "win32") return true;
+    if (process.platform !== "linux") return false;
+    try { return /microsoft|wsl/i.test(fs.readFileSync("/proc/version", "utf8")); } catch { return false; }
+}
+
+export const POWERSHELL_MAX_SCRIPT = 10_000;
+
+export function encodePowerShell(script: string, width = 400): string {
+    const wrapped =
+        "$ProgressPreference='SilentlyContinue'\n" +
+        "try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}\n" +
+        "$Error.Clear()\n" +
+        `& {\n${script}\n} *>&1 | Out-String -Width ${width}\n` +
+        "if ($Error.Count) { [Console]::Error.WriteLine(\"[$($Error.Count) error(s) above]\"); exit 1 }\n";
+    return Buffer.from(wrapped, "utf16le").toString("base64");
+}
+
+function runPowerShell(script: string, timeoutMs: number, cwd?: string): Promise<{ out: string; code: number | null; timedOut: boolean }> {
+    return new Promise((resolveP) => {
+        const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(script)];
+        let out = "";
+        let timedOut = false;
+        let child: ChildProcess;
+        try {
+            child = spawn(process.env.MODELSERVER_POWERSHELL_EXE || "powershell.exe", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] } as any);
+        } catch (e) {
+            resolveP({ out: `failed to start powershell.exe: ${(e as Error).message}`, code: -1, timedOut: false });
+            return;
+        }
+        const add = (b: Buffer) => { out += b.toString("utf8"); if (out.length > 400_000) out = out.slice(-300_000); };
+        child.stdout?.on("data", add);
+        child.stderr?.on("data", add);
+        const t = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs);
+        child.on("error", (e) => { out += `\n[powershell.exe: ${e.message}]`; });
+        child.on("close", (code) => { clearTimeout(t); resolveP({ out, code, timedOut }); });
+    });
+}
+
+function registerPowerShellTool(pi: ExtensionAPI): boolean {
+    if (!powershellAvailable() || process.env.MODELSERVER_POWERSHELL_TOOL === "0") return false;
+    try {
+        (pi as any).registerTool({
+            name: "powershell",
+            label: "powershell",
+            description:
+                "Run a Windows PowerShell script on THIS machine and return its output. Pass the script exactly as you would type it in a " +
+                "PowerShell window — $_, pipes, quotes and braces need NO escaping. Use this instead of `powershell.exe -Command` inside bash.",
+            parameters: Type.Object({
+                script: Type.String({ description: "PowerShell code, run as-is (multi-line is fine)" }),
+                timeoutMs: Type.Optional(Type.Number({ description: "Max ms to wait (default 60000, max 600000)" })),
+                cwd: Type.Optional(Type.String({ description: "Working directory" })),
+            }),
+            async execute(_id: string, a: any) {
+                const script = String(a?.script ?? a?.command ?? "").trim();
+                if (!script) throw new Error("script is empty");
+                if (script.length > POWERSHELL_MAX_SCRIPT) {
+                    throw new Error(`script is ${script.length} chars (max ${POWERSHELL_MAX_SCRIPT}); write it to a .ps1 with your write tool and run: & 'C:\\path\\to\\file.ps1'`);
+                }
+                const timeout = Math.min(Math.max(Number(a?.timeoutMs) || 60_000, 1_000), 600_000);
+                const r = await runPowerShell(script, timeout, a?.cwd ? String(a.cwd) : undefined);
+                let text = r.out.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+                const cap = 16_000;
+                if (text.length > cap) text = `${text.slice(0, cap * 0.8)}\n… [${text.length - cap} chars omitted — filter with Where-Object / Select-Object -First] …\n${text.slice(-cap * 0.2)}`;
+                const status = r.timedOut ? `timed out after ${timeout} ms` : `exit ${r.code}`;
+                if ((r.code ?? 1) !== 0 || r.timedOut) {
+                    throw new Error(`[powershell — ${status}]\n${text || "(no output)"}`);
+                }
+                return { content: [{ type: "text", text: text || "(no output)" }], details: { status } };
+            },
+        });
+        return true;
+    } catch (e) {
+        console.error("[modelserver] failed to register powershell:", e);
+        return false;
+    }
+}
+
 function registerInteractiveShellTools(pi: ExtensionAPI): number {
     let n = 0;
     const reg = (def: any) => {
@@ -2349,8 +2441,27 @@ export function loopOutcomeSig(content: unknown, isError?: boolean): string {
 }
 
 /** Why a bash command can never see shell state from an earlier call, or "". */
+/** A PowerShell pipeline pushed through bash quoting, or "". */
+export function bashPowerShellHint(command: string): string {
+    const c = String(command || "");
+    if (!/\b(?:powershell|pwsh)(?:\.exe)?\b/i.test(c)) return "";
+    const dq = /-(?:c|command)\s+"([^"]*)/i.exec(c);
+    const outside = c.replace(/"[^"]*"|'[^']*'/g, "");
+    const reasons: string[] = [];
+    if (dq && /\$/.test(dq[1])) reasons.push("bash expanded the $ variables (e.g. $_) inside the double quotes before PowerShell saw them");
+    if (/\|\s*(?:[A-Z][a-z]+-[A-Z]\w+|%|\?|select|where|sort|format-\w+|ft|fl)\b/i.test(outside.slice(outside.search(/powershell|pwsh/i)))) {
+        reasons.push("the pipe after the closing quote runs in bash, which has no PowerShell cmdlets");
+    }
+    if (!reasons.length) return "";
+    return `This command was mangled before PowerShell ran it: ${reasons.join("; ")}. ` +
+        "Use the powershell tool instead and pass the script exactly as you would type it in a PowerShell window, " +
+        "e.g. powershell {script: \"Get-AppxPackage | Where-Object { -not $_.IsFramework } | Select-Object Name, Version | Format-Table -AutoSize\"}.";
+}
+
 export function bashFreshShellHint(command: string): string {
     const c = String(command || "");
+    const ps = (typeof process !== "undefined" && powershellAvailable()) ? bashPowerShellHint(c) : "";
+    if (ps) return ps;
     // Started a background job in THIS call: wait/jobs refer to it legitimately.
     const bare = c.replace(/&&|\|&|\d?>&\d?|&>>?|<&\d?/g, " ");
     const startsChild = /&/.test(bare) || /\bnohup\b|\bsetsid\b|\bStart-Process\b/.test(c);
@@ -2426,7 +2537,7 @@ export function createLoopGuard(opts: { noteAt?: number; blockAt?: number; slowN
             // shell state: say so right away, before it becomes a loop.
             if (toolName === "bash") {
                 const hint = bashFreshShellHint(String((input as any)?.command || ""));
-                if (hint && !hinted.has(key) && (same.length >= 2 || /\b(?:wait|jobs|fg)\b/.test(String((input as any)?.command || "")))) {
+                if (hint && !hinted.has(key) && (same.length >= 2 || /\b(?:wait|jobs|fg|powershell|pwsh)\b/i.test(String((input as any)?.command || "")))) {
                     hinted.add(key);
                     notes.push(hint);
                 }
