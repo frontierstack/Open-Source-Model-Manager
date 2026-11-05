@@ -315,6 +315,7 @@ const modelRolesSvc = require('./services/modelRoles');
 const turnRouting = require('./services/turnRouting');
 const v1ContextGuard = require('./services/v1ContextGuard');
 const piLoopGuard = require('./services/piLoopGuard');
+const piStruggle = require('./services/piStruggle');
 const leadHandoff = require('./services/leadHandoff');
 const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
@@ -30655,6 +30656,50 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     }
                 }
             } catch (e) { console.warn('[omp/Pair] skipped:', e.message); }
+        }
+
+        // ── Pi: hand a task the fast model is failing at to the strong one ──
+        // Decided per request from the task's own tool results, not by topic:
+        // a solo task on the fast primary whose calls keep failing (two in a
+        // row, or three in all) moves to the secondary, which gets the whole
+        // history incl. the failures, and stays there for the rest of the task
+        // (the cached plan is updated). The next user message is planned anew.
+        if (req.method === 'POST' && req.path === '/v1/chat/completions' && piClient
+            && Array.isArray(req.body?.messages) && process.env.PI_ESCALATE !== '0') {
+            try {
+                const pr = await resolvePiPairRoles(req);
+                const cur = piInstanceName(firstInstance);
+                const strong = pr.enabled ? modelInstances.get(pr.roles.secondary) : null;
+                if (strong && strong.status === 'running' && cur === pr.roles.primary && pr.roles.secondary !== cur
+                    && !isPiSummarizerBody(req.body)) {
+                    const st = piStruggle.assessStruggle(req.body.messages);
+                    if (st.struggling) {
+                        firstInstance = strong;
+                        targetHost = instanceHost(firstInstance);
+                        targetPort = firstInstance.internalPort || firstInstance.port;
+                        targetUrl = `http://${targetHost}:${targetPort}${req.originalUrl}`;
+                        if (firstInstance.backend === 'sglang' && firstInstance.config?.hfRepoId) req.body.model = firstInstance.config.hfRepoId;
+                        const msgs = req.body.messages;
+                        const last = msgs[msgs.length - 1];
+                        if (last && last.role === 'tool') {
+                            const note = piStruggle.handoverNote(st, cur);
+                            msgs[msgs.length - 1] = typeof last.content === 'string' ? { ...last, content: last.content + note }
+                                : Array.isArray(last.content) ? { ...last, content: [...last.content, { type: 'text', text: note }] } : last;
+                        }
+                        // Keep the rest of this task on the strong model.
+                        const latest = v1LatestUserText(msgs);
+                        const keyId = req.apiKeyData?.id;
+                        if (keyId && latest) {
+                            const tk = `${keyId}|${msgs.filter(m => m?.role === 'user').length}|${crypto.createHash('sha1').update(latest).digest('hex')}`;
+                            const hit = piPairTasks.get(tk);
+                            if (hit && hit.plan) { hit.plan.runOn = pr.roles.secondary; hit.plan.reason = `${hit.plan.reason}; escalated to ${pr.roles.secondary} after ${st.failed} failed calls`; }
+                            piSessionModel.set(keyId, { model: pr.roles.secondary, at: Date.now() });
+                        }
+                        console.log(`[omp/Pair] escalating ${authName}'s task from ${cur} to ${pr.roles.secondary}: ${st.failed}/${st.calls} tool calls failed (${st.streak} in a row) — last: ${st.lastErrors.slice(-1)[0] || '?'}`);
+                        broadcast({ type: 'log', level: 'info', targetUserId: req.userId, message: `[omp/Pair] ${cur} struggling (${st.failed}/${st.calls} calls failed) — ${pr.roles.secondary} takes over the task` });
+                    }
+                }
+            } catch (e) { console.warn('[omp/Pair] escalation check skipped:', e.message); }
         }
 
         // ── Pi: a request must run on a model that can hold it ──────────────
