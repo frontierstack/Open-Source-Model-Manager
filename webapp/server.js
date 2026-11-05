@@ -32409,53 +32409,73 @@ app.use((req, res) => {
                 function: {
                     name: 'render_chart',
                     description:
-                        'Draw an inline chart in the chat: line, bar, area, pie, scatter, or a COMBO of bars + a line (give each series its own type). ' +
-                        'USE WHEN the user asks to visualize, plot, graph or chart data — data from the conversation or data you fetched via fetch_timeseries or the `web` tool. ' +
-                        'THIS IS THE PREFERRED WAY TO MAKE A CHART — do NOT write Python/matplotlib via run_python and do NOT create_file for a chart. Parse the numbers yourself and pass them in `data[]`; this renders an interactive chart in one step. ' +
-                        'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
-                        'Rows: one object per x-value, e.g. [{month:"Jan 2026", posts:8}, …]. Each series names the row key it plots in `dataKey` (default: its `name`). ' +
-                        'COMBO ("bar and line graph", "line over the bars"): type:"combo" and series [{name:"Posts", dataKey:"posts", type:"bar"}, {name:"Trend", dataKey:"posts", type:"line"}] — the line plots the SAME values and traces the tops of the bars on one shared axis. Only when the user asks for a running total add cumulative:true (computed for you); yAxis:"right" puts a different measure on a second axis. ' +
-                        'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary. A series whose dataKey is not in the rows is an error, not a blank chart.',
+                        'Draw an interactive chart: line, area, bar, combo bar+line, pie/donut, scatter/bubble, radar, funnel, heatmap, waterfall, candlestick, histogram. ' +
+                        'USE WHEN the user asks to visualize, plot, graph or chart data — data from the conversation or data you fetched (web, count_entries, fetch_timeseries, files). ' +
+                        'THIS IS THE WAY TO MAKE A CHART IN CHAT — never write matplotlib with run_python or create_file for a chart. Parse the numbers and pass them in `data[]`. ' +
+                        'PICK THE FORM FROM THE DATA: trend over time → line or area (several series fine); compare categories → bar (horizontal:true for long names or >10 items, sorted); ' +
+                        'parts of a whole → donut/pie (≤8 slices; more fold into "Other"); composition over time → stacked:true bar/area (stacked:"percent" for shares); ' +
+                        'amount + trend → combo, or lineOverBars:true for a smooth line tracing the bar tops; two measures per item → scatter (bubble with a size column, trend:true adds a fit); ' +
+                        'stages that shrink → funnel; profile across 3-8 dimensions → radar; how a total is built from +/- steps → waterfall; day × hour style grids → heatmap; ' +
+                        'prices with open/high/low/close → candlestick; a distribution of raw numbers → histogram (pass values:[…]). ' +
+                        'Rows: one object per x-value, e.g. [{month:"Jan 2026", posts:8}, …]; each series names the row key it plots in `dataKey`. ' +
+                        'Set valueFormat (number|compact|percent|currency + currency code, or unit) so axes and tooltips read right; referenceLines:[{y, label}] or average:true mark a target or the mean. ' +
+                        'Always give a clear `title` and axis labels. Keep one y-axis; yAxis:"right" only when the user asks for two scales. A series whose dataKey is not in the rows is an error, not a blank chart.',
                     parameters: {
                         type: 'object',
                         properties: {
                             type: {
                                 type: 'string',
-                                enum: ['line', 'bar', 'area', 'pie', 'scatter', 'combo'],
-                                description: 'Chart type. combo = mix bars/lines/areas, one type per series.',
+                                enum: ['line', 'area', 'bar', 'combo', 'pie', 'donut', 'scatter', 'bubble', 'radar', 'radialBar', 'funnel', 'treemap', 'heatmap', 'waterfall', 'candlestick', 'histogram'],
+                                description: 'Chart form. combo = bars/lines/areas mixed, one type per series.',
                             },
                             title: { type: 'string', description: 'Chart title.' },
-                            xLabel: { type: 'string', description: 'X-axis label (omit for pie).' },
-                            yLabel: { type: 'string', description: 'Y-axis label (omit for pie).' },
+                            subtitle: { type: 'string', description: 'Optional one-line context under the title (source, period).' },
+                            xLabel: { type: 'string', description: 'X-axis label.' },
+                            yLabel: { type: 'string', description: 'Y-axis label.' },
                             y2Label: { type: 'string', description: 'Right-axis label when a series uses yAxis:"right".' },
                             data: {
                                 type: 'array',
-                                description:
-                                    'Rows of data, one per x-value: [{x, y}, ...] or [{month, posts, ...}, ...]. Pie: [{label, value}, ...].',
+                                description: 'Rows, one per x-value: [{month, posts, ...}]. pie/donut/funnel/treemap/radialBar: [{name, value}]. scatter: [{x, y, size?, group?, label?}]. heatmap: [{x, y, value}]. waterfall: [{name, value, total?:true}]. candlestick: [{date, open, high, low, close, volume?}].',
                                 items: { type: 'object' },
                             },
+                            values: { type: 'array', items: { type: 'number' }, description: 'histogram only: the raw numbers to bin.' },
+                            bins: { type: 'integer', description: 'histogram only: number of bins (default from the sample size).' },
+                            xKey: { type: 'string', description: 'Row key for the x-axis / category (default: detected).' },
                             series: {
                                 type: 'array',
-                                description: 'Optional explicit series (required for combo).',
+                                description: 'Explicit series (required for combo).',
                                 items: {
                                     type: 'object',
                                     properties: {
                                         name: { type: 'string', description: 'Legend label.' },
                                         dataKey: { type: 'string', description: 'The row key this series plots (default: name).' },
                                         type: { type: 'string', enum: ['bar', 'line', 'area'], description: 'Mark for this series (combo charts).' },
-                                        cumulative: { type: 'boolean', description: 'Plot the running total of dataKey.' },
-                                        yAxis: { type: 'string', enum: ['left', 'right'], description: 'Which y-axis (default left; right for cumulative).' },
-                                        color: { type: 'string', description: 'CSS color (hex / rgb / named). Optional; auto-assigned if omitted.' },
+                                        withLine: { type: 'boolean', description: 'bar series: also draw a smooth line through the tops of these bars.' },
+                                        trend: { type: 'string', enum: ['linear', 'moving'], description: 'Add a computed trend line (linear fit or moving average) for this series.' },
+                                        curve: { type: 'string', enum: ['smooth', 'linear', 'step'], description: 'Line/area shape (default smooth).' },
+                                        cumulative: { type: 'boolean', description: 'Plot the running total of dataKey (only when the user asks for one).' },
+                                        yAxis: { type: 'string', enum: ['left', 'right'], description: 'Right axis only when the user asks for two scales.' },
+                                        color: { type: 'string', description: 'CSS color — only when the user asks for one; auto-assigned otherwise.' },
                                     },
                                     required: ['name'],
                                 },
                             },
+                            lineOverBars: { type: 'boolean', description: 'bar/combo: add a smooth line that traces the bar tops.' },
+                            stacked: { type: 'string', enum: ['true', 'percent'], description: 'bar/area: stack the series ("percent" = 100% shares).' },
+                            horizontal: { type: 'boolean', description: 'bar: horizontal bars (long labels, rankings).' },
+                            trend: { type: 'boolean', description: 'scatter: add a linear-fit line.' },
+                            valueFormat: { type: 'string', enum: ['number', 'compact', 'percent', 'currency'], description: 'How values print on axes, labels and tooltips.' },
+                            currency: { type: 'string', description: 'ISO code for valueFormat currency, e.g. USD, EUR.' },
+                            unit: { type: 'string', description: 'Unit suffix, e.g. "ms", "GB".' },
+                            showValues: { type: 'boolean', description: 'Print values on the bars.' },
+                            referenceLines: { type: 'array', items: { type: 'object' }, description: 'Lines marking a target/threshold: [{y: 100, label: "Target"}].' },
+                            average: { type: 'boolean', description: 'Draw a line at the mean of the plotted values.' },
                             summary: {
                                 type: 'string',
-                                description: 'One-sentence takeaway shown above the chart (e.g. "S&P 500 rose 18% over the period").',
+                                description: 'One-sentence takeaway shown under the title (e.g. "S&P 500 rose 18% over the period").',
                             },
                         },
-                        required: ['type', 'data'],
+                        required: ['type'],
                     },
                 },
             };
