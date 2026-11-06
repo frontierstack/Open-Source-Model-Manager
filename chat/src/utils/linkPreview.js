@@ -12,7 +12,7 @@ const SHOT_W = 640;
 const SHOT_H = 400;
 // Delay before each attempt (ms). ~45 s in total, then give up (text-only card).
 const DELAYS = [0, 2500, 3000, 4000, 5000, 7000, 9000, 14000];
-const MAX_IN_FLIGHT = 4;
+const MAX_IN_FLIGHT = 6;
 
 const entries = new Map();   // url -> entry
 const queue = [];            // entries waiting for a network slot
@@ -59,7 +59,46 @@ function schedule(e) {
     e.timer = setTimeout(() => { e.timer = null; enqueue(e, false); }, delay);
 }
 
+// Our own renderer (GET /api/link-preview, see webapp services/linkPreview.js)
+// is asked first: it usually has the page already, because the server queued
+// it the moment the web call returned. 202 = still rendering → ask again soon;
+// anything else that is not an image → fall back to mshots.
+const OWN_DELAYS = [0, 1500, 2500, 4000, 6000, 9000];
+
+function attemptOwn(e) {
+    e.loading = true;
+    inFlight++;
+    const done = () => { e.loading = false; inFlight = Math.max(0, inFlight - 1); e.lastAt = Date.now(); };
+    const fallBack = () => { e.mode = 'mshots'; e.attempt = 0; schedule(e); };
+    fetch(`/api/link-preview?url=${encodeURIComponent(e.url)}&wait=8000`, { credentials: 'same-origin' })
+        .then(async (res) => {
+            if (res.status === 202) {
+                done();
+                e.ownAttempt = (e.ownAttempt || 0) + 1;
+                if (e.ownAttempt >= OWN_DELAYS.length) fallBack();
+                else { e.nextAt = Date.now() + OWN_DELAYS[e.ownAttempt]; e.timer = setTimeout(() => { e.timer = null; enqueue(e, false); }, OWN_DELAYS[e.ownAttempt]); }
+                pump();
+                return;
+            }
+            const type = res.headers.get('content-type') || '';
+            if (!res.ok || !type.startsWith('image/')) { done(); fallBack(); pump(); return; }
+            const blob = await res.blob();
+            const src = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+                done();
+                e.status = 'ready'; e.src = src; e.img = img;
+                notify(e);
+                pump();
+            };
+            img.onerror = () => { done(); URL.revokeObjectURL(src); fallBack(); pump(); };
+            img.src = src;
+        })
+        .catch(() => { done(); fallBack(); pump(); });
+}
+
 function attempt(e) {
+    if (e.mode !== 'mshots') { attemptOwn(e); return; }
     e.loading = true;
     inFlight++;
     const n = e.attempt;
@@ -102,7 +141,7 @@ function attempt(e) {
 function entryFor(url) {
     let e = entries.get(url);
     if (!e) {
-        e = { url, status: 'idle', src: null, attempt: 0, listeners: new Set(), timer: null, queued: false, loading: false, lastAt: 0 };
+        e = { url, status: 'idle', src: null, attempt: 0, mode: 'own', ownAttempt: 0, listeners: new Set(), timer: null, queued: false, loading: false, lastAt: 0 };
         entries.set(url, e);
     }
     return e;

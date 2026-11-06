@@ -1,6 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { ExternalLink, ChevronDown } from 'lucide-react';
-import { getHostname, colorForHostname, avatarLetter } from './SearchSources';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ExternalLink, ChevronDown, Loader2 } from 'lucide-react';
+import { getHostname, colorForHostname, avatarLetter, usePreview } from './SearchSources';
+import { warmPreview } from '../../utils/linkPreview';
 
 /**
  * Every site the turn's web calls touched, as a bundle of small square site
@@ -82,9 +84,113 @@ function SiteIcon({ host, size = 20, ring = false }) {
     );
 }
 
+// Screenshot card for one page, anchored to the row under the pointer. Shows
+// the loader's already-decoded image, so a warmed page appears at once.
+function PreviewCard({ page, anchor }) {
+    const preview = usePreview(page.url, true);
+    const [pos, setPos] = useState(null);
+    useEffect(() => {
+        const place = () => {
+            const r = anchor && anchor.getBoundingClientRect();
+            if (!r) return;
+            const W = 320, H = 260, m = 8;
+            let left = Math.min(Math.max(m, r.left), window.innerWidth - W - m);
+            let top = r.top - H - m >= m ? r.top - H - m : Math.min(r.bottom + m, window.innerHeight - H - m);
+            setPos({ left, top });
+        };
+        place();
+        window.addEventListener('scroll', place, true);
+        window.addEventListener('resize', place);
+        return () => { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); };
+    }, [anchor]);
+    if (!pos || typeof document === 'undefined') return null;
+    const host = getHostname(page.url) || '';
+    return createPortal(
+        <div className="src-popup" style={{ left: pos.left, top: pos.top, zIndex: 9999 }}>
+            {preview.status !== 'failed' && (
+                <div className="src-popup-shot">
+                    {preview.status === 'ready' && preview.img ? (
+                        <span
+                            className="absolute inset-0"
+                            ref={(el) => {
+                                if (!el) return;
+                                const img = preview.img;
+                                if (img.parentNode !== el) { img.alt = ''; img.className = 'w-full h-full object-cover'; el.replaceChildren(img); }
+                            }}
+                        />
+                    ) : (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+                            <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--ink-4)' }} />
+                            <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>Rendering preview…</span>
+                        </div>
+                    )}
+                </div>
+            )}
+            {page.title && <div className="src-popup-title line-clamp-2">{page.title}</div>}
+            <div className="src-popup-host">{host}</div>
+            {page.snippet && <div className="src-popup-text line-clamp-4">{page.snippet.slice(0, 280)}</div>}
+        </div>,
+        document.body,
+    );
+}
+
+// Hover (desktop) or first tap (touch) previews; a second tap follows the link.
+function usePreviewHover() {
+    const [hover, setHover] = useState(null);   // { page, anchor }
+    const timer = useRef(null);
+    const coarse = () => typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(hover: none)').matches;
+    const bind = (page) => ({
+        onMouseEnter: (e) => {
+            const anchor = e.currentTarget;
+            warmPreview(page.url, { urgent: true });
+            clearTimeout(timer.current);
+            timer.current = setTimeout(() => setHover({ page, anchor }), 120);
+        },
+        onMouseLeave: () => { clearTimeout(timer.current); setHover(null); },
+        onFocus: (e) => { warmPreview(page.url, { urgent: true }); setHover({ page, anchor: e.currentTarget }); },
+        onBlur: () => setHover(null),
+        onClick: (e) => {
+            if (!coarse()) return;
+            if (hover && hover.page.url === page.url) return;
+            e.preventDefault();
+            warmPreview(page.url, { urgent: true });
+            setHover({ page, anchor: e.currentTarget });
+        },
+    });
+    useEffect(() => () => clearTimeout(timer.current), []);
+    return { hover, bind, close: () => setHover(null) };
+}
+
 export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }) {
     const sites = useMemo(() => collectSources(toolCalls, searchResults), [toolCalls, searchResults]);
     const [open, setOpen] = useState(false);
+    const { hover, bind, close } = usePreviewHover();
+    const rootRef = useRef(null);
+    // Warm the screenshots while the cluster is on (or near) the screen, so
+    // opening the list and hovering a page shows its preview at once.
+    useEffect(() => {
+        const el = rootRef.current;
+        if (!el || !sites.length) return undefined;
+        const warm = () => {
+            const read = sites.flatMap(s => s.pages.filter(p => p.kind === 'read'));
+            const rest = sites.flatMap(s => s.pages.filter(p => p.kind !== 'read'));
+            read.concat(rest).slice(0, 12).forEach(p => warmPreview(p.url));
+        };
+        if (typeof IntersectionObserver === 'undefined') { warm(); return undefined; }
+        const io = new IntersectionObserver((items) => {
+            if (items.some(it => it.isIntersecting)) { warm(); io.disconnect(); }
+        }, { rootMargin: '400px 0px' });
+        io.observe(el);
+        return () => io.disconnect();
+    }, [sites]);
+    useEffect(() => {
+        if (!hover) return undefined;
+        const onDown = (e) => { if (!(e.target.closest && e.target.closest('.srcx-list'))) close(); };
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        document.addEventListener('pointerdown', onDown, true);
+        document.addEventListener('keydown', onKey);
+        return () => { document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('keydown', onKey); };
+    }, [hover]);
     if (!sites.length) return null;
     const pageCount = sites.reduce((n, s) => n + s.pages.length, 0);
     const readCount = sites.filter((s) => s.read).length;
@@ -92,7 +198,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
     const extra = sites.length - shown.length;
 
     return (
-        <div className={'srcx' + (open ? ' srcx--open' : '')}>
+        <div ref={rootRef} className={'srcx' + (open ? ' srcx--open' : '')}>
             <button
                 type="button"
                 className="srcx-bar"
@@ -115,7 +221,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
                 <ul className="srcx-list">
                     {sites.map((s) => (
                         <li key={s.host} className="srcx-site">
-                            <a className="srcx-site-head" href={s.pages[0].url} target="_blank" rel="noopener noreferrer" title={s.pages[0].url}>
+                            <a className="srcx-site-head" href={s.pages[0].url} target="_blank" rel="noopener noreferrer" {...bind(s.pages[0])}>
                                 <SiteIcon host={s.host} size={18} />
                                 <span className="srcx-host">{s.host}</span>
                                 {s.read && <span className="srcx-tag">read</span>}
@@ -123,7 +229,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
                             <ul className="srcx-pages">
                                 {s.pages.map((p) => (
                                     <li key={p.url}>
-                                        <a href={p.url} target="_blank" rel="noopener noreferrer" title={p.url}>
+                                        <a href={p.url} target="_blank" rel="noopener noreferrer" {...bind(p)}>
                                             <span className="srcx-title">{p.title || p.url.replace(/^https?:\/\/(www\.)?/i, '')}</span>
                                             <ExternalLink className="srcx-ext" style={{ width: 11, height: 11 }} strokeWidth={1.75} />
                                         </a>
@@ -134,6 +240,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
                     ))}
                 </ul>
             )}
+            {hover && <PreviewCard page={hover.page} anchor={hover.anchor} />}
         </div>
     );
 }

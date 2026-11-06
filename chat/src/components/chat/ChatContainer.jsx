@@ -9,6 +9,7 @@ import ChatSettings from './ChatSettings';
 import ArtifactsPanel, { extractArtifacts, langFromName } from './ArtifactsPanel';
 import { extractCodeDraft, languageForTool } from '../../utils/toolCodeArtifacts';
 import ConvoHeader from './ConvoHeader';
+import { warmPreview } from '../../utils/linkPreview';
 
 // Track empty→messages transition for slide-down animation
 function useSlideTransition(isEmpty) {
@@ -243,6 +244,23 @@ function extractSources(toolName, result) {
         }];
     }
     return null;
+}
+
+// Page screenshots for the source previews are rendered lazily by mshots
+// (~4–10 s for a page it has not seen). Ask for them the moment a web call
+// returns — the turn keeps working for a while after that, so by the time the
+// answer lands and the sources show, the screenshots are ready. Pages the
+// model READ come first; a search only warms its top results.
+function warmSourcePreviews(toolName, result) {
+    try {
+        const list = extractSources(toolName, result);
+        if (!list || !list.length) return;
+        const isSearch = toolName === 'web_search' || (result && result.mode === 'search');
+        const pick = isSearch
+            ? list.filter(s => s.snippet && s.snippet.length > 200).concat(list).slice(0, 3)
+            : list.slice(0, 4);
+        for (const s of pick) warmPreview(s.url);
+    } catch (_) { /* previews are best-effort */ }
 }
 
 // Convert streamingToolCalls entries (server-shaped) into the chip shape
@@ -2190,6 +2208,7 @@ export default function ChatContainer({
                                 // truncated preview for an error field.
                                 let error = null;
                                 const result = parsed.result ?? null;
+                                warmSourcePreviews(parsed.name, result);
                                 if (result && typeof result === 'object' && result.error) {
                                     error = String(result.error);
                                 } else if (!result) {

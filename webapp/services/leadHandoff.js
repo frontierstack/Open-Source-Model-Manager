@@ -518,11 +518,20 @@ function isRetrievalShaped(text) {
  * Is this an EASY turn — one the fast primary should answer alone?
  * @returns {{easy:boolean, reason:string}}
  */
+const SCREENSHOT_ASK_RE = /^(?:please\s+|can you\s+|could you\s+)*(?:(?:take|grab|get|capture|make|give me|send me|show me)\s+)?(?:me\s+)?(?:a\s+|an?\s+)?(?:quick\s+|full[- ]page\s+|mobile\s+)?screen ?(?:shot|grab|cap(?:ture)?)s?\b|^(?:show me )?what (?:does|do) \S.{0,80}? look like(?: on (?:a |my )?(?:phone|mobile|desktop))?\??$/i;
+
 function isEasyTurn({ text, hasAttachments = false, attachmentKinds = [], hasHistory = false, previousText = null, lastAssistantText = null, hostAgent = false } = {}) {
     const ask = cleanAsk(text);
     if (!ask) return { easy: true, reason: 'empty ask' };
     if (EXPLICIT_RE.test(ask)) return { easy: false, reason: 'user asked for the models to work together' };
     if (hasAttachments || (attachmentKinds && attachmentKinds.length)) return { easy: false, reason: 'has an attachment' };
+    // "Take a screenshot of <page>" / "what does X look like on a phone": one
+    // take_screenshot call. Measured: the pair spent ~5 s on a brief and a
+    // background job for it before the one call ran.
+    if (SCREENSHOT_ASK_RE.test(ask) && ask.split(/\s+/).length <= 20 && !ANALYSIS_VERB.test(ask) && !MULTI_STEP2.test(ask)
+        && !/\b(compare|versus|vs\.?|then|and (also|then)|explain|summari[sz]e|review)\b/i.test(ask) && (ask.match(/https?:\/\//g) || []).length <= 1) {
+        return { easy: true, reason: 'a screenshot' };
+    }
     if (URL_RE.test(ask)) return { easy: false, reason: 'names a link' };
     if (SECURITY_RE.test(ask)) return { easy: false, reason: 'security work' };
     const words = ask.split(/\s+/).filter(Boolean).length;

@@ -253,6 +253,8 @@ try {
     playwrightService = require('./services/playwrightService');
     playwrightEnabled = true;
     console.log('Playwright service loaded - advanced web scraping enabled');
+    // linkPreview reaches the URL guards through late-bound wrappers (they are defined further down).
+    process.nextTick(() => { try { require('./services/linkPreview').init({ playwrightService, urlBlockReason: (u) => urlBlockReason(u), hostBlockReason: (u) => hostBlockReason(u) }); } catch (e) { console.warn('[linkPreview] init failed:', e.message); } });
 } catch (error) {
     console.log('Playwright service not available - using axios fallback:', error.message);
 }
@@ -306,6 +308,9 @@ const embeddingEngine = require('./services/embeddingEngine');
 // conversations (replaces the old per-conversation store). Storage only — the
 // extraction heuristics live in this file.
 const coreMemory = require('./services/coreMemory');
+const dataProfile = require('./services/dataProfile');
+const linkPreview = require('./services/linkPreview');
+const dataProfileCache = new Map();   // `${path}|${size}|${mtime}` -> profile
 const episodeIndex = require('./services/episodeIndex');
 const experienceMemory = require('./services/experienceMemory');
 const toolRouter = require('./services/toolRouter');
@@ -12572,6 +12577,66 @@ app.get('/api/agent-workspaces/inventory', requireAuth, async (req, res) => {
 // automatic fallback if the sandbox runner throws during setup (missing
 // image, broken Docker socket, etc.) — we'd rather degrade to the old
 // behavior than fail the whole request.
+// A repo link the turn will want to read: a GitHub/GitLab/Bitbucket repo root,
+// tree or blob URL, asked about as code (a bare link, or review/audit/explain/
+// check/how does…). Issues, PRs, releases, wikis and profile pages are pages to
+// read, not code to clone. Returns { url, repo: 'owner/name', ref } or null.
+const REPO_HOST_RE = /\bhttps?:\/\/(?:www\.)?(github\.com|gitlab\.com|bitbucket\.org)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/(tree|blob|src|-\/tree|-\/blob)\/([^\s\/?#]+)[^\s]*)?(?=$|[\s?#)\]>,]|\/(?:$|[\s?#]))/i;
+const REPO_RESERVED_OWNERS = new Set(['orgs', 'topics', 'settings', 'features', 'marketplace', 'explore', 'sponsors', 'about', 'pricing', 'login', 'join', 'collections', 'trending', 'search', 'apps', 'enterprise', 'users', 'help']);
+const REPO_CODE_INTENT_RE = /\b(review|audit|analy[sz]\w*|check|scan|inspect|look (at|into|through)|explain|understand|walk me through|summari[sz]\w*|what does (it|this|the (repo|code|project)) do|how does|is (it|this) (safe|legit|malicious)|malicious|malware|backdoor|safe to (run|install|use)|secur\w*|vulnerab\w*|code|source|repo(sitory)?|readme|build|compile|run it|install it|dependencies|find (the|where)|where (is|does))\b/i;
+function repoLinkForPreclone(askText) {
+    const text = String(askText || '');
+    const m = REPO_HOST_RE.exec(text);
+    if (!m) return null;
+    const host = m[1].toLowerCase();
+    const owner = m[2], name = m[3];
+    if (REPO_RESERVED_OWNERS.has(owner.toLowerCase())) return null;
+    // One file (a blob link) is one page read, not a clone.
+    if (m[4] && /blob$/i.test(m[4])) return null;
+    if (/^(issues|pulls?|releases|wiki|discussions|actions|commits?|compare|security|stargazers|network)$/i.test(name)) return null;
+    // A link into issues/PRs/releases is about that page, not the code.
+    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 30);
+    if (/^\/(issues|pull|pulls|releases|wiki|discussions|actions|commit|compare)\b/i.test(after)) return null;
+    const rest = text.replace(m[0], ' ').replace(/https?:\/\/\S+/g, ' ').replace(/[^\w\s]/g, ' ').trim();
+    const bare = rest.split(/\s+/).filter(Boolean).length <= 2;
+    if (!bare && !REPO_CODE_INTENT_RE.test(rest)) return null;
+    const repo = host === 'github.com' ? `${owner}/${name}` : `https://${host}/${owner}/${name}.git`;
+    const ref = (m[4] && m[5] && !/^[0-9a-f]{40}$/i.test(m[5]) && !/\.\w+$/.test(m[5])) ? m[5] : (m[5] && /^[0-9a-f]{7,40}$/i.test(m[5]) ? m[5] : null);
+    return { url: `https://${host}/${owner}/${name}`, repo, ref };
+}
+
+// File count by extension and top-level entries of a cloned repo (host path).
+async function repoInventory(dir) {
+    const counts = new Map();
+    let files = 0;
+    const walk = async (d, depth) => {
+        if (files > 20000 || depth > 12) return;
+        let ents;
+        try { ents = await fs.readdir(d, { withFileTypes: true }); } catch (_) { return; }
+        for (const e of ents) {
+            if (e.name === '.git' || e.name === 'node_modules') continue;
+            const p = path.join(d, e.name);
+            if (e.isDirectory()) await walk(p, depth + 1);
+            else if (e.isFile()) {
+                files++;
+                const ext = (path.extname(e.name) || e.name).toLowerCase();
+                counts.set(ext, (counts.get(ext) || 0) + 1);
+            }
+        }
+    };
+    let top = [];
+    try {
+        top = (await fs.readdir(dir, { withFileTypes: true }))
+            .filter(e => e.name !== '.git')
+            .map(e => e.name + (e.isDirectory() ? '/' : ''))
+            .sort((a, b) => (b.endsWith('/') - a.endsWith('/')) || a.localeCompare(b));
+    } catch (_) { return null; }
+    await walk(dir, 0);
+    const byExt = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([e, n]) => `${e} ${n}`).join(', ');
+    const shown = top.slice(0, 25).join(', ') + (top.length > 25 ? `, … ${top.length - 25} more` : '');
+    return { files, byExt, top: shown || '(empty)' };
+}
+
 async function executePythonSkill(skill, params, ctx = null) {
     const sandbox = require('./services/sandboxRunner');
     // Sandbox policy:
@@ -22210,6 +22275,144 @@ const chatStreamHandlerInner = async (req, res) => {
             console.warn('[Chat Stream] image pre-flight failed:', e.message);
         }
 
+        // --- Tabular data: profile the file before the model touches it ------
+        // Measured: CSV analysis turns ran run_python 7-10 times because the
+        // model guessed the layout (title row above the header, US dates,
+        // "1,234" numbers, blank cells, a trailing Total row) and rewrote its
+        // hand-parsed script after every crash. The server reads the file once
+        // and states those facts plus a pandas loader line that handles them.
+        // Runs for a table attached this turn, and for a table already in the
+        // conversation when the ask is about data.
+        try {
+            const bucketOwner = req.userId ?? null;
+            if ((conversationId || inProcBucket) && latestUserMsgIdx >= 0 && fullToolCatalog.some(t => t?.function?.name === 'run_python')) {
+                const TABLE_RE = /\.(csv|tsv|xlsx|xlsm|xls)$/i;
+                const atts = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+                const attached = atts.map(a => String(a?.filename || a?.name || '')).filter(n => TABLE_RE.test(n)).map(sanitizeUploadName);
+                const um0 = chatMessages[latestUserMsgIdx];
+                const askText = experienceMemory.summarizeTask(typeof um0.content === 'string' ? um0.content
+                    : (Array.isArray(um0.content) ? um0.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''));
+                const dataAsk = /\b(csv|spreadsheet|excel|xlsx?|data|dataset|table|column|rows?|chart|graph|plot|trend|average|median|sum|total|count|retention|churn|installs?|users?|revenue|sales|metrics?|kpi|analy[sz]\w*|compare|growth|per (day|week|month))\b/i.test(askText);
+                const sbRunner = require('./services/sandboxRunner');
+                const ws = await sbRunner.ensureWorkspace(bucketOwner, inProcBucket ? null : conversationId, inProcBucket || null);
+                const uploadsDir = path.join(ws.localInContainer, 'uploads');
+                let names = attached;
+                if (!names.length && dataAsk) {
+                    try {
+                        const ents = await fs.readdir(uploadsDir, { withFileTypes: true });
+                        const tables = [];
+                        for (const e of ents) {
+                            if (!e.isFile() || !TABLE_RE.test(e.name)) continue;
+                            const st = await fs.stat(path.join(uploadsDir, e.name));
+                            tables.push({ name: e.name, m: st.mtimeMs });
+                        }
+                        names = tables.sort((a, b) => b.m - a.m).slice(0, 2).map(t => t.name);
+                    } catch (_) { names = []; }
+                }
+                const notes = [];
+                for (const name of names.slice(0, 3)) {
+                    const local = path.join(uploadsDir, name);
+                    let prof = null;
+                    try {
+                        const st = await fs.stat(local);
+                        const key = `${local}|${st.size}|${st.mtimeMs}`;
+                        prof = dataProfileCache.get(key);
+                        if (prof === undefined) {
+                            prof = dataProfile.profileFile(local);
+                            if (dataProfileCache.size > 64) dataProfileCache.delete(dataProfileCache.keys().next().value);
+                            dataProfileCache.set(key, prof);
+                        }
+                    } catch (e) { console.warn('[Chat Stream] data profile failed for', name, e.message); }
+                    if (prof) notes.push(dataProfile.renderProfileNote(prof, `/workspace/uploads/${name}`));
+                }
+                if (notes.length) {
+                    preflightForcedTools.add('run_python');
+                    if (fullToolCatalog.some(t => t?.function?.name === 'render_chart')) preflightForcedTools.add('render_chart');
+                    const note = `[SYSTEM: ${notes.join('\n\n')}]\n\n`;
+                    const um = chatMessages[latestUserMsgIdx];
+                    if (typeof um.content === 'string') um.content = note + um.content;
+                    else if (Array.isArray(um.content)) {
+                        const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                        if (tIdx >= 0) um.content[tIdx].text = note + um.content[tIdx].text;
+                        else um.content.unshift({ type: 'text', text: note });
+                    }
+                    console.log(`[Chat Stream] Data pre-flight: profiled ${notes.length} table(s) (${names.slice(0, 3).join(', ')}), ${note.length} chars`);
+                }
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] data pre-flight failed:', e.message);
+        }
+
+        // --- Repository link: clone it before the turn ------------------------
+        // Measured: on a bare repo link the model listed the empty workspace
+        // with run_python before cloning, guessed clone paths (read_file on
+        // gh-clones/<hash>/<owner>/<repo>/README.md) and background jobs
+        // guessed them too. The clone is the first step every such turn takes,
+        // so the server takes it and states the real path and file inventory.
+        // Top-level turns only (jobs share this bucket and see the clone).
+        try {
+            if (!req.delegate && !req.sidecar && (conversationId || inProcBucket) && latestUserMsgIdx >= 0
+                && fullToolCatalog.some(t => t?.function?.name === 'git_clone_shallow' || t?.function?.name === 'scan_source_files')) {
+                const um0 = chatMessages[latestUserMsgIdx];
+                const askText = experienceMemory.summarizeTask(typeof um0.content === 'string' ? um0.content
+                    : (Array.isArray(um0.content) ? um0.content.filter(p => p?.type === 'text').map(p => p.text).join('\n') : ''));
+                const repo = repoLinkForPreclone(askText);
+                if (repo) {
+                    const skills = await loadSkills();
+                    const skill = skills.find(k => k.name === 'git_clone_shallow' && k.enabled !== false);
+                    if (skill) {
+                        const t0 = Date.now();
+                        const callId = `call_auto_clone_${Date.now()}`;
+                        const args = { repo: repo.repo, ...(repo.ref ? { ref: repo.ref } : {}) };
+                        const purpose = `Clone ${repo.repo} so its files can be read`;
+                        if (clientConnected) {
+                            try { res.write(`data: ${JSON.stringify({ type: 'tool_executing', tool_call_id: callId, name: 'git_clone_shallow', arguments: JSON.stringify(args), purpose, contentOffset: 0 })}\n\n`); } catch (_) { clientConnected = false; }
+                        }
+                        let result = null;
+                        try {
+                            result = await executePythonSkill(skill, args, { userId: req.userId ?? null, conversationId: inProcBucket ? null : conversationId, workspaceBucket: inProcBucket || null });
+                        } catch (e) { result = { success: false, error: e.message }; }
+                        const ok = !!(result && result.success && result.path);
+                        const ms = Date.now() - t0;
+                        let note = '';
+                        if (ok) {
+                            const sbRunner = require('./services/sandboxRunner');
+                            const ws = await sbRunner.ensureWorkspace(req.userId ?? null, inProcBucket ? null : conversationId, inProcBucket || null);
+                            const rel = String(result.path).replace(/^\/workspace\/?/, '');
+                            const inv = await repoInventory(path.join(ws.localInContainer, rel));
+                            note = `[SYSTEM: The server already cloned ${repo.url} for this turn: it is at ${result.path}` +
+                                `${result.head_sha ? ` (commit ${String(result.head_sha).slice(0, 10)})` : ''}. Use that path exactly; do not clone it again. ` +
+                                (inv ? `${inv.files} files${inv.byExt ? ` (${inv.byExt})` : ''}. Top level: ${inv.top}. ` : '') +
+                                'To review it, call scan_source_files on that path first (it pages through every source file), then grep_code for specific patterns — several patterns in ONE call with an alternation (a|b|c) and regex:true — and read_file only for the files that matter.]\n\n';
+                            for (const t of ['scan_source_files', 'grep_code', 'read_file', 'outline_file']) {
+                                if (fullToolCatalog.some(x => x?.function?.name === t)) preflightForcedTools.add(t);
+                            }
+                            const umc = chatMessages[latestUserMsgIdx];
+                            if (typeof umc.content === 'string') umc.content = note + umc.content;
+                            else if (Array.isArray(umc.content)) {
+                                const tIdx = umc.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                                if (tIdx >= 0) umc.content[tIdx].text = note + umc.content[tIdx].text;
+                                else umc.content.unshift({ type: 'text', text: note });
+                            }
+                        }
+                        const preview = JSON.stringify(result || {}).slice(0, 240);
+                        if (clientConnected) {
+                            try { res.write(`data: ${JSON.stringify({ type: 'tool_result', tool_call_id: callId, name: 'git_clone_shallow', preview, result, durationMs: ms })}\n\n`); } catch (_) { clientConnected = false; }
+                        }
+                        persistedToolChips.push({
+                            type: 'native_tool_call', label: 'git_clone_shallow', purpose, contentOffset: 0,
+                            query: `repo: ${args.repo}`, args, status: ok ? 'success' : 'failed',
+                            error: ok ? undefined : String(result && result.error || 'clone failed').slice(0, 300),
+                            preview, durationMs: ms,
+                        });
+                        console.log(`[Chat Stream] Repo pre-flight: ${ok ? `cloned ${repo.repo} → ${result.path}${result.cached ? ' (cached)' : ''}` : `clone of ${repo.repo} failed: ${result && result.error}`} in ${ms}ms`);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] repo pre-flight failed:', e.message);
+        }
+
         // Visible thinking-aloud on a thinking-OFF model. With no reasoning
         // trace the model's only commentary is prose before its tool calls,
         // and the 27B loaded with --reasoning off wrote none: 0 chars across a
@@ -31319,6 +31522,26 @@ app.post('/api/memories', requireAuth, async (req, res) => {
 // Stats for the Memory tab: trend of calls per task, the effect of recalled
 // memory, playbook refinements and new proven approaches. Admins may read
 // another account's with ?userId=.
+// Preview image for a source card (640×400 JPEG rendered by our browser,
+// cached a day). 200 = the image; 202 = still rendering (ask again); 404 = the
+// page could not be rendered (the client falls back to another service).
+app.get('/api/link-preview', requireAuth, async (req, res) => {
+    try {
+        const url = String(req.query.url || '');
+        const waitMs = Math.min(Math.max(parseInt(req.query.wait, 10) || 0, 0), 15000);
+        const r = await linkPreview.get(url, { waitMs });
+        if (r.file) {
+            res.set('Cache-Control', 'private, max-age=86400');
+            res.type('image/jpeg');
+            return res.sendFile(r.file);
+        }
+        if (r.pending) return res.status(202).json({ status: 'pending' });
+        return res.status(404).json({ status: r.refused ? 'refused' : 'failed' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/memories/stats', requireAuth, async (req, res) => {
     try {
         const own = memAccountId(req);
@@ -32706,6 +32929,22 @@ app.use((req, res) => {
     // to the built-in image search (loop-safe). Bounded/cleared in execute.
     const findImageWebFirstSeen = new Map();
 
+    // Page previews for the chat's source cards: queue the pages a web call
+    // read (and its top search hits) the moment it returns, so the previews
+    // are rendered while the model is still working (services/linkPreview.js).
+    try {
+        const webTool = tools.toolRegistry.get('web');
+        if (webTool && !webTool._previewWrapped) {
+            const orig = webTool.execute.bind(webTool);
+            webTool.execute = async (args, ctx) => {
+                const r = await orig(args, ctx);
+                try { linkPreview.warm(linkPreview.urlsFromWebResult(r)); } catch (_) { /* previews are best-effort */ }
+                return r;
+            };
+            webTool._previewWrapped = true;
+        }
+    } catch (e) { console.warn('[linkPreview] web tool hook failed:', e.message); }
+
     // ----- find_image ------------------------------------------------------
     // Answers "find/show me a picture of X". The model CANNOT reliably guess
     // working image URLs — it hallucinates links that 404 — so it has no good
@@ -32728,8 +32967,8 @@ app.use((req, res) => {
                 function: {
                     name: 'find_image',
                     description:
-                        'USE WHEN the user asks to find / show / display / extract / screenshot a picture, photo, or image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
-                        'To EXTRACT the image(s) FROM a specific page, pass the page URL in `urls` — it is opened in a real browser and the rendered images are pulled out. To SCREENSHOT a page (user explicitly asks for a screenshot/snapshot), pass the page URL in `urls` AND set screenshot:true — the rendered page itself is captured and displayed. ' +
+                        'USE WHEN the user asks to find / show / display / extract a picture, photo or image (a screenshot of a web page is take_screenshot). This tool displays images inline in the chat as a thumbnail grid. ' +
+                        'To EXTRACT the image(s) FROM a specific page, pass the page URL in `urls` — it is opened in a real browser and the rendered images are pulled out. For a SCREENSHOT of a page use take_screenshot, not this tool. ' +
                         'PREFERRED FLOW: FIRST use the `web` tool (search the web, or read a page with want:"images") to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The `web` tool sees the live web and finds the most relevant, current images. ' +
                         'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
                         'Pass EVERY image URL you find here even if you suspect the site blocks hotlinking — when a URL will not load directly the tool saves the picture server-side (like "save image as") and embeds the bytes so it still renders. NEVER fall back to printing the image URL as a text link. ' +
@@ -33141,6 +33380,11 @@ app.use((req, res) => {
                 // (full-page, height-capped) instead of extracting its images.
                 // Challenge walls abort service-side; flat frames are dropped.
                 const screenshotFailures = [];
+                // A screenshot of a page is take_screenshot's job (real page
+                // capture, saved file, the page text for the model).
+                if (wantScreenshot && pageUrls.length && tools.toolRegistry.has('take_screenshot') && playwrightService && typeof playwrightService.capturePage === 'function') {
+                    return tools.toolRegistry.get('take_screenshot').execute({ url: pageUrls[0].url, fullPage: args?.fullPage, selector: args?.selector }, ctx);
+                }
                 if (wantScreenshot && pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.screenshotPageImages === 'function') {
                     for (const pg of pageUrls.slice(0, 2)) {
                         try {
@@ -33431,19 +33675,118 @@ app.use((req, res) => {
         },
     });
 
+    // ----- take_screenshot ---------------------------------------------------
+    // A picture of a web page as a person sees it. Screenshots used to live
+    // only inside find_image (a flag the routed model rarely saw), so "take a
+    // screenshot of X" went hunting for image URLs. This captures the page in
+    // the real browser (ads blocked, cookie/age walls dismissed), saves a PNG
+    // under /workspace/artifacts (shown inline in the chat + downloadable, and
+    // usable by other tools) and returns the page's visible text, since the
+    // model cannot see the picture.
+    tools.registerTool({
+        name: 'take_screenshot',
+        build(ctx) {
+            if (!playwrightEnabled || !playwrightService || typeof playwrightService.capturePage !== 'function') return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'take_screenshot',
+                    description: 'Take a screenshot of a web page (or one element of it) and show it to the user; use this whenever the user asks for a screenshot, capture or snapshot of a site. ' +
+                        'Renders the live page in a real browser with ads blocked and cookie banners closed, saves a PNG under /workspace/artifacts/, and returns the page text visible in the shot (you cannot see the image itself, so describe it from that text). ' +
+                        'fullPage captures the whole scrolling page (up to ~6000px); selector captures one element (CSS selector or the visible text of a heading/table/chart); device "mobile" renders a phone layout.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Page URL (http/https).' },
+                            fullPage: { type: 'boolean', description: 'Whole scrolling page instead of the first screen.' },
+                            selector: { type: 'string', description: 'Capture just this element: a CSS selector, or text that appears in it.' },
+                            device: { type: 'string', enum: ['desktop', 'mobile'], description: 'Viewport (default desktop).' },
+                            waitFor: { type: 'string', description: 'Text to wait for before capturing, or a number of milliseconds.' },
+                        },
+                        required: ['url'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            let url = String(args?.url || args?.page || (Array.isArray(args?.urls) ? args.urls[0] : '') || '').trim();
+            if (url && !/^https?:\/\//i.test(url) && /^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(url)) url = 'https://' + url;
+            if (!/^https?:\/\//i.test(url)) return { success: false, error: 'url required (an http(s) page address)' };
+            const blocked = urlBlockReason(url);
+            if (blocked) return { success: false, error: blocked };
+            const hostBlock = typeof hostBlockReason === 'function' ? hostBlockReason(url) : null;
+            if (hostBlock) return { success: false, error: hostBlock.message || String(hostBlock) };
+            let waitFor = args?.waitFor;
+            if (typeof waitFor === 'string' && /^\d+$/.test(waitFor.trim())) waitFor = parseInt(waitFor, 10);
+            const fullPage = args?.fullPage === true || args?.fullPage === 'true' || /\b(full[- ]?page|whole page|entire page)\b/i.test(String(ctx?.latestUserText || ''));
+            const ask = String(ctx?.latestUserText || '');
+            const device = /mobile|phone/i.test(String(args?.device || '')) || /\b(on (a |my )?(phone|mobile)|mobile (view|version|layout))\b/i.test(ask) ? 'mobile' : 'desktop';
+            // The user's words decide what to capture, as with the screenshot
+            // flag: the fast model often drops `selector` ("screenshot the
+            // pricing table on <url>" came back as a first-screen shot).
+            let selector = args?.selector ? String(args.selector).slice(0, 300) : null;
+            if (!selector) {
+                const m = ask.match(/\bscreen ?(?:shot|grab|cap(?:ture)?)s?\s+(?:of\s+)?(?:the|that|this)\s+(.{3,60}?)\s+(?:on|from|at|in|of)\s+(?:https?:\/\/|www\.|[\w-]+\.[a-z]{2,})/i);
+                if (m && !/^(page|site|website|homepage|home page|front page|whole page|entire page|full page|screen)$/i.test(m[1].trim())) selector = m[1].trim();
+            }
+            const t0 = Date.now();
+            const shot = await playwrightService.capturePage(url, { fullPage, selector, device, waitFor });
+            if (!shot || !shot.success) {
+                const why = (shot && shot.error) || 'capture failed';
+                console.log(`[take_screenshot] ${url} failed after ${Date.now() - t0}ms: ${String(why).slice(0, 160)}`);
+                return {
+                    success: false, url, error: why,
+                    ...(shot && Array.isArray(shot.headings) && shot.headings.length ? { headings: shot.headings, hint: 'Retry with selector set to one of these headings (exact text), or take the whole page with fullPage:true.' } : {}),
+                    ...(shot && shot.aborted === 'challenge' ? { hint: 'The site shows a bot check to automated browsers. Tell the user; do not retry the same URL.' } : {}),
+                };
+            }
+            // Save the PNG into the conversation's workspace so it is shown,
+            // downloadable, and readable by other tools (ocr_image, create_pdf…).
+            let artifact = null, savedTo = null;
+            try {
+                const sbRunner = require('./services/sandboxRunner');
+                const ws = await sbRunner.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId || null, ctx?.workspaceBucket || null);
+                const dir = path.join(ws.localInContainer, 'artifacts');
+                await fs.mkdir(dir, { recursive: true });
+                await fs.chmod(dir, 0o777).catch(() => {});
+                const host = (() => { try { return new URL(shot.finalUrl || url).hostname.replace(/^www\./, ''); } catch (_) { return 'page'; } })();
+                const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+                const name = `screenshot-${host.replace(/[^a-z0-9.-]/gi, '_').slice(0, 50)}-${stamp}${args?.selector ? '-element' : fullPage ? '-full' : ''}${device === 'mobile' ? '-mobile' : ''}.png`;
+                await fs.writeFile(path.join(dir, name), shot.buffer);
+                await fs.chmod(path.join(dir, name), 0o666).catch(() => {});
+                savedTo = `/workspace/artifacts/${name}`;
+                const convQ = ctx?.conversationId ? `?conv=${encodeURIComponent(String(ctx.conversationId))}` : '';
+                // The download route serves a run's staging copy or, when there
+                // is none (this file was written straight into the workspace),
+                // the workspace's artifacts/ — any 16-hex run id resolves it.
+                const runId = crypto.randomBytes(8).toString('hex');
+                artifact = { name, size: shot.buffer.length, url: `/api/tool-artifacts/${runId}/${encodeURIComponent(name)}${convQ}`, runId };
+            } catch (e) {
+                console.warn('[take_screenshot] save failed:', e.message);
+            }
+            console.log(`[take_screenshot] ${url} → ${shot.width}×${shot.height}${savedTo ? ` saved ${savedTo}` : ''} in ${Date.now() - t0}ms (ads blocked ${shot.adsBlocked}, dismissed ${shot.dismissed.length})`);
+            return {
+                success: true,
+                url, finalUrl: shot.finalUrl, title: shot.title,
+                width: shot.width, height: shot.height, device, fullPage, selector: selector || undefined,
+                savedTo,
+                shownToUser: !!artifact,
+                pageText: shot.text,
+                note: 'The screenshot is shown to the user in the chat. You cannot see it: describe it from pageText, and do not paste the image path or a markdown image into your reply.',
+                ...(artifact ? { _artifacts: [artifact] } : {}),
+            };
+        },
+    });
+
     // Hidden alias: models asked for a screenshot sometimes invent a
-    // `screenshot` tool call (observed live) — catch it and route to
-    // find_image's screenshot mode instead of erroring with "unknown tool".
-    // Hidden (build → null) so the advertised path stays find_image.
+    // `screenshot` tool call (observed live) — route it to take_screenshot.
     tools.registerTool({
         name: 'screenshot',
         build() { return null; },
         async execute(args, ctx) {
-            const urls = Array.isArray(args?.urls) ? args.urls
-                : (typeof args?.url === 'string' && args.url ? [args.url]
-                    : (typeof args?.page === 'string' && args.page ? [args.page] : []));
-            const findImage = tools.toolRegistry.get('find_image');
-            return findImage.execute({ ...args, urls, screenshot: true }, ctx);
+            return tools.toolRegistry.get('take_screenshot').execute({
+                ...args, url: args?.url || args?.page || (Array.isArray(args?.urls) ? args.urls[0] : ''),
+            }, ctx);
         },
     });
 

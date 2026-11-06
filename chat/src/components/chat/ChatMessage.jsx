@@ -52,6 +52,7 @@ const TOOL_VERBS = {
     base64_decode: 'Decoding',
     load_skill: 'Loading skill',
     render_chart: 'Rendering chart',
+    take_screenshot: 'Taking a screenshot',
     fetch_timeseries: 'Fetching data',
     read_file: 'Reading file',
     head_file: 'Reading file',

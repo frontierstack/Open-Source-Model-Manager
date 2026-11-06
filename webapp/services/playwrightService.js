@@ -3965,7 +3965,203 @@ async function renderLocalPage(opts = {}) {
     }
 }
 
+/**
+ * A screenshot of a web page as a person would see it — the `take_screenshot`
+ * tool. Unlike screenshotPageImages (which hunts content images for
+ * find_image) this captures the PAGE: the viewport, the full page (height
+ * capped), or one element by selector. Ads are blocked, cookie/age walls are
+ * dismissed first, and bot-challenge walls are reported instead of captured.
+ *
+ * @returns {{success, title, finalUrl, buffer, width, height, text, dismissed, error?, aborted?}}
+ */
+async function capturePage(url, options = {}) {
+    const {
+        fullPage = false,
+        selector = null,
+        device = 'desktop',
+        waitFor = null,              // ms, or text that must appear
+        timeout = 25000,
+        maxFullHeight = 6000,
+    } = options;
+    let poolEntry = null, context = null, page = null;
+    const lease = armDeadline('capturePage', url, hardDeadlineFor(timeout, 20000));
+    try {
+        poolEntry = await getBrowser(lease);
+        const base = getStealthContextOptions();
+        const mobile = device === 'mobile';
+        const viewport = mobile ? { width: 390, height: 844 } : { width: 1366, height: 860 };
+        context = await poolEntry.browser.newContext({
+            ...base, viewport, screen: viewport,
+            ...(mobile ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2,
+                userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' } : {}),
+            ignoreHTTPSErrors: true,
+        });
+        lease.context = context;
+        const stats = { adsBlocked: 0 };
+        await installRequestPolicy(context, { stats });
+        page = await context.newPage();
+        await applyStealthPatches(page);
+        await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        try { await page.waitForLoadState('networkidle', { timeout: 7000 }); } catch (_) {}
+
+        const CHALLENGE = /just a moment|checking your browser|verify you are human|are you a robot|attention required|request blocked|press (&|and) hold/i;
+        const blocked = async () => {
+            try {
+                return await page.evaluate((src) => new RegExp(src, 'i').test(((document.title || '') + ' ' + (document.body ? document.body.innerText || '' : '')).slice(0, 700)), CHALLENGE.source);
+            } catch (_) { return false; }
+        };
+        if (await blocked()) {
+            await page.waitForTimeout(5000);
+            if (await blocked()) return { success: false, aborted: 'challenge', error: 'the site answered with a bot-check page instead of the content', url };
+        }
+        let dismissed = [];
+        try { const d = await dismissOverlays(page); dismissed = Array.isArray(d) ? d : ((d && d.dismissed) || []); } catch (_) {}
+
+        if (typeof waitFor === 'number' && waitFor > 0) await page.waitForTimeout(Math.min(waitFor, 15000));
+        else if (typeof waitFor === 'string' && waitFor.trim()) {
+            try { await page.getByText(waitFor.trim(), { exact: false }).first().waitFor({ timeout: 12000 }); } catch (_) {}
+        } else await page.waitForTimeout(1200);
+
+        // Lazy images below the fold only paint once scrolled to.
+        if (fullPage) {
+            try {
+                await page.evaluate(async (cap) => {
+                    await new Promise((resolve) => {
+                        let y = 0;
+                        const step = () => {
+                            window.scrollBy(0, window.innerHeight);
+                            y += window.innerHeight;
+                            if (y < Math.min(document.body.scrollHeight, cap)) setTimeout(step, 150);
+                            else { window.scrollTo(0, 0); resolve(); }
+                        };
+                        step();
+                    });
+                }, maxFullHeight);
+                await page.waitForTimeout(600);
+            } catch (_) {}
+        }
+
+        const title = await page.title().catch(() => '');
+        const finalUrl = page.url();
+        let buffer, width, height;
+        if (selector) {
+            // 1) a real CSS selector, 2) an element whose text matches, 3) a
+            // heading carrying the words of a guessed selector ("pricing-table"
+            // → a heading with "pricing") and the section/table around it.
+            // Models guess selectors; a miss used to wait 11 s and fail.
+            const sel = String(selector);
+            let target = null;
+            const looksCss = /^[#.\[]|^[a-z][\w-]*(?:[.#\[:>\s]|$)/i.test(sel) && !/\s{2,}/.test(sel);
+            if (looksCss) {
+                try {
+                    const loc = page.locator(sel).first();
+                    await loc.waitFor({ state: 'visible', timeout: 2500 });
+                    target = loc;
+                } catch (_) { /* fall through */ }
+            }
+            if (!target) {
+                const words = sel.toLowerCase().replace(/[#.\[\]=>"':_-]+/g, ' ').split(/\s+/)
+                    .filter(w => w.length >= 3 && !['div', 'section', 'table', 'class', 'container', 'wrapper', 'the', 'and', 'with'].includes(w));
+                const wantTable = /table|grid|plans?|pric|compar/i.test(sel);
+                if (words.length) {
+                    const marked = await page.evaluate(({ words, wantTable }) => {
+                        const vis = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 40 && r.height > 10 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
+                        const pageH = document.documentElement.scrollHeight;
+                        const tall = (el) => el.getBoundingClientRect().height;
+                        const mark = (el) => { el.setAttribute('data-ms-shot', '1'); return true; };
+                        // a) A heading that names it → the block it titles.
+                        const heads = [...document.querySelectorAll('h1,h2,h3,h4,caption,[role=heading],legend')].filter(vis);
+                        let best = null, bestScore = 0;
+                        for (const h of heads) {
+                            const t = (h.innerText || '').toLowerCase();
+                            const score = words.filter(w => t.includes(w)).length;
+                            if (score > bestScore) { best = h; bestScore = score; }
+                        }
+                        if (best && bestScore >= Math.min(2, words.length)) {
+                            let el = best.closest(wantTable ? 'table,section,article,[class*=pric],[class*=plan],[class*=compar]' : 'section,article,figure,table') || best.parentElement;
+                            while (el && el.parentElement && tall(el) < 200) el = el.parentElement;
+                            if (!el || tall(el) > pageH * 0.8) el = best.parentElement || best;
+                            return mark(el);
+                        }
+                        // b) An element whose id/class names it (plan cards
+                        //    are often only marked in their class names).
+                        const blocks = [...document.querySelectorAll('section,div,table,article,ul,figure,form')].filter(vis);
+                        let pick = null;
+                        for (const el of blocks) {
+                            const marker = `${el.id || ''} ${typeof el.className === 'string' ? el.className : ''}`.toLowerCase();
+                            if (!words.some(w => marker.includes(w))) continue;
+                            const h = tall(el);
+                            if (h < 150 || h > pageH * 0.8) continue;
+                            if (!pick || h > tall(pick)) pick = el;
+                        }
+                        if (pick) return mark(pick);
+                        if (best) {
+                            let el = best.closest('section,article,figure,table') || best.parentElement;
+                            while (el && el.parentElement && tall(el) < 200) el = el.parentElement;
+                            if (!el || tall(el) > pageH * 0.8) el = best.parentElement || best;
+                            return mark(el);
+                        }
+                        return false;
+                    }, { words, wantTable }).catch(() => false);
+                    if (marked) target = page.locator('[data-ms-shot="1"]').first();
+                }
+            }
+            if (!target) {
+                try {
+                    const byText = page.getByText(sel, { exact: false }).first();
+                    await byText.waitFor({ state: 'visible', timeout: 1500 });
+                    target = byText;
+                } catch (_) { /* fall through */ }
+            }
+            if (!target) {
+                const headings = await page.evaluate(() => [...document.querySelectorAll('h1,h2,h3')]
+                    .map(h => (h.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 80)).filter(Boolean).slice(0, 25)).catch(() => []);
+                return { success: false, error: `nothing on the page matches "${sel}"`, headings, url, title, finalUrl };
+            }
+            await target.scrollIntoViewIfNeeded().catch(() => {});
+            await page.waitForTimeout(400);
+            const box = await target.boundingBox().catch(() => null);
+            if (box && box.height > 3000) {
+                // A match that big is a page region, not an element: keep its top.
+                const sy = await page.evaluate(() => window.scrollY).catch(() => 0);
+                buffer = await page.screenshot({ fullPage: true, clip: { x: Math.max(0, box.x), y: box.y + sy, width: box.width, height: 3000 }, timeout: 15000 });
+                width = Math.round(box.width); height = 3000;
+            } else {
+                buffer = await target.screenshot({ timeout: 10000 });
+                width = box ? Math.round(box.width) : null; height = box ? Math.round(box.height) : null;
+            }
+        } else if (fullPage) {
+            const vp = page.viewportSize();
+            const pageH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)).catch(() => vp.height);
+            height = Math.min(Math.max(pageH, vp.height), maxFullHeight);
+            width = vp.width;
+            buffer = height < pageH
+                ? await page.screenshot({ clip: { x: 0, y: 0, width, height }, timeout: 20000 })
+                : await page.screenshot({ fullPage: true, timeout: 20000 });
+        } else {
+            const vp = page.viewportSize();
+            width = vp.width; height = vp.height;
+            buffer = await page.screenshot({ timeout: 15000 });
+        }
+        // What the screenshot shows, as text — the model has no vision.
+        const text = await page.evaluate((sel) => {
+            const root = sel ? document.querySelector(sel) : document.body;
+            const t = root ? (root.innerText || '') : '';
+            return t.replace(/\n{3,}/g, '\n\n').trim().slice(0, 2500);
+        }, selector && !/\s/.test(selector) ? selector : null).catch(() => '');
+        return { success: true, url, finalUrl, title, buffer, width, height, text, dismissed, adsBlocked: stats.adsBlocked || 0 };
+    } catch (error) {
+        return { success: false, error: lease.errorOf(error), url };
+    } finally {
+        lease.clear();
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
 module.exports = {
+    capturePage,
     dismissOverlays,
     fetchUrlContent,
     fetchMultipleUrls,

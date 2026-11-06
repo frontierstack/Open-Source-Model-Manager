@@ -22,7 +22,7 @@ export function getHostname(url) {
  * rendered and cached — mshots answers the first requests with a "generating"
  * placeholder — so a hover shows it immediately instead of waiting it out.
  */
-function usePreview(url, enabled) {
+export function usePreview(url, enabled) {
     const [state, setState] = useState(() => (enabled ? getPreview(url) : { status: 'idle', src: null }));
     useEffect(() => {
         if (!enabled) return undefined;

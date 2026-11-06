@@ -116,7 +116,7 @@ const INTENT_RULES = [
     // web/parse_html loops and never reaches find_image's browser extraction
     // (observed: 15 tool calls, no image, on a "extract the main image" ask).
     [/\b(extract|grab|pull|capture|fetch|scrape|display|show|save)\b[^.\n]{0,60}\b(main |hero |lead |og:?|cover )?(image|picture|photo|img|thumbnail)s?\b|\b(image|picture|photo)s?\b[^.\n]{0,40}\bfrom (this|that|the|a) (page|site|url|link|article|listing)/i, ['find_image']],
-    [/\bscreen ?shot|\bsnapshot of\b/i, ['find_image']],
+    [/\bscreen ?(shot|grab|cap(ture)?)s?\b|\bsnapshot of\b|\bcapture (the|this|that|a) (page|site|website|screen)\b|\bwhat (does|do) .{1,60} look like\b/i, ['take_screenshot']],
     // Testing/previewing a page the MODEL wrote ("test it in playwright", "the
     // animator isn't displaying", "console error …", "blank canvas"). Without
     // this the model tries to build a browser INSIDE the sandbox (17 run_node
