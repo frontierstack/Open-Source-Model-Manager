@@ -31280,6 +31280,20 @@ app.post('/api/memories', requireAuth, async (req, res) => {
 
 // The account's archive of past tasks (the vector index behind "similar past
 // tasks"), newest first. Admins may read another account's with ?userId=.
+// Stats for the Memory tab: trend of calls per task, the effect of recalled
+// memory, playbook refinements and new proven approaches. Admins may read
+// another account's with ?userId=.
+app.get('/api/memories/stats', requireAuth, async (req, res) => {
+    try {
+        const own = memAccountId(req);
+        const userId = (req.query.userId && callerIsAdmin(req)) ? String(req.query.userId) : own;
+        const archived = (await episodeIndex.listEpisodes(userId, { limit: 2000 }).catch(() => ({ episodes: [] }))).episodes;
+        res.json({ success: true, userId, ...(await coreMemory.stats(userId, archived)) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/memories/episodes', requireAuth, async (req, res) => {
     try {
         const own = memAccountId(req);

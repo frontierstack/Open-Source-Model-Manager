@@ -11,6 +11,7 @@ import {
     History as HistoryIcon,
     FlaskConical as TestIcon,
 } from 'lucide-react';
+import MemoryStats from './MemoryStats';
 
 // Memory tab — CORE MEMORY: one living memory per THEME of work (research,
 // coding, data analysis, documents, media, security analysis, automations).
@@ -107,6 +108,12 @@ export default function MemoryPanel() {
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState(null);
 
+    // 'themes' = the per-theme memories; 'stats' = how well the memory is doing.
+    const [statsKey, setStatsKey] = React.useState(0);
+    const [view, setView] = React.useState(() => {
+        try { return localStorage.getItem('memoryPanelView') === 'stats' ? 'stats' : 'themes'; } catch (_) { return 'themes'; }
+    });
+    React.useEffect(() => { try { localStorage.setItem('memoryPanelView', view); } catch (_) { /* per-browser only */ } }, [view]);
     const [selectedKey, setSelectedKey] = React.useState(null); // `${userId}|${theme}`
     const [notes, setNotes] = React.useState('');
     const [savingNotes, setSavingNotes] = React.useState(false);
@@ -290,8 +297,19 @@ export default function MemoryPanel() {
                     </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <div className="inline-flex overflow-hidden rounded-lg border text-sm" role="tablist" style={{ borderColor: 'var(--border-primary)' }}>
+                        {[['themes', 'Themes'], ['stats', 'Stats']].map(([k, l]) => (
+                            <button
+                                key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)}
+                                className="px-3 py-2 font-medium transition"
+                                style={view === k ? { backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' } : { color: 'var(--text-secondary)' }}
+                            >
+                                {l}
+                            </button>
+                        ))}
+                    </div>
                     <button
-                        type="button" onClick={() => loadMemories()} title="Refresh"
+                        type="button" onClick={() => { loadMemories(); setStatsKey((k) => k + 1); }} title="Refresh"
                         className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition"
                         style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
                     >
@@ -315,6 +333,7 @@ export default function MemoryPanel() {
                 </div>
             )}
 
+            {view === 'stats' ? <MemoryStats key={statsKey} /> : (
             <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
                 {/* Theme list */}
                 <div className="flex min-h-0 flex-col rounded-lg border" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-secondary)' }}>
@@ -621,6 +640,7 @@ export default function MemoryPanel() {
                     )}
                 </div>
             </div>
+            )}
         </div>
     );
 }

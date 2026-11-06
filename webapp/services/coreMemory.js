@@ -39,6 +39,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
+const memoryStats = require('./memoryStats');
 const experienceMemory = require('./experienceMemory');
 
 const DATA_DIR = '/models/.modelserver';
@@ -445,6 +446,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         // failures, then faster) becomes the proven approach. Provisional
         // snapshots may only SEED it.
         let newBest = false;
+        const bestBefore = rec.bestApproach && !rec.bestApproach.provisional ? rec.bestApproach.calls : null;
         const hasApproach = Array.isArray(episode.approach) && episode.approach.length > 0;
         if (hasApproach && converged && !rough) {
             const cur = rec.bestApproach;
@@ -481,6 +483,14 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
             followed = !!adh.followed;
             if (followed) s.followed += 1;
         }
+        try {
+            memoryStats.logRun(shard, {
+                t, th: rec.theme, c: calls, f: failedCalls, s: seconds, ok: converged, rough,
+                prov: !!provisional, k: taskKey || null,
+                r: !!recalled, rt: !!(recalled && recalled.id === rec.id), fo: followed,
+            });
+            if (newBest) memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'best', calls, from: bestBefore });
+        } catch (e) { log(`stats log failed: ${e.message}`); }
         rec.dirty = true;               // playbook refinement pending
         rec.updatedAt = t;
         return { id: rec.id, theme: rec.theme, label: rec.label, runs: s.runs, newBest, improvedVsBest, followed, provisional: !!provisional, sameRun, bestCalls: s.bestCalls, calls };
@@ -528,7 +538,13 @@ async function setEnabled(userId, id, enabled) {
 async function remove(userId, id) {
     return mutate(userId, (shard) => {
         const before = shard.memories.length;
+        const gone = shard.memories.find(m => m.id === id);
         shard.memories = shard.memories.filter(m => m.id !== id);
+        if (gone) {
+            // A reset theme starts its record over; its stats go with it.
+            if (Array.isArray(shard.statsLog)) shard.statsLog = shard.statsLog.filter(r => r.th !== gone.theme);
+            if (Array.isArray(shard.statsEvents)) shard.statsEvents = shard.statsEvents.filter(e => e.th !== gone.theme);
+        }
         return shard.memories.length < before;
     });
 }
@@ -538,6 +554,9 @@ async function clearAll(userId) {
         const n = shard.memories.length;
         shard.memories = [];
         shard.cursors = {};
+        shard.statsLog = [];
+        shard.statsEvents = [];
+        shard.statsSeeded = true;   // nothing left to seed from
         return n;
     });
 }
@@ -614,6 +633,7 @@ async function applyRefinement(userId, id, ref) {
             rec.playbook = ref.playbook;
             rec.playbookVersion += 1;
             rec.playbookUpdatedAt = t;
+            try { memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'refine', v: rec.playbookVersion, runs: rec.stats.runs }); } catch (_) { /* stats only */ }
         }
         if (ref.lessons && ref.lessons.length) {
             const keep = rec.lessons.filter(l => l.source === 'user' || l.source === 'model');
@@ -709,7 +729,17 @@ async function peekBestApproach(userId, themeKey) {
     return experienceMemory.renderApproach(rec.bestApproach.steps);
 }
 
+/** Stats for the Memory tab's Stats view; seeds the log from the archive once. */
+async function stats(userId, archived = null) {
+    let shard = await readShard(userId);
+    if (!shard.statsSeeded && archived) {
+        shard = await mutate(userId, (sh) => { memoryStats.seedFromHistory(sh, archived); return sh; });
+    }
+    return memoryStats.computeStats(shard, allThemes());
+}
+
 module.exports = {
+    stats,
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
