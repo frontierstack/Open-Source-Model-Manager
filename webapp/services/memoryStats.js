@@ -41,6 +41,7 @@ function logRun(shard, row) {
         ok: row.ok !== false, rough: !!row.rough, prov: !!row.prov, k: row.k || null,
         r: row.r == null ? null : !!row.r, rt: row.rt == null ? null : !!row.rt,
         fo: row.fo == null ? null : !!row.fo,
+        tools: Array.isArray(row.tools) ? row.tools.slice(0, 8) : undefined,
     };
     if (r.k) {
         const i = shard.statsLog.findIndex(x => x.k === r.k);
@@ -111,10 +112,13 @@ function summarizeRows(rows) {
     };
 }
 
-// Early vs recent: the first and last third of a theme's tasks (min 3 each).
+// Early vs recent: the first and last third of a theme's tasks. Needs
+// TREND_MIN tasks: with 4 against 4 one long task decides the sign (Coding read
+// +94% from six quick game rewrites vs a few repo audits).
+const TREND_MIN = parseInt(process.env.CORE_MEMORY_TREND_MIN, 10) || 15;
 function earlyVsRecent(rows) {
-    if (rows.length < 6) return null;
-    const n = Math.max(3, Math.floor(rows.length / 3));
+    if (rows.length < TREND_MIN) return null;
+    const n = Math.max(5, Math.floor(rows.length / 3));
     const early = summarizeRows(rows.slice(0, n));
     const recent = summarizeRows(rows.slice(-n));
     const change = (early.avgCalls && recent.avgCalls != null) ? round((recent.avgCalls - early.avgCalls) / early.avgCalls, 3) : null;
@@ -236,4 +240,4 @@ function computeStats(shard, themes) {
     };
 }
 
-module.exports = { logRun, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+module.exports = { TREND_MIN, logRun, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };

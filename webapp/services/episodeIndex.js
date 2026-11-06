@@ -233,7 +233,7 @@ function ago(iso) {
  * history already); `skipApproach` drops a match that only repeats the theme's
  * proven approach.
  */
-async function recallSimilar(userId, { query, theme = null, excludeConvId = null, skipApproach = '', k = RECALL_K } = {}) {
+async function recallSimilar(userId, { query, theme = null, excludeConvId = null, skipApproach = '', k = RECALL_K, hostAgent = false } = {}) {
     const q = cleanTask(query);
     if (!userId || !q) return [];
     const work = (async () => {
@@ -255,6 +255,8 @@ async function recallSimilar(userId, { query, theme = null, excludeConvId = null
             const r = arc.episodes[hit.docId];
             if (!r) continue;
             if (excludeConvId && r.convId && r.convId === excludeConvId) continue;
+            // Work on the user's own machine is useless (and misleading) to the web chat.
+            if (!hostAgent && r.theme === 'host') continue;
             const taskKey = r.task.toLowerCase().replace(/https?:\/\/\S+/g, 'URL').slice(0, 60);
             if (seenApproach.has(r.approach) || seenTask.has(taskKey)) continue;
             seenApproach.add(r.approach); seenTask.add(taskKey);
@@ -346,7 +348,22 @@ async function count(userId) {
     return Object.keys(arc.episodes).length;
 }
 
+/** Re-theme archived episodes: `themeOf(record)` returns the new theme or null. */
+async function retheme(userId, themeOf) {
+    return serial(userId, async () => {
+        const arc = await readArchive(userId);
+        let n = 0;
+        for (const r of Object.values(arc.episodes)) {
+            const t = themeOf(r);
+            if (t && t !== r.theme) { r.theme = t; n++; }
+        }
+        if (n) await writeArchive(userId, arc);
+        return n;
+    });
+}
+
 module.exports = {
+    retheme,
     archiveEpisode, recallSimilar, renderSimilar, removeTheme, clearAll, count, listEpisodes,
     // pure, exported for tests
     cleanTask, redactSecrets, stripRuntimeTags, toRecord, toolsFromApproachText,

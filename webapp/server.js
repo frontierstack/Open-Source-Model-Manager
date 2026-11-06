@@ -16240,6 +16240,19 @@ const CORE_REFINE_MIN_GAP_MS = parseInt(process.env.CORE_MEMORY_REFINE_GAP_MS, 1
 const coreRefineLast = new Map();      // `${userId}|${id}` -> last start ts
 const coreRefineScheduled = new Set(); // keys with a deferred retry pending
 
+async function repairCoreMemoryThemes() {
+    for (const uid of await coreMemory.listAllUsers()) {
+        const archived = (await episodeIndex.listEpisodes(uid, { limit: 2000 }).catch(() => ({ episodes: [] }))).episodes;
+        const report = await coreMemory.rethemeStored(uid, { archived, toolsOf: episodeIndex.toolsFromApproachText });
+        if (!report) continue;
+        const moved = await episodeIndex.retheme(uid, (r) => report.moves.get(`${r.theme}|${String(r.at).slice(0, 19)}`) || null).catch(() => 0);
+        console.log(`[Memory] Theme repair for ${uid}: ${report.moved} task(s) re-filed ${JSON.stringify(report.byPair)}; ` +
+            `archive re-themed ${moved}; host advice cleared from: ${report.cleaned.join(', ') || 'none'}`);
+        let i = 0;
+        for (const id of await coreMemory.dirtyRecords(uid)) refineCoreMemory(uid, id, { delayMs: 30000 + (i++) * 60000 }).catch(() => {});
+    }
+}
+
 async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     if (process.env.CORE_MEMORY_LLM_REFINE === '0') return null;
     if (!userId || !id) return null;
@@ -16306,7 +16319,7 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
 // the recorder can say whether the playbook was followed and whether the run
 // beat the remembered best. `taskKey`/`provisional` come from the /v1 bridge
 // (a Pi task is re-recorded while it runs; snapshots update ONE episode).
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false }) {
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false, hostAgent = false }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
@@ -16323,7 +16336,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         if (!okChips.length) return;
         const attachmentKinds = coreMemory.deriveAttachmentKinds(attachments);
         const cleanAsk = experienceMemory.summarizeTask(userText) || String(userText || '');
-        const cls = coreMemory.classifyTheme({ toolLabels: okChips.map(c => c.label), userText: cleanAsk, attachmentKinds, hasTools: true });
+        const cls = coreMemory.classifyTheme({ toolLabels: okChips.map(c => c.label), userText: cleanAsk, attachmentKinds, hasTools: true, hostAgent });
         const theme = cls ? cls.theme : 'general';
         const episode = experienceMemory.buildEpisode(
             { userText, attachmentKinds, chips, activity: theme, quality, taskKey, provisional },
@@ -16362,7 +16375,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
 // `tokenBudget`, or null when the ask has no theme / the theme has no memory.
 // `attachmentKinds`/`toolLabels` sharpen the classification (an image upload is
 // media work even when the ask says "what is this").
-async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { attachmentKinds = new Set(), toolLabels = [] } = {}) {
+async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { attachmentKinds = new Set(), toolLabels = [], hostAgent = false } = {}) {
     if (!query || typeof query !== 'string') return null;
     query = query.replace(/^\/(no_)?think\b\s*/i, '');
     // "no web searches" names the web only to rule it out — it must not pick
@@ -16373,13 +16386,13 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // Similar past tasks from the vector archive get up to ~40% of the budget
     // (at most 400 tokens); the theme block gets the rest. Both are bounded, so
     // the injected text stays the same size however large the archive grows.
-    const cls = coreMemory.classifyTheme({ toolLabels, userText: query, attachmentKinds, hasTools: toolLabels.length > 0 });
+    const cls = coreMemory.classifyTheme({ toolLabels, userText: query, attachmentKinds, hasTools: toolLabels.length > 0, hostAgent });
     let themeRec = null;
     try { themeRec = cls ? await coreMemory.peekBestApproach(userId, cls.theme) : null; } catch (_) { themeRec = null; }
     let similar = [];
     try {
         similar = await episodeIndex.recallSimilar(userId, {
-            query, theme: cls ? cls.theme : null, excludeConvId: currentConvId,
+            query, theme: cls ? cls.theme : null, excludeConvId: currentConvId, hostAgent,
             skipApproach: themeRec ? episodeIndex.redactSecrets(themeRec).slice(0, 320) : '',
         });
     } catch (e) { console.warn('[Memory] similar-task recall failed:', e.message); similar = []; }
@@ -16387,7 +16400,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     let rec = null;
     try {
         rec = await coreMemory.recall(userId, {
-            userText: query, attachmentKinds, toolLabels,
+            userText: query, attachmentKinds, toolLabels, hostAgent,
             tokenBudget: similar.length ? Math.max(200, tokenBudget - simBudget) : tokenBudget,
         });
     } catch (e) { console.warn('[Memory] recall failed:', e.message); rec = null; }
@@ -16466,6 +16479,23 @@ function stripPiRuntimeContext(text) {
 function v1LatestUserIndex(messages) {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === 'user') return i;
     return -1;
+}
+function v1MessageText(m) {
+    const c = m && m.content;
+    if (typeof c === 'string') return stripPiRuntimeContext(c);
+    if (Array.isArray(c)) return stripPiRuntimeContext(c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n'));
+    return '';
+}
+// A message the USER wrote, not the agent runtime's own: omp's
+// <system-interrupt>/<system-reminder> wrappers with nothing else, or our late
+// "[ASSISTANT RESULTS" follow-up turn.
+function v1IsRealUserMessage(m) {
+    const t = v1MessageText(m).trim();
+    if (!t) return false;
+    if (/^\[ASSISTANT RESULTS/.test(t)) return false;
+    if (/^<system-interrupt\b/i.test(t)) return false;
+    const rest = t.replace(/<system-[a-z-]+\b[^>]*>[\s\S]*?<\/system-[a-z-]+>/gi, '').trim();
+    return rest.length > 0;
 }
 function v1LatestUserText(messages) {
     const i = v1LatestUserIndex(messages);
@@ -17043,7 +17073,7 @@ async function injectPersonaForV1(req, instance) {
     if (!mem) {
         // The tools the model used BEFORE this task's user message sharpen the
         // theme (a session deep in code is coding even when the ask is terse).
-        const fresh = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { toolLabels });
+        const fresh = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { toolLabels, hostAgent: true });
         mem = fresh && fresh.block ? fresh : { block: null };
         v1PersonaCacheSet(cacheKey, mem);
     }
@@ -17087,8 +17117,13 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = nul
     v1RecordInFlight.add(lockKey);
     try {
         if (await isMemoryDisabledForUser(userId)) return;
+        // A REAL user message starts a task. The agent's own runtime messages
+        // arrive with role user too — omp's "<system-interrupt reason=
+        // tool_call_loop_detected>", our late "[ASSISTANT RESULTS …]" follow-up —
+        // and recorded as tasks they split one task into several and became
+        // the task text ("<system-interrupt …> You called `powershell` …").
         const userIdxs = [];
-        messages.forEach((m, i) => { if (m?.role === 'user') userIdxs.push(i); });
+        messages.forEach((m, i) => { if (m?.role === 'user' && v1IsRealUserMessage(m)) userIdxs.push(i); });
         if (!userIdxs.length) return;                    // no task has started yet
         // Record the CURRENT (in-progress) task — everything after the latest
         // user message. /v1 is stateless and a single agentic task spans MANY
@@ -17123,7 +17158,7 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = nul
         // every Pi task, so unrelated experiences embedded as near-duplicates
         // (inflated cosine → wrong merges, diluted recall). v1LatestUserText
         // resolves the same message (`taskStart` IS the last user index).
-        const userText = v1LatestUserText(messages);
+        const userText = v1MessageText(messages[taskStart]);
         // Pi resolves tools client-side; we only see results, so treat them as
         // successful. recordTurnActivity computes the recipe-quality signals
         // (flail/unique) from these chips, so an in-progress snapshot is kept only
@@ -17149,6 +17184,7 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = nul
             // task in step with the work, never good enough to overwrite a
             // complete, measured playbook.
             provisional: true,
+            hostAgent: true,
         });
         await coreMemory.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
@@ -36535,6 +36571,11 @@ server.listen(PORT, async () => {
     } catch {}
     console.log(`Server is listening on 0.0.0.0:${PORT} — ${protocol}://localhost:${PORT}`
         + (lanAddrs.length ? ` (container addresses: ${lanAddrs.join(', ')})` : ''));
+
+    // One-time core memory repair: re-file tasks under the right theme (the
+    // `host` theme for terminal-agent work on the user's machine). Background,
+    // after the embedding engine is up; idempotent via the shard's themeVersion.
+    { const t = setTimeout(() => { repairCoreMemoryThemes().catch(e => console.warn('[Memory] theme repair failed:', e.message)); }, 20000); if (t.unref) t.unref(); }
 
     // Parallel initialization for faster startup
     console.log('Starting parallel initialization...');

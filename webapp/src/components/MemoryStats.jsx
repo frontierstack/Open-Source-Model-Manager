@@ -250,7 +250,7 @@ export default function MemoryStats({ userId = null }) {
                     value={data.adjustedChange == null ? '—' : <Change value={data.adjustedChange} />}
                     sub={data.trendThemes
                         ? `earliest vs latest third of each theme's tasks · ${data.improvedThemes} theme${data.improvedThemes === 1 ? '' : 's'} leaner, ${data.worseThemes} heavier`
-                        : 'needs 6+ tasks in a theme'}
+                        : 'needs 15+ tasks in a theme'}
                 />
             </div>
 
@@ -297,7 +297,7 @@ export default function MemoryStats({ userId = null }) {
                 </Card>
             </div>
 
-            <Card title="By theme" hint="Trend compares the earliest and latest third of a theme's tasks (needs 6+). Follow rate = recalled tasks that used the proven approach.">
+            <Card title="By theme" hint="Trend compares the earliest and latest third of a theme's tasks (needs 15+). Follow rate = recalled tasks that used the proven approach.">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm" style={{ minWidth: 760 }}>
                         <thead>

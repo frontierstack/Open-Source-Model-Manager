@@ -59,7 +59,11 @@ const MAX_HISTORY = 6;
  *  thinking-control prefixes). Capped on a word boundary. */
 function summarizeTask(userText, attachmentKinds = new Set()) {
     let t = String(userText || '');
-    t = t.replace(/^\/(no_)?think\b\s*/i, '');
+    // Terminal-agent wrappers (omp): "<system-reminder> Today: … </system-reminder>"
+    // and "<system-interrupt reason=…> … </system-interrupt>" are runtime text,
+    // not the ask.
+    t = t.replace(/<system-[a-z-]+\b[^>]*>[\s\S]*?<\/system-[a-z-]+>/gi, ' ').replace(/<\/?system-[a-z-]+\b[^>]*>/gi, ' ');
+    t = t.replace(/^\s*\/(no_)?think\b\s*/i, '');
     // Server-side notes prepended to the latest user message ("[SYSTEM: …]\n\n",
     // "[SERVER NOTE: …]\n\n" — the account-memory block, the workspace/image/
     // base64 pre-flights). They can contain ']' inside (memory handles like

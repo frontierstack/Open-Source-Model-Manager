@@ -72,7 +72,27 @@ function clean(s, max) { return String(s || '').replace(/\s+/g, ' ').trim().slic
 // the attachment kinds that imply it. Security sits FIRST and its text cue
 // weighs more because its tools are coding's tools (run_python over a pcap).
 
+// Tools of a terminal agent (omp/Pi) running on the USER'S OWN machine. Chat
+// never has these names (its file tools are read_file/grep_code/run_bash), so a
+// vote for them can only come from the /v1 bridge.
+const HOST_TOOLS = ['bash', 'powershell', 'read', 'write', 'edit', 'grep', 'glob', 'find', 'ls', 'task', 'todo_write',
+    'shell_open', 'shell_exec', 'shell_send', 'shell_read', 'shell_close', 'shell_list', 'ssh_connect', 'notebook_edit'];
+const HOST_TEXT_RE = /\b((my|this|the) (computer|machine|pc|laptop|desktop|system|box)|on my (pc|computer|machine|laptop)|installed (apps|programs|software)|task manager|event viewer|registry|powershell|windows (defender|update|firewall|services?)|startup (apps|items|programs)|my (files|folders|downloads|desktop)|appdata)\b|[a-z]:[\\/]|%[a-z]+%/i;
+
 const THEMES = [
+    {
+        // Work done by a terminal agent on the user's own computer. Kept apart
+        // from everything else: its steps (bash/PowerShell on Windows, local
+        // file reads) mean nothing to the web chat, and mixed in they filled the
+        // Research/Coding playbooks with "validate via bash first" (2026-11-06).
+        key: 'host', label: 'Your computer',
+        description: 'Work the terminal agent (omp) does on your own machine: shell commands, PowerShell, local files, system checks.',
+        tools: HOST_TOOLS,
+        text: HOST_TEXT_RE,
+        textWeight: 3,
+        agentOnly: true,      // the text cue counts only on the terminal-agent surface
+        attachments: [],
+    },
     {
         key: 'security', label: 'Security analysis',
         description: 'Malware and packet-capture analysis, OSINT, binary/CTF work, IOC and vulnerability audits, log forensics.',
@@ -85,7 +105,7 @@ const THEMES = [
         key: 'data-analysis', label: 'Data analysis',
         description: 'Spreadsheets, CSV/SQL, statistics, charts and time series.',
         tools: ['read_xlsx', 'create_xlsx', 'query_sqlite', 'csv_describe', 'spreadsheet_query', 'render_chart', 'fetch_timeseries', 'chart_plot', 'read_csv'],
-        text: /\b(spreadsheet|excel|csv|tsv|xlsx?|pivot|charts?|graph(s| it| this)?|plot|visuali[sz]e|dashboard|histogram|scatter|dataset|statistic\w*|averages?|median|sql query|time ?series|stock (price|chart)|ticker|correlat\w+|forecast)\b/i,
+        text: /\b(spreadsheet|excel|csv|tsv|xlsx?|pivot|charts?|graph(s| it| this)?|plot|visuali[sz]e|dashboard|histogram|scatter|dataset|statistic\w*|averages?|median|sql query|time ?series|stock (price|chart)|ticker|correlat\w+|forecast|retention|cohorts?|churn|funnel|conversion rates?|kpis?|metrics|installs|analy[sz]e (this|the|my) (data|csv|numbers|results)|(data|csv|spreadsheet) analysis|(new|newer|latest|updated) data)\b/i,
         textWeight: 1.5,
         attachments: ['spreadsheet'],
     },
@@ -178,17 +198,27 @@ function deriveAttachmentKinds(attachments) {
  * plain question with no theme cue returns null so NOTHING is injected.
  * `{ theme, label, scores, confident }`.
  */
-function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new Set(), hasTools = null } = {}) {
+// Phrases whose "code" is not programming ("What area is zip code 55904" was
+// filed under Coding and became its proven approach).
+const NON_CODE_RE = /\b(zip|postal|post|area|country|dialing|promo|promotional|discount|coupon|voucher|gift|referral|qr|bar|morse|dress|tax|error|status|verification|confirmation|access|security|activation|product|license|airport|iata|naics|sic|icd|cpt)[ -]?codes?\b/gi;
+
+const GENERIC_TOOLS = new Set(['run_python', 'run_node', 'run_bash', 'read_file', 'head_file', 'tail_file', 'list_directory',
+    'search_files', 'get_file_metadata', 'make_downloadable', 'extract_archive', 'unzip_file', 'tar_extract', 'copy_file', 'move_file']);
+
+function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new Set(), hasTools = null, hostAgent = false } = {}) {
     const scores = new Map();
     const bump = (k, w) => scores.set(k, (scores.get(k) || 0) + w);
     // Words inside a URL are its path, not the user's intent: the ".html"
     // of an article link filed "summarize <article>" under Coding.
-    const q = clean(String(userText || '').replace(/\b(?:https?:\/\/|www\.)\S+/gi, ' link '), 4000);
+    const q = clean(String(userText || '').replace(/\b(?:https?:\/\/|www\.)\S+/gi, ' link ').replace(NON_CODE_RE, ' '), 4000);
     for (const label of toolLabels) {
         const k = TOOL_THEME.get(label);
-        if (k) bump(k, 1);
+        // Interpreters and plain file reads serve every kind of work (a CSV
+        // retention analysis is run_python + read_file); they lean, the ask decides.
+        if (k) bump(k, GENERIC_TOOLS.has(label) ? 0.5 : 1);
     }
     for (const t of THEMES) {
+        if (t.agentOnly && !hostAgent) continue;
         if (t.text && q && t.text.test(q)) bump(t.key, t.textWeight || 1.5);
         if (t.topic && q && t.topic.test(q)) bump(t.key, t.topicWeight || 0.5);
         for (const kind of t.attachments) if (attachmentKinds && attachmentKinds.has && attachmentKinds.has(kind)) bump(t.key, 2);
@@ -429,6 +459,13 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         };
         if (sameRun) {
             const idx = rec.episodes.findIndex(e => e.taskKey === taskKey);
+            // A later snapshot of the same task: the counters follow its growth
+            // (they used to keep the FIRST snapshot's calls, so a 32-call omp
+            // task was counted as 1).
+            const prev = rec.episodes[idx] || {};
+            s.totalCalls += calls - (Number.isFinite(prev.calls) ? prev.calls : 0);
+            if (seconds != null) s.totalSeconds += seconds - (Number.isFinite(prev.seconds) ? prev.seconds : 0);
+            s.lastCalls = calls;
             rec.episodes[idx] = ep;
         } else {
             rec.episodes.push(ep);
@@ -487,6 +524,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
             memoryStats.logRun(shard, {
                 t, th: rec.theme, c: calls, f: failedCalls, s: seconds, ok: converged, rough,
                 prov: !!provisional, k: taskKey || null,
+                tools: [...new Set(experienceMemory.approachTools(episode.approach || []))].slice(0, 8),
                 r: !!recalled, rt: !!(recalled && recalled.id === rec.id), fo: followed,
             });
             if (newBest) memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'best', calls, from: bestBefore });
@@ -697,10 +735,12 @@ function renderBlock(rec, tokenBudget) {
  * theme, the theme has no memory yet, the memory is disabled, or it holds
  * nothing to say (no runs, no notes, no lessons).
  */
-async function recall(userId, { userText = '', attachmentKinds = new Set(), toolLabels = [], tokenBudget = 700, theme = null } = {}) {
+async function recall(userId, { userText = '', attachmentKinds = new Set(), toolLabels = [], tokenBudget = 700, theme = null, hostAgent = false } = {}) {
     if (!userId) return null;
-    const cls = theme ? { theme, label: themeInfo(theme).label } : classifyTheme({ toolLabels, userText, attachmentKinds, hasTools: toolLabels.length > 0 });
+    const cls = theme ? { theme, label: themeInfo(theme).label } : classifyTheme({ toolLabels, userText, attachmentKinds, hasTools: toolLabels.length > 0, hostAgent });
     if (!cls) return null;
+    // The host memory describes the user's own machine; the web chat cannot act on it.
+    if (cls.theme === 'host' && !hostAgent) return null;
     const shard = await readShard(userId);
     const rec = findByTheme(shard, cls.theme);
     if (!rec || rec.enabled === false) return null;
@@ -729,6 +769,154 @@ async function peekBestApproach(userId, themeKey) {
     return experienceMemory.renderApproach(rec.bestApproach.steps);
 }
 
+// ---------------------------------------------------------------------------
+// One-time repair: re-file stored tasks under the right theme (2026-11-06)
+// ---------------------------------------------------------------------------
+// Before the `host` theme existed, terminal-agent work on the user's machine
+// (bash/PowerShell/local greps) was filed under Research, Coding and General,
+// and "zip code" asks counted as Coding. That made those themes look heavier
+// and put host-only advice ("validate via bash first") into playbooks the web
+// chat follows. This re-classifies every known task (held episodes + the
+// archive), moves counters and held episodes, re-themes the stats rows, and
+// clears the host advice from the themes it leaked into so the refiner
+// rebuilds them. `toolsOf(approachText)` lists an episode's tools.
+const THEME_VERSION = 2;
+const HOST_ADVICE_RE = /\b(bash|powershell|glob|git bash)\b/i;
+
+// Only the two defects found are corrected; everything else keeps the theme it
+// was filed under with its full context (attachments, earlier tools), which a
+// re-guess from the stored task line alone does not have.
+function themeOfEpisode(e, toolsOf, fromTheme) {
+    const tools = Array.isArray(e.tools) && e.tools.length ? e.tools : toolsOf(e.approach || '');
+    const hostAgent = String(e.convId || '').startsWith('pi-');
+    const task = experienceMemory.summarizeTask(e.task || '');
+    if (hostAgent && tools.length && tools.filter(t => HOST_TOOLS.includes(t)).length * 2 >= tools.length) return 'host';
+    // Coding over-claimed two kinds of task: "zip code"-style asks, and data
+    // analysis done with run_python/read_file (generic tools now weigh half).
+    // Only those corrections are taken; any other re-guess keeps the old theme.
+    if (fromTheme === 'coding') {
+        const cls = classifyTheme({ toolLabels: tools, userText: task, hasTools: tools.length > 0, hostAgent });
+        if (cls && (cls.theme === 'research' || cls.theme === 'data-analysis')) return cls.theme;
+    }
+    return fromTheme;
+}
+
+async function rethemeStored(userId, { archived = [], toolsOf = () => [] } = {}) {
+    return mutate(userId, (shard) => {
+        if ((shard.themeVersion || 1) >= THEME_VERSION) return null;
+        const moves = new Map();            // `${theme}|${at19}` -> newTheme
+        const report = { moved: 0, byPair: {}, cleaned: [] };
+        const seen = new Set();
+        const consider = (fromTheme, e) => {
+            if (!e || !e.at) return;
+            const key = `${fromTheme}|${String(e.at).slice(0, 19)}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            const to = themeOfEpisode(e, toolsOf, fromTheme);
+            if (to === fromTheme) return;
+            moves.set(key, to);
+            // Lifetime counters follow the task.
+            const src = findByTheme(shard, fromTheme);
+            const dst = ensureTheme(shard, userId, to);
+            const calls = Number.isFinite(e.calls) ? e.calls : 0;
+            const secs = Number.isFinite(e.seconds) ? e.seconds : 0;
+            const ok = e.converged !== false;
+            // A provisional omp snapshot was counted with its FIRST snapshot's
+            // calls (fixed in recordEpisode now), so only one call is taken back.
+            const counted = e.provisional ? Math.min(1, calls) : calls;
+            if (src) {
+                const s = src.stats;
+                s.runs = Math.max(0, s.runs - 1);
+                s.totalCalls = Math.max(0, s.totalCalls - counted);
+                s.totalSeconds = Math.max(0, s.totalSeconds - secs);
+                if (ok) s.converged = Math.max(0, s.converged - 1); else s.failedRuns = Math.max(0, s.failedRuns - 1);
+            }
+            const d = dst.stats;
+            d.runs += 1; d.totalCalls += calls; d.totalSeconds += secs;
+            if (ok) d.converged += 1; else d.failedRuns += 1;
+            if (!d.firstRunAt || e.at < d.firstRunAt) d.firstRunAt = e.at;
+            if (!d.lastRunAt || e.at > d.lastRunAt) d.lastRunAt = e.at;
+            d.lastCalls = calls;
+            report.moved += 1;
+            const pair = `${fromTheme}→${to}`;
+            report.byPair[pair] = (report.byPair[pair] || 0) + 1;
+        };
+        for (const rec of [...shard.memories]) for (const e of rec.episodes || []) consider(rec.theme, e);
+        for (const e of archived || []) consider(e.theme || 'general', e);
+
+        // Move the held episodes themselves.
+        for (const rec of [...shard.memories]) {
+            const keep = [];
+            for (const e of rec.episodes || []) {
+                const to = moves.get(`${rec.theme}|${String(e.at).slice(0, 19)}`);
+                if (!to) { keep.push(e); continue; }
+                const dst = ensureTheme(shard, userId, to);
+                dst.episodes.push(e);
+                dst.episodes.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+                while (dst.episodes.length > MAX_EPISODES) dst.episodes.shift();
+            }
+            rec.episodes = keep;
+        }
+        // A proven approach that came from a moved task goes with it.
+        for (const rec of [...shard.memories]) {
+            const b = rec.bestApproach;
+            if (!b || !b.at) continue;
+            const to = moves.get(`${rec.theme}|${String(b.at).slice(0, 19)}`)
+                || (rec.theme !== 'host' && (b.steps || []).length && (b.steps || []).every(st => HOST_TOOLS.includes(st.tool)) ? 'host' : null);
+            if (!to) continue;
+            const dst = ensureTheme(shard, userId, to);
+            if (!dst.bestApproach || (b.calls ?? 1e9) < (dst.bestApproach.calls ?? 1e9)) {
+                dst.bestApproach = b;
+                dst.stats.bestCalls = b.calls ?? dst.stats.bestCalls;
+            }
+            rec.bestApproach = null;
+            rec.stats.bestCalls = null;     // re-established by the next clean run
+        }
+        // Stats rows follow the task. A row whose episode is no longer held or
+        // archived (only 8 per theme are kept) is judged by its own fields: its
+        // tools when recorded, else an omp task key (every omp task recorded
+        // before this theme existed was work on the user's machine).
+        for (const r of shard.statsLog || []) {
+            const to = moves.get(`${r.th}|${String(r.t).slice(0, 19)}`);
+            if (to) { r.th = to; continue; }
+            if (r.th === 'host') continue;
+            const tools = Array.isArray(r.tools) ? r.tools : null;
+            const hostish = tools ? (tools.length && tools.filter(t => HOST_TOOLS.includes(t)).length * 2 >= tools.length)
+                : String(r.k || '').startsWith('pi-');
+            if (hostish) { r.th = 'host'; report.rowsOnly = (report.rowsOnly || 0) + 1; }
+        }
+        // Clear host advice from the themes it leaked into; the refiner rewrites
+        // them from the tasks that remain. The user's own guidance is kept.
+        for (const rec of shard.memories) {
+            if (rec.theme === 'host') { if (rec.episodes.length) rec.dirty = true; continue; }
+            let changed = false;
+            if (rec.playbook && HOST_ADVICE_RE.test(rec.playbook)) {
+                rec.playbookHistory.push({ version: rec.playbookVersion, at: rec.playbookUpdatedAt, runs: rec.stats.runs, playbook: rec.playbook, note: 'cleared: mixed with work on the user\'s machine' });
+                while (rec.playbookHistory.length > MAX_HISTORY) rec.playbookHistory.shift();
+                rec.playbook = '';
+                changed = true;
+            }
+            const lessons = rec.lessons.filter(l => l.source === 'user' || !HOST_ADVICE_RE.test(l.text));
+            if (lessons.length !== rec.lessons.length) { rec.lessons = lessons; changed = true; }
+            const avoid = rec.avoid.filter(a => !HOST_TOOLS.includes(String(a.text).split(':')[0].trim()));
+            if (avoid.length !== rec.avoid.length) { rec.avoid = avoid; changed = true; }
+            if (changed) { rec.dirty = true; report.cleaned.push(rec.theme); }
+            rec.updatedAt = nowIso();
+        }
+        // A theme left with no tasks at all is removed.
+        shard.memories = shard.memories.filter(m => m.stats.runs > 0 || m.notes || m.episodes.length);
+        shard.themeVersion = THEME_VERSION;
+        report.moves = moves;
+        return report;
+    });
+}
+
+/** Theme records waiting for a refinement (after a repair). */
+async function dirtyRecords(userId) {
+    const shard = await readShard(userId);
+    return shard.memories.filter(m => m.dirty).map(m => m.id);
+}
+
 /** Stats for the Memory tab's Stats view; seeds the log from the archive once. */
 async function stats(userId, archived = null) {
     let shard = await readShard(userId);
@@ -739,7 +927,7 @@ async function stats(userId, archived = null) {
 }
 
 module.exports = {
-    stats,
+    stats, rethemeStored, dirtyRecords, HOST_TOOLS, THEME_VERSION,
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
