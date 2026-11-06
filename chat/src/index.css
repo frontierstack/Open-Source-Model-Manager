@@ -5654,3 +5654,45 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 .chart-table td { padding: 6px 10px; color: var(--ink); border-bottom: 1px solid var(--rule-2); }
 .chart-table td.is-num { text-align: right; font-variant-numeric: tabular-nums; }
 .chart-table tr:last-child td { border-bottom: none; }
+
+/* Source cluster — the sites a turn's web calls touched, bundled as small
+   square site icons under the answer; click to list every page. */
+.srcx { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule-2); }
+.srcx-bar {
+    display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 6px;
+    border-radius: 8px; border: 1px solid var(--rule); background: color-mix(in oklab, var(--ink) 3%, transparent);
+    color: var(--ink-2); font-size: 12px; --fs: 12px; cursor: pointer; transition: background .12s, border-color .12s;
+}
+.srcx-bar:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); border-color: var(--ink-4); color: var(--ink); }
+.srcx-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.srcx-stack { display: inline-flex; align-items: center; }
+.srcx-stack > .srcx-icon + .srcx-icon { margin-left: -5px; }
+.srcx-icon {
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    border-radius: 5px; overflow: hidden; line-height: 1;
+}
+.srcx-icon img { width: 70%; height: 70%; object-fit: contain; display: block; }
+.srcx-icon--ring { box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 2.5px var(--rule); }
+.srcx-letter { font-weight: 700; letter-spacing: -.02em; user-select: none; }
+.srcx-more { width: 20px; height: 20px; font-size: 9.5px; --fs: 9.5px; font-weight: 600; background: var(--bg-2); color: var(--ink-2); }
+.srcx-label { white-space: nowrap; }
+.srcx-chev { color: var(--ink-3); transition: transform .15s; }
+.srcx--open .srcx-chev { transform: rotate(180deg); }
+.srcx-list {
+    list-style: none; margin: 8px 0 0; padding: 0;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px;
+}
+.srcx-site { border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; background: var(--surface); min-width: 0; }
+.srcx-site-head { display: flex; align-items: center; gap: 7px; text-decoration: none; color: var(--ink); font-size: 12.5px; --fs: 12.5px; font-weight: 600; min-width: 0; }
+.srcx-site-head:hover .srcx-host { text-decoration: underline; }
+.srcx-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srcx-tag { margin-left: auto; font-size: 10px; --fs: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, transparent); }
+.srcx-pages { list-style: none; margin: 4px 0 0 25px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.srcx-pages a { display: flex; align-items: center; gap: 5px; min-width: 0; text-decoration: none; color: var(--ink-2); font-size: 12px; --fs: 12px; }
+.srcx-pages a:hover { color: var(--accent); }
+.srcx-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srcx-ext { flex-shrink: 0; opacity: .6; }
+@media (max-width: 640px) {
+    .srcx-list { grid-template-columns: 1fr; }
+    .srcx-bar { height: 34px; }
+}

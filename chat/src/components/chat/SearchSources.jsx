@@ -7,7 +7,7 @@ import { warmPreview, getPreview, subscribePreview } from '../../utils/linkPrevi
  * Safely parse a URL and return a cleaned hostname (www. stripped).
  * Returns null if the URL is invalid.
  */
-function getHostname(url) {
+export function getHostname(url) {
     try {
         const hostname = new URL(url).hostname;
         return hostname.replace(/^www\./i, '');
@@ -53,7 +53,7 @@ const AVATAR_PALETTE = [
     { bg: '#a21caf', fg: '#ffffff' }, // fuchsia
 ];
 
-function colorForHostname(hostname) {
+export function colorForHostname(hostname) {
     if (!hostname) return AVATAR_PALETTE[0];
     let hash = 0;
     for (let i = 0; i < hostname.length; i++) {
@@ -65,7 +65,7 @@ function colorForHostname(hostname) {
 /**
  * First letter of the hostname's base name — e.g. 'nytimes.com' -> 'N'.
  */
-function avatarLetter(hostname) {
+export function avatarLetter(hostname) {
     if (!hostname) return '?';
     // Drop a leading subdomain if there's one so 'en.wikipedia.org' -> 'W'
     // and 'blog.github.com' -> 'G'. Keep single-label hosts as-is.

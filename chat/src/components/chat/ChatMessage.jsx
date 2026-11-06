@@ -4,7 +4,7 @@ import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
-import SearchSources from './SearchSources';
+import SourceCluster from './SourceCluster';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
@@ -1267,10 +1267,8 @@ export default React.memo(function ChatMessage({
                     })()}
 
                     {/* Search source chips */}
-                    {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(searchResults) && searchResults.length > 0 && (
-                        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
-                            <SearchSources sources={searchResults} />
-                        </div>
+                    {!isUser && !isStreaming && !bodyCollapsed && (
+                        <SourceCluster toolCalls={toolCalls} searchResults={searchResults} />
                     )}
 
                     {/* Tool calls — always wrapped in a collapsible summary
