@@ -1149,6 +1149,49 @@ async function resolveCodePathLiterals(codeText, workspaceInfo, mount = CONTAINE
  *  Returns the (possibly unchanged) params plus a list of what was rewritten.
  *  Never throws — on any surprise we leave the arg alone and let the skill
  *  produce its own error. */
+// A path under gh-clones/ that does not exist is almost always a REMEMBERED
+// clone layout: the model writes `gh-clones/<some hash>/<owner>/<repo>/README.md`
+// (the old hash-named layout, or the github URL shape) while the clone really
+// sits at `gh-clones/<owner>-<repo>[-<ref>]/README.md`. Basename fuzzy matching
+// cannot help (every repo has a README.md), so match the CLONE DIR instead:
+// for every split of the requested path into <prefix>/<remainder>, a clone
+// whose name carries the prefix's words and holds <remainder> wins. Returns the
+// workspace-relative path, or null when nothing (or more than one) fits.
+async function resolveCloneRelPath(root, rel) {
+    const segs = rel.split('/').filter(Boolean);
+    if (segs[0] !== 'gh-clones' || segs.length < 3) return null;
+    let clones;
+    try {
+        clones = (await fs.readdir(path.join(root, 'gh-clones'), { withFileTypes: true }))
+            .filter(e => e.isDirectory()).map(e => e.name);
+    } catch { return null; }
+    if (!clones.length) return null;
+    const words = s => String(s).toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 2);
+    const tail = segs.slice(1);
+    const hits = [];
+    for (const clone of clones) {
+        const cloneWords = new Set(words(clone));
+        for (let k = 0; k < tail.length; k++) {
+            const remainder = tail.slice(k);
+            const full = path.join(root, 'gh-clones', clone, ...remainder);
+            let ok = false;
+            try { ok = (await fs.stat(full)).isFile(); } catch { /* missing */ }
+            if (!ok) continue;
+            const prefixWords = words(tail.slice(0, k).join(' '));
+            const score = prefixWords.filter(w => cloneWords.has(w)).length;
+            // A prefix that names nothing of this clone only counts when it is
+            // the ONLY clone (then there is nothing else it could mean).
+            if (score === 0 && clones.length > 1) continue;
+            hits.push({ rel: ['gh-clones', clone, ...remainder].join('/'), score, depth: remainder.length });
+            break; // longest remainder for this clone is the most specific
+        }
+    }
+    if (!hits.length) return null;
+    hits.sort((a, b) => b.score - a.score || b.depth - a.depth);
+    if (hits.length > 1 && hits[0].score === hits[1].score && hits[0].depth === hits[1].depth) return null;
+    return hits[0].rel;
+}
+
 async function resolveMissingReadPaths(toolName, params, workspaceInfo, mount = CONTAINER_MOUNT) {
     const argNames = RESOLVABLE_READ_PATH_ARGS[toolName];
     if (!argNames || !params || typeof params !== 'object' || !workspaceInfo) {
@@ -1173,6 +1216,18 @@ async function resolveMissingReadPaths(toolName, params, workspaceInfo, mount = 
             if (st.isDirectory()) continue;   // a dir where a file was wanted: the skill explains that better
         } catch { /* ENOENT — this is the case we recover */ }
 
+        try {
+            const cloneRel = await resolveCloneRelPath(root, rel);
+            if (cloneRel) {
+                const resolved = path.posix.join(mount, cloneRel);
+                if (out === params) out = { ...params };
+                out[arg] = resolved;
+                resolutions.push({ arg, from: value, to: resolved });
+                continue;
+            }
+        } catch (e) {
+            console.warn('[sandboxRunner] clone path recovery failed for', toolName, arg, e.message);
+        }
         try {
             const wantedBase = path.basename(rel);
             const parentLocal = path.dirname(local);
@@ -1683,6 +1738,7 @@ module.exports = {
     resolveInWorkspace,
     normalizePathArgs,
     resolveMissingReadPaths,
+    resolveCloneRelPath,
     resolveCodePathLiterals,
     isWriteContextLiteral,
     isDerivedName,
