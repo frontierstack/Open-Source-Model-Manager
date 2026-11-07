@@ -21,6 +21,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encryption');
 const adBlockService = require('./services/adBlock');
+const embeddedPageData = require('./services/embeddedPageData');
 
 // ---- llama.cpp speed defaults (top-level so the boot-time container sync can
 // read them too). Measured 2026-08-21 on 2×RTX 5060 Ti 16 GB / Qwen3.8-27B
@@ -14374,6 +14375,19 @@ function extractTextFromHtml(html, maxLength = 5000) {
                      .replace(/\n{3,}/g, '\n\n')
                      .replace(/[ \t]*\n[ \t]*/g, '\n')
                      .trim();
+
+    // Content the site ships as JSON inside the page (GitHub's React pages:
+    // commit lists, diffs, pull requests). Without it those pages read as a
+    // thin shell and every read went to the browser (5-8 s instead of <1 s).
+    // Added after the whitespace cleanup so diff indentation survives.
+    try {
+        const pageData = embeddedPageData.extract(html, Math.max(2000, Math.floor(maxLength * 0.75)));
+        if (pageData) {
+            const room = Math.max(600, maxLength - pageData.length - 20);
+            if (content.length > room) content = content.slice(0, room);
+            content = `${content}\n\nPage data:\n${pageData}`;
+        }
+    } catch (_) { /* page data is optional */ }
 
     // Truncate if too long
     if (content.length > maxLength) {

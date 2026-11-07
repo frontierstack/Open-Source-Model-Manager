@@ -96,8 +96,12 @@ const THEMES = [
     {
         key: 'security', label: 'Security analysis',
         description: 'Malware and packet-capture analysis, OSINT, binary/CTF work, IOC and vulnerability audits, log forensics.',
-        tools: ['hex_dump', 'extract_strings', 'xor_bytes', 'hex_convert', 'virustotal_lookup', 'dns_lookup', 'whois_lookup', 'analyze_pe', 'yara_scan'],
-        text: /\b(malware|malicious|ioc|c2\b|beacon|pcap(ng)?|packet capture|wireshark|tcpdump|osint|ctf\b|reverse[- ]?engineer\w*|disassembl\w+|shellcode|exploit|vulnerab\w+|cve[- ]?\d|phishing|ransomware|trojan|backdoor|infected|suspicious|threat|forensic\w*|virustotal|evtx|event logs?|security (audit|review|analysis)|pentest|penetration|attacker|compromise[ds]?|indicators? of compromise)\b/i,
+        // The reverse-engineering toolchain belongs here (2026-11-07): owned by
+        // no theme, "reverse engineer the .exe in this repo" scored Coding on
+        // the clone/scan/extract steps around it.
+        tools: ['hex_dump', 'extract_strings', 'xor_bytes', 'hex_convert', 'virustotal_lookup', 'dns_lookup', 'whois_lookup', 'analyze_pe', 'yara_scan',
+            'disassemble', 'decompile', 'binary_info', 'gdb_batch', 'unpack_upx', 'inspect_msi', 'parse_pem'],
+        text: /\b(malware|malicious|ioc|c2\b|beacon|pcap(ng)?|packet capture|wireshark|tcpdump|osint|ctf\b|reverse[- ]?engineer\w*|disassembl\w+|decompil\w+|keygen|shellcode|exploit|vulnerab\w+|cve[- ]?\d|phishing|ransomware|trojan|backdoor|infected|suspicious|threat|forensic\w*|virustotal|evtx|event logs?|security (audit|review|analysis)|pentest|penetration|attacker|compromise[ds]?|indicators? of compromise)\b/i,
         textWeight: 3,
         attachments: ['capture'],
     },
@@ -223,6 +227,9 @@ function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new S
         if (t.topic && q && t.topic.test(q)) bump(t.key, t.topicWeight || 0.5);
         for (const kind of t.attachments) if (attachmentKinds && attachmentKinds.has && attachmentKinds.has(kind)) bump(t.key, 2);
     }
+    // Asking for reverse engineering IS the task, whatever repo/file tools get
+    // the binary onto disk first (clone, scan, extract all score Coding).
+    if (q && RE_TEXT.test(q)) bump('security', 2);
     let best = null;
     for (const t of THEMES) {
         const s = scores.get(t.key) || 0;
@@ -789,16 +796,26 @@ async function peekBestApproach(userId, themeKey) {
 // archive), moves counters and held episodes, re-themes the stats rows, and
 // clears the host advice from the themes it leaked into so the refiner
 // rebuilds them. `toolsOf(approachText)` lists an episode's tools.
-const THEME_VERSION = 2;
+const THEME_VERSION = 3;
+// v3 (2026-11-07): reverse-engineering tasks filed under Coding/General/
+// Research move to Security analysis.
+const RE_TOOLS = new Set(['disassemble', 'decompile', 'binary_info', 'gdb_batch', 'unpack_upx', 'inspect_msi']);
+const RE_TEXT = /\b(reverse[- ]?engineer\w*|disassembl\w+|decompil\w+|keygen)\b/i;
+const RE_FROM = new Set(['coding', 'general', 'research']);
 const HOST_ADVICE_RE = /\b(bash|powershell|glob|git bash)\b/i;
 
 // Only the two defects found are corrected; everything else keeps the theme it
 // was filed under with its full context (attachments, earlier tools), which a
 // re-guess from the stored task line alone does not have.
-function themeOfEpisode(e, toolsOf, fromTheme) {
+function themeOfEpisode(e, toolsOf, fromTheme, fromVersion = 1) {
     const tools = Array.isArray(e.tools) && e.tools.length ? e.tools : toolsOf(e.approach || '');
     const hostAgent = String(e.convId || '').startsWith('pi-');
     const task = experienceMemory.summarizeTask(e.task || '');
+    if (fromVersion >= 2) {
+        if (RE_FROM.has(fromTheme) && !hostAgent && (tools.some(t => RE_TOOLS.has(t)) || RE_TEXT.test(task))) return 'security';
+        return fromTheme;
+    }
+    if (RE_FROM.has(fromTheme) && !hostAgent && (tools.some(t => RE_TOOLS.has(t)) || RE_TEXT.test(task))) return 'security';
     if (hostAgent && tools.length && tools.filter(t => HOST_TOOLS.includes(t)).length * 2 >= tools.length) return 'host';
     // Coding over-claimed two kinds of task: "zip code"-style asks, and data
     // analysis done with run_python/read_file (generic tools now weigh half).
@@ -812,7 +829,8 @@ function themeOfEpisode(e, toolsOf, fromTheme) {
 
 async function rethemeStored(userId, { archived = [], toolsOf = () => [] } = {}) {
     return mutate(userId, (shard) => {
-        if ((shard.themeVersion || 1) >= THEME_VERSION) return null;
+        const fromVersion = shard.themeVersion || 1;
+        if (fromVersion >= THEME_VERSION) return null;
         const moves = new Map();            // `${theme}|${at19}` -> newTheme
         const report = { moved: 0, byPair: {}, cleaned: [] };
         const seen = new Set();
@@ -821,7 +839,7 @@ async function rethemeStored(userId, { archived = [], toolsOf = () => [] } = {})
             const key = `${fromTheme}|${String(e.at).slice(0, 19)}`;
             if (seen.has(key)) return;
             seen.add(key);
-            const to = themeOfEpisode(e, toolsOf, fromTheme);
+            const to = themeOfEpisode(e, toolsOf, fromTheme, fromVersion);
             if (to === fromTheme) return;
             moves.set(key, to);
             // Lifetime counters follow the task.
@@ -889,6 +907,8 @@ async function rethemeStored(userId, { archived = [], toolsOf = () => [] } = {})
             const to = moves.get(`${r.th}|${String(r.t).slice(0, 19)}`);
             if (to) { r.th = to; continue; }
             if (r.th === 'host') continue;
+            if (RE_FROM.has(r.th) && Array.isArray(r.tools) && r.tools.some(t => RE_TOOLS.has(t))) { r.th = 'security'; report.rowsOnly = (report.rowsOnly || 0) + 1; continue; }
+            if (fromVersion >= 2) continue;
             const tools = Array.isArray(r.tools) ? r.tools : null;
             const hostish = tools ? (tools.length && tools.filter(t => HOST_TOOLS.includes(t)).length * 2 >= tools.length)
                 : String(r.k || '').startsWith('pi-');
@@ -896,7 +916,10 @@ async function rethemeStored(userId, { archived = [], toolsOf = () => [] } = {})
         }
         // Clear host advice from the themes it leaked into; the refiner rewrites
         // them from the tasks that remain. The user's own guidance is kept.
-        for (const rec of shard.memories) {
+        // Themes that gave or received tasks are re-refined from what they hold now.
+        const touched = new Set([...moves.values(), ...[...moves.keys()].map(k => k.split('|')[0])]);
+        for (const rec of shard.memories) if (touched.has(rec.theme) && rec.episodes.length) rec.dirty = true;
+        for (const rec of (fromVersion >= 2 ? [] : shard.memories)) {
             if (rec.theme === 'host') { if (rec.episodes.length) rec.dirty = true; continue; }
             let changed = false;
             if (rec.playbook && HOST_ADVICE_RE.test(rec.playbook)) {

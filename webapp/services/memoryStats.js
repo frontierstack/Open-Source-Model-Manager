@@ -386,6 +386,70 @@ function findingsFor(rows, scope, label) {
     return out;
 }
 
+// Inverse standard normal (Acklam's rational approximation).
+function normInv(p) {
+    if (p <= 0) return -Infinity; if (p >= 1) return Infinity;
+    const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+    const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+    const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549671010349497e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+    const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+    const lo = 0.02425, hi = 1 - lo;
+    if (p < lo) { const q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+    if (p > hi) { const q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+    const q = p - 0.5, r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+
+// Web chat as a whole, LIKE FOR LIKE: each theme's earliest third against its
+// latest third, combined weighted by size (Stouffer's method for the p-value).
+// Pooling all chat tasks read a week of reverse-engineering work (3-9 minute
+// tasks that barely existed before) as "chat got 50% slower" while research,
+// the most common kind, had got faster. The pooled change is kept as `pooled`.
+const STRAT_MIN = 6;
+function stratifiedFindings(rows, scope, label) {
+    const out = [];
+    const themes = [...new Set(rows.map(r => r.th))];
+    for (const m of METRICS) {
+        let wsum = 0, acc = 0, zsum = 0, w2 = 0, nFrom = 0, nTo = 0;
+        const parts = [];
+        for (const th of themes) {
+            const rs = rows.filter(r => r.th === th).filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+            if (rs.length < STRAT_MIN) continue;
+            const w = Math.min(60, Math.max(3, Math.floor(rs.length / 3)));
+            const c = compareGroups(rs.slice(0, w), rs.slice(-w), m);
+            if (!c || c.change == null) continue;
+            const wt = Math.min(c.nFrom, c.nTo);
+            // Ratios average on a log scale: +100% and −50% cancel, and one
+            // theme going 1 → 6 calls cannot outweigh every other theme.
+            const contrib = c.changeKind === 'relative' ? Math.log(Math.max(0.05, 1 + c.change)) : c.change;
+            acc += contrib * wt; wsum += wt;
+            if (c.p != null) {
+                const z = normInv(1 - Math.max(1e-9, c.p) / 2) * Math.sign(c.change || 0);
+                zsum += z * wt; w2 += wt * wt;
+            }
+            nFrom += c.nFrom; nTo += c.nTo;
+            parts.push({ theme: th, change: c.change, nFrom: c.nFrom, nTo: c.nTo });
+        }
+        if (!wsum || parts.length === 0) continue;
+        const z = w2 ? zsum / Math.sqrt(w2) : 0;
+        const p = w2 ? round(2 * (1 - normCdf(Math.abs(z))), 4) : null;
+        const changeKind = (m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative';
+        const change = round(changeKind === 'relative' ? Math.exp(acc / wsum) - 1 : acc / wsum, 3);
+        // Pooled (mix included), for context.
+        const all = rows.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+        const pw = Math.min(60, Math.max(5, Math.floor(all.length / 3)));
+        const pooled = all.length >= FIND_MIN ? compareGroups(all.slice(0, pw), all.slice(-pw), m) : null;
+        const f = { scope, scopeLabel: label, metric: m.key, metricLabel: m.label, change, changeKind,
+            nFrom, nTo, p, evidence: evidence(p, nFrom, nTo), matched: true, themes: parts,
+            from: pooled ? pooled.from : null, to: pooled ? pooled.to : null,
+            pooled: pooled ? { from: pooled.from, to: pooled.to, change: pooled.change } : null,
+            since: all.length ? all[0].t : null, recentSince: all.length ? all[Math.max(0, all.length - pw)].t : null };
+        f.direction = direction(f);
+        out.push(f);
+    }
+    return out;
+}
+
 // Weekly series with every measure, for the trend charts.
 function weeklySeries(rows) {
     const weeks = new Map();
@@ -539,7 +603,7 @@ function analyze(rows, byTheme, events, label) {
     // order of magnitude, a shift in mix would read as a trend).
     const findings = [];
     const chatRows = rows.filter(r => !isHostRow(r));
-    const chatFindings = findingsFor(chatRows, 'chat', 'Web chat');
+    const chatFindings = stratifiedFindings(chatRows, 'chat', 'Web chat (like for like)');
     findings.push(...chatFindings);
     for (const t of byTheme) {
         const rs = rows.filter(r => r.th === t.theme);

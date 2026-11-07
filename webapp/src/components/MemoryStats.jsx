@@ -530,12 +530,16 @@ function FindingRow({ f }) {
                     <span style={{ color: 'var(--text-secondary)' }}> · {(METRIC_FMT[f.metric] || {}).label || f.metricLabel}</span>
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    <span className="tabular-nums">{fmt(f.from)} → <b style={{ color: 'var(--text-primary)' }}>{fmt(f.to)}</b></span>
+                    {f.matched
+                        ? <span>each theme against itself ({(f.themes || []).length} themes)</span>
+                        : <span className="tabular-nums">{fmt(f.from)} → <b style={{ color: 'var(--text-primary)' }}>{fmt(f.to)}</b></span>}
                     <Change value={f.change} kind={f.changeKind} small />
                     <Evidence level={f.evidence} p={f.p} nFrom={f.nFrom} nTo={f.nTo} />
                 </div>
                 <div className="mt-0.5 text-[0.7rem]" style={{ color: MUTED }}>
-                    earliest {f.nFrom} tasks (from {shortDate(f.since)}) vs latest {f.nTo} (since {shortDate(f.recentSince)})
+                    {f.matched
+                        ? <>All chat tasks pooled: {fmt(f.from)} → {fmt(f.to)}{f.pooled && f.pooled.change != null ? ` (${f.pooled.change > 0 ? '+' : ''}${Math.round(f.pooled.change * 100)}${f.changeKind === 'points' ? ' pts' : '%'})` : ''}, which also counts the change in what kind of work you asked for</>
+                        : <>earliest {f.nFrom} tasks (from {shortDate(f.since)}) vs latest {f.nTo} (since {shortDate(f.recentSince)})</>}
                 </div>
             </div>
         </li>
@@ -600,7 +604,7 @@ export default function MemoryStats({ userId = null }) {
     const followReady = I && I.followedTasks >= MIN_COMPARE && I.notFollowedTasks >= MIN_COMPARE;
     const corrTracked = (data.tasks || []).filter((t) => typeof t.cor === 'boolean');
     const corrRate = corrTracked.length ? corrTracked.filter((t) => t.cor).length / corrTracked.length : null;
-    const trendSub = (f) => (f ? `${f.nFrom} earliest vs ${f.nTo} latest chat tasks` : 'trend needs 10+ tasks');
+    const trendSub = (f) => (f ? `trend: each theme's earliest vs latest tasks (${EVIDENCE[f.evidence].label})` : 'trend needs 6+ tasks in a theme');
 
     const scopeSelect = (
         <select value={scope} onChange={(e) => setScope(e.target.value)} className="rounded-md border px-2 py-1 text-xs"
