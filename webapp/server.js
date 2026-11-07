@@ -22,6 +22,7 @@ const rateLimit = require('express-rate-limit');
 const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encryption');
 const adBlockService = require('./services/adBlock');
 const embeddedPageData = require('./services/embeddedPageData');
+const inlineTables = require('./services/inlineTables');
 
 // ---- llama.cpp speed defaults (top-level so the boot-time container sync can
 // read them too). Measured 2026-08-21 on 2×RTX 5060 Ti 16 GB / Qwen3.8-27B
@@ -1505,7 +1506,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `WHEN A CALL FAILS OR COMES BACK EMPTY: read the error and any \`hint\`, \`obstacle\` or \`note\` in the result — they usually name the next step; do that. Never re-send a call that failed with the same arguments, and do not try a third variation of an approach that failed twice: change the route — a different tool, a different source (the official site or docs, the project's GitHub, a package registry or API, an archived copy), or a different way to get the same fact. A page that is missing, blocked or empty is a finding, not a dead end: say so in one line and answer from what you could get, marking anything you could not confirm. When the user asked about one SPECIFIC page, file, article or item and it does not exist or cannot be reached, say that FIRST and never pass a different one off as it — a closest match may be offered only when clearly labelled as a different item.`,
         `WEB RESEARCH: a search query is 2–6 plain keywords — the exact name plus what you want ("Kubernetes release notes", "pandas latest version PyPI", "Steam Deck OLED battery life"). No OR chains, no stacked quotes, no past years; add the current year only when the ask is about recent events. Then READ the best one to three results (\`read:N\`, or \`url\`) — snippets are leads, not sources. For versions, releases, prices and specs go to the primary source (the official site, the registry, GitHub releases). Generic or off-topic results mean the QUERY was weak (\`relevance\`/\`hint\` say so): quote the exact name, add one distinguishing detail or a site:. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Try three genuinely different queries before calling something unavailable. Never guess or retype a URL — copy it from the user or a result.`,
         `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs, numbers or data you did not get from a tool, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest. When sources disagree, say which says what.`,
-        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), downloads (download_file), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. If it fails, read the traceback and fix that line; do not start over. COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
+        `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), downloads (download_file), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. If it fails, read the traceback and fix that line; do not start over. Pass data between scripts through FILES: the script that computes results saves them (json.dump to /workspace/<name>.json) and the next script loads that file — never paste a previous tool output back into code (retyping a large JSON costs minutes of generation and breaks on quoting). COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
         `FILES: anything the user should be able to download (HTML, PDF, image, archive, dataset, script, edited source) is written under /workspace/ and delivered with make_downloadable. To show or give a file you already wrote in this conversation, call make_downloadable on it instead of pasting it back (paste only small files, or when asked). Edit large files in pieces (replace_lines / search_replace_file, or create_file + append_to_file) — a whole large file pasted into one tool argument gets cut off. PDFs are rendered from static HTML or markdown: scripts do NOT run in them, so compute every number first (yourself, or with one run_python call) and write the values into the document — never leave them to JavaScript.`,
         `YOUR REPLY starts with the answer itself — never with your process ("I now have…", "All the results are in", "Here's what I found:", "Based on my research"). Lead with the direct answer, then the supporting detail. Unless the user asked for a format, fit it to the content: a table for comparing several items, a numbered list for steps, prose for explanations. Cite the URLs you used when the answer rests on web sources. In the final answer, do not talk about these rules, your tools, background jobs or the other model unless the user asks how you worked.`,
         `BEFORE YOU SEND the final answer, check it against the user's request: every part answered, the exact number of items asked for, the requested format, length, language and tone, nothing they excluded, sources if they asked for them, files delivered with make_downloadable. Fix what is missing. If part of the request could not be done, say which part and why in one line — never present a guess as a finding.`,
@@ -9444,6 +9445,11 @@ function skillOrigin(skill) {
 // process. Offered anyway, the model picked run_cmd for `git log` on a Linux
 // sandbox and spent a call on the error (2026-11-07). The Skills page still
 // lists such a skill; the chat catalog and omp leave it out.
+// Tools offered mid-turn as a convenience, not because the task needs them.
+// Adding one rewrites the top of the prompt (see the grow-only expansion), so
+// on a long conversation they wait for a later, shorter turn.
+const OPTIONAL_GROW_TOOLS = new Set(['save_tool']);
+const OPTIONAL_GROW_MAX_CTX_TOKENS = parseInt(process.env.OPTIONAL_GROW_MAX_CTX_TOKENS, 10) || 12000;
 const OS_NAME_BY_PLATFORM = { win32: 'Windows', darwin: 'Darwin', linux: 'Linux' };
 function skillRunsHere(s) {
     const code = String((s && s.code) || '');
@@ -22419,6 +22425,36 @@ const chatStreamHandlerInner = async (req, res) => {
             console.warn('[Chat Stream] data pre-flight failed:', e.message);
         }
 
+        // --- Large inline tables → sample + path ------------------------------
+        // The client inlines every attached CSV in full; the model reads the
+        // copy in /workspace/uploads/ with pandas anyway. A 51.7k-char message
+        // (three files attached twice) cost 95 s of prefill before the first
+        // word. Big tables keep a sample, exact duplicates become a pointer.
+        // Applied to EVERY user message, deterministically, so earlier turns
+        // stay byte-identical (prompt cache). Only when the file is on disk.
+        try {
+            if ((conversationId || inProcBucket) && fullToolCatalog.some(t => t?.function?.name === 'run_python')
+                && chatMessages.some(m => m && m.role === 'user' && JSON.stringify(m.content || '').includes('=== FILE '))) {
+                const sbRunner = require('./services/sandboxRunner');
+                const ws = await sbRunner.ensureWorkspace(req.userId ?? null, inProcBucket ? null : conversationId, inProcBucket || null);
+                let onDisk = new Set();
+                try { onDisk = new Set(await fs.readdir(path.join(ws.localInContainer, 'uploads'))); } catch (_) { /* none */ }
+                if (onDisk.size) {
+                    const fileExists = (name) => { const n = sanitizeUploadName(name); return onDisk.has(n) ? `/workspace/uploads/${n}` : null; };
+                    let saved = 0, cut = 0, dups = 0;
+                    const apply = (t) => { const r = inlineTables.condense(t, { fileExists }); saved += r.savedChars; cut += r.condensed; dups += r.duplicates; return r.text; };
+                    for (const m of chatMessages) {
+                        if (!m || m.role !== 'user') continue;
+                        if (typeof m.content === 'string') m.content = apply(m.content);
+                        else if (Array.isArray(m.content)) for (const p of m.content) if (p && p.type === 'text' && typeof p.text === 'string') p.text = apply(p.text);
+                    }
+                    if (saved > 0) console.log(`[Chat Stream] Inline tables: ${cut} large table(s) cut to a sample, ${dups} duplicate(s) replaced — ${saved} chars fewer`);
+                }
+            }
+        } catch (e) {
+            console.warn('[Chat Stream] inline-table condensing failed:', e.message);
+        }
+
         // --- Repository link: clone it before the turn ------------------------
         // Measured: on a bare repo link the model listed the empty workspace
         // with run_python before cloning, guessed clone paths (read_file on
@@ -24742,7 +24778,20 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         let grew = false;
                         const addName = (n) => { if (n && fullByName.has(n) && !advertisedNames.has(n)) { advertisedNames.add(n); grew = true; } };
                         for (const c of (accumulatedToolCalls || [])) addName(c?.function?.name);
-                        if (toolCtx._forcedToolNames) toolCtx._forcedToolNames.forEach(addName);
+                        // The catalog sits at the TOP of the prompt (Qwen renders
+                        // tools before the system text), so any addition makes the
+                        // backend re-read the whole conversation: 90k tokens = 159 s
+                        // on the 27B (the Appstats turn, 2026-11-07, for save_tool
+                        // after one successful script). A tool that is merely ON
+                        // OFFER waits while the conversation is long; one the model
+                        // needs (it called it, an error or advisory named it) is
+                        // still added at once.
+                        let optionalDeferred = null;
+                        const ctxTokNow = () => (optionalDeferred ??= estimateTokens(JSON.stringify(currentMessages)));
+                        if (toolCtx._forcedToolNames) toolCtx._forcedToolNames.forEach((n) => {
+                            if (OPTIONAL_GROW_TOOLS.has(n) && !advertisedNames.has(n) && ctxTokNow() > OPTIONAL_GROW_MAX_CTX_TOKENS) return;
+                            addName(n);
+                        });
                         if (grew) {
                             const rebuilt = [];
                             for (const n of advertisedNames) {
