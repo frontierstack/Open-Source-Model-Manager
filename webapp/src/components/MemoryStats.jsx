@@ -341,10 +341,21 @@ const WEEKLY_METRICS = [
     { key: 'correctionRate', label: 'Corrections', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of answers your next message corrected ("that\'s wrong", "I said…"). Tracked from Nov 7, 2026 on.' },
     { key: 'recallRate', label: 'Memory recalled', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks that started with the theme\'s memory. Higher is better here.' },
     { key: 'followRate', label: 'Playbook followed', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Of the tasks given the memory, how many used the proven approach. Higher is better here.' },
-    { key: 'tasks', label: 'Tasks', fmt: (v) => String(v), kind: 'bar', hint: 'How much work was recorded each week.' },
+    { key: 'tasks', label: 'Tasks', fmt: (v) => String(v), kind: 'bar', hint: 'How much work was recorded in each period.' },
 ];
 
-function WeeklyChart({ data, metric, height = 180 }) {
+function bucketLabel(key, unit) {
+    if (!key) return '';
+    if (unit === 'hour') { const d = new Date(key); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, { hour: 'numeric' }); }
+    return shortDate(key);
+}
+function bucketTitle(key, unit) {
+    if (unit === 'hour') { const d = new Date(key); return isNaN(d) ? '' : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`; }
+    if (unit === 'day') return shortDate(key);
+    return `Week of ${shortDate(key)}`;
+}
+
+function WeeklyChart({ data, metric, height = 180, unit = 'week' }) {
     const [hover, setHover] = React.useState(null);
     const [ref, w] = useWidth();
     const field = metric.key;
@@ -368,7 +379,7 @@ function WeeklyChart({ data, metric, height = 180 }) {
     const d = hover != null ? data[hover] : null;
     return (
         <div ref={ref} className="relative" style={{ width: '100%' }}>
-            <svg width={w} height={h} role="img" aria-label={`${metric.label} by week`} style={{ display: 'block' }}>
+            <svg width={w} height={h} role="img" aria-label={`${metric.label} by ${unit}`} style={{ display: 'block' }}>
                 {ticks.map((t) => (
                     <g key={t}>
                         <line x1={padL} x2={w - padR} y1={y(t)} y2={y(t)} stroke={RULE} strokeWidth={t === 0 ? 1 : 0.5} opacity={t === 0 ? 1 : 0.6} />
@@ -397,7 +408,7 @@ function WeeklyChart({ data, metric, height = 180 }) {
                 )))}
                 {hover != null && metric.kind === 'line' && <line x1={x(hover)} x2={x(hover)} y1={padT} y2={y(0)} stroke={MUTED} strokeWidth="1" strokeDasharray="3 3" />}
                 {data.map((dd, i) => (i % labelEvery === 0 ? (
-                    <text key={`l${dd.week}`} x={x(i)} y={h - 6} textAnchor="middle" fontSize="10" fill={MUTED}>{shortDate(dd.week)}</text>
+                    <text key={`l${dd.week}`} x={x(i)} y={h - 6} textAnchor="middle" fontSize="10" fill={MUTED}>{bucketLabel(dd.week, unit)}</text>
                 ) : null))}
                 {data.map((dd, i) => (
                     <rect key={`h${dd.week}`} x={padL + slot * i} y={padT} width={slot} height={plotH} fill="transparent"
@@ -412,7 +423,7 @@ function WeeklyChart({ data, metric, height = 180 }) {
             )}
             {d && (
                 <Tooltip x={x(hover)} width={w}>
-                    <div className="font-semibold">Week of {shortDate(d.week)}</div>
+                    <div className="font-semibold">{bucketTitle(d.week, unit)}</div>
                     <div style={{ color: 'var(--text-secondary)' }}>{metric.label}: <b>{d[field] == null ? '—' : metric.fmt(d[field])}</b></div>
                     {metric.band && d[metric.band] != null && <div style={{ color: 'var(--text-secondary)' }}>p75: {metric.fmt(d[metric.band])}</div>}
                     <div style={{ color: 'var(--text-secondary)' }}>{d.tasks} task{d.tasks === 1 ? '' : 's'}</div>
@@ -989,7 +1000,7 @@ function SelfCorrection({ data, now }) {
     };
     return (
         <Card title="Self-correction"
-            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it judges the result and rolls back a fix that made things worse. Checks run after every task.`}
+            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it judges the result and rolls back a fix that made things worse. Checks run after every task, and always judge on your full history — the time range above does not change what gets corrected.`}
             right={SC.lastCheckAt ? <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>checked {ago(SC.lastCheckAt, now)}</span> : null}>
             <div className="mb-3 grid grid-cols-3 gap-2">
                 {[['Correcting', active.length, '#f59e0b'], ['Helped', helped, GOOD], ['Rolled back / worse', rolled, BAD]].map(([l, v, c]) => (
@@ -1066,15 +1077,17 @@ function Counter({ value }) {
 
 const MIN_COMPARE = 3;
 
-const RANGES = [['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['1y', 'Year'], ['all', 'All time']];
-const RANGE_TEXT = { '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days', '1y': 'the last year', all: 'all time' };
+const RANGES = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['1y', 'Year'], ['all', 'All time']];
+const RANGE_TEXT = { '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days', '1y': 'the last year', all: 'all time' };
 
 // Running median of the last 7 tasks over the last 40 — a tile's trend line
 // without one slow task spiking it.
 function rollingSpark(tasks, get) {
     const v = (tasks || []).slice(-46).map(get).filter((x) => x != null && Number.isFinite(x));
+    // Short windows hold few tasks: shrink the smoothing so a line still shows.
+    const k = Math.max(1, Math.min(6, Math.floor(v.length / 5)));
     const out = [];
-    for (let i = 6; i < v.length; i++) out.push(median(v.slice(i - 6, i + 1)));
+    for (let i = k; i < v.length; i++) out.push(median(v.slice(i - k, i + 1)));
     return out.slice(-40);
 }
 
@@ -1287,11 +1300,11 @@ export default function MemoryStats({ userId = null }) {
             </Card>
 
             {/* Trends by week */}
-            <Card title={`${wm.label}, by week`} hint={wm.hint} right={scopeSelect}>
+            <Card title={`${wm.label}, by ${data.bucket || 'week'}`} hint={wm.hint} right={scopeSelect}>
                 <div className="mb-3">
                     <Segmented options={WEEKLY_METRICS.map((m) => [m.key, m.label])} value={weeklyMetric} onChange={setWeeklyMetric} />
                 </div>
-                <WeeklyChart data={scoped.weekly} metric={wm} />
+                <WeeklyChart data={scoped.weekly} metric={wm} unit={data.bucket || 'week'} />
             </Card>
 
             {/* Every task */}

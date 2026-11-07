@@ -171,7 +171,7 @@ function withVsWithout(rows) {
  */
 // `since` (ISO) limits everything to tasks/events from then on; the headline
 // counters are then computed from the log instead of the lifetime totals.
-function computeStats(shard, themes, { since = null } = {}) {
+function computeStats(shard, themes, { since = null, bucket = 'week' } = {}) {
     ensure(shard);
     const label = new Map((themes || []).map(t => [t.key, t.label]));
     // A Pi task is snapshotted while it runs; only its final row counts.
@@ -201,7 +201,7 @@ function computeStats(shard, themes, { since = null } = {}) {
         life.proven = allEvents.filter(e => e.kind === 'best').length;
     }
 
-    const weekly = weeklySeries(rows);
+    const weekly = weeklySeries(rows, bucket);
 
     const byTheme = [];
     const themeKeys = [...new Set([...(themes || []).map(t => t.key), ...rows.map(r => r.th)])];
@@ -209,7 +209,15 @@ function computeStats(shard, themes, { since = null } = {}) {
         const rs = rows.filter(r => r.th === key);
         const rec = recs.find(m => m.theme === key);
         if (!rs.length && !rec) continue;
-        const s = (rec && rec.stats) || {};
+        let s = (rec && rec.stats) || {};
+        // In a range, the per-theme counters come from that window's tasks.
+        if (since) {
+            const conv = rs.filter(r => r.ok !== false && !r.rough);
+            const rec2 = rs.filter(r => r.rt);
+            s = { runs: rs.length, totalCalls: rs.reduce((n, r) => n + (r.c || 0), 0),
+                bestCalls: conv.length ? Math.min(...conv.map(r => r.c)) : null,
+                recalled: rec2.length, followed: rec2.filter(r => r.fo === true).length, lastRunAt: rs.length ? rs[rs.length - 1].t : null };
+        }
         byTheme.push({
             theme: key,
             label: label.get(key) || (rec && rec.label) || key,
@@ -229,7 +237,7 @@ function computeStats(shard, themes, { since = null } = {}) {
             memoryEffect: withVsWithout(rs),
             spark: rs.slice(-30).map(r => r.c),
             sparkSeconds: rs.slice(-30).map(r => r.s).filter(x => x != null),
-            weekly: weeklySeries(rs),
+            weekly: weeklySeries(rs, bucket),
             secondsTrend: (() => {
                 const v = rs.filter(r => r.s != null);
                 if (v.length < FIND_MIN) return null;
@@ -271,6 +279,7 @@ function computeStats(shard, themes, { since = null } = {}) {
         themes: byTheme,
         events,
         range: since ? { since } : null,
+        bucket,
         ...analyze(rows, byTheme, allEvents, label),
     };
 }
@@ -464,10 +473,18 @@ function stratifiedFindings(rows, scope, label) {
 }
 
 // Weekly series with every measure, for the trend charts.
-function weeklySeries(rows) {
+// Buckets for the trend chart: hours for a day, days for up to a month, weeks beyond.
+function bucketStart(iso, unit) {
+    if (unit === 'week') return weekStart(iso);
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    if (unit === 'day') return d.toISOString().slice(0, 10);
+    return d.toISOString().slice(0, 13) + ':00:00.000Z';
+}
+function weeklySeries(rows, unit = 'week') {
     const weeks = new Map();
     for (const r of rows) {
-        const w = weekStart(r.t);
+        const w = bucketStart(r.t, unit);
         if (!w) continue;
         if (!weeks.has(w)) weeks.set(w, []);
         weeks.get(w).push(r);

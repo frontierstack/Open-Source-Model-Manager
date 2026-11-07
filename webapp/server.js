@@ -31811,10 +31811,12 @@ app.get('/api/memories/stats', requireAuth, async (req, res) => {
         const own = memAccountId(req);
         const userId = (req.query.userId && callerIsAdmin(req)) ? String(req.query.userId) : own;
         const archived = (await episodeIndex.listEpisodes(userId, { limit: 2000 }).catch(() => ({ episodes: [] }))).episodes;
-        const RANGES = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+        const RANGES = { '24h': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
         const days = RANGES[String(req.query.range || '')];
         const since = days ? new Date(Date.now() - days * 86400000).toISOString() : null;
-        res.json({ success: true, userId, rangeKey: days ? String(req.query.range) : 'all', ...(await coreMemory.stats(userId, archived, { since })) });
+        // Trend-chart buckets that suit the window: hours for a day, days up to a month.
+        const bucket = days === 1 ? 'hour' : (days && days <= 30) ? 'day' : 'week';
+        res.json({ success: true, userId, rangeKey: days ? String(req.query.range) : 'all', ...(await coreMemory.stats(userId, archived, { since, bucket })) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

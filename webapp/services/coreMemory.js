@@ -969,12 +969,12 @@ async function dirtyRecords(userId) {
 }
 
 /** Stats for the Memory tab's Stats view; seeds the log from the archive once. */
-async function stats(userId, archived = null, { since = null } = {}) {
+async function stats(userId, archived = null, { since = null, bucket = 'week' } = {}) {
     let shard = await readShard(userId);
     if (!shard.statsSeeded && archived) {
         shard = await mutate(userId, (sh) => { memoryStats.seedFromHistory(sh, archived); return sh; });
     }
-    const out = memoryStats.computeStats(shard, allThemes(), { since });
+    const out = memoryStats.computeStats(shard, allThemes(), { since, bucket });
     // Self-correction always works on the whole history, whatever the view's range.
     const full = since ? memoryStats.computeStats(shard, allThemes()) : out;
     return { ...out, selfCorrect: selfCorrect.publicState(shard, (full.findings || {}).worsening) };
