@@ -238,15 +238,38 @@ function assessFinding(f) {
     return { actionable: true, reason: '' };
 }
 
+// An active correction as it stands right now: tasks measured so far and the
+// measure over them against the baseline (an interim reading, not a verdict).
+function liveProgress(shard, a) {
+    const m = metricByKey.get(a.metric);
+    if (!m) return {};
+    const vals = themeRows(shard, a.th).filter(r => r.t > a.t).filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+    const done = vals.slice(0, EVAL_K);
+    const value = done.length ? centre(done, m) : null;
+    const change = worseBy(a.baseline, value, m);
+    return {
+        progress: done.length,
+        remaining: Math.max(0, EVAL_K - done.length),
+        lastTaskAt: done.length ? done[done.length - 1].t : null,
+        interim: value == null ? null : {
+            value, change,
+            changeKind: (m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative',
+            direction: change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat',
+        },
+    };
+}
+
 /** What the Stats view shows. `worsening` = the current worsening findings. */
 function publicState(shard, worsening = []) {
     const st = state(shard);
     return {
         watch: (worsening || []).filter(f => f && f.scope && f.scope !== 'chat' && f.evidence !== 'weak')
-            .map(f => ({ scope: f.scope, metric: f.metric, ...assessFinding(f) })),
+            .map(f => ({ scope: f.scope, scopeLabel: f.scopeLabel, metric: f.metric, metricLabel: f.metricLabel,
+                from: f.from, to: f.to, change: f.change, changeKind: f.changeKind, evidence: f.evidence, nFrom: f.nFrom, nTo: f.nTo,
+                ...assessFinding(f) })),
         evalTasks: EVAL_K,
         cooldownHours: COOLDOWN_MS / 3600000,
-        actions: st.actions.slice(-40).reverse().map(({ prevPlaybook, rollback, ...a }) => ({ ...a, canRollBack: !!prevPlaybook })),
+        actions: st.actions.slice(-40).reverse().map(({ prevPlaybook, rollback, ...a }) => ({ ...a, canRollBack: !!prevPlaybook, ...(a.status === 'active' ? liveProgress(shard, a) : {}) })),
         lastCheckAt: st.lastCheckAt || null,
     };
 }

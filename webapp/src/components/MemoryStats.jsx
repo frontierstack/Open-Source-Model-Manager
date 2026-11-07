@@ -12,7 +12,6 @@ import {
     Wrench as FixIcon,
     ShieldCheck as SteadyIcon,
     RotateCcw as RevertIcon,
-    RefreshCw as CheckIcon,
     MessageSquareWarning as CorrectedIcon,
 } from 'lucide-react';
 
@@ -96,9 +95,42 @@ function Change({ value, kind = 'relative', invert = false, small = false, thres
     const txt = kind === 'points'
         ? `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)} pts`
         : `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)}%`;
+    const dir = value < -t ? 'down' : value > t ? 'up' : 'flat';
     return (
-        <span className={`inline-flex items-center gap-1 font-medium tabular-nums ${small ? 'text-xs' : ''}`} style={{ color }}>
-            <Icon size={small ? 12 : 14} strokeWidth={2} />{txt}
+        <span key={txt} className={`ms-chg ms-chg--${dir} inline-flex items-center gap-1 font-medium tabular-nums ${small ? 'text-xs' : ''}`} style={{ color }}>
+            <span className="ms-chg-icon inline-flex"><Icon size={small ? 12 : 14} strokeWidth={2} /></span>{txt}
+        </span>
+    );
+}
+
+// A formatted number that counts to its new value and flashes when it changes.
+function Num({ value, fmt }) {
+    const v = useTween(value, 800);
+    const bump = useBump(value);
+    return <span key={bump} className={bump ? 'ms-num-flash' : undefined}>{value == null ? '—' : fmt(v)}</span>;
+}
+
+// Which way a series is heading: median of its last third against its first.
+function trendOf(values, lowerIsBetter = true) {
+    const v = (values || []).filter((x) => x != null && Number.isFinite(x));
+    if (v.length < 4) return null;
+    const k = Math.max(2, Math.floor(v.length / 3));
+    const a = median(v.slice(0, k)), b = median(v.slice(-k));
+    const base = Math.abs(a) > 1e-9 ? Math.abs(a) : (Math.abs(b) || 1);
+    const change = (b - a) / base;
+    const dir = change > 0.05 ? 'up' : change < -0.05 ? 'down' : 'flat';
+    const good = dir === 'flat' ? null : (dir === 'down') === lowerIsBetter;
+    return { dir, change, good, color: good == null ? MUTED : good ? GOOD : BAD };
+}
+
+function TrendBadge({ trend, label }) {
+    if (!trend) return null;
+    const Icon = trend.dir === 'up' ? UpIcon : trend.dir === 'down' ? DownIcon : FlatIcon;
+    const text = trend.dir === 'flat' ? 'steady' : trend.good ? 'improving' : 'worsening';
+    return (
+        <span key={`${trend.dir}${trend.good}`} className={`ms-chg ms-chg--${trend.dir} inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[0.65rem] font-semibold`}
+            style={{ color: trend.color, backgroundColor: `color-mix(in oklab, ${trend.color} 12%, transparent)` }} title={label ? `${label}: ${text}` : text}>
+            <span className="ms-chg-icon inline-flex"><Icon size={11} strokeWidth={2.25} /></span>{text}
         </span>
     );
 }
@@ -183,7 +215,7 @@ function ago(iso, now) {
 }
 
 // Small trend line under a tile: draws in, and the last point glows.
-function TileSpark({ values, color = ACCENT, width = 120, height = 28 }) {
+function TileSpark({ values, color = ACCENT, width = 120, height = 28, lowerIsBetter = true }) {
     const gid = React.useMemo(() => `ms-g${Math.random().toString(36).slice(2, 8)}`, []);
     const v = (values || []).filter((x) => x != null && Number.isFinite(x));
     if (v.length < 3) return null;
@@ -194,7 +226,10 @@ function TileSpark({ values, color = ACCENT, width = 120, height = 28 }) {
     const pts = v.map((x, i) => `${(i * step).toFixed(1)},${py(x).toFixed(1)}`);
     const area = `M0,${height} L${pts.join(' L')} L${width},${height} Z`;
     const key = v.length + ':' + v[v.length - 1];
+    const tr = trendOf(v, lowerIsBetter);
+    const endY = py(v[v.length - 1]);
     return (
+        <span className="inline-flex items-center gap-2">
         <svg width={width} height={height} className="ms-spark" aria-hidden style={{ display: 'block', overflow: 'visible' }}>
             <defs>
                 <linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
@@ -204,8 +239,11 @@ function TileSpark({ values, color = ACCENT, width = 120, height = 28 }) {
             </defs>
             <path key={`a${key}`} d={area} fill={`url(#${gid})`} className="ms-fade-in" />
             <polyline key={`l${key}`} points={pts.join(' ')} pathLength="1" className="ms-draw" fill="none" stroke={color} strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
-            <circle cx={(v.length - 1) * step} cy={py(v[v.length - 1])} r="3" fill={color} className="ms-pulse-dot" />
+            <circle cx={(v.length - 1) * step} cy={endY} r="3" fill={tr ? tr.color : color} className="ms-pulse-dot" />
+            <circle cx={(v.length - 1) * step} cy={endY} r="3" fill="none" stroke={tr ? tr.color : color} strokeWidth="1.5" className="ms-ripple-loop" />
         </svg>
+        <TrendBadge trend={tr} />
+        </span>
     );
 }
 
@@ -238,7 +276,7 @@ function Tile({ label, value, sub, extra, num = null, format = null, spark = nul
                 )}
             </div>
             {sub && <div className="mt-0.5 text-xs leading-snug" style={{ color: MUTED }}>{sub}</div>}
-            {spark && <div className="mt-2"><TileSpark values={spark} color={sparkColor} /></div>}
+            {spark && <div className="mt-2"><TileSpark values={spark} color={sparkColor} lowerIsBetter={lowerIsBetter} /></div>}
         </div>
     );
 }
@@ -621,15 +659,22 @@ function HistChart({ bins, height = 170 }) {
     );
 }
 
-function Spark({ values, width = 84, height = 22, label = 'values' }) {
+function Spark({ values, width = 84, height = 22, label = 'values', lowerIsBetter = true }) {
     if (!values || values.length < 2) return <span style={{ color: MUTED }}>—</span>;
     const max = Math.max(1, ...values);
     const step = width / (values.length - 1);
-    const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (v / max) * (height - 4)).toFixed(1)}`).join(' ');
+    const yOf = (v) => height - 2 - (v / max) * (height - 4);
+    const pts = values.map((v, i) => `${(i * step).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
+    const tr = trendOf(values, lowerIsBetter);
+    const k = `${values.length}:${values[values.length - 1]}`;
     return (
-        <svg width={width} height={height} aria-label={`last ${values.length} tasks: ${label}`} style={{ display: 'block' }}>
-            <polyline points={pts} fill="none" stroke={ACCENT} strokeWidth="1.5" strokeLinejoin="round" />
-        </svg>
+        <span className="inline-flex items-center gap-1.5">
+            <svg width={width} height={height} aria-label={`last ${values.length} tasks: ${label}`} style={{ display: 'block', overflow: 'visible' }}>
+                <polyline key={k} points={pts} pathLength="1" className="ms-draw" fill="none" stroke={ACCENT} strokeWidth="1.5" strokeLinejoin="round" />
+                <circle cx={(values.length - 1) * step} cy={yOf(values[values.length - 1])} r="2.5" fill={tr ? tr.color : ACCENT} className="ms-pulse-dot" />
+            </svg>
+            <TrendBadge trend={tr} label={label} />
+        </span>
     );
 }
 
@@ -640,8 +685,10 @@ function FindingRow({ f }) {
     const better = f.direction === 'better';
     const Icon = better ? BetterIcon : WorseIcon;
     return (
-        <li className="flex items-start gap-2.5 border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
-            <Icon size={15} style={{ color: better ? GOOD : BAD, flexShrink: 0, marginTop: 2 }} aria-label={better ? 'improving' : 'getting worse'} />
+        <li className="ms-feed-in flex items-start gap-2.5 border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
+            <span className={`ms-chg ms-chg--${better ? 'down' : 'up'} inline-flex`} style={{ flexShrink: 0, marginTop: 2 }}>
+                <span className="ms-chg-icon inline-flex"><Icon size={15} style={{ color: better ? GOOD : BAD }} aria-label={better ? 'improving' : 'getting worse'} /></span>
+            </span>
             <div className="min-w-0 flex-1">
                 <div className="text-sm">
                     <b className="font-medium">{f.scopeLabel}</b>
@@ -650,7 +697,7 @@ function FindingRow({ f }) {
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
                     {f.matched
                         ? <span>each theme against itself ({(f.themes || []).length} themes)</span>
-                        : <span className="tabular-nums">{fmt(f.from)} → <b style={{ color: 'var(--text-primary)' }}>{fmt(f.to)}</b></span>}
+                        : <span className="tabular-nums"><Num value={f.from} fmt={fmt} /> → <b style={{ color: 'var(--text-primary)' }}><Num value={f.to} fmt={fmt} /></b></span>}
                     <Change value={f.change} kind={f.changeKind} small />
                     <Evidence level={f.evidence} p={f.p} nFrom={f.nFrom} nTo={f.nTo} />
                 </div>
@@ -756,74 +803,121 @@ function LiveBadge({ live }) {
 const STATUS_TEXT = { active: 'in progress', helped: 'helped', no_effect: 'had no clear effect', worse: 'made it worse', rolled_back: 'rolled back' };
 const STATUS_COLOR = { active: '#f59e0b', helped: GOOD, no_effect: MUTED, worse: BAD, rolled_back: BAD };
 
-function SelfCorrection({ data, now, onCheck, checking }) {
+// One active correction: applied → measuring (n of N tasks) → verdict, with
+// the measure so far against where it started. Updates on every task.
+function CorrectionTracker({ a, evalTasks, now }) {
+    const fmt = (v) => (METRIC_FMT[a.metric] || { fmt: n1 }).fmt(v);
+    const n = a.progress || 0;
+    const bump = useBump(n);
+    const pctDone = Math.round((n / evalTasks) * 100);
+    const it = a.interim;
+    const dirColor = it ? (it.direction === 'better' ? GOOD : it.direction === 'worse' ? BAD : MUTED) : MUTED;
+    const steps = [
+        ['Applied', true],
+        [`Measuring ${n}/${evalTasks}`, n > 0],
+        ['Verdict', false],
+    ];
+    return (
+        <li className="ms-feed-in rounded-md border p-2.5" style={{ borderColor: 'color-mix(in oklab, #f59e0b 35%, var(--border-primary))', backgroundColor: 'color-mix(in oklab, #f59e0b 5%, transparent)' }}>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+                <span className="text-sm"><b className="font-medium">{a.label}</b><span style={{ color: 'var(--text-secondary)' }}> · {a.metricLabel}</span></span>
+                <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>started {ago(a.t, now)}</span>
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-xs" style={{ color: '#f59e0b' }}>
+                <span className="ms-status-dot is-on" style={{ backgroundColor: '#f59e0b' }} />
+                {a.kind === 'revert' ? `Restored playbook v${a.toVersion != null ? a.toVersion : ''}${a.basis ? '' : ''}` : `Playbook rewritten (v${a.toVersion})`} — {a.why}
+            </div>
+            <ol className="ms-steps mt-2.5 flex items-center gap-1.5 text-[0.68rem] font-semibold">
+                {steps.map(([label, done], i) => (
+                    <React.Fragment key={i}>
+                        {i > 0 && <span className={`ms-step-line ${done ? 'is-done' : ''}`} />}
+                        <li className={`ms-step ${done ? 'is-done' : ''} ${i === 1 && n < evalTasks ? 'is-current' : ''}`}>
+                            <span className="ms-step-dot" />{label}
+                        </li>
+                    </React.Fragment>
+                ))}
+            </ol>
+            <div className="mt-2.5 flex items-center gap-2">
+                <span className="ms-progress h-2 flex-1 overflow-hidden rounded-full" style={{ backgroundColor: 'var(--bg-hover)' }}>
+                    <span className="ms-progress-fill block h-full rounded-full" style={{ width: `${Math.max(3, pctDone)}%`, backgroundColor: '#f59e0b' }} />
+                </span>
+                <span key={bump} className={`shrink-0 text-xs font-semibold tabular-nums ${bump ? 'ms-num-flash' : ''}`}>{pctDone}%</span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                {it ? (
+                    <span className="inline-flex flex-wrap items-center gap-1.5">
+                        so far <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}><Num value={it.value} fmt={fmt} /></b>
+                        <span style={{ color: MUTED }}>vs {fmt(a.baseline)} before</span>
+                        <Change value={it.change} kind={it.changeKind} small />
+                        <span className="font-medium" style={{ color: dirColor }}>{it.direction === 'better' ? 'trending better' : it.direction === 'worse' ? 'trending worse' : 'no clear change yet'}</span>
+                    </span>
+                ) : <span>waiting for the first {a.label.toLowerCase()} task</span>}
+                <span className="tabular-nums" style={{ color: MUTED }}>
+                    {a.remaining ? `${a.remaining} more task${a.remaining === 1 ? '' : 's'} to a verdict` : 'verdict due now'}{a.lastTaskAt ? ` · last ${ago(a.lastTaskAt, now)}` : ''}
+                </span>
+            </div>
+        </li>
+    );
+}
+
+function SelfCorrection({ data, now }) {
     const SC = data.selfCorrect || { actions: [], evalTasks: 6 };
-    const F = data.findings || {};
-    const watching = (F.worsening || []).filter((f) => f.evidence !== 'weak' && f.scope && f.scope !== 'chat');
     const actions = SC.actions || [];
+    const active = actions.filter((a) => a.status === 'active');
+    // Watching = the server's all-time list (the view's range filter does not apply).
+    const watching = (SC.watch || []).filter((w) => !active.some((a) => a.th === w.scope));
     const helped = actions.filter((a) => a.status === 'helped').length;
     const rolled = actions.filter((a) => a.status === 'rolled_back' || a.status === 'worse').length;
-    const activeN = actions.filter((a) => a.status === 'active').length;
     const fmt = (m, v) => (METRIC_FMT[m] || { fmt: n1 }).fmt(v);
-    const statusFor = (f) => {
-        const mine = actions.filter((a) => a.th === f.scope);
-        const act = mine.find((a) => a.status === 'active');
-        if (act) return { text: act.kind === 'revert' ? 'Correcting · restored a better playbook' : 'Correcting · playbook rewritten', color: '#f59e0b', progress: (act.progress || 0) / (SC.evalTasks || 6), act };
-        const last = mine[0];
-        if (last && now - Date.parse(last.t) < (SC.cooldownHours || 6) * 3600e3) return { text: `Last attempt ${STATUS_TEXT[last.status] || last.status} · next try after cooldown`, color: MUTED };
-        const w = (SC.watch || []).find((x) => x.scope === f.scope && x.metric === f.metric);
-        if (w && !w.actionable) return { text: `Watching · ${w.reason}`, color: MUTED };
-        return { text: 'Will act at the next check', color: ACCENT };
+    const statusFor = (w) => {
+        const last = actions.find((a) => a.th === w.scope);
+        if (last && now - Date.parse(last.t) < (SC.cooldownHours || 6) * 3600e3) return { text: `Last attempt ${STATUS_TEXT[last.status] || last.status} · next try after the cooldown`, color: MUTED };
+        if (!w.actionable) return { text: `Watching · ${w.reason}`, color: MUTED };
+        return { text: 'Will act at the next check', color: ACCENT, on: true };
     };
     return (
         <Card title="Self-correction"
-            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it checks the result and rolls back a fix that made things worse.`}
-            right={(
-                <button type="button" onClick={onCheck} disabled={checking}
-                    className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs disabled:opacity-60"
-                    style={{ borderColor: RULE, color: 'var(--text-secondary)' }}>
-                    <CheckIcon size={12} className={checking ? 'animate-spin' : ''} /> Check now
-                </button>
-            )}>
+            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it judges the result and rolls back a fix that made things worse. Checks run after every task.`}
+            right={SC.lastCheckAt ? <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>checked {ago(SC.lastCheckAt, now)}</span> : null}>
             <div className="mb-3 grid grid-cols-3 gap-2">
-                {[['Correcting', activeN, '#f59e0b'], ['Helped', helped, GOOD], ['Rolled back / worse', rolled, BAD]].map(([l, v, c]) => (
+                {[['Correcting', active.length, '#f59e0b'], ['Helped', helped, GOOD], ['Rolled back / worse', rolled, BAD]].map(([l, v, c]) => (
                     <div key={l} className="rounded-md border px-2.5 py-2" style={{ borderColor: RULE }}>
                         <div className="text-[0.65rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>{l}</div>
                         <div className="text-lg font-semibold tabular-nums" style={{ color: v ? c : 'var(--text-primary)' }}><Counter value={v} /></div>
                     </div>
                 ))}
             </div>
+            {active.length > 0 && (
+                <>
+                    <div className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>In progress</div>
+                    <ul className="mb-3 space-y-2">
+                        {active.map((a) => <CorrectionTracker key={a.id} a={a} evalTasks={SC.evalTasks || 6} now={now} />)}
+                    </ul>
+                </>
+            )}
             <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Watching</div>
             {watching.length ? (
                 <ul className="mb-3">
-                    {watching.map((f, i) => {
-                        const st = statusFor(f);
+                    {watching.map((w) => {
+                        const st = statusFor(w);
                         return (
-                            <li key={`${f.scope}${f.metric}`} className="ms-feed-in border-t py-2 first:border-t-0" style={{ borderColor: RULE, animationDelay: `${i * 60}ms` }}>
+                            <li key={`${w.scope}${w.metric}`} className="ms-feed-in border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
                                 <div className="flex flex-wrap items-baseline justify-between gap-x-2">
-                                    <span className="text-sm"><b className="font-medium">{f.scopeLabel}</b><span style={{ color: 'var(--text-secondary)' }}> · {(METRIC_FMT[f.metric] || {}).label || f.metricLabel}</span></span>
-                                    <span className="inline-flex items-center gap-2 text-xs"><span className="tabular-nums" style={{ color: 'var(--text-secondary)' }}>{fmt(f.metric, f.from)} → {fmt(f.metric, f.to)}</span><Change value={f.change} kind={f.changeKind} small /></span>
+                                    <span className="text-sm"><b className="font-medium">{w.scopeLabel}</b><span style={{ color: 'var(--text-secondary)' }}> · {(METRIC_FMT[w.metric] || {}).label || w.metricLabel}</span></span>
+                                    <span className="inline-flex items-center gap-2 text-xs"><span className="tabular-nums" style={{ color: 'var(--text-secondary)' }}><Num value={w.from} fmt={(v) => fmt(w.metric, v)} /> → <Num value={w.to} fmt={(v) => fmt(w.metric, v)} /></span><Change value={w.change} kind={w.changeKind} small /></span>
                                 </div>
                                 <div className="mt-1 flex items-center gap-2 text-xs" style={{ color: st.color }}>
-                                    <span className={`ms-status-dot ${st.act ? 'is-on' : ''}`} style={{ backgroundColor: st.color }} />{st.text}
+                                    <span className={`ms-status-dot ${st.on ? 'is-on' : ''}`} style={{ backgroundColor: st.color }} />{st.text}
                                 </div>
-                                {st.act && (
-                                    <div className="mt-1.5 flex items-center gap-2">
-                                        <span className="ms-progress h-1.5 flex-1 overflow-hidden rounded-full" style={{ backgroundColor: 'var(--bg-hover)' }}>
-                                            <span className="ms-progress-fill block h-full rounded-full" style={{ width: `${Math.max(4, st.progress * 100)}%`, backgroundColor: st.color }} />
-                                        </span>
-                                        <span className="shrink-0 text-[0.7rem] tabular-nums" style={{ color: MUTED }}>{st.act.progress || 0}/{SC.evalTasks} tasks measured</span>
-                                    </div>
-                                )}
                             </li>
                         );
                     })}
                 </ul>
-            ) : (
+            ) : !active.length ? (
                 <div className="mb-3 flex items-center gap-2 rounded-md px-2 py-2 text-xs" style={{ color: GOOD, backgroundColor: `color-mix(in oklab, ${GOOD} 8%, transparent)` }}>
                     <SteadyIcon size={14} /> Nothing is trending the wrong way with evidence — no correction needed.
                 </div>
-            )}
+            ) : <div className="mb-3 py-1 text-xs" style={{ color: MUTED }}>Nothing else trending the wrong way.</div>}
             <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>History</div>
             {actions.length ? (
                 <ul className="max-h-[220px] overflow-y-auto">
@@ -858,6 +952,9 @@ function Counter({ value }) {
 
 const MIN_COMPARE = 3;
 
+const RANGES = [['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['1y', 'Year'], ['all', 'All time']];
+const RANGE_TEXT = { '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days', '1y': 'the last year', all: 'all time' };
+
 // Running median of the last 7 tasks over the last 40 — a tile's trend line
 // without one slow task spiking it.
 function rollingSpark(tasks, get) {
@@ -880,10 +977,13 @@ export default function MemoryStats({ userId = null }) {
     const [live, setLive] = React.useState('connecting');
     const [feed, setFeed] = React.useState([]);
     const [updatedAt, setUpdatedAt] = React.useState(null);
-    const [checking, setChecking] = React.useState(false);
     const mountedAt = React.useRef(Date.now());
     const now = useNow(1000);
-    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    const [range, setRangeState] = React.useState(() => { try { return localStorage.getItem('memoryStatsRange') || 'all'; } catch (_) { return 'all'; } });
+    const [switching, setSwitching] = React.useState(false);
+    const setRange = (r) => { setRangeState(r); setSwitching(true); try { localStorage.setItem('memoryStatsRange', r); } catch (_) { /* per-browser only */ } };
+    const streamQs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    const qs = `?${new URLSearchParams({ ...(userId ? { userId } : {}), ...(range !== 'all' ? { range } : {}) }).toString()}`;
 
     // `silent` refreshes keep the current view on screen (live updates).
     const load = React.useCallback(async (silent = false) => {
@@ -895,9 +995,10 @@ export default function MemoryStats({ userId = null }) {
             setData(body);
             setUpdatedAt(Date.now());
             if (silent) setError(null);
-        } catch (e) { if (!silent) setError(e.message); } finally { if (!silent) setLoading(false); }
+        } catch (e) { if (!silent) setError(e.message); } finally { if (!silent) setLoading(false); setSwitching(false); }
     }, [qs]);
-    React.useEffect(() => { load(); }, [load]);
+    const loadedOnce = React.useRef(false);
+    React.useEffect(() => { load(loadedOnce.current); loadedOnce.current = true; }, [load]);
 
     // Live feed: the server pushes a frame per task / memory update /
     // self-correction step; each one refreshes the stats (coalesced).
@@ -906,7 +1007,7 @@ export default function MemoryStats({ userId = null }) {
         const refresh = () => { clearTimeout(pending); pending = setTimeout(() => load(true), 700); };
         const open = () => {
             if (closed || typeof EventSource === 'undefined') { setLive('reconnecting'); return; }
-            es = new EventSource(`/api/memories/stats/stream${qs}`, { withCredentials: true });
+            es = new EventSource(`/api/memories/stats/stream${streamQs}`, { withCredentials: true });
             es.onopen = () => setLive('live');
             es.onmessage = (m) => {
                 let ev = null;
@@ -929,19 +1030,8 @@ export default function MemoryStats({ userId = null }) {
         const onVis = () => { if (document.visibilityState === 'visible') load(true); };
         document.addEventListener('visibilitychange', onVis);
         return () => { closed = true; clearTimeout(pending); clearInterval(poll); document.removeEventListener('visibilitychange', onVis); if (es) es.close(); };
-    }, [qs, load]);
+    }, [streamQs, load]);
 
-    const checkNow = React.useCallback(async () => {
-        setChecking(true);
-        try {
-            await fetch('/api/memories/self-correct', {
-                method: 'POST', credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify(userId ? { userId } : {}),
-            });
-            await load(true);
-        } finally { setChecking(false); }
-    }, [userId, load]);
 
     const themes = React.useMemo(() => ((data && data.themes) || []).filter((t) => t.lifetimeTasks > 0), [data]);
     const labelOf = React.useMemo(() => new Map(themes.map((t) => [t.theme, t.label])), [themes]);
@@ -1002,7 +1092,7 @@ export default function MemoryStats({ userId = null }) {
     );
 
     return (
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pb-6 pr-1">
+        <div className={`ms-root min-h-0 flex-1 space-y-4 overflow-y-auto pb-6 pr-1 ${switching ? 'is-switching' : ''}`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
                     <LiveBadge live={live} />
@@ -1010,9 +1100,12 @@ export default function MemoryStats({ userId = null }) {
                         {updatedAt ? `updated ${ago(updatedAt, now)}` : ''}{live !== 'live' ? ' · refreshing every 30 s' : ''}
                     </span>
                 </div>
-                <span className="text-xs" style={{ color: MUTED }}>
-                    {(L.tasks || 0).toLocaleString()} tasks · {themes.length} themes{data.selfCorrect && data.selfCorrect.lastCheckAt ? ` · self-check ${ago(data.selfCorrect.lastCheckAt, now)}` : ''}
-                </span>
+                <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="text-xs tabular-nums" style={{ color: MUTED }}>
+                        {(L.tasks || 0).toLocaleString()} tasks{range !== 'all' && data.since ? ` since ${shortDate(data.since)}` : ''} · {themes.length} themes
+                    </span>
+                    <Segmented options={RANGES} value={range} onChange={setRange} />
+                </div>
             </div>
             {/* Headline numbers */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1035,22 +1128,22 @@ export default function MemoryStats({ userId = null }) {
                     sub={corrTracked.length ? `${corrTracked.filter((t) => t.cor).length} of ${corrTracked.length} tracked tasks` : 'tracked from today on: a "that\'s wrong / I said…" reply counts against the answer'} />
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <Tile label="Tasks learned from" value={L.tasks || 0} num={L.tasks || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false}
+                <Tile label={range === 'all' ? 'Tasks learned from' : 'Tasks in range'} value={L.tasks || 0} num={L.tasks || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false}
                     sub={`across ${themes.length} theme${themes.length === 1 ? '' : 's'}${data.since ? ` since ${shortDate(data.since)}` : ''}`} />
                 <Tile label="Memory recalled" value={pct(L.recallRate)} num={L.recallRate} format={(v) => pct(v)} lowerIsBetter={false} sub={`${L.recalled || 0} tasks started from a theme memory`} />
                 <Tile label="Playbook followed" value={pct(L.followRate)} num={L.followRate} format={(v) => pct(v)} lowerIsBetter={false} sub={`${L.followed || 0} of ${L.recalled || 0} recalled tasks used the proven approach`} />
-                <Tile label="Memory updates" value={L.refinements || 0} num={L.refinements || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false} sub={`${L.proven || 0} proven approaches · ${L.lessons || 0} lessons · ${L.avoid || 0} pitfalls`} />
+                <Tile label={range === 'all' ? 'Memory updates' : 'Memory updates in range'} value={L.refinements || 0} num={L.refinements || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false} sub={`${L.proven || 0} proven approaches · ${L.lessons || 0} lessons · ${L.avoid || 0} pitfalls`} />
             </div>
 
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                 <ActivityFeed items={feedItems} labelOf={labelOf} now={now} live={live} />
-                <SelfCorrection data={data} now={now} onCheck={checkNow} checking={checking} />
+                <SelfCorrection data={data} now={now} />
             </div>
 
             {/* What is changing */}
             <Card
                 title="What's improving — and what isn't"
-                hint={`Each measure compares a theme's earliest third of tasks with its latest third (needs ${F.minTasks || 10}+ tasks). The dots show how likely the change is real rather than chance.`}
+                hint={`Within ${RANGE_TEXT[range]}: each measure compares a theme's earliest third of tasks with its latest third (needs ${F.minTasks || 10}+ tasks). The dots show how likely the change is real rather than chance. Updates with every task.`}
                 right={(
                     <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs" style={{ color: MUTED }}>
                         <input type="checkbox" checked={showWeak} onChange={(e) => setShowWeak(e.target.checked)} />
@@ -1067,13 +1160,13 @@ export default function MemoryStats({ userId = null }) {
                     <div>
                         <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: GOOD }}>Improving</div>
                         {improving.length
-                            ? <ul>{improving.map((f, i) => <FindingRow key={i} f={f} />)}</ul>
+                            ? <ul>{improving.map((f) => <FindingRow key={`${f.scope}|${f.metric}`} f={f} />)}</ul>
                             : <div className="py-2 text-xs" style={{ color: MUTED }}>Nothing yet{!showWeak && (F.improving || []).length ? ' with evidence (tick the box to see weaker signals)' : ''}.</div>}
                     </div>
                     <div>
                         <div className="mb-1 mt-3 text-[0.68rem] font-semibold uppercase tracking-wide lg:mt-0" style={{ color: BAD }}>Getting worse</div>
                         {worsening.length
-                            ? <ul>{worsening.map((f, i) => <FindingRow key={i} f={f} />)}</ul>
+                            ? <ul>{worsening.map((f) => <FindingRow key={`${f.scope}|${f.metric}`} f={f} />)}</ul>
                             : <div className="py-2 text-xs" style={{ color: MUTED }}>Nothing{!showWeak && (F.worsening || []).length ? ' with evidence' : ''}.</div>}
                     </div>
                 </div>
@@ -1234,7 +1327,7 @@ export default function MemoryStats({ userId = null }) {
                                     <td className="py-2 pr-3" title={t.trend ? `${n1(t.trend.early.avgCalls)} → ${n1(t.trend.recent.avgCalls)} calls (${t.trend.window} tasks each)` : ''}>
                                         {t.trend ? <Change value={t.trend.callsChange} small /> : <span className="text-xs" style={{ color: MUTED }}>too few</span>}
                                     </td>
-                                    <td className="py-2 pr-3"><Spark values={t.sparkSeconds} label="seconds" /></td>
+                                    <td className="py-2 pr-3"><Spark values={t.sparkSeconds} label="response time" /></td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{t.recalled}</td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{pct(t.followRate)}</td>
                                     <td className="py-2 text-right tabular-nums">v{t.playbookVersion}</td>

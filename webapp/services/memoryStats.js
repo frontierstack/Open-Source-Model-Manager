@@ -169,11 +169,14 @@ function withVsWithout(rows) {
  * Everything the Stats view shows. `memories` = the shard's theme records
  * (lifetime counters live there), `themes` = allThemes() for labels/order.
  */
-function computeStats(shard, themes) {
+// `since` (ISO) limits everything to tasks/events from then on; the headline
+// counters are then computed from the log instead of the lifetime totals.
+function computeStats(shard, themes, { since = null } = {}) {
     ensure(shard);
     const label = new Map((themes || []).map(t => [t.key, t.label]));
     // A Pi task is snapshotted while it runs; only its final row counts.
-    const rows = shard.statsLog.filter(r => r && r.t).sort((a, b) => String(a.t).localeCompare(String(b.t)));
+    const rows = shard.statsLog.filter(r => r && r.t && (!since || r.t >= since)).sort((a, b) => String(a.t).localeCompare(String(b.t)));
+    const allEvents = (shard.statsEvents || []).filter(e => e && (!since || (e.t && e.t >= since)));
     const recs = shard.memories || [];
 
     // Lifetime counters (they predate the log and cover tasks it never saw).
@@ -188,6 +191,15 @@ function computeStats(shard, themes) {
         acc.proven += m.bestApproach ? 1 : 0;
         return acc;
     }, { tasks: 0, calls: 0, recalled: 0, followed: 0, converged: 0, refinements: 0, lessons: 0, avoid: 0, proven: 0 });
+    if (since) {
+        life.tasks = rows.length;
+        life.calls = rows.reduce((n, r) => n + (r.c || 0), 0);
+        life.recalled = rows.filter(r => r.rt).length;
+        life.followed = rows.filter(r => r.rt && r.fo === true).length;
+        life.converged = rows.filter(r => r.ok !== false).length;
+        life.refinements = allEvents.filter(e => e.kind === 'refine' || e.kind === 'correct').length;
+        life.proven = allEvents.filter(e => e.kind === 'best').length;
+    }
 
     const weekly = weeklySeries(rows);
 
@@ -228,7 +240,7 @@ function computeStats(shard, themes) {
     }
     byTheme.sort((a, b) => b.lifetimeTasks - a.lifetimeTasks);
 
-    const events = (shard.statsEvents || []).slice().sort((a, b) => String(b.t).localeCompare(String(a.t)))
+    const events = allEvents.slice().sort((a, b) => String(b.t).localeCompare(String(a.t)))
         .slice(0, 40).map(e => ({ ...e, label: label.get(e.th) || e.th }));
 
     const overall = summarizeRows(rows);
@@ -258,7 +270,8 @@ function computeStats(shard, themes) {
         weekly,
         themes: byTheme,
         events,
-        ...analyze(rows, byTheme, shard.statsEvents || [], label),
+        range: since ? { since } : null,
+        ...analyze(rows, byTheme, allEvents, label),
     };
 }
 

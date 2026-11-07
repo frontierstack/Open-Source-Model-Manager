@@ -31798,7 +31798,10 @@ app.get('/api/memories/stats', requireAuth, async (req, res) => {
         const own = memAccountId(req);
         const userId = (req.query.userId && callerIsAdmin(req)) ? String(req.query.userId) : own;
         const archived = (await episodeIndex.listEpisodes(userId, { limit: 2000 }).catch(() => ({ episodes: [] }))).episodes;
-        res.json({ success: true, userId, ...(await coreMemory.stats(userId, archived)) });
+        const RANGES = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+        const days = RANGES[String(req.query.range || '')];
+        const since = days ? new Date(Date.now() - days * 86400000).toISOString() : null;
+        res.json({ success: true, userId, rangeKey: days ? String(req.query.range) : 'all', ...(await coreMemory.stats(userId, archived, { since })) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
