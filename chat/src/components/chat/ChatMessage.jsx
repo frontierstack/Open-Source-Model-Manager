@@ -628,7 +628,7 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming, pair }
     if (failed) meta.push(`${failed} failed`);
     if (dur) meta.push(dur);
     return (
-        <div className={`msg-notes${pair ? ' msg-turn msg-work' : ''}`} aria-live={pair && isStreaming ? 'polite' : undefined}>
+        <div className={`msg-notes${pair ? ' msg-turn msg-work' : ''}${open ? ' is-open' : ''}`} aria-live={pair && isStreaming ? 'polite' : undefined}>
             <button
                 type="button"
                 className="msg-notes-toggle srcx-bar bar-style"
