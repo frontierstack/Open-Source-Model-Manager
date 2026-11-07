@@ -102,6 +102,11 @@ const INTENT_RULES = [
     // it here pins it through the per-conversation selection cache too).
     [/\b(in parallel|simultaneously|concurrently|at the same time|side by side|(two|three|four|multiple|several|parallel|separate|different|\d+) (agents?|workers?|researchers?|assistants?|sub-?agents?|sub-?tasks?)|\bdelegate\b|\b(compare|comparison|contrast|versus|vs\.?)\b|\b(each|all|every one) of (these|those|the following|them)\b|\bboth\b[^.\n]{0,40}\b(sites?|urls?|pages?|files?|repos?|companies|products?|options?|topics?|papers?|articles?)\b)/i, ['delegate']],
     [/\b(search|google|look ?up|latest|current|news|headline|today'?s|recent)\b|https?:\/\/|www\./i, ['web']],
+    // Git history of a repository ("run git log", "recent commits", "who
+    // changed this file"): the git_* skills return it structured in one call.
+    // Without the rule they were often not advertised, and the model ran git
+    // through run_python's subprocess instead (2026-11-07).
+    [/\bgit (?:log|show|blame|diff|history|shortlog)\b|\bcommit (?:history|log|messages?|diffs?)\b|\b(?:recent|last|latest|newest|first|previous) (?:\d+ |few |several )?commits?\b|\bwho (?:changed|wrote|modified|committed|authored)\b|\b(?:blame|changelog of)\b[^.\n]{0,40}\b(?:file|line|repo|repository)\b|\bcommits? (?:to|in|on|of|touching) (?:the |this |that )?(?:repo|repository|branch|file)\b/i, ['git_log', 'git_show_commit', 'git_file_history', 'git_blame', 'git_clone_shallow']],
     [/\bdns\b|\b(a|mx|txt|ns|cname)\s+record|nslookup|resolve .*(domain|host)/i, ['dns_lookup']],
     [/\bvirus\s*total\b|malware|reputation|\b[a-f0-9]{32,64}\b/i, ['virustotal_lookup']],
     [/\bbase ?64\b|decode this/i, ['base64_decode']],

@@ -1032,6 +1032,14 @@ function commandInstallsBrowser(command) {
 // INVOCATION itself, not a mere filename mention, and deliberately DO NOT cover
 // jobs that legitimately belong in the interpreter and have no dedicated tool:
 // pcap/dpkt, evtx, scapy, numpy/pandas computation, or custom crypto/decrypt.
+// `git <sub>` as a shell string or a subprocess argument list, with any
+// global options (-C path, --no-pager, -c k=v) in between. `tail` must
+// follow the subcommand within the same command.
+function gitSub(sub, tail = '') {
+    const shell = `(?:^|["'\`]\\s*|&&\\s*|;\\s*|\\|\\s*|\\$\\(\\s*)git(?:\\s+(?:-C\\s+\\S+|--no-pager|-c\\s+\\S+|--git-dir[= ]\\S+))*\\s+${sub}\\b${tail}`;
+    const list = `["']git["'](?:\\s*,\\s*(?:["'][^"'\\n]*["']|[\\w.]+))*?\\s*,\\s*["']${sub}["']${tail}`;
+    return new RegExp(`${shell}|${list}`);
+}
 const DUP_TOOL_RULES = [
     // OCR
     [/\bpytesseract\b|\bimage_to_(?:string|data|osd)\s*\(/, 'ocr_image',
@@ -1063,6 +1071,23 @@ const DUP_TOOL_RULES = [
     // Git clone
     [/\bgit\s+clone\b|["']clone["']\s*,\s*["']https?:/, 'git_clone_shallow',
         'clone a git repository'],
+    // Git history/inspection. Shell form ("git -C repo log …") and list form
+    // (["git", "-C", repo, "log", …]). --follow / a path filter is the
+    // per-file history tool; plain log is git_log.
+    [gitSub('log', '[^\\n]{0,200}?(?:--follow\\b)'), 'git_file_history',
+        'list the commits that touched a file'],
+    [gitSub('log'), 'git_log',
+        'read the commit history'],
+    [gitSub('show'), 'git_show_commit',
+        'show a commit and its diff'],
+    [gitSub('blame'), 'git_blame',
+        'see who changed each line'],
+    [gitSub('diff'), 'git_diff',
+        'diff the working tree'],
+    [gitSub('ls-tree'), 'git_list_tree',
+        'list the files in a commit'],
+    [gitSub('(?:branch|status)'), 'git_status',
+        'check the repository status'],
     // strings(1)-style extraction
     [/\bre\.(?:findall|finditer)\s*\(\s*(?:rb?|b)["']\[[\\]?x?20|subprocess\.[a-z_]+\([^)]*\bstrings\b|["']strings["']\s*,/, 'extract_strings',
         'pull printable strings out of a binary'],
