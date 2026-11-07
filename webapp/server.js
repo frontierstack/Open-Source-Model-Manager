@@ -9438,6 +9438,21 @@ function skillOrigin(skill) {
     return (!skill.userId && _defaultSkillNames.has(skill.name)) ? 'default' : 'user';
 }
 
+// A skill whose code returns an error unless it runs on one OS ("cmd.exe is
+// only available on Windows") can never succeed where it would run here:
+// sandboxed skills run in the Linux sandbox, the rest in this server's
+// process. Offered anyway, the model picked run_cmd for `git log` on a Linux
+// sandbox and spent a call on the error (2026-11-07). The Skills page still
+// lists such a skill; the chat catalog and omp leave it out.
+const OS_NAME_BY_PLATFORM = { win32: 'Windows', darwin: 'Darwin', linux: 'Linux' };
+function skillRunsHere(s) {
+    const code = String((s && s.code) || '');
+    const m = /platform\.system\(\)\s*!=\s*['"](Windows|Darwin|Linux)['"]/.exec(code);
+    if (!m) return true;
+    const here = s.sandbox ? 'Linux' : (OS_NAME_BY_PLATFORM[process.platform] || process.platform);
+    return m[1] === here;
+}
+
 app.get('/api/skills', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'agents')) {
@@ -9447,7 +9462,7 @@ app.get('/api/skills', requireAuth, async (req, res) => {
     try {
         const skills = await loadSkills();
         const userSkills = filterByUserId(skills, req.userId);
-        res.json(userSkills.map(s => ({ ...s, origin: skillOrigin(s) })));
+        res.json(userSkills.map(s => ({ ...s, origin: skillOrigin(s), ...(skillRunsHere(s) ? {} : { runnable: false }) })));
     } catch (error) {
         console.error('Error loading skills:', error);
         res.status(500).json({ error: 'Failed to load skills' });
@@ -36090,6 +36105,7 @@ app.use((req, res) => {
             const taken = new Set(tools.toolRegistry.keys());
             for (const s of scoped) {
                 if (!s || s.enabled === false || !s.name) continue;
+                if (!skillRunsHere(s)) continue;
                 const name = safeToolName(s.name);
                 if (isSkillBlocked(policy, s.name)) continue;
                 if (!name || taken.has(name)) continue;

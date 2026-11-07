@@ -1231,6 +1231,8 @@ export default async function (ompApi: ExtensionAPI) {
         : [...skills].sort((a, b) => priorityRank(a?.name || "") - priorityRank(b?.name || ""));
     for (const skill of orderedSkills) {
         if (!skill || !skill.name || skill.enabled === false) continue;
+        // The server marks a skill that cannot run on its OS (run_cmd on a Linux server).
+        if ((skill as any).runnable === false) continue;
 
         const nativeRoute = NATIVE_TOOL_ROUTES[skill.name];
         const code = String(skill.code || "");
