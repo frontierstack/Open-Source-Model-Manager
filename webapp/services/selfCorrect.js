@@ -151,20 +151,35 @@ function correctionInput(rec, f, m) {
 function plan(shard, findings, { now = Date.now() } = {}) {
     const st = state(shard);
     const out = [];
+    // Every worsening theme measure with an explanation of what the check
+    // decided about it — the Stats view shows this as the check's log.
+    const considered = [];
+    const note = (f, decision, reason) => considered.push({
+        th: f.scope, label: f.scopeLabel, metric: f.metric, metricLabel: f.metricLabel,
+        from: f.from, to: f.to, changeKind: f.changeKind, evidence: f.evidence, decision, reason,
+    });
     const seen = new Set();
     for (const f of findings || []) {
-        if (!f || f.direction !== 'worse' || !ACT_MIN[f.evidence]) continue;
-        if (Math.min(f.nFrom || 0, f.nTo || 0) < ACT_MIN[f.evidence]) continue;
-        if (!f.scope || f.scope === 'chat' || seen.has(f.scope)) continue;
+        if (!f || f.direction !== 'worse' || !f.scope || f.scope === 'chat') continue;
         const m = metricByKey.get(f.metric);
+        if (!m) continue;
+        const have = Math.min(f.nFrom || 0, f.nTo || 0);
+        if (!ACT_MIN[f.evidence]) { note(f, 'skip', `could be chance (${have} vs ${have} tasks) — not acted on`); continue; }
+        if (have < ACT_MIN[f.evidence]) { note(f, 'wait', `${f.evidence === 'strong' ? 'strong' : 'some'} evidence but only ${have} tasks a side; acts at ${ACT_MIN[f.evidence]}+`); continue; }
         const rec = (shard.memories || []).find(r => r.theme === f.scope);
-        if (!m || !rec || rec.enabled === false) continue;
+        if (!rec) { note(f, 'skip', 'no memory for this theme yet'); continue; }
+        if (rec.enabled === false) { note(f, 'skip', 'this theme’s memory is paused'); continue; }
         const mine = st.actions.filter(a => a.th === f.scope);
-        if (mine.some(a => a.status === 'active')) continue;
+        const act = mine.find(a => a.status === 'active');
+        if (act) { note(f, 'wait', `a correction for ${act.metricLabel.toLowerCase()} is being measured on this theme — one at a time`); continue; }
+        if (seen.has(f.scope)) { note(f, 'wait', 'another measure of this theme is being corrected in this check'); continue; }
         const last = mine[mine.length - 1];
-        if (last && now - Date.parse(last.t) < COOLDOWN_MS) continue;
+        if (last && now - Date.parse(last.t) < COOLDOWN_MS) {
+            const h = Math.max(1, Math.ceil((COOLDOWN_MS - (now - Date.parse(last.t))) / 3600000));
+            note(f, 'wait', `cooling down after the last attempt (${STATUS_WORD[last.status] || last.status}); next try in ~${h} h`); continue;
+        }
         const attempts = mine.filter(a => a.metric === f.metric && now - Date.parse(a.t) < ATTEMPT_WINDOW_MS).length;
-        if (attempts >= MAX_ATTEMPTS) continue;
+        if (attempts >= MAX_ATTEMPTS) { note(f, 'skip', `${attempts} attempts in 48 h without a fix — paused to avoid churning the playbook`); continue; }
         seen.add(f.scope);
         const base = {
             th: f.scope, label: rec.label, metric: f.metric, metricLabel: m.label,
@@ -174,16 +189,29 @@ function plan(shard, findings, { now = Date.now() } = {}) {
         if (better) {
             out.push({ ...base, kind: 'revert', toVersion: better.version, text: better.text, basis: better.basis,
                 why: `playbook v${better.version} ran this theme at ${fmtVal(better.centre, m)} vs ${fmtVal(better.current, m)} now` });
+            note(f, 'act', `restoring playbook v${better.version}, which measured ${fmtVal(better.centre, m)} vs ${fmtVal(better.current, m)} now`);
         } else {
             out.push({ ...base, kind: 'refine', input: correctionInput(rec, f, m),
                 why: `${m.label.toLowerCase()} went ${fmtVal(f.from, m)} → ${fmtVal(f.to, m)}; rewriting the playbook against the slow tasks` });
+            note(f, 'act', 'no earlier playbook measured better — rewriting the playbook against the slow tasks');
         }
     }
+    out.considered = considered;
     return out;
+}
+const STATUS_WORD = { helped: 'it helped', no_effect: 'no clear effect', worse: 'it made things worse', rolled_back: 'rolled back' };
+
+/** Keep a short log of checks (newest last). */
+const CHECKS_MAX = 40;
+function logCheck(shard, entry) {
+    const st = state(shard);
+    if (!Array.isArray(st.checks)) st.checks = [];
+    st.checks.push(entry);
+    while (st.checks.length > CHECKS_MAX) st.checks.shift();
 }
 
 /** Record an applied action (inside a shard mutation). */
-function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prevPlaybook }) {
+function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prevPlaybook, newPlaybook = null }) {
     const st = state(shard);
     const m = metricByKey.get(d.metric);
     const rows = themeRows(shard, d.th);
@@ -191,7 +219,7 @@ function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prev
         id: `sc_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
         t: new Date(now).toISOString(), th: d.th, label: d.label, metric: d.metric, metricLabel: d.metricLabel,
         kind: d.kind, why: d.why, trigger: d.trigger, basis: d.basis || null,
-        fromVersion, toVersion, prevPlaybook: prevPlaybook || null,
+        fromVersion, toVersion, prevPlaybook: prevPlaybook || null, newPlaybook: newPlaybook || null,
         baseline: m ? centre(rows.slice(-BASE_K), m) : null, baselineN: Math.min(BASE_K, rows.length),
         status: 'active', after: null,
     };
@@ -247,7 +275,16 @@ function liveProgress(shard, a) {
     const done = vals.slice(0, EVAL_K);
     const value = done.length ? centre(done, m) : null;
     const change = worseBy(a.baseline, value, m);
+    const all = themeRows(shard, a.th);
+    const lastTheme = all.length ? all[all.length - 1].t : null;
+    const now = Date.now();
+    const recent = all.filter(r => now - Date.parse(r.t) < 14 * 86400000).length;
+    const perDay = recent / 14;
+    const remaining = Math.max(0, EVAL_K - done.length);
     return {
+        lastThemeTaskAt: lastTheme,
+        themeTasks14d: recent,
+        etaDays: remaining && perDay > 0 ? Math.round((remaining / perDay) * 10) / 10 : null,
         progress: done.length,
         remaining: Math.max(0, EVAL_K - done.length),
         lastTaskAt: done.length ? done[done.length - 1].t : null,
@@ -257,6 +294,12 @@ function liveProgress(shard, a) {
             direction: change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat',
         },
     };
+}
+
+function versionText(shard, th, v) {
+    const rec = (shard.memories || []).find(r => r.theme === th);
+    const t = rec && v != null ? playbookText(rec, v) : null;
+    return t ? t.slice(0, 600) : null;
 }
 
 /** What the Stats view shows. `worsening` = the current worsening findings. */
@@ -269,9 +312,15 @@ function publicState(shard, worsening = []) {
                 ...assessFinding(f) })),
         evalTasks: EVAL_K,
         cooldownHours: COOLDOWN_MS / 3600000,
-        actions: st.actions.slice(-40).reverse().map(({ prevPlaybook, rollback, ...a }) => ({ ...a, canRollBack: !!prevPlaybook, ...(a.status === 'active' ? liveProgress(shard, a) : {}) })),
+        actions: st.actions.slice(-40).reverse().map(({ prevPlaybook, rollback, ...a }) => ({
+            ...a, canRollBack: !!prevPlaybook,
+            fromText: prevPlaybook ? prevPlaybook.slice(0, 600) : null,
+            toText: a.newPlaybook ? String(a.newPlaybook).slice(0, 600) : versionText(shard, a.th, a.toVersion),
+            ...(a.status === 'active' ? liveProgress(shard, a) : {}),
+        })).map(({ newPlaybook, ...a }) => a),
+        checks: (st.checks || []).slice(-15).reverse(),
         lastCheckAt: st.lastCheckAt || null,
     };
 }
 
-module.exports = { assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };
+module.exports = { logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };

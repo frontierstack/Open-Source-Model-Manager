@@ -16477,7 +16477,9 @@ async function runSelfCorrection(userId) {
     if (await isMemoryDisabledForUser(userId)) return null;
     selfCorrectRunning.add(userId);
     try {
-        const { judged, plan } = await coreMemory.checkCorrections(userId);
+        const startedAt = Date.now();
+        const { judged, plan, considered } = await coreMemory.checkCorrections(userId);
+        const outcomes = [];
         for (const a of judged) {
             const after = a.after ? selfCorrect.fmtMetric(a.metric, a.after.value) : '?';
             logUserActivity(userId, `Memory self-correction: ${a.label} ${a.metricLabel.toLowerCase()} after the ${a.kind} — ${selfCorrect.fmtMetric(a.metric, a.baseline)} → ${after} over ${a.after ? a.after.n : 0} tasks: ${a.status.replace('_', ' ')}${a.status === 'rolled_back' ? ' (restored the playbook it replaced)' : ''}`);
@@ -16486,7 +16488,7 @@ async function runSelfCorrection(userId) {
             let ref = null;
             if (d.kind === 'refine') {
                 if (process.env.CORE_MEMORY_LLM_REFINE === '0') continue;
-                if (!chatCapacity().models.some(m => m.free > 0)) { scheduleSelfCorrection(userId, 5 * 60000); continue; }
+                if (!chatCapacity().models.some(m => m.free > 0)) { outcomes.push({ th: d.th, metric: d.metric, result: 'deferred', reason: 'every model was busy — retrying in 5 min' }); scheduleSelfCorrection(userId, 5 * 60000); continue; }
                 const rec = await coreMemory.getByTheme(userId, d.th);
                 if (!rec) continue;
                 try {
@@ -16504,14 +16506,25 @@ async function runSelfCorrection(userId) {
                 } catch (e) {
                     if (e && e.code === 'NO_FREE_SLOT') scheduleSelfCorrection(userId, 5 * 60000);
                     else console.warn(`[SelfCorrect] refine for ${d.label} failed: ${e.message}`);
+                    outcomes.push({ th: d.th, metric: d.metric, result: 'deferred', reason: e && e.code === 'NO_FREE_SLOT' ? 'every model was busy — retrying in 5 min' : `the rewrite failed (${String(e.message).slice(0, 80)})` });
                     continue;
                 }
-                if (!ref) { console.log(`[SelfCorrect] refine for ${d.label} returned nothing usable`); continue; }
+                if (!ref) { console.log(`[SelfCorrect] refine for ${d.label} returned nothing usable`); outcomes.push({ th: d.th, metric: d.metric, result: 'deferred', reason: 'the rewrite came back unusable — will try again at the next check' }); continue; }
             }
             const a = await coreMemory.applyCorrection(userId, d, { ref });
+            outcomes.push({ th: d.th, metric: d.metric, result: a ? 'applied' : 'deferred', reason: a ? `${d.kind === 'revert' ? `restored v${d.toVersion}` : 'rewrote the playbook'} → now v${a.toVersion}` : 'nothing changed' });
             if (a) logUserActivity(userId, `Memory self-correction: ${d.label} — ${d.metricLabel.toLowerCase()} is trending worse (${d.trigger.evidence} evidence); ${d.kind === 'revert' ? `restored playbook v${d.toVersion}` : 'rewrote the playbook against the slow tasks'} → v${a.toVersion}. Checking it over the next ${selfCorrect.EVAL_K} tasks.`);
         }
-        return { judged: judged.length, acted: plan.length };
+        // The check's own log entry: what it looked at and what it decided.
+        const actives = (await coreMemory.stats(userId).catch(() => null))?.selfCorrect?.actions?.filter(a => a.status === 'active') || [];
+        const entry = {
+            t: new Date(startedAt).toISOString(), ms: Date.now() - startedAt,
+            judged: judged.map(a => ({ th: a.th, label: a.label, metricLabel: a.metricLabel, status: a.status, from: a.baseline, to: a.after ? a.after.value : null, metric: a.metric })),
+            considered: considered.map(c => { const o = outcomes.find(x => x.th === c.th && x.metric === c.metric); return o ? { ...c, decision: o.result === 'applied' ? 'act' : 'wait', reason: o.reason } : c; }),
+            measuring: actives.map(a => ({ th: a.th, label: a.label, metricLabel: a.metricLabel, progress: a.progress || 0, remaining: a.remaining })),
+        };
+        await coreMemory.logCorrectionCheck(userId, entry).catch(() => {});
+        return { judged: judged.length, acted: outcomes.filter(o => o.result === 'applied').length };
     } finally {
         selfCorrectRunning.delete(userId);
     }

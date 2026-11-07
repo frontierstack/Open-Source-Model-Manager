@@ -1006,7 +1006,8 @@ async function checkCorrections(userId, { now = Date.now() } = {}) {
             delete a.rollback;
             noteChange(shard, { kind: 'self_correct', phase: 'judged', theme: a.th, label: a.label, action: { id: a.id, kind: a.kind, status: a.status, metricLabel: a.metricLabel, after: a.after } });
         }
-        return { judged, plan: selfCorrect.plan(shard, findings, { now }) };
+        const planned = selfCorrect.plan(shard, findings, { now });
+        return { judged, plan: planned, considered: planned.considered || [] };
     });
 }
 
@@ -1036,7 +1037,7 @@ async function applyCorrection(userId, d, { ref = null, now = Date.now() } = {})
             if (Array.isArray(ref.lessons)) for (const l of ref.lessons.slice(0, 3)) addUnique(rec.lessons, l, MAX_LESSONS, { source: 'refined' });
         }
         rec.dirty = false;
-        const a = selfCorrect.recordAction(shard, d, { now, fromVersion, toVersion: rec.playbookVersion, prevPlaybook: prev });
+        const a = selfCorrect.recordAction(shard, d, { now, fromVersion, toVersion: rec.playbookVersion, prevPlaybook: prev, newPlaybook: rec.playbook });
         rec.correction = {
             actionId: a.id,
             note: d.kind === 'revert'
@@ -1049,8 +1050,16 @@ async function applyCorrection(userId, d, { ref = null, now = Date.now() } = {})
     });
 }
 
+/** Append one self-correction check to the log the Stats view shows. */
+async function logCorrectionCheck(userId, entry) {
+    return mutate(userId, (shard) => {
+        selfCorrect.logCheck(shard, entry);
+        noteChange(shard, { kind: 'self_check', check: entry });
+    });
+}
+
 module.exports = {
-    events, checkCorrections, applyCorrection,
+    events, checkCorrections, applyCorrection, logCorrectionCheck,
     stats, rethemeStored, dirtyRecords, HOST_TOOLS, THEME_VERSION,
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,

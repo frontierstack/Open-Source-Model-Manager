@@ -732,6 +732,12 @@ function feedItem(ev, labelOf) {
         case 'refine': return { icon: RefineIcon, color: ACCENT, title: `${L(ev.theme)} playbook rewritten`, meta: `now v${ev.v}` };
         case 'best': return { icon: BestIcon, color: GOOD, title: `${L(ev.theme)}: new proven approach`, meta: ev.calls != null ? `${ev.from != null ? `${ev.from} → ` : ''}${ev.calls} calls` : '' };
         case 'correction': return { icon: CorrectedIcon, color: BAD, title: 'You corrected an answer', meta: 'counted against that task' };
+        case 'self_check': {
+            const c = ev.check || {};
+            const acted = (c.considered || []).filter((x) => x.decision === 'act');
+            if (!acted.length && !(c.judged || []).length) return null;   // quiet checks stay in the card's log
+            return { icon: FixIcon, color: '#f59e0b', title: 'Self-check', detail: [...(c.judged || []).map((j) => `verdict on ${j.label}: ${STATUS_TEXT[j.status] || j.status}`), ...acted.map((x) => `${x.label}: ${x.reason}`)].join(' · ') };
+        }
         case 'self_correct': {
             const a = ev.action || {};
             if (ev.phase === 'judged') {
@@ -803,6 +809,97 @@ function LiveBadge({ live }) {
 const STATUS_TEXT = { active: 'in progress', helped: 'helped', no_effect: 'had no clear effect', worse: 'made it worse', rolled_back: 'rolled back' };
 const STATUS_COLOR = { active: '#f59e0b', helped: GOOD, no_effect: MUTED, worse: BAD, rolled_back: BAD };
 
+// The playbook text before and after a correction.
+function PlaybookDiff({ a }) {
+    const [open, setOpen] = React.useState(false);
+    if (!a.fromText && !a.toText) return null;
+    return (
+        <div className="mt-2">
+            <button type="button" onClick={() => setOpen((v) => !v)} className="text-xs font-medium hover:underline" style={{ color: ACCENT }} aria-expanded={open}>
+                {open ? 'Hide' : 'Show'} what changed in the playbook{a.fromVersion != null ? ` (v${a.fromVersion} → v${a.toVersion})` : ''}
+            </button>
+            {open && (
+                <div className="ms-feed-in mt-1.5 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {[['Before', a.fromText, BAD], [a.kind === 'revert' ? 'Restored' : 'Rewritten', a.toText, GOOD]].map(([l, t, c]) => (
+                        <div key={l} className="rounded-md border p-2 text-xs leading-relaxed" style={{ borderColor: `color-mix(in oklab, ${c} 35%, var(--border-primary))` }}>
+                            <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-wide" style={{ color: c }}>{l}</div>
+                            <div style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{t || '(empty)'}</div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+const DECISION = {
+    act: { label: 'acted', color: '#f59e0b' },
+    wait: { label: 'waiting', color: ACCENT },
+    skip: { label: 'not acted on', color: MUTED },
+};
+
+// What each check looked at and decided, newest first.
+function ChecksLog({ checks, now }) {
+    const [all, setAll] = React.useState(false);
+    if (!checks || !checks.length) return <div className="py-2 text-xs" style={{ color: MUTED }}>No checks have run yet — the first runs a couple of minutes after the server starts, then after every task and every 30 minutes.</div>;
+    const list = all ? checks : checks.slice(0, 1);
+    return (
+        <div>
+            <ul className="space-y-2">
+                {list.map((c, i) => (
+                    <li key={c.t} className={`rounded-md border p-2.5 ${i === 0 ? 'ms-feed-in' : ''}`} style={{ borderColor: RULE }}>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                            <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                Check {ago(c.t, now)}
+                            </span>
+                            <span className="tabular-nums" style={{ color: MUTED }}>
+                                {(c.considered || []).length} measure{(c.considered || []).length === 1 ? '' : 's'} trending worse reviewed
+                                {c.judged && c.judged.length ? ` · ${c.judged.length} verdict${c.judged.length === 1 ? '' : 's'}` : ''}
+                                {c.ms != null ? ` · ${c.ms < 1000 ? `${c.ms} ms` : `${(c.ms / 1000).toFixed(1)} s`}` : ''}
+                            </span>
+                        </div>
+                        <ul className="mt-1.5 space-y-1 text-xs">
+                            {(c.judged || []).map((j, k) => (
+                                <li key={`j${k}`} className="flex gap-2">
+                                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: STATUS_COLOR[j.status] || MUTED }} />
+                                    <span><b className="font-medium">Verdict · {j.label}</b> {j.metricLabel.toLowerCase()}: {STATUS_TEXT[j.status] || j.status}{j.to != null ? ` (${fmtFor(j.metric, j.from)} → ${fmtFor(j.metric, j.to)})` : ''}</span>
+                                </li>
+                            ))}
+                            {(c.measuring || []).map((m, k) => (
+                                <li key={`m${k}`} className="flex gap-2">
+                                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: '#f59e0b' }} />
+                                    <span><b className="font-medium">Measuring · {m.label}</b> {m.metricLabel.toLowerCase()}: {m.progress}/{m.progress + (m.remaining || 0)} tasks so far</span>
+                                </li>
+                            ))}
+                            {(c.considered || []).map((x, k) => {
+                                const d = DECISION[x.decision] || DECISION.skip;
+                                return (
+                                    <li key={`c${k}`} className="flex gap-2">
+                                        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: d.color }} />
+                                        <span style={{ color: 'var(--text-secondary)' }}>
+                                            <b className="font-medium" style={{ color: 'var(--text-primary)' }}>{x.label} · {x.metricLabel.toLowerCase()}</b>{' '}
+                                            <span className="tabular-nums">{fmtFor(x.metric, x.from)} → {fmtFor(x.metric, x.to)}</span>{' '}
+                                            — <span style={{ color: d.color }}>{d.label}</span>: {x.reason}
+                                        </span>
+                                    </li>
+                                );
+                            })}
+                            {!(c.judged || []).length && !(c.measuring || []).length && !(c.considered || []).length && (
+                                <li style={{ color: GOOD }}>Nothing trending worse — no action needed.</li>
+                            )}
+                        </ul>
+                    </li>
+                ))}
+            </ul>
+            {checks.length > 1 && (
+                <button type="button" onClick={() => setAll((v) => !v)} className="mt-1.5 text-xs hover:underline" style={{ color: ACCENT }}>
+                    {all ? 'Show only the latest check' : `Show ${checks.length - 1} earlier check${checks.length === 2 ? '' : 's'}`}
+                </button>
+            )}
+        </div>
+    );
+}
+
 // One active correction: applied → measuring (n of N tasks) → verdict, with
 // the measure so far against where it started. Updates on every task.
 function CorrectionTracker({ a, evalTasks, now }) {
@@ -851,11 +948,26 @@ function CorrectionTracker({ a, evalTasks, now }) {
                         <Change value={it.change} kind={it.changeKind} small />
                         <span className="font-medium" style={{ color: dirColor }}>{it.direction === 'better' ? 'trending better' : it.direction === 'worse' ? 'trending worse' : 'no clear change yet'}</span>
                     </span>
-                ) : <span>waiting for the first {a.label.toLowerCase()} task</span>}
+                ) : <span>No {a.label} task has run since the fix — nothing to measure yet.</span>}
                 <span className="tabular-nums" style={{ color: MUTED }}>
-                    {a.remaining ? `${a.remaining} more task${a.remaining === 1 ? '' : 's'} to a verdict` : 'verdict due now'}{a.lastTaskAt ? ` · last ${ago(a.lastTaskAt, now)}` : ''}
+                    {a.remaining ? `${a.remaining} more task${a.remaining === 1 ? '' : 's'} to a verdict` : 'verdict due at the next check'}{a.lastTaskAt ? ` · last ${ago(a.lastTaskAt, now)}` : ''}
                 </span>
             </div>
+            <div className="mt-2 rounded-md px-2.5 py-2 text-xs leading-relaxed" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+                {(() => {
+                    const pace = a.themeTasks14d != null ? a.themeTasks14d / 14 : null;
+                    const paceTxt = pace == null ? '' : pace >= 1 ? `about ${Math.round(pace)} a day` : pace > 0 ? `about ${Math.max(1, Math.round(pace * 7))} a week` : 'none in the last two weeks';
+                    return (
+                        <>
+                            <b style={{ color: 'var(--text-primary)' }}>What it's waiting for:</b> the fix is judged only on new {a.label} tasks, so it advances when you next do {a.label.toLowerCase()} work
+                            {a.lastThemeTaskAt ? ` (the last one was ${ago(a.lastThemeTaskAt, now)}` : ''}{paceTxt ? `${a.lastThemeTaskAt ? '; ' : ' ('}${paceTxt} lately` : ''}{(a.lastThemeTaskAt || paceTxt) ? ')' : ''}.
+                            {a.etaDays != null && a.remaining ? ` At that pace the verdict lands in about ${a.etaDays < 1 ? 'a day' : `${Math.round(a.etaDays)} day${Math.round(a.etaDays) === 1 ? '' : 's'}`}.` : ''}
+                            {' '}After {evalTasks} tasks it compares {a.metricLabel.toLowerCase()} with the {fmt(a.baseline)} before the fix: better → kept, no change → tried differently later, worse → the old playbook comes back.
+                        </>
+                    );
+                })()}
+            </div>
+            <PlaybookDiff a={a} />
         </li>
     );
 }
@@ -918,6 +1030,8 @@ function SelfCorrection({ data, now }) {
                     <SteadyIcon size={14} /> Nothing is trending the wrong way with evidence — no correction needed.
                 </div>
             ) : <div className="mb-3 py-1 text-xs" style={{ color: MUTED }}>Nothing else trending the wrong way.</div>}
+            <div className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Recent checks</div>
+            <div className="mb-3"><ChecksLog checks={SC.checks} now={now} /></div>
             <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>History</div>
             {actions.length ? (
                 <ul className="max-h-[220px] overflow-y-auto">
