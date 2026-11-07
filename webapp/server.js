@@ -14283,8 +14283,17 @@ function extractTextFromHtml(html, maxLength = 5000) {
     const metaDesc = metaDescMatch ? metaDescMatch[1].trim() : '';
 
     // Extract article content (prioritize article, main, or content divs)
-    const articleMatch = text.match(/<article[^>]*>([\s\S]*?)<\/article>/gi) ||
-                         text.match(/<main[^>]*>([\s\S]*?)<\/main>/gi) ||
+    // <article> wins only when it holds a real share of the page (the
+    // browser extractor's rule): a GitHub profile README is an <article> of
+    // three lines inside a <main> holding the pinned repositories, and a
+    // listing page wraps each card in its own <article>.
+    const textLenOf = (parts) => (parts || []).join(' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().length;
+    const articleParts = text.match(/<article[^>]*>([\s\S]*?)<\/article>/gi);
+    const mainParts = text.match(/<main[^>]*>([\s\S]*?)<\/main>/gi);
+    const articleOk = articleParts && (!mainParts || (textLenOf(articleParts) >= 200 && textLenOf(articleParts) >= 0.4 * textLenOf(mainParts)));
+    const articleMatch = (articleOk ? articleParts : null) ||
+                         mainParts ||
+                         articleParts ||
                          text.match(/<div[^>]*(?:class|id)=["'][^"']*(?:content|article|post|story|body)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi);
 
     let mainContent = '';
@@ -14298,7 +14307,10 @@ function extractTextFromHtml(html, maxLength = 5000) {
 
     // Extract paragraphs
     const paragraphs = [];
-    const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    // `<p[^>]*>` also matched <path> (SVG icons), <picture>, <pre>: a "paragraph"
+    // then ran from an icon to the next </p> and swallowed the content between
+    // (GitHub profile: five of six repository cards lost).
+    const pRegex = /<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/gi;
     let pMatch;
     while ((pMatch = pRegex.exec(mainContent)) !== null) {
         const pText = pMatch[1].replace(/<[^>]*>/g, ' ').trim();
@@ -14324,8 +14336,11 @@ function extractTextFromHtml(html, maxLength = 5000) {
     // all, so this returned a bare title for the entire class of page it is most
     // often pointed at, and every one of them escalated to the browser (or came
     // back "empty") for nothing. Fall back to the flattened block text.
+    // Built for every page now (not only when there is no prose): card/list
+    // pages — repo cards, release notes in <li>, headline grids — keep most of
+    // their content outside <p>, and the prose alone dropped it.
     let listText = '';
-    if (paragraphs.length === 0 || paragraphs.join(' ').length < 300) {
+    {
         const BLOCK_END = /<\/(?:li|div|p|tr|section|article|h[1-6]|dd|dt|td|th|figcaption|blockquote)>/gi;
         const flat = mainContent
             .replace(BLOCK_END, '\n')
@@ -14355,7 +14370,12 @@ function extractTextFromHtml(html, maxLength = 5000) {
     if (title) content += `Title: ${title}\n\n`;
     if (metaDesc) content += `Summary: ${metaDesc}\n\n`;
     if (headings.length > 0) content += `Key Points:\n- ${headings.slice(0, 5).join('\n- ')}\n\n`;
-    if (paragraphs.length > 0) content += `Content:\n${paragraphs.join('\n\n')}`;
+    // Prose wins when it carries most of the page (an article reads cleaner
+    // as paragraphs); when it covers under 80% of the block text, the
+    // page is a listing and the paragraphs are incidental (a profile's "block
+    // this user" note beat its repository cards).
+    const paraText = paragraphs.join('\n\n');
+    if (paragraphs.length > 0 && !(listText && paraText.length < listText.length * 0.8)) content += `Content:\n${paraText}`;
     else if (listText) content += `Content:\n${listText}`;
 
     // Clean up whitespace and entities
@@ -14616,7 +14636,14 @@ function htmlShellSignal(rawHtml, textLen) {
     const scriptCount = (head.match(/<script\b/gi) || []).length;
     const ratio = textLen / htmlLen; // text-to-HTML density
     // SHELL: a script-heavy / marker-bearing / ultra-low-density large body.
-    const isShell = (hasMarker || ratio < 0.05) && (htmlLen > 30000 || scriptCount >= 8) && ratio < 0.08;
+    // Low density alone is not a shell when the server rendered the content:
+    // GitHub's profile pages carry ~150 KB of inline SVG/JSON around 100+
+    // content blocks and no framework marker, and were sent to the browser
+    // for 6 s each. A real shell without a marker has few blocks (nothing
+    // rendered yet).
+    const renderedBlocks = hasMarker ? 0 : (head.match(/<(?:li|p|h[1-6]|tr|article|section)\b/gi) || []).length;
+    const serverRendered = !hasMarker && renderedBlocks >= 40;
+    const isShell = (hasMarker || (ratio < 0.05 && !serverRendered)) && (htmlLen > 30000 || scriptCount >= 8) && ratio < 0.08;
     // TINY-COMPLETE: a small marker-free high-density page — nothing more to fetch.
     const isTinyComplete = htmlLen < 5000 && !hasMarker && ratio >= 0.10;
     return { isShell, isTinyComplete };
