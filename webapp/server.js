@@ -14256,6 +14256,7 @@ app.get('/api/search', requireAuth, async (req, res) => {
 });
 
 // Helper function to extract readable text content from HTML
+const UI_NOISE_LINE_RE = /^(?:-\s*)?(?:Uh oh!|Sorry, something went wrong\.?|There was an error while loading\. Please reload this page ?\.?|Loading(?:\.\.\.|…)?|Choose a tag to compare|Learn about vigilant mode ?\.|This (?:tag|commit) was signed with the committer’s verified signature ?\.|Collapse sidebar(?: .*)?)$/;
 function extractTextFromHtml(html, maxLength = 5000) {
     if (!html) return '';
     // Ad containers out first (token-declared slots only, balanced-tag scan) so
@@ -14375,6 +14376,11 @@ function extractTextFromHtml(html, maxLength = 5000) {
                      .replace(/\n{3,}/g, '\n\n')
                      .replace(/[ \t]*\n[ \t]*/g, '\n')
                      .trim();
+
+    // Interface strings that are never content (GitHub repeats each of these
+    // per release card: "Uh oh! There was an error while loading…" ×20).
+    // Whole-line matches only.
+    content = content.split('\n').filter(l => !UI_NOISE_LINE_RE.test(l.trim())).join('\n').replace(/\n{3,}/g, '\n\n');
 
     // Content the site ships as JSON inside the page (GitHub's React pages:
     // commit lists, diffs, pull requests). Without it those pages read as a
