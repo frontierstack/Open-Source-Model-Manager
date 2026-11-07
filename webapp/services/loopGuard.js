@@ -1107,6 +1107,40 @@ function codeDuplicatesTool(code) {
 }
 
 // ---------------------------------------------------------------------------
+// Pasted earlier output
+// ---------------------------------------------------------------------------
+// A script that embeds a big string literal copied from an earlier tool
+// result: the model retyped data it already had (5-8k generated tokens per
+// script on the Appstats turn, and one paste broke Python's quoting).
+// Returns { chars, source } for the largest such literal, or null. `priors`
+// are earlier tool results as text; `source` is the stdoutFile one of them
+// named, when it did.
+const PASTE_MIN_CHARS = parseInt(process.env.PASTE_MIN_CHARS, 10) || 1200;
+function normPaste(t) { return String(t || '').replace(/\\[nrt"'\\]/g, '').replace(/[\s"'`\\]/g, ''); }
+function pastedPriorOutput(code, priors) {
+    const n = normPaste(code);
+    if (n.length < PASTE_MIN_CHARS * 0.6 || !Array.isArray(priors) || !priors.length) return null;
+    // Whole script, not only string literals: data comes back pasted as a JSON
+    // string, a Python dict or a JS object literal alike. 80-char windows at a
+    // 100-char stride; the share found verbatim in ONE earlier result is the
+    // pasted part. Bounded: the last 8 results, 200k chars each.
+    const W = 80, STRIDE = 100;
+    let best = null;
+    for (const raw of priors.slice(-8)) {
+        const p = normPaste(String(raw || '').slice(0, 200000));
+        if (p.length < 400) continue;
+        let hit = 0;
+        for (let k = 0; k + W <= n.length; k += STRIDE) if (p.includes(n.slice(k, k + W))) hit++;
+        const chars = hit * STRIDE;
+        if (chars >= PASTE_MIN_CHARS && (!best || chars > best.chars)) {
+            const sf = /"stdoutFile"\s*:\s*"([^"]+)"/.exec(String(raw));
+            best = { chars, source: sf ? sf[1] : null };
+        }
+    }
+    return best;
+}
+
+// ---------------------------------------------------------------------------
 // Error-class signature + same-error streak
 // ---------------------------------------------------------------------------
 // The progress ledger scores a call as progress when it succeeded, was
@@ -1188,6 +1222,7 @@ function makeErrorStreakTracker(opts = {}) {
 }
 
 module.exports = {
+    pastedPriorOutput,
     canonicalArgs,
     stableStringify,
     argsSimilarity,
