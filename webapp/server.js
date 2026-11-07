@@ -16384,7 +16384,7 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
 // the recorder can say whether the playbook was followed and whether the run
 // beat the remembered best. `taskKey`/`provisional` come from the /v1 bridge
 // (a Pi task is re-recorded while it runs; snapshots update ONE episode).
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false, hostAgent = false }) {
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false, hostAgent = false, model = null }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
@@ -16410,6 +16410,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         if (!episode.task) return;
         const res = await coreMemory.recordEpisode(userId, {
             episode, theme, convId: conversationId || null, recalled, taskKey, provisional,
+            meta: { model, source: hostAgent ? 'agent' : 'chat', answerChars: quality && Number.isFinite(quality.answerChars) ? quality.answerChars : null },
         });
         if (!res) return;
         // Every eligible episode also goes into the account's vector archive,
@@ -19820,6 +19821,13 @@ const chatStreamHandlerInner = async (req, res) => {
                 const earlier = userIdx.slice(0, -1).reverse().slice(0, 6).map(i => textOf(inputMessages[i]));
                 if (latestIdx != null && earlier.length) {
                     redoInfo = leadHandoff.detectRedo({ text: textOf(inputMessages[latestIdx]), previousTexts: earlier });
+                    // A correction is the user telling us the previous answer was
+                    // wrong — the memory Stats count it against that task.
+                    if (redoInfo && redoInfo.kind === 'correction' && conversationId && req.body?.recordMemory !== false) {
+                        coreMemory.markCorrection(memAccountId(req), conversationId)
+                            .then(hit => { if (hit) console.log('[Memory] correction recorded against the previous task'); })
+                            .catch(() => {});
+                    }
                     if (redoInfo) console.log(`[Chat Stream] Redo turn (${redoInfo.kind}): redoes "${redoInfo.original.slice(0, 120)}"${redoInfo.complaints.length ? ` after ${redoInfo.complaints.length} earlier correction(s)` : ''}`);
                 }
             } catch (e) { console.warn('[Chat Stream] redo detection skipped:', e.message); }
@@ -28073,6 +28081,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                 userText: latestUserText,
                 attachments: req.body?.attachments,
                 recalled: recalledCore,
+                model: targetModel,
                 // How the run went — drives which approach is kept as the best.
                 quality: {
                     ms: Date.now() - streamStartTime,

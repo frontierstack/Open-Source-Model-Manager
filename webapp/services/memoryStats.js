@@ -43,12 +43,40 @@ function logRun(shard, row) {
         fo: row.fo == null ? null : !!row.fo,
         tools: Array.isArray(row.tools) ? row.tools.slice(0, 8) : undefined,
     };
+    // Added 2026-11-07: playbook version at the time, the answering model,
+    // answer size, where the task came from, and the conversation (so a
+    // correction in the NEXT message can be pinned on this task).
+    if (Number.isFinite(row.pv)) r.pv = row.pv;
+    if (row.m) r.m = String(row.m).slice(0, 80);
+    if (Number.isFinite(row.ac)) r.ac = row.ac;
+    if (row.src) r.src = row.src;
+    if (row.cv) { r.cv = String(row.cv).slice(0, 64); r.cor = false; }
     if (r.k) {
         const i = shard.statsLog.findIndex(x => x.k === r.k);
         if (i >= 0) { shard.statsLog[i] = { ...shard.statsLog[i], ...r, t: shard.statsLog[i].t }; return; }
     }
     shard.statsLog.push(r);
     while (shard.statsLog.length > LOG_MAX) shard.statsLog.shift();
+}
+
+/**
+ * The user's next message corrected the answer ("that's wrong", "I said…").
+ * Pins it on the newest task of that conversation from the last 6 hours.
+ */
+const CORRECTION_WINDOW_MS = 6 * 3600 * 1000;
+function markCorrection(shard, convId, now = Date.now()) {
+    ensure(shard);
+    const cv = String(convId || '').slice(0, 64);
+    if (!cv) return false;
+    for (let i = shard.statsLog.length - 1; i >= 0; i--) {
+        const r = shard.statsLog[i];
+        if (r.cv !== cv) continue;
+        if (now - Date.parse(r.t) > CORRECTION_WINDOW_MS) return false;
+        if (r.cor) return false;
+        r.cor = true;
+        return true;
+    }
+    return false;
 }
 
 function logEvent(shard, ev) {
@@ -161,22 +189,7 @@ function computeStats(shard, themes) {
         return acc;
     }, { tasks: 0, calls: 0, recalled: 0, followed: 0, converged: 0, refinements: 0, lessons: 0, avoid: 0, proven: 0 });
 
-    // Weekly series over the log.
-    const weeks = new Map();
-    for (const r of rows) {
-        const w = weekStart(r.t);
-        if (!w) continue;
-        if (!weeks.has(w)) weeks.set(w, []);
-        weeks.get(w).push(r);
-    }
-    const weekly = [...weeks.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, rs]) => {
-        const s = summarizeRows(rs);
-        const known = rs.filter(r => r.r != null);
-        return {
-            week, tasks: s.tasks, avgCalls: s.avgCalls, failedCallRate: s.failedCallRate,
-            recallRate: known.length ? round(known.filter(r => r.rt).length / known.length, 3) : null,
-        };
-    });
+    const weekly = weeklySeries(rows);
 
     const byTheme = [];
     const themeKeys = [...new Set([...(themes || []).map(t => t.key), ...rows.map(r => r.th)])];
@@ -203,6 +216,14 @@ function computeStats(shard, themes) {
             trend: earlyVsRecent(rs),
             memoryEffect: withVsWithout(rs),
             spark: rs.slice(-30).map(r => r.c),
+            sparkSeconds: rs.slice(-30).map(r => r.s).filter(x => x != null),
+            weekly: weeklySeries(rs),
+            secondsTrend: (() => {
+                const v = rs.filter(r => r.s != null);
+                if (v.length < FIND_MIN) return null;
+                const w = Math.min(60, Math.max(5, Math.floor(v.length / 3)));
+                return compareGroups(v.slice(0, w), v.slice(-w), METRICS[0]);
+            })(),
         });
     }
     byTheme.sort((a, b) => b.lifetimeTasks - a.lifetimeTasks);
@@ -237,7 +258,313 @@ function computeStats(shard, themes) {
         weekly,
         themes: byTheme,
         events,
+        ...analyze(rows, byTheme, shard.statsEvents || [], label),
     };
 }
 
-module.exports = { TREND_MIN, logRun, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+// ---------------------------------------------------------------------------
+// Advanced analysis (2026-11-07): what is improving, how long answers take,
+// and whether the memory changes how tasks go.
+//
+// Every comparison carries its sample sizes and a p-value: with a few dozen
+// tasks per theme most differences are noise, and the panel says so instead of
+// colouring them green.
+
+function quantile(a, q) {
+    if (!a.length) return null;
+    const s = [...a].sort((x, y) => x - y);
+    const pos = (s.length - 1) * q;
+    const lo = Math.floor(pos), hi = Math.ceil(pos);
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo);
+}
+
+// Standard normal CDF (Abramowitz–Stegun 7.1.26 via erf).
+function normCdf(z) {
+    const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
+    const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(z * z) / 2);
+    return z >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
+
+/** Two-sided Mann–Whitney U (normal approximation, tie-corrected). */
+function mannWhitneyP(a, b) {
+    const n1 = a.length, n2 = b.length;
+    if (n1 < 2 || n2 < 2) return null;
+    const all = a.map(v => [v, 0]).concat(b.map(v => [v, 1])).sort((x, y) => x[0] - y[0]);
+    const ranks = new Array(all.length);
+    let tieSum = 0;
+    for (let i = 0; i < all.length;) {
+        let j = i;
+        while (j + 1 < all.length && all[j + 1][0] === all[i][0]) j++;
+        const r = (i + j) / 2 + 1;
+        for (let k = i; k <= j; k++) ranks[k] = r;
+        const tcount = j - i + 1;
+        tieSum += tcount ** 3 - tcount;
+        i = j + 1;
+    }
+    let r1 = 0;
+    all.forEach((x, i) => { if (x[1] === 0) r1 += ranks[i]; });
+    const u = r1 - n1 * (n1 + 1) / 2;
+    const n = n1 + n2;
+    const sd = Math.sqrt((n1 * n2 / 12) * ((n + 1) - tieSum / (n * (n - 1))));
+    if (!sd) return 1;
+    const z = (Math.abs(u - n1 * n2 / 2) - 0.5) / sd;
+    return Math.max(0, Math.min(1, 2 * (1 - normCdf(z))));
+}
+
+/** Two-sided two-proportion z-test. */
+function twoPropP(x1, n1, x2, n2) {
+    if (n1 < 2 || n2 < 2) return null;
+    const p = (x1 + x2) / (n1 + n2);
+    const sd = Math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2));
+    if (!sd) return 1;
+    const z = Math.abs(x1 / n1 - x2 / n2) / sd;
+    return Math.max(0, Math.min(1, 2 * (1 - normCdf(z))));
+}
+
+function evidence(p, nA, nB) {
+    if (p == null || Math.min(nA, nB) < 5) return 'weak';
+    if (p < 0.05) return 'strong';
+    if (p < 0.2) return 'moderate';
+    return 'weak';
+}
+
+const isHostRow = (r) => r.src === 'agent' || r.th === 'host';
+
+// Outcome measures. `kind: 'value'` compares medians (Mann–Whitney), `'rate'`
+// compares shares (z-test). All are lower-is-better.
+const METRICS = [
+    { key: 'seconds', label: 'Response time', kind: 'value', get: r => r.s, unit: 'seconds' },
+    { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls' },
+    { key: 'failedShare', label: 'Failed tool calls', kind: 'value', get: r => (r.c + r.f) ? r.f / (r.c + r.f) : 0, unit: 'share' },
+    { key: 'rough', label: 'Tasks that flailed', kind: 'rate', get: r => (r.rough ? 1 : 0) },
+    { key: 'corrected', label: 'Answers corrected by you', kind: 'rate', get: r => (typeof r.cor === 'boolean' ? (r.cor ? 1 : 0) : null) },
+];
+
+function metricVals(rows, m) { return rows.map(m.get).filter(v => v != null && Number.isFinite(v)); }
+function metricCentre(vals, m) { return vals.length ? (m.kind === 'rate' ? avg(vals) : median(vals)) : null; }
+
+/** Compare two groups of rows on one metric. */
+function compareGroups(a, b, m) {
+    const va = metricVals(a, m), vb = metricVals(b, m);
+    const ca = metricCentre(va, m), cb = metricCentre(vb, m);
+    if (ca == null || cb == null) return null;
+    const p = m.kind === 'rate'
+        ? twoPropP(va.reduce((x, y) => x + y, 0), va.length, vb.reduce((x, y) => x + y, 0), vb.length)
+        : mannWhitneyP(va, vb);
+    // Relative change of b against a (b is "after"/"with memory").
+    let change = null;
+    if (m.kind === 'rate' || m.key === 'failedShare') change = round(cb - ca, 3);           // percentage points
+    else if (ca > 0) change = round((cb - ca) / ca, 3);
+    return { from: round(ca, 3), to: round(cb, 3), nFrom: va.length, nTo: vb.length, change,
+        changeKind: (m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative',
+        p: p == null ? null : round(p, 4), evidence: evidence(p, va.length, vb.length) };
+}
+
+const MEANINGFUL = { relative: 0.08, points: 0.03 };
+function direction(c) {
+    if (!c || c.change == null) return 'flat';
+    const t = MEANINGFUL[c.changeKind];
+    return c.change <= -t ? 'better' : c.change >= t ? 'worse' : 'flat';
+}
+
+// Earlier vs recent for one scope: the oldest and newest third (window capped,
+// so a long history still compares "then" with "lately").
+const FIND_MIN = parseInt(process.env.CORE_MEMORY_FIND_MIN, 10) || 10;
+function findingsFor(rows, scope, label) {
+    const out = [];
+    for (const m of METRICS) {
+        const rs = rows.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+        if (rs.length < FIND_MIN) continue;
+        const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
+        const early = rs.slice(0, w), recent = rs.slice(-w);
+        const c = compareGroups(early, recent, m);
+        if (!c) continue;
+        out.push({ scope, scopeLabel: label, metric: m.key, metricLabel: m.label, ...c,
+            since: early[0].t, until: recent[recent.length - 1].t, recentSince: recent[0].t,
+            direction: direction(c) });
+    }
+    return out;
+}
+
+// Weekly series with every measure, for the trend charts.
+function weeklySeries(rows) {
+    const weeks = new Map();
+    for (const r of rows) {
+        const w = weekStart(r.t);
+        if (!w) continue;
+        if (!weeks.has(w)) weeks.set(w, []);
+        weeks.get(w).push(r);
+    }
+    return [...weeks.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, rs]) => {
+        const secs = rs.map(r => r.s).filter(x => x != null);
+        const known = rs.filter(r => r.r != null);
+        const rec = known.filter(r => r.rt);
+        const fol = rec.filter(r => r.fo != null);
+        const corr = rs.filter(r => typeof r.cor === 'boolean');
+        const allCalls = rs.reduce((n, r) => n + r.c + r.f, 0);
+        return {
+            week, tasks: rs.length,
+            avgCalls: round(avg(rs.map(r => r.c))),
+            medianCalls: median(rs.map(r => r.c)),
+            medianSeconds: secs.length ? Math.round(median(secs)) : null,
+            p75Seconds: secs.length ? Math.round(quantile(secs, 0.75)) : null,
+            failedCallRate: allCalls ? round(rs.reduce((n, r) => n + r.f, 0) / allCalls, 3) : null,
+            roughRate: round(rs.filter(r => r.rough).length / rs.length, 3),
+            recallRate: known.length ? round(rec.length / known.length, 3) : null,
+            followRate: fol.length ? round(fol.filter(r => r.fo).length / fol.length, 3) : null,
+            correctionRate: corr.length ? round(corr.filter(r => r.cor).length / corr.length, 3) : null,
+        };
+    });
+}
+
+// With the theme's memory recalled vs a cold start. Raw groups mix themes
+// (memory is recalled more on themes that already have one), so each theme is
+// also compared with itself and the per-theme differences are weighted.
+function memoryImpact(rows) {
+    const known = rows.filter(r => r.r != null);
+    const withM = known.filter(r => r.rt), cold = known.filter(r => !r.rt);
+    const metrics = [];
+    for (const m of METRICS) {
+        const c = compareGroups(cold, withM, m);
+        if (!c) continue;
+        // Theme-matched.
+        let wsum = 0, acc = 0, themesUsed = 0;
+        const themes = [...new Set(known.map(r => r.th))];
+        for (const th of themes) {
+            const a = cold.filter(r => r.th === th), b = withM.filter(r => r.th === th);
+            const tc = compareGroups(a, b, m);
+            if (!tc || tc.change == null || Math.min(tc.nFrom, tc.nTo) < 2) continue;
+            const wgt = Math.min(tc.nFrom, tc.nTo);
+            acc += tc.change * wgt; wsum += wgt; themesUsed++;
+        }
+        metrics.push({ metric: m.key, metricLabel: m.label, ...c, direction: direction(c),
+            matchedChange: wsum ? round(acc / wsum, 3) : null, matchedThemes: themesUsed });
+    }
+    const recalled = withM.filter(r => r.fo != null);
+    const followed = recalled.filter(r => r.fo), notFollowed = recalled.filter(r => !r.fo);
+    const follow = [];
+    for (const m of METRICS) {
+        const c = compareGroups(notFollowed, followed, m);
+        if (c) follow.push({ metric: m.key, metricLabel: m.label, ...c, direction: direction(c) });
+    }
+    return { withTasks: withM.length, coldTasks: cold.length, metrics,
+        followedTasks: followed.length, notFollowedTasks: notFollowed.length, follow };
+}
+
+// Learning curve: how the Nth task of a theme compares with that theme's
+// typical task. Values are relative to the theme's own median, so research
+// (long) and coding (short) can be pooled.
+const CURVE_BUCKETS = [[1, 5], [6, 15], [16, 30], [31, 60], [61, Infinity]];
+function learningCurve(rows) {
+    const byTheme = new Map();
+    for (const r of rows) { if (!byTheme.has(r.th)) byTheme.set(r.th, []); byTheme.get(r.th).push(r); }
+    const out = CURVE_BUCKETS.map(([lo, hi]) => ({ label: hi === Infinity ? `${lo}+` : `${lo}–${hi}`, lo, hi, seconds: [], calls: [], themes: new Set() }));
+    for (const [th, rs] of byTheme) {
+        if (rs.length < 8) continue;
+        const ms = median(rs.map(r => r.s).filter(x => x != null && x > 0));
+        const mc = median(rs.map(r => r.c).filter(x => x > 0));
+        rs.forEach((r, i) => {
+            const b = out.find(x => i + 1 >= x.lo && i + 1 <= x.hi);
+            if (!b) return;
+            if (ms && r.s != null) b.seconds.push(r.s / ms);
+            if (mc) b.calls.push(r.c / mc);
+            b.themes.add(th);
+        });
+    }
+    return out.map(b => ({
+        label: b.label, tasks: Math.max(b.seconds.length, b.calls.length), themes: b.themes.size,
+        relSeconds: b.seconds.length >= 3 ? round(median(b.seconds), 3) : null,
+        relCalls: b.calls.length >= 3 ? round(median(b.calls), 3) : null,
+    }));
+}
+
+// Before/after each memory update (new proven approach or playbook rewrite):
+// the theme's last K tasks before it against its first K after.
+const UPDATE_K = 5;
+function updateImpact(rows, events, label) {
+    const list = [];
+    for (const e of events) {
+        if (!e || !e.t || (e.kind !== 'best' && e.kind !== 'refine')) continue;
+        const rs = rows.filter(r => r.th === e.th);
+        const before = rs.filter(r => r.t < e.t).slice(-UPDATE_K);
+        const after = rs.filter(r => r.t > e.t).slice(0, UPDATE_K);
+        if (before.length < 3 || after.length < 3) continue;
+        // Rewrites often land between the same two tasks (v21..v24 with no
+        // task in between): one row per distinct before/after split.
+        const split = `${e.th}|${before[before.length - 1].t}|${after[0].t}`;
+        const prev = list.find(x => x.split === split);
+        if (prev) {
+            if (e.kind === 'best') { prev.kind = 'best'; prev.calls = e.calls ?? prev.calls; prev.from = e.from ?? prev.from; }
+            if (e.v != null) { prev.vFrom = Math.min(prev.vFrom ?? e.v, e.v); prev.v = Math.max(prev.v ?? e.v, e.v); }
+            prev.merged = (prev.merged || 1) + 1;
+            if (e.t > prev.t) prev.t = e.t;
+            continue;
+        }
+        const sec = compareGroups(before, after, METRICS[0]);
+        const cal = compareGroups(before, after, METRICS[1]);
+        list.push({ split, t: e.t, th: e.th, label: label.get(e.th) || e.th, kind: e.kind, v: e.v ?? null, vFrom: e.v ?? null, calls: e.calls ?? null, from: e.from ?? null,
+            before: before.length, after: after.length,
+            seconds: sec ? { from: sec.from, to: sec.to, change: sec.change } : null,
+            callsChange: cal ? { from: cal.from, to: cal.to, change: cal.change } : null });
+    }
+    const sec = list.filter(x => x.seconds && x.seconds.change != null);
+    const cal = list.filter(x => x.callsChange && x.callsChange.change != null);
+    return {
+        window: UPDATE_K,
+        updates: list.length,
+        fasterAfter: sec.filter(x => x.seconds.change < -MEANINGFUL.relative).length,
+        slowerAfter: sec.filter(x => x.seconds.change > MEANINGFUL.relative).length,
+        medianSecondsChange: sec.length ? round(median(sec.map(x => x.seconds.change)), 3) : null,
+        leanerAfter: cal.filter(x => x.callsChange.change < -MEANINGFUL.relative).length,
+        heavierAfter: cal.filter(x => x.callsChange.change > MEANINGFUL.relative).length,
+        medianCallsChange: cal.length ? round(median(cal.map(x => x.callsChange.change)), 3) : null,
+        recent: list.slice().sort((a, b) => String(b.t).localeCompare(String(a.t))).slice(0, 20).map(({ split, ...x }) => x),
+    };
+}
+
+function responseTime(rows) {
+    const secs = rows.map(r => r.s).filter(x => x != null);
+    const chat = rows.filter(r => !isHostRow(r)).map(r => r.s).filter(x => x != null);
+    const agent = rows.filter(isHostRow).map(r => r.s).filter(x => x != null);
+    const stat = (a) => (a.length ? { tasks: a.length, median: Math.round(median(a)), p25: Math.round(quantile(a, 0.25)), p75: Math.round(quantile(a, 0.75)), p90: Math.round(quantile(a, 0.9)) } : null);
+    // Distribution for the histogram (minutes buckets).
+    const edges = [0, 15, 30, 60, 120, 240, 480, 900, Infinity];
+    const hist = edges.slice(0, -1).map((lo, i) => ({ lo, hi: edges[i + 1], tasks: secs.filter(s => s >= lo && s < edges[i + 1]).length }));
+    return { all: stat(secs), chat: stat(chat), agent: stat(agent), histogram: hist };
+}
+
+/** Everything beyond the basic counters; merged into computeStats' result. */
+function analyze(rows, byTheme, events, label) {
+    // Overall findings use chat and agent rows separately (they differ by an
+    // order of magnitude, a shift in mix would read as a trend).
+    const findings = [];
+    const chatRows = rows.filter(r => !isHostRow(r));
+    const chatFindings = findingsFor(chatRows, 'chat', 'Web chat');
+    findings.push(...chatFindings);
+    for (const t of byTheme) {
+        const rs = rows.filter(r => r.th === t.theme);
+        findings.push(...findingsFor(rs, t.theme, t.label));
+    }
+    const rank = { strong: 0, moderate: 1, weak: 2 };
+    const sortF = (a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0));
+    const improving = findings.filter(f => f.direction === 'better').sort(sortF);
+    const worsening = findings.filter(f => f.direction === 'worse').sort(sortF);
+    const steady = findings.filter(f => f.direction === 'flat').length;
+
+    const tasks = rows.slice(-400).map(r => ({
+        t: r.t, th: r.th, c: r.c, f: r.f, s: r.s, rough: r.rough || undefined,
+        rt: r.rt, fo: r.fo, cor: r.cor, src: isHostRow(r) ? 'agent' : 'chat', pv: r.pv,
+    }));
+    return {
+        findings: { improving, worsening, steady, total: findings.length, minTasks: FIND_MIN, chat: Object.fromEntries(chatFindings.map(f => [f.metric, f])) },
+        responseTime: responseTime(rows),
+        impact: memoryImpact(rows),
+        learningCurve: learningCurve(rows),
+        updateImpact: updateImpact(rows, events, label),
+        tasks,
+        correctionsTrackedSince: (rows.find(r => typeof r.cor === 'boolean') || {}).t || null,
+        metrics: METRICS.map(m => ({ key: m.key, label: m.label, kind: m.kind })),
+    };
+}
+
+module.exports = { TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };

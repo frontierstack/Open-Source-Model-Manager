@@ -430,7 +430,7 @@ function addUnique(arr, text, cap, extra = {}) {
  *   taskKey  — /v1 in-progress snapshot key: the same task re-records ONE episode
  * Returns { id, theme, label, runs, newBest, improvedVsBest, followed, provisional }.
  */
-async function recordEpisode(userId, { episode, theme, convId = null, recalled = null, taskKey = null, provisional = false }) {
+async function recordEpisode(userId, { episode, theme, convId = null, recalled = null, taskKey = null, provisional = false, meta = null }) {
     if (!userId || !episode) return null;
     const themeKey = THEME_BY_KEY.has(theme) ? theme : 'general';
     return mutate(userId, (shard) => {
@@ -526,6 +526,9 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
                 prov: !!provisional, k: taskKey || null,
                 tools: [...new Set(experienceMemory.approachTools(episode.approach || []))].slice(0, 8),
                 r: !!recalled, rt: !!(recalled && recalled.id === rec.id), fo: followed,
+                pv: rec.playbookVersion || 0,
+                m: meta && meta.model, ac: meta && meta.answerChars, src: meta && meta.source,
+                cv: provisional || taskKey ? null : convId,
             });
             if (newBest) memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'best', calls, from: bestBefore });
         } catch (e) { log(`stats log failed: ${e.message}`); }
@@ -533,6 +536,12 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         rec.updatedAt = t;
         return { id: rec.id, theme: rec.theme, label: rec.label, runs: s.runs, newBest, improvedVsBest, followed, provisional: !!provisional, sameRun, bestCalls: s.bestCalls, calls };
     });
+}
+
+/** The user's next message corrected the newest task of this conversation. */
+async function markCorrection(userId, convId) {
+    if (!userId || !convId) return false;
+    return mutate(userId, (shard) => memoryStats.markCorrection(shard, convId));
 }
 
 /** A lesson the model (record_learning) or the user adds to a theme. */
@@ -931,7 +940,7 @@ module.exports = {
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
-    recordEpisode, addLesson, setNotes, setEnabled, remove, clearAll,
+    recordEpisode, markCorrection, addLesson, setNotes, setEnabled, remove, clearAll,
     getCursor, setCursor,
     REFINE_PROMPT, refinementInput, parseRefinement, applyRefinement,
     recall, renderBlock,
