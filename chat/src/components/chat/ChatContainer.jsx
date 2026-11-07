@@ -285,7 +285,7 @@ function buildNativeChipEntries(streamingToolCalls) {
                 argPreview = (String(tc.arguments).length > 80 ? String(tc.arguments).slice(0, 80) + '…' : String(tc.arguments));
             }
         }
-        const sources = extractSources(tc.name, tc.result);
+        const sources = extractSources(tc.name, tc.result) || (Array.isArray(tc.sources) && tc.sources.length ? tc.sources : null);
         const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
         const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
         // find_image returns an imageSpec the UI renders inline as a thumbnail
@@ -2208,7 +2208,10 @@ export default function ChatContainer({
                                 // truncated preview for an error field.
                                 let error = null;
                                 const result = parsed.result ?? null;
-                                warmSourcePreviews(parsed.name, result);
+                                // A result over 32 KB is not sent; the server
+                                // then sends the pages it returned on their own.
+                                const frameSources = Array.isArray(parsed.sources) && parsed.sources.length ? parsed.sources : null;
+                                warmSourcePreviews(parsed.name, result || (frameSources ? { mode: 'read', results: frameSources } : null));
                                 if (result && typeof result === 'object' && result.error) {
                                     error = String(result.error);
                                 } else if (!result) {
@@ -2222,6 +2225,7 @@ export default function ChatContainer({
                                     preview: parsed.preview,
                                     purpose: parsed.purpose,
                                     result,
+                                    sources: frameSources,
                                     error,
                                 });
                                 // Close the active "Calling …" feed entry and

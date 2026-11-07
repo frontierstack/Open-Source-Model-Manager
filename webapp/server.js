@@ -326,6 +326,7 @@ const piStruggle = require('./services/piStruggle');
 const leadHandoff = require('./services/leadHandoff');
 const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
+const { webSourcesFromResult } = require('./services/webSources');
 const assistantQueue = require('./services/assistantQueue');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -26686,6 +26687,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                         || 'failed').slice(0, 300)
                                     : undefined,
                                 preview: String(resultMsg.content || '').slice(0, 240),
+                                // Pages a web call returned — the site icons under the answer.
+                                sources: (!failedChip && webSourcesFromResult(call.function.name, parsedFullSpec || parsedForChip)) || undefined,
                                 chartSpec: (parsedForChip && parsedForChip.chartSpec) || undefined,
                                 chartSummary: (parsedForChip && typeof parsedForChip.summary === 'string') ? parsedForChip.summary : undefined,
                                 // full spec (real data URLs), not the model-facing lean copy
@@ -26717,6 +26720,9 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 const resultPayload = parsedResult && (isChartTool || isSpecPayload || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
                                     ? parsedResult
                                     : undefined;
+                                // A big result is not sent, so send the pages it
+                                // returned on their own (the site icons need them).
+                                const frameSources = webSourcesFromResult(call.function.name, parsedResult);
                                 res.write(`data: ${JSON.stringify({
                                     type: 'tool_result',
                                     tool_call_id: call.id,
@@ -26726,6 +26732,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     source: policy.source,
                                     ...(policy.source === 'skill' ? { network: policy.network } : {}),
                                     ...(resultPayload !== undefined ? { result: resultPayload } : {}),
+                                    ...(frameSources ? { sources: frameSources } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }

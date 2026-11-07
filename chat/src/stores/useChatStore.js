@@ -653,6 +653,9 @@ export const useChatStore = create(
                     // sources / URL snippets / anything structured without
                     // re-parsing the truncated preview.
                     result: tc.result,
+                    // Pages a web call returned, sent on their own when the
+                    // result itself was too big for the frame.
+                    ...(tc.sources ? { sources: tc.sources } : {}),
                     error: tc.error,
                     durationMs: Date.now() - existing.startedAt,
                 };
