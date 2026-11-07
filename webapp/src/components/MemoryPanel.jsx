@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-    Brain as BrainIcon,
+    BookMarked as MemoryIcon,
     Trash2 as DeleteIcon,
     Save as SaveIcon,
     RefreshCw as RefreshIcon,
@@ -285,7 +285,7 @@ export default function MemoryPanel() {
             {/* Header */}
             <div className="flex flex-col items-stretch gap-3 px-1 pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2.5">
-                    <BrainIcon size={20} strokeWidth={1.75} style={{ color: 'var(--accent-primary)' }} />
+                    <MemoryIcon size={20} strokeWidth={1.75} style={{ color: 'var(--accent-primary)' }} />
                     <div>
                         <div className="text-base font-semibold tracking-tight">Core memory</div>
                         <div className="text-xs leading-relaxed" style={{ color: 'var(--text-tertiary)', maxWidth: '68ch' }}>

@@ -6496,6 +6496,12 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     .msg-work > .msg-notes-toggle.bar-style .msg-turn-totals { flex-basis: auto; margin-left: 0; }
     .srcx-bar.bar-style .srcx-stack > .srcx-icon:nth-child(n+4):not(.srcx-more) { display: none; }
 }
+/* Thinking dropdown in the same bar. */
+.msg-thinking-toggle.bar-style .msg-thinking-count { color: var(--ink-3); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.msg-thinking-toggle.bar-style .tool-tile svg { width: 12px; height: 12px; }
+.msg-thinking-toggle.bar-style .srcx-chev { width: 14px; height: 14px; }
+.msg-thinking-toggle.is-thinking .tool-tile { animation: tool-pulse 1.4s ease-in-out infinite; }
+.msg-thinking-panel { border-radius: 8px; border: 1px solid var(--rule); background: color-mix(in oklab, var(--ink) 3%, transparent); }
 .hover\:underline:hover{
   text-decoration-line: underline;
 }

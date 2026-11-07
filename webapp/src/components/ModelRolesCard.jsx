@@ -4,7 +4,7 @@ import {
     Switch, Chip, Alert, Collapse, Button,
 } from '@mui/material';
 import GroupWorkIcon from '@mui/icons-material/GroupWork';
-import PsychologyIcon from '@mui/icons-material/Psychology';
+import StrongModelIcon from '@mui/icons-material/WorkspacePremium';
 import BoltIcon from '@mui/icons-material/Bolt';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
@@ -494,7 +494,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                         onChange={(v) => save({ primary: v })}
                     />
                     <RoleTile
-                        icon={<PsychologyIcon fontSize="small" sx={{ color: secondaryActive ? 'var(--accent-primary)' : 'text.secondary' }} />}
+                        icon={<StrongModelIcon fontSize="small" sx={{ color: secondaryActive ? 'var(--accent-primary)' : 'text.secondary' }} />}
                         title="Secondary — takes over the hard ones"
                         blurb="Steps in when the ask is substantial and writes the answer itself, with the primary fetching things for it."
                         value={roles.secondary}

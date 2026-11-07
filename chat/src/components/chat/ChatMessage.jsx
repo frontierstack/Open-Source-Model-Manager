@@ -5,7 +5,7 @@ import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
 import SourceCluster from './SourceCluster';
-import ToolIconStack from './ToolIconStack';
+import ToolIconStack, { ToolTile } from './ToolIconStack';
 import { distinctTools } from '../../utils/toolIcons';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
@@ -998,24 +998,22 @@ export default React.memo(function ChatMessage({
                 <div style={isUser ? userBubble : aiBubble} className={isUser ? 'message-user' : `message-assistant${revised ? ' bubble-revised' : ''}`}>
                     {/* Reasoning / thinking dropdown */}
                     {displayReasoning && (
-                        <div ref={reasoningRef} style={{ marginBottom: 10, marginLeft: -6 }}>
+                        <div ref={reasoningRef} style={{ marginBottom: 10 }}>
                             <button
                                 onClick={handleToggleReasoning}
-                                className="msg-thinking-toggle"
+                                className={`msg-thinking-toggle srcx-bar bar-style${isStreaming && !displayContent ? ' is-thinking' : ''}`}
                                 aria-expanded={reasoningExpanded}
                             >
-                                <span>{isStreaming && !displayContent ? 'Thinking' : 'Thought process'}</span>
-                                <span className="msg-thinking-count">· {displayReasoning.length.toLocaleString()} chars</span>
-                                {reasoningExpanded
-                                    ? <ChevronUp strokeWidth={2} />
-                                    : <ChevronDown strokeWidth={2} />
-                                }
+                                <span className="srcx-stack"><ToolTile name="thinking" ring /></span>
+                                <span className="msg-turn-label">{isStreaming && !displayContent ? 'Thinking' : 'Thought process'}</span>
+                                <span className="msg-thinking-count">{displayReasoning.length.toLocaleString()} chars</span>
+                                <ChevronDown className="srcx-chev" strokeWidth={1.75} />
                             </button>
                             {reasoningExpanded && (() => {
                                 const steps = splitReasoningIntoSteps(displayReasoning);
                                 const structured = steps.length >= 3;
                                 return (
-                                    <div className="msg-thinking-panel" style={{ marginLeft: 6 }}>
+                                    <div className="msg-thinking-panel">
                                         {structured ? (
                                             <ol>
                                                 {steps.map((step, i) => (

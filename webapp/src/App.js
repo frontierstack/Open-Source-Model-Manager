@@ -115,7 +115,7 @@ import {
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
     Boxes as LucideBoxes,
-    Brain as LucideBrain,
+    BookMarked as LucideMemory,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
@@ -6877,7 +6877,7 @@ console.log(chip);`
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
         { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
-        { id: 10, icon: <LucideBrain size={18} strokeWidth={1.75} />,     label: 'Memory' }
+        { id: 10, icon: <LucideMemory size={18} strokeWidth={1.75} />,     label: 'Memory' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users

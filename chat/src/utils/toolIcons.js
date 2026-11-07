@@ -3,10 +3,11 @@
 import {
     Globe, FileText, FileEdit, Code2, Terminal, Search, FolderOpen, FolderSearch, GitBranch, BarChart3,
     Image as ImageIcon, Camera, Film, Download, Archive, ListOrdered, ArrowLeftRight, BookOpen, Bug, ScanText,
-    Mic, Users, Workflow, Shield, Wrench, Database, FileSpreadsheet, Link as LinkIcon, Mail, Package, Binary,
+    Mic, Users, Workflow, Shield, Wrench, Database, FileSpreadsheet, Link as LinkIcon, Mail, Package, Binary, Lightbulb,
 } from 'lucide-react';
 
 const RULES = [
+    [/^thinking$/, Lightbulb],
     [/^(first_pass|ask_assistant|await_assistant|escalate)$/, ArrowLeftRight],
     [/^(web|web_search|fetch_url|scrapling_fetch|playwright_fetch|playwright_interact|crawl_pages|sniff_media_streams|http_request)$/, Globe],
     [/^take_screenshot$|^screenshot$/, Camera],
