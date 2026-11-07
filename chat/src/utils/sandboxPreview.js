@@ -59,15 +59,29 @@ function escapeAttr(s) {
 export function injectSandboxPreview(html, { baseHref } = {}) {
     const inject = (baseHref ? `<base href="${escapeAttr(baseHref)}">` : '') + STORAGE_POLYFILL;
     if (!html) return inject;
-    const headMatch = html.match(/<head[^>]*>/i);
-    if (headMatch) {
+    // Only a tag that sits BEFORE the page's first script/body counts. A loose
+    // `/<head[^>]*>/` also matched `<header>`, and a page with no <head> but a
+    // `<header>` inside a script's template string got the polyfill spliced
+    // INTO that script — its `</script>` ended the page's script early and the
+    // rest of the JS rendered as text in the preview.
+    const firstCode = html.search(/<(?:script|body|style)\b/i);
+    const before = (m) => m && (firstCode < 0 || m.index < firstCode);
+    const headMatch = html.match(/<head(?=[\s>])[^>]*>/i);
+    if (before(headMatch)) {
         const at = headMatch.index + headMatch[0].length;
         return html.slice(0, at) + inject + html.slice(at);
     }
-    const htmlMatch = html.match(/<html[^>]*>/i);
-    if (htmlMatch) {
+    const htmlMatch = html.match(/<html(?=[\s>])[^>]*>/i);
+    if (before(htmlMatch)) {
         const at = htmlMatch.index + htmlMatch[0].length;
         return html.slice(0, at) + '<head>' + inject + '</head>' + html.slice(at);
+    }
+    // No usable <head>/<html>: put it first, but after a doctype so the page
+    // keeps standards mode.
+    const doctype = html.match(/^\s*<!doctype[^>]*>/i);
+    if (doctype) {
+        const at = doctype[0].length;
+        return html.slice(0, at) + inject + html.slice(at);
     }
     return inject + html;
 }
