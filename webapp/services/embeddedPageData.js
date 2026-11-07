@@ -18,7 +18,11 @@ const BLOCK_RE = /<script type="application\/json" data-target="react-app\.embed
 // Routes that describe the page chrome, not its content.
 const SKIP_ROUTE = /LayoutRoute$|^csrf|^currentUser$/i;
 // Fields that are identifiers, styling or UI plumbing.
-const SKIP_KEY = /^(?:avatarUrl|ownerAvatar|globalId|globalRelayId|id|color|commitHeadShaChannel|.*Channel|csrf_tokens|currentUser|currentUserCan.*|.*Html|shortMessageMarkdownLink|nameHtml|titleHtml|isGitHub|hovercardUrl|ariaLabel|tabIndex|.*Url$|linkedIssueUrl|profileName|showPusherAttribution|committerAttribution|blobLineNumber|leftLineNumber|rightLineNumber|.*Expanded.*|.*Collapsed.*)$/;
+const SKIP_KEY = /^(?:avatarUrl|ownerAvatar|globalId|globalRelayId|id|color|commitHeadShaChannel|.*Channel|csrf_tokens|currentUser|currentUserCan.*|.*Html|shortMessageMarkdownLink|nameHtml|titleHtml|isGitHub|hovercardUrl|ariaLabel|tabIndex|.*Url$|linkedIssueUrl|profileName|showPusherAttribution|committerAttribution|blobLineNumber|leftLineNumber|rightLineNumber|.*Expanded.*|.*Collapsed.*|toc|navigation|symbols|headerInfo|selectedPage|pageTitle|expanded|page|repository|refInfo|fileTree|treeExpanded|issueTemplate|discussionTemplate|csvError|renderedFileInfo|richTextTruncated)$/;
+// Less than this is navigation or a header, not the page's content: the
+// releases page carries only a table of contents (its notes are plain HTML),
+// and letting that pass made the page look complete when it was not.
+const MIN_CONTENT_CHARS = 400;
 
 function stripMarkup(s) {
     return String(s)
@@ -112,6 +116,7 @@ function extract(html, maxChars = 12000) {
         }
     }
     const text = lines.join('\n');
+    if (text.replace(/\s+/g, ' ').length < MIN_CONTENT_CHARS) return '';
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n… [page data truncated]` : text;
 }
 

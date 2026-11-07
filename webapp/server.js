@@ -15424,6 +15424,11 @@ async function fetchUrlContent(url, options = {}) {
     // Scrapling is a stealth FETCHER, not a JS engine, so a pure client-
     // rendered app (e.g. vuejs.org) otherwise dead-ends at a ~700-char nav shell.
     let forceBrowser = memoLayer === 'playwright';
+    // The cheap GET reached the page (HTTP 2xx HTML, no bot wall) but the page
+    // itself was thin. Then the PAGE needs a later layer, not the HOST: pinning
+    // the host made every later page of it (GitHub commits/PRs/issues) skip the
+    // 0.3-0.8 s fast read for a 5-10 s browser run, for six hours.
+    let fastProbeReachedPage = false;
     if (fastPathWillRun) {
         try {
             const ax = typeof htmlOut.body === 'string'
@@ -15466,6 +15471,7 @@ async function fetchUrlContent(url, options = {}) {
                         ...(obs ? { obstacle: obs } : {}),
                     });
                 }
+                if (!(obs && (obs.kind === 'bot_challenge' || obs.kind === 'blocked' || obs.kind === 'ratelimit'))) fastProbeReachedPage = true;
                 mark('axios-fast', obs ? `${obs.kind}${obs.vendor ? '/' + obs.vendor : ''}` : (tooThin ? 'thin' : 'shell'));
                 // The browser dismisses consent overlays / age gates and renders JS
                 // shells — go straight there rather than through a stealth fetcher
@@ -15533,7 +15539,7 @@ async function fetchUrlContent(url, options = {}) {
             const obs = imp ? obstacleOf('impersonate', imp, impStatus || (imp.success ? 200 : 0)) : null;
             const impThin = !impText || isContentTooThin(impText, url) || (impShell && impLen < SHELL_TEXT_FLOOR);
             if (imp && imp.success && impText && !impThin && !(obs && obs.escalate)) {
-                setHostMemo(url, 'impersonate');   // skip axios+scrapling here next time
+                setHostMemo(url, fastProbeReachedPage ? null : 'impersonate');   // skip axios+scrapling here next time (only when axios was blocked)
                 clearHostBotWall(url);
                 mark('impersonate', `${obs ? obs.kind : 'ok'}${imp.rotated ? '/rotated:' + imp.profile : ''}`);
                 const published = extractPublishedDate(imp.bodyHead);
@@ -15588,7 +15594,7 @@ async function fetchUrlContent(url, options = {}) {
             const stillShell = forceBrowser && (scraplingResult.content || '').length < SHELL_TEXT_FLOOR;
             const obs = scraplingResult.success ? obstacleOf('scrapling', scraplingResult, scraplingResult.httpStatus || 200) : null;
             if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url) && !titleShell && !stillShell && !(obs && obs.escalate)) {
-                setHostMemo(url, 'scrapling');   // skip the axios probe for this host next time
+                setHostMemo(url, fastProbeReachedPage ? null : 'scrapling');   // skip the axios probe next time — only for a host that blocked it
                 clearHostBotWall(url);
                 mark('scrapling', obs ? obs.kind : 'ok');
                 const pagination = scraplingResult.anchorsHtml ? paginationSvc.paginationFromHtml(scraplingResult.anchorsHtml, scraplingResult.finalUrl || url) : null;
@@ -15667,7 +15673,7 @@ async function fetchUrlContent(url, options = {}) {
                     if (best && (best.content || '').length > (result.content || '').length * 1.5) return finish(best);
                     return finish({ ...result, source: 'playwright', obstacle: obs });
                 }
-                setHostMemo(url, 'playwright');   // go straight to the browser for this host next time
+                setHostMemo(url, fastProbeReachedPage ? null : 'playwright');   // straight to the browser next time — only for a host that blocked the cheap read
                 clearHostBotWall(url);
                 mark('playwright', `${obs ? obs.kind : 'ok'}${result.dismissed ? '/dismissed:' + result.dismissed.map(d => d.kind).join('+') : ''}`);
                 return finish({ ...result, source: 'playwright', ...(obs ? { obstacle: obs } : {}) });
