@@ -873,7 +873,7 @@ function ChecksLog({ checks, now }) {
                             {(c.judged || []).map((j, k) => (
                                 <li key={`j${k}`} className="flex gap-2">
                                     <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: STATUS_COLOR[j.status] || MUTED }} />
-                                    <span><b className="font-medium">Verdict · {j.label}</b> {j.metricLabel.toLowerCase()}: {STATUS_TEXT[j.status] || j.status}{j.to != null ? ` (${fmtFor(j.metric, j.from)} → ${fmtFor(j.metric, j.to)})` : ''}</span>
+                                    <span><b className="font-medium">Verdict · {j.label}</b> {j.metricLabel.toLowerCase()}: {STATUS_TEXT[j.status] || j.status}{j.early ? ' early (clearly worse after 2 tasks)' : ''}{j.results && j.results.length > 1 ? ` — ${j.results.map((r) => `${r.metricLabel.toLowerCase()} ${fmtFor(r.metric, r.baseline)} → ${fmtFor(r.metric, r.value)}`).join(', ')}` : j.to != null ? ` (${fmtFor(j.metric, j.from)} → ${fmtFor(j.metric, j.to)})` : ''}</span>
                                 </li>
                             ))}
                             {(c.measuring || []).map((m, k) => (
@@ -918,8 +918,10 @@ function CorrectionTracker({ a, evalTasks, now }) {
     const n = a.progress || 0;
     const bump = useBump(n);
     const pctDone = Math.round((n / evalTasks) * 100);
-    const it = a.interim;
-    const dirColor = it ? (it.direction === 'better' ? GOOD : it.direction === 'worse' ? BAD : MUTED) : MUTED;
+    const metricsList = (a.metrics && a.metrics.length) ? a.metrics : [{ metric: a.metric, metricLabel: a.metricLabel, baseline: a.baseline }];
+    const readingsByMetric = new Map((a.interims || (a.interim ? [{ ...a.interim, metric: a.metric }] : [])).map((r) => [r.metric, r]));
+    const anyReading = readingsByMetric.size > 0;
+    const fmtM = (m) => (v) => (METRIC_FMT[m] || { fmt: n1 }).fmt(v);
     const steps = [
         ['Applied', true],
         [`Measuring ${n}/${evalTasks}`, n > 0],
@@ -951,15 +953,28 @@ function CorrectionTracker({ a, evalTasks, now }) {
                 </span>
                 <span key={bump} className={`shrink-0 text-xs font-semibold tabular-nums ${bump ? 'ms-num-flash' : ''}`}>{pctDone}%</span>
             </div>
+            <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                {metricsList.map((x) => {
+                    const r = readingsByMetric.get(x.metric);
+                    const f = fmtM(x.metric);
+                    const col = r ? (r.direction === 'better' ? GOOD : r.direction === 'worse' ? BAD : MUTED) : MUTED;
+                    return (
+                        <li key={x.metric} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                            <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{x.metricLabel}</span>
+                            {r ? (
+                                <>
+                                    <span>so far <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}><Num value={r.value} fmt={f} /></b></span>
+                                    <span style={{ color: MUTED }}>vs {f(x.baseline)} before</span>
+                                    <Change value={r.change} kind={r.changeKind} small />
+                                    <span className="font-medium" style={{ color: col }}>{r.direction === 'better' ? 'trending better' : r.direction === 'worse' ? 'trending worse' : 'no clear change yet'}</span>
+                                </>
+                            ) : <span style={{ color: MUTED }}>was {f(x.baseline)} before the fix — no reading yet</span>}
+                        </li>
+                    );
+                })}
+            </ul>
             <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                {it ? (
-                    <span className="inline-flex flex-wrap items-center gap-1.5">
-                        so far <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}><Num value={it.value} fmt={fmt} /></b>
-                        <span style={{ color: MUTED }}>vs {fmt(a.baseline)} before</span>
-                        <Change value={it.change} kind={it.changeKind} small />
-                        <span className="font-medium" style={{ color: dirColor }}>{it.direction === 'better' ? 'trending better' : it.direction === 'worse' ? 'trending worse' : 'no clear change yet'}</span>
-                    </span>
-                ) : <span>No {a.label} task has run since the fix — nothing to measure yet.</span>}
+                {anyReading ? <span>Readings over {n} task{n === 1 ? '' : 's'} since the fix.</span> : <span>No {a.label} task has run since the fix — nothing to measure yet.</span>}
                 <span className="tabular-nums" style={{ color: MUTED }}>
                     {a.remaining ? `${a.remaining} more task${a.remaining === 1 ? '' : 's'} to a verdict` : 'verdict due at the next check'}{a.lastTaskAt ? ` · last ${ago(a.lastTaskAt, now)}` : ''}
                 </span>
@@ -973,7 +988,7 @@ function CorrectionTracker({ a, evalTasks, now }) {
                             <b style={{ color: 'var(--text-primary)' }}>What it's waiting for:</b> the fix is judged only on new {a.label} tasks, so it advances when you next do {a.label.toLowerCase()} work
                             {a.lastThemeTaskAt ? ` (the last one was ${ago(a.lastThemeTaskAt, now)}` : ''}{paceTxt ? `${a.lastThemeTaskAt ? '; ' : ' ('}${paceTxt} lately` : ''}{(a.lastThemeTaskAt || paceTxt) ? ')' : ''}.
                             {a.etaDays != null && a.remaining ? ` At that pace the verdict lands in about ${a.etaDays < 1 ? 'a day' : `${Math.round(a.etaDays)} day${Math.round(a.etaDays) === 1 ? '' : 's'}`}.` : ''}
-                            {' '}After {evalTasks} tasks it compares {a.metricLabel.toLowerCase()} with the {fmt(a.baseline)} before the fix: better → kept, no change → tried differently later, worse → the old playbook comes back.
+                            {' '}After {evalTasks} tasks it compares {metricsList.length > 1 ? `each of the ${metricsList.length} measures` : a.metricLabel.toLowerCase()} with before the fix: better → kept, no change → tried again differently after an hour, worse on any measure → the old playbook comes back (already after 2 tasks if it is clearly worse).
                         </>
                     );
                 })()}

@@ -1038,11 +1038,13 @@ async function applyCorrection(userId, d, { ref = null, now = Date.now() } = {})
         }
         rec.dirty = false;
         const a = selfCorrect.recordAction(shard, d, { now, fromVersion, toVersion: rec.playbookVersion, prevPlaybook: prev, newPlaybook: rec.playbook });
+        const ms = (d.metrics || [{ metric: d.metric, metricLabel: d.metricLabel, trigger: d.trigger }]);
+        const list = ms.map(x => `${x.metricLabel.toLowerCase()} ${selfCorrect.fmtMetric(x.metric, x.trigger && x.trigger.from)} → ${selfCorrect.fmtMetric(x.metric, x.trigger && x.trigger.to)}`).join('; ');
         rec.correction = {
             actionId: a.id,
             note: d.kind === 'revert'
-                ? `${d.metricLabel} got worse under the newer playbook; it was restored from v${d.toVersion}, which measured better. Keep its method unless the tasks show a clear reason to change it.`
-                : `${d.metricLabel} was getting worse (${selfCorrect.fmtMetric(d.metric, d.trigger.from)} → ${selfCorrect.fmtMetric(d.metric, d.trigger.to)}); this playbook was rewritten to bring it back down. Keep that focus.`,
+                ? `These measures got worse under the newer playbook (${list}); it was restored from v${d.toVersion}, which measured better. Keep its method unless the tasks show a clear reason to change it.`
+                : `These measures were getting worse (${list}); this playbook was rewritten to bring them back down. Keep that focus.`,
         };
         memoryStats.logEvent(shard, { t: a.t, th: rec.theme, kind: 'correct', action: d.kind, metric: d.metric, v: rec.playbookVersion });
         noteChange(shard, { kind: 'self_correct', phase: 'applied', theme: rec.theme, label: rec.label, action: { id: a.id, kind: a.kind, metricLabel: a.metricLabel, why: a.why, toVersion: a.toVersion } });

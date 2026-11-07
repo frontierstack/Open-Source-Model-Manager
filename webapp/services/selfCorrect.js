@@ -10,9 +10,10 @@
 //              by the tasks around each rewrite); otherwise a TARGETED
 //              re-refinement that is told what regressed and shown the slow
 //              and the fast recent tasks.
-//   evaluate — once EVAL_K tasks ran after the action, compare them with the
-//              EVAL_K before it: helped / no effect / worse. A correction that
-//              made things worse is rolled back to the playbook it replaced.
+//   evaluate — after EVAL_K (3) tasks compare every corrected measure with
+//              its baseline: helped / no effect / worse; a clear regression is
+//              rolled back after EARLY_K (2). One correction per theme covers
+//              all its worsening measures; themes are corrected in parallel.
 //
 // Everything here is pure (plain shard objects in, decisions out); the server
 // owns the model call and the scheduling. State lives in shard.selfCorrect.
@@ -20,16 +21,18 @@
 const memoryStats = require('./memoryStats');
 const { METRICS, compareGroups } = memoryStats;
 
-const EVAL_K = parseInt(process.env.SELF_CORRECT_EVAL_TASKS, 10) || 6;
+const EVAL_K = parseInt(process.env.SELF_CORRECT_EVAL_TASKS, 10) || 3;     // tasks to a verdict
+const EARLY_K = 2;                  // a clear regression is rolled back after this many
 const BASE_K = 8;
-const COOLDOWN_MS = (parseFloat(process.env.SELF_CORRECT_COOLDOWN_H) || 6) * 3600 * 1000;
-const MAX_ATTEMPTS = parseInt(process.env.SELF_CORRECT_MAX_ATTEMPTS, 10) || 3;   // per theme+measure in ATTEMPT_WINDOW
-const ATTEMPT_WINDOW_MS = 48 * 3600 * 1000;
-const MIN_GROUP = 6;                // tasks per playbook version / per side of a rewrite to judge it
-// Acting needs more than the panel shows: strong evidence on 5+ tasks a side,
-// or moderate evidence on 8+. A revert must ALSO show the old playbook was
-// better with evidence of its own — one flailed task in five is not a pattern.
-const ACT_MIN = { strong: 5, moderate: 8 };
+const COOLDOWN_MS = (parseFloat(process.env.SELF_CORRECT_COOLDOWN_H) || 1) * 3600 * 1000;
+const MAX_ATTEMPTS = parseInt(process.env.SELF_CORRECT_MAX_ATTEMPTS, 10) || 4;   // per theme in ATTEMPT_WINDOW
+const ATTEMPT_WINDOW_MS = 24 * 3600 * 1000;
+const MIN_GROUP = 5;                // tasks per playbook version / per side of a rewrite to judge it
+// When to act. Strong or moderate evidence may restore an earlier playbook;
+// a weaker signal only gets a targeted rewrite, and only when the change is
+// large — the 3-task verdict and the rollback guard every one of them.
+const ACT_MIN = { strong: 4, moderate: 5, weak: 5 };
+const WEAK_FACTOR = 2;              // weak evidence: change must be ≥ 2× the meaningful threshold
 const ACTIONS_MAX = 120;
 const metricByKey = new Map(METRICS.map(m => [m.key, m]));
 
@@ -88,7 +91,7 @@ function betterPlaybook(shard, rec, m) {
         const cmp = compareGroups(rs, curRows.slice(-Math.max(MIN_GROUP, BASE_K)), m);
         if (!cmp || cmp.evidence === 'weak') continue;
         const c = cmp.from, d = worseBy(cmp.from, cmp.to, m);   // how much worse the current one is
-        if (d != null && d >= THRESH(m) && (!best || c < best.centre)) best = { version: v, text, centre: c, current: cmp.to, basis: 'by-version', n: rs.length };
+        if (d != null && d >= THRESH(m) && (!best || c < best.centre)) best = { version: v, text, centre: c, current: cmp.to, basis: 'by-version', n: rs.length, oldRows: rs, newRows: curRows.slice(-Math.max(MIN_GROUP, BASE_K)) };
     }
     if (best) return best;
     // Fallback: the rewrite after which this measure got worse.
@@ -105,7 +108,7 @@ function betterPlaybook(shard, rec, m) {
         if (d == null || d < THRESH(m)) continue;
         const prevV = (rec.playbookHistory || []).map(h => h.version).filter(v => v < e.v).sort((a, b) => b - a)[0];
         const text = prevV != null ? playbookText(rec, prevV) : null;
-        if (text && text !== rec.playbook) return { version: prevV, text, centre: cb, current: ca, basis: 'around-rewrite', n: before.length, rewrite: e.v };
+        if (text && text !== rec.playbook) return { version: prevV, text, centre: cb, current: ca, basis: 'around-rewrite', n: before.length, rewrite: e.v, oldRows: before, newRows: after };
     }
     return null;
 }
@@ -130,15 +133,21 @@ function fmtVal(v, m) {
 
 function fmtMetric(key, v) { const m = metricByKey.get(key); return m ? fmtVal(v, m) : String(v); }
 
-function correctionInput(rec, f, m) {
-    const { bad, good } = contrastTasks(rec, m);
+function correctionInput(rec, fs) {
+    const list = (Array.isArray(fs) ? fs : [fs]).map(f => ({ f, m: metricByKey.get(f.metric) })).filter(x => x.m);
     const line = (e) => `- "${e.task}" → ${e.calls} call${e.calls === 1 ? '' : 's'}${e.failed ? ` (${e.failed} failed)` : ''}${e.seconds != null ? `, ${e.seconds} s` : ''}${e.rough ? ' [ROUGH]' : ''}: ${e.approach || 'no tools'}`;
     const parts = [
-        `REGRESSION TO FIX: "${m.label}" for this theme got worse — ${fmtVal(f.from, m)} → ${fmtVal(f.to, m)} between its earliest and latest tasks (${f.nFrom} vs ${f.nTo} tasks).`,
-        'Rewrite the playbook so the next tasks bring this measure back down. Find what the slow/heavy tasks did that the fast/lean ones did not (extra searches, re-reading, retries of a failing call, scripts where a tool exists, missing early checks) and turn the difference into a concrete instruction. Keep what the fast tasks did.',
+        `REGRESSION${list.length > 1 ? 'S' : ''} TO FIX for this theme (earliest vs latest tasks):\n` +
+            list.map(({ f, m }) => `- ${m.label}: ${fmtVal(f.from, m)} → ${fmtVal(f.to, m)} (${f.nFrom} vs ${f.nTo} tasks)`).join('\n'),
+        `Rewrite the playbook so the next tasks bring ${list.length > 1 ? 'these measures' : 'this measure'} back down. Find what the slow/heavy/failing tasks did that the fast/lean ones did not (extra searches, re-reading, retries of a failing call, scripts where a tool exists, missing early checks) and turn the difference into concrete instructions. Keep what the good tasks did.`,
     ];
-    if (bad.length) parts.push('WORST RECENT TASKS on this measure:\n' + bad.map(line).join('\n'));
-    if (good.length) parts.push('BEST RECENT TASKS on this measure:\n' + good.map(line).join('\n'));
+    const seen = new Set();
+    for (const { m } of list.slice(0, 2)) {
+        const { bad, good } = contrastTasks(rec, m);
+        const b = bad.filter(e => !seen.has(e.task)); b.forEach(e => seen.add(e.task));
+        if (b.length) parts.push(`WORST RECENT TASKS on ${m.label.toLowerCase()}:\n` + b.map(line).join('\n'));
+        if (good.length) parts.push(`BEST RECENT TASKS on ${m.label.toLowerCase()}:\n` + good.map(line).join('\n'));
+    }
     return parts.join('\n\n');
 }
 
@@ -148,52 +157,91 @@ function correctionInput(rec, f, m) {
  * — at most one per theme, none while a correction on that theme is still
  * being evaluated or inside its cooldown.
  */
+function eligibility(f) {
+    const have = Math.min(f.nFrom || 0, f.nTo || 0);
+    const need = ACT_MIN[f.evidence] || ACT_MIN.weak;
+    if (have < need) return { ok: false, decision: 'wait', reason: `only ${have} tasks a side so far; acts at ${need}+` };
+    if (f.evidence === 'weak') {
+        const m = metricByKey.get(f.metric);
+        const big = m && f.change != null && Math.abs(f.change) >= WEAK_FACTOR * THRESH(m);
+        if (!big) return { ok: false, decision: 'wait', reason: 'could still be chance and the change is small — watching' };
+    }
+    return { ok: true };
+}
+
+/**
+ * Decide what to do now: ONE correction per theme, covering every measure of
+ * that theme that is getting worse (they share one playbook, so separate
+ * fixes would overwrite each other); themes are corrected independently, in
+ * parallel. `findings` = computeStats(...).findings.worsening.
+ */
 function plan(shard, findings, { now = Date.now() } = {}) {
     const st = state(shard);
     const out = [];
-    // Every worsening theme measure with an explanation of what the check
-    // decided about it — the Stats view shows this as the check's log.
     const considered = [];
     const note = (f, decision, reason) => considered.push({
         th: f.scope, label: f.scopeLabel, metric: f.metric, metricLabel: f.metricLabel,
         from: f.from, to: f.to, changeKind: f.changeKind, evidence: f.evidence, decision, reason,
     });
-    const seen = new Set();
+    const byTheme = new Map();
     for (const f of findings || []) {
-        if (!f || f.direction !== 'worse' || !f.scope || f.scope === 'chat') continue;
-        const m = metricByKey.get(f.metric);
-        if (!m) continue;
-        const have = Math.min(f.nFrom || 0, f.nTo || 0);
-        if (!ACT_MIN[f.evidence]) { note(f, 'skip', `could be chance (${have} vs ${have} tasks) — not acted on`); continue; }
-        if (have < ACT_MIN[f.evidence]) { note(f, 'wait', `${f.evidence === 'strong' ? 'strong' : 'some'} evidence but only ${have} tasks a side; acts at ${ACT_MIN[f.evidence]}+`); continue; }
-        const rec = (shard.memories || []).find(r => r.theme === f.scope);
-        if (!rec) { note(f, 'skip', 'no memory for this theme yet'); continue; }
-        if (rec.enabled === false) { note(f, 'skip', 'this theme’s memory is paused'); continue; }
-        const mine = st.actions.filter(a => a.th === f.scope);
+        if (!f || f.direction !== 'worse' || !f.scope || f.scope === 'chat' || !metricByKey.has(f.metric)) continue;
+        if (!byTheme.has(f.scope)) byTheme.set(f.scope, []);
+        byTheme.get(f.scope).push(f);
+    }
+    const rank = { strong: 0, moderate: 1, weak: 2 };
+    for (const [th, fs] of byTheme) {
+        fs.sort((a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0)));
+        const rec = (shard.memories || []).find(r => r.theme === th);
+        if (!rec) { fs.forEach(f => note(f, 'skip', 'no memory for this theme yet')); continue; }
+        if (rec.enabled === false) { fs.forEach(f => note(f, 'skip', 'this theme’s memory is paused')); continue; }
+        const mine = st.actions.filter(a => a.th === th);
         const act = mine.find(a => a.status === 'active');
-        if (act) { note(f, 'wait', `a correction for ${act.metricLabel.toLowerCase()} is being measured on this theme — one at a time`); continue; }
-        if (seen.has(f.scope)) { note(f, 'wait', 'another measure of this theme is being corrected in this check'); continue; }
+        if (act) {
+            const covered = new Set(actionMetrics(act).map(x => x.metric));
+            fs.forEach(f => note(f, 'wait', covered.has(f.metric)
+                ? `being corrected now — verdict after ${EVAL_K} ${rec.label} tasks`
+                : `joins the next ${rec.label} correction once the current one is judged (≤${EVAL_K} tasks)`));
+            continue;
+        }
         const last = mine[mine.length - 1];
         if (last && now - Date.parse(last.t) < COOLDOWN_MS) {
-            const h = Math.max(1, Math.ceil((COOLDOWN_MS - (now - Date.parse(last.t))) / 3600000));
-            note(f, 'wait', `cooling down after the last attempt (${STATUS_WORD[last.status] || last.status}); next try in ~${h} h`); continue;
+            const m = Math.max(1, Math.ceil((COOLDOWN_MS - (now - Date.parse(last.t))) / 60000));
+            fs.forEach(f => note(f, 'wait', `last attempt ${STATUS_WORD[last.status] || last.status}; next try in ~${m} min`)); continue;
         }
-        const attempts = mine.filter(a => a.metric === f.metric && now - Date.parse(a.t) < ATTEMPT_WINDOW_MS).length;
-        if (attempts >= MAX_ATTEMPTS) { note(f, 'skip', `${attempts} attempts in 48 h without a fix — paused to avoid churning the playbook`); continue; }
-        seen.add(f.scope);
+        const attempts = mine.filter(a => now - Date.parse(a.t) < ATTEMPT_WINDOW_MS).length;
+        if (attempts >= MAX_ATTEMPTS) { fs.forEach(f => note(f, 'skip', `${attempts} attempts on this theme in 24 h — paused so the playbook is not churned`)); continue; }
+        const eligible = [];
+        for (const f of fs) { const e = eligibility(f); if (e.ok) eligible.push(f); else note(f, e.decision, e.reason); }
+        if (!eligible.length) continue;
+        const primary = eligible[0];
+        const pm = metricByKey.get(primary.metric);
+        const metrics = eligible.map(f => ({ metric: f.metric, metricLabel: metricByKey.get(f.metric).label,
+            trigger: { from: f.from, to: f.to, change: f.change, changeKind: f.changeKind, evidence: f.evidence, p: f.p, nFrom: f.nFrom, nTo: f.nTo } }));
         const base = {
-            th: f.scope, label: rec.label, metric: f.metric, metricLabel: m.label,
-            trigger: { from: f.from, to: f.to, change: f.change, changeKind: f.changeKind, evidence: f.evidence, p: f.p, nFrom: f.nFrom, nTo: f.nTo },
+            th, label: rec.label, metric: primary.metric, metricLabel: metrics.map(x => x.metricLabel).join(' + '),
+            metrics, trigger: metrics[0].trigger,
         };
-        const better = betterPlaybook(shard, rec, m);
+        // Restoring an earlier playbook needs real evidence AND must not make
+        // another of the theme's worsening measures worse.
+        let better = primary.evidence !== 'weak' ? betterPlaybook(shard, rec, pm) : null;
+        if (better && better.oldRows && better.newRows) {
+            for (const f of eligible.slice(1)) {
+                const m2 = metricByKey.get(f.metric);
+                const c = compareGroups(better.newRows, better.oldRows, m2);   // old playbook as "after"
+                const d = c ? worseBy(c.from, c.to, m2) : null;
+                if (d != null && d >= THRESH(m2) && c.evidence !== 'weak') { better = null; break; }
+            }
+        }
         if (better) {
-            out.push({ ...base, kind: 'revert', toVersion: better.version, text: better.text, basis: better.basis,
-                why: `playbook v${better.version} ran this theme at ${fmtVal(better.centre, m)} vs ${fmtVal(better.current, m)} now` });
-            note(f, 'act', `restoring playbook v${better.version}, which measured ${fmtVal(better.centre, m)} vs ${fmtVal(better.current, m)} now`);
+            const { oldRows, newRows, ...b } = better;
+            out.push({ ...base, kind: 'revert', toVersion: b.version, text: b.text, basis: b.basis,
+                why: `playbook v${b.version} ran this theme at ${fmtVal(b.centre, pm)} ${pm.label.toLowerCase()} vs ${fmtVal(b.current, pm)} now` });
+            eligible.forEach(f => note(f, 'act', `restoring playbook v${b.version} (${metrics.length} measure${metrics.length === 1 ? '' : 's'} in one correction)`));
         } else {
-            out.push({ ...base, kind: 'refine', input: correctionInput(rec, f, m),
-                why: `${m.label.toLowerCase()} went ${fmtVal(f.from, m)} → ${fmtVal(f.to, m)}; rewriting the playbook against the slow tasks` });
-            note(f, 'act', 'no earlier playbook measured better — rewriting the playbook against the slow tasks');
+            out.push({ ...base, kind: 'refine', input: correctionInput(rec, eligible),
+                why: `rewriting the playbook against ${metrics.map(x => x.metricLabel.toLowerCase()).join(', ')} (${metrics.map(x => `${fmtVal(x.trigger.from, metricByKey.get(x.metric))} → ${fmtVal(x.trigger.to, metricByKey.get(x.metric))}`).join(', ')})` });
+            eligible.forEach(f => note(f, 'act', `rewriting the playbook${metrics.length > 1 ? ` for ${metrics.length} measures at once` : ''}`));
         }
     }
     out.considered = considered;
@@ -210,17 +258,25 @@ function logCheck(shard, entry) {
     while (st.checks.length > CHECKS_MAX) st.checks.shift();
 }
 
+function actionMetrics(a) {
+    return Array.isArray(a.metrics) && a.metrics.length ? a.metrics : [{ metric: a.metric, metricLabel: a.metricLabel, baseline: a.baseline }];
+}
+const kindOf = (m) => ((m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative');
+
 /** Record an applied action (inside a shard mutation). */
 function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prevPlaybook, newPlaybook = null }) {
     const st = state(shard);
-    const m = metricByKey.get(d.metric);
-    const rows = themeRows(shard, d.th);
+    const rows = themeRows(shard, d.th).slice(-BASE_K);
+    const metrics = (d.metrics || [{ metric: d.metric, metricLabel: d.metricLabel, trigger: d.trigger }]).map(x => {
+        const m = metricByKey.get(x.metric);
+        return { metric: x.metric, metricLabel: x.metricLabel, trigger: x.trigger, baseline: m ? centre(rows, m) : null };
+    });
     const a = {
         id: `sc_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
         t: new Date(now).toISOString(), th: d.th, label: d.label, metric: d.metric, metricLabel: d.metricLabel,
-        kind: d.kind, why: d.why, trigger: d.trigger, basis: d.basis || null,
+        metrics, kind: d.kind, why: d.why, trigger: d.trigger, basis: d.basis || null,
         fromVersion, toVersion, prevPlaybook: prevPlaybook || null, newPlaybook: newPlaybook || null,
-        baseline: m ? centre(rows.slice(-BASE_K), m) : null, baselineN: Math.min(BASE_K, rows.length),
+        baseline: metrics[0] ? metrics[0].baseline : null, baselineN: rows.length,
         status: 'active', after: null,
     };
     st.actions.push(a);
@@ -228,28 +284,46 @@ function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prev
     return a;
 }
 
+// Per-measure readings for an action over the tasks that ran after it.
+function readings(shard, a, k = EVAL_K) {
+    const after = themeRows(shard, a.th).filter(r => r.t > a.t);
+    return actionMetrics(a).map(x => {
+        const m = metricByKey.get(x.metric);
+        if (!m) return { ...x, n: 0, value: null, change: null };
+        const vals = after.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); }).slice(0, k);
+        const value = vals.length ? centre(vals, m) : null;
+        const change = worseBy(x.baseline, value, m);
+        return { metric: x.metric, metricLabel: x.metricLabel, baseline: x.baseline, n: vals.length, value, change, changeKind: kindOf(m),
+            direction: change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat',
+            clearlyWorse: change != null && change >= 2 * THRESH(m) };
+    });
+}
+
 /**
- * Judge active actions whose follow-up window has filled. Returns the judged
- * actions; those with `rollback` set should have their playbook restored.
+ * Judge active actions. Verdict after EVAL_K tasks; a clear regression on
+ * any measure is rolled back already after EARLY_K. Worse on any measure →
+ * rollback; better on one or more and worse on none → helped.
  */
 function evaluate(shard, { now = Date.now() } = {}) {
     const st = state(shard);
     const judged = [];
     for (const a of st.actions) {
         if (a.status !== 'active') continue;
-        const m = metricByKey.get(a.metric);
-        if (!m) { a.status = 'no_effect'; continue; }
-        const after = themeRows(shard, a.th).filter(r => r.t > a.t);
-        const vals = after.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
-        a.progress = Math.min(vals.length, EVAL_K);
-        if (vals.length < EVAL_K) continue;
-        const to = centre(vals.slice(0, EVAL_K), m);
-        const d = worseBy(a.baseline, to, m);
-        a.after = { value: to, n: EVAL_K, change: d, changeKind: (m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative' };
+        const rs = readings(shard, a);
+        const n = Math.min(...rs.map(r => r.n));
+        const tasksAfter = themeRows(shard, a.th).filter(r => r.t > a.t).length;
+        a.progress = Math.min(tasksAfter, EVAL_K);
+        const early = n >= EARLY_K && rs.some(r => r.clearlyWorse);
+        // Response time can be missing on a task; do not wait forever for it.
+        const ready = n >= EVAL_K || (tasksAfter >= EVAL_K + 2 && rs.every(r => r.n >= EARLY_K));
+        if (!early && !ready) continue;
+        const prim = rs[0];
+        a.results = rs.map(({ clearlyWorse, ...r }) => r);
+        a.after = { value: prim.value, n: prim.n, change: prim.change, changeKind: prim.changeKind };
         a.judgedAt = new Date(now).toISOString();
-        if (d == null) a.status = 'no_effect';
-        else if (d <= -THRESH(m)) a.status = 'helped';
-        else if (d >= THRESH(m)) { a.status = 'worse'; if (a.prevPlaybook) a.rollback = true; }
+        a.early = early && !ready;
+        if (rs.some(r => r.direction === 'worse')) { a.status = 'worse'; if (a.prevPlaybook) a.rollback = true; }
+        else if (rs.some(r => r.direction === 'better')) a.status = 'helped';
         else a.status = 'no_effect';
         judged.push(a);
     }
@@ -259,40 +333,30 @@ function evaluate(shard, { now = Date.now() } = {}) {
 /** Would plan() act on this finding (ignoring cooldowns)? And if not, why. */
 function assessFinding(f) {
     if (!f || f.direction !== 'worse' || !f.scope || f.scope === 'chat') return { actionable: false, reason: 'not a theme measure' };
-    const need = ACT_MIN[f.evidence];
-    if (!need) return { actionable: false, reason: 'could still be chance' };
-    const have = Math.min(f.nFrom || 0, f.nTo || 0);
-    if (have < need) return { actionable: false, reason: `needs ${need}+ tasks on each side at this evidence (has ${have})` };
-    return { actionable: true, reason: '' };
+    const e = eligibility(f);
+    return e.ok ? { actionable: true, reason: '' } : { actionable: false, reason: e.reason };
 }
 
 // An active correction as it stands right now: tasks measured so far and the
 // measure over them against the baseline (an interim reading, not a verdict).
 function liveProgress(shard, a) {
-    const m = metricByKey.get(a.metric);
-    if (!m) return {};
-    const vals = themeRows(shard, a.th).filter(r => r.t > a.t).filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
-    const done = vals.slice(0, EVAL_K);
-    const value = done.length ? centre(done, m) : null;
-    const change = worseBy(a.baseline, value, m);
+    const rs = readings(shard, a);
     const all = themeRows(shard, a.th);
-    const lastTheme = all.length ? all[all.length - 1].t : null;
+    const after = all.filter(r => r.t > a.t);
     const now = Date.now();
     const recent = all.filter(r => now - Date.parse(r.t) < 14 * 86400000).length;
     const perDay = recent / 14;
-    const remaining = Math.max(0, EVAL_K - done.length);
+    const progress = Math.min(after.length, EVAL_K);
+    const remaining = Math.max(0, EVAL_K - progress);
+    const interims = rs.filter(r => r.value != null).map(({ clearlyWorse, ...r }) => r);
     return {
-        lastThemeTaskAt: lastTheme,
+        lastThemeTaskAt: all.length ? all[all.length - 1].t : null,
         themeTasks14d: recent,
         etaDays: remaining && perDay > 0 ? Math.round((remaining / perDay) * 10) / 10 : null,
-        progress: done.length,
-        remaining: Math.max(0, EVAL_K - done.length),
-        lastTaskAt: done.length ? done[done.length - 1].t : null,
-        interim: value == null ? null : {
-            value, change,
-            changeKind: (m.kind === 'rate' || m.key === 'failedShare') ? 'points' : 'relative',
-            direction: change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat',
-        },
+        progress, remaining,
+        lastTaskAt: progress ? after[progress - 1].t : null,
+        interims,
+        interim: interims[0] || null,
     };
 }
 
@@ -306,7 +370,7 @@ function versionText(shard, th, v) {
 function publicState(shard, worsening = []) {
     const st = state(shard);
     return {
-        watch: (worsening || []).filter(f => f && f.scope && f.scope !== 'chat' && f.evidence !== 'weak')
+        watch: (worsening || []).filter(f => f && f.scope && f.scope !== 'chat')
             .map(f => ({ scope: f.scope, scopeLabel: f.scopeLabel, metric: f.metric, metricLabel: f.metricLabel,
                 from: f.from, to: f.to, change: f.change, changeKind: f.changeKind, evidence: f.evidence, nFrom: f.nFrom, nTo: f.nTo,
                 ...assessFinding(f) })),
@@ -323,4 +387,4 @@ function publicState(shard, worsening = []) {
     };
 }
 
-module.exports = { logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };
+module.exports = { actionMetrics, readings, EARLY_K, logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };
