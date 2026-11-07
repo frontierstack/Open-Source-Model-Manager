@@ -16493,17 +16493,24 @@ async function runSelfCorrection(userId) {
                 const rec = await coreMemory.getByTheme(userId, d.th);
                 if (!rec) return;
                 try {
-                    const raw = await Promise.race([
+                    const ask = (extra) => Promise.race([
                         runModelCompletion({
                             messages: [
                                 { role: 'system', content: coreMemory.REFINE_PROMPT },
-                                { role: 'user', content: coreMemory.refinementInput(rec) + '\n\n' + d.input },
+                                { role: 'user', content: coreMemory.refinementInput(rec) + '\n\n' + d.input + extra },
                             ],
-                            temperature: 0, maxTokens: 800, disableThinking: true, preferFree: true, waitMs: 0, failIfBusy: true,
+                            temperature: 0, maxTokens: 900, disableThinking: true, preferFree: true, waitMs: 0, failIfBusy: true,
                         }),
                         new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('timed out')), CORE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
                     ]);
+                    let raw = await ask('');
                     ref = coreMemory.parseRefinement(raw);
+                    if (!ref || ref.playbook === rec.playbook) {
+                        console.log(`[SelfCorrect] ${d.label} rewrite unusable (${ref ? 'unchanged playbook' : 'no JSON'}): ${String(raw || '').replace(/\s+/g, ' ').slice(0, 240)}`);
+                        raw = await ask('\n\nYour previous reply was not usable. Reply with ONLY the JSON object {"playbook": "...", "lessons": [...]} — a CHANGED playbook that addresses the regressions above. No prose, no code fence.');
+                        ref = coreMemory.parseRefinement(raw);
+                        if (ref && ref.playbook === rec.playbook) ref = null;
+                    }
                 } catch (e) {
                     const busy = e && e.code === 'NO_FREE_SLOT';
                     if (busy) scheduleSelfCorrection(userId, 5 * 60000);
