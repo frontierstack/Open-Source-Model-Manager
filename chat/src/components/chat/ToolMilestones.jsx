@@ -20,7 +20,7 @@ const VERBS = {
     base64_decode:     ['Decoding',                'Decoded'],
     load_skill:        ['Loading skill',           'Loaded'],
     render_chart:      ['Rendering chart',         'Rendered'],
-    take_screenshot:   ['Taking a screenshot',     'Took a screenshot of'],
+    take_screenshot:   ['Taking a screenshot',     'Screenshot'],
     fetch_timeseries:  ['Fetching data',           'Fetched'],
     read_file:         ['Reading',                 'Read'],
     head_file:         ['Reading head of',         'Read head of'],

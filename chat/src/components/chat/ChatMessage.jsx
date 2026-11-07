@@ -5,6 +5,8 @@ import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
 import SourceCluster from './SourceCluster';
+import ToolIconStack from './ToolIconStack';
+import { distinctTools } from '../../utils/toolIcons';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
@@ -629,15 +631,16 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming, pair }
         <div className={`msg-notes${pair ? ' msg-turn msg-work' : ''}`} aria-live={pair && isStreaming ? 'polite' : undefined}>
             <button
                 type="button"
-                className="msg-notes-toggle"
+                className="msg-notes-toggle srcx-bar bar-style"
                 onClick={onToggle}
                 aria-expanded={open}
                 aria-label={open ? 'Collapse working notes' : 'Expand working notes'}
             >
-                <ChevronDown strokeWidth={2} />
+                <ToolIconStack tools={distinctTools(toolCalls)} />
                 <span className="msg-turn-label">Working notes</span>
                 {pair && <PairPills lead={pair.lead} assistant={pair.assistant} />}
                 <span className="msg-turn-totals">{[...(pair ? pair.totals : []), ...meta].join(' \u00b7 ')}</span>
+                <ChevronDown className="srcx-chev" strokeWidth={1.75} />
             </button>
             {open && pair && pair.body && (
                 <div className="msg-work-section">
@@ -1298,16 +1301,16 @@ export default React.memo(function ChatMessage({
                                 <button
                                     type="button"
                                     onClick={() => { toolsToggledRef.current = true; setToolsExpanded(v => !v); }}
-                                    className="msg-tools-toggle"
+                                    className="msg-tools-toggle srcx-bar bar-style"
                                     aria-expanded={toolsExpanded}
                                     aria-label={toolsExpanded ? 'Collapse tool calls' : 'Expand tool calls'}
                                 >
-                                    <ChevronDown strokeWidth={2} />
+                                    <ToolIconStack tools={distinctTools(toolCalls)} />
                                     <span className="msg-tools-count">
                                         {toolCalls.length} tool {toolCalls.length === 1 ? 'call' : 'calls'}
                                     </span>
-                                    <span style={{ color: 'var(--ink-4)' }}>·</span>
-                                    <span className="msg-tools-summary">{summary}</span>
+                                    <span className="msg-tools-summary">· {summary}</span>
+                                    <ChevronDown className="srcx-chev" strokeWidth={1.75} />
                                 </button>
                                 {toolsExpanded && (
                                     <div className="msg-tools-list">

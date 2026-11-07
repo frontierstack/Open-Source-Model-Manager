@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { modelDisplayName } from '../../utils/modelDisplayName';
 import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText, ArrowLeftRight } from 'lucide-react';
 import SearchSources from './SearchSources';
+import { ToolTile } from './ToolIconStack';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
 import VideoBlock from './VideoBlock';
@@ -190,7 +191,7 @@ export default function ToolCallBlock({ tool }) {
                         ? <Check strokeWidth={3} />
                         : <AlertCircle strokeWidth={2.25} />}
                 </span>
-                <IconComponent className="tool-chip-icon" strokeWidth={1.75} />
+                <ToolTile name={type === 'native_tool_call' ? label : (type === 'web_search' || type === 'url_fetch' ? 'web' : label)} size={20} className="tool-chip-tile" />
                 <code className="tool-chip-name">{toolName}</code>
                 {model && <ModelTag model={model} title={`Called by ${model}`} />}
                 {sandboxed === true && (

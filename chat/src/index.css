@@ -5696,3 +5696,66 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     .srcx-list { grid-template-columns: 1fr; }
     .srcx-bar { height: 34px; }
 }
+
+/* Working notes, the "N tool calls" bar and tool-call chips share the source
+   cluster's look (srcx-bar): a bordered 30px bar, bundled square tool icons,
+   label + counts, chevron on the right. */
+.srcx-bar.bar-style {
+    display: inline-flex; align-items: center; gap: 8px; height: 30px; min-height: 30px; max-width: 100%; min-width: 0;
+    padding: 0 8px 0 6px; margin: 0; width: auto; align-self: flex-start;
+    border-radius: 8px; border: 1px solid var(--rule); background: color-mix(in oklab, var(--ink) 3%, transparent);
+    color: var(--ink-2); font-size: 12px; --fs: 12px; letter-spacing: 0; text-transform: none; font-weight: 400;
+    cursor: pointer; transition: background .12s, border-color .12s;
+}
+.srcx-bar.bar-style:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); border-color: var(--ink-4); color: var(--ink); }
+.srcx-bar.bar-style .srcx-chev { width: 14px; height: 14px; flex-shrink: 0; margin-left: 2px; color: var(--ink-3); transform: none; transition: transform .15s; }
+.srcx-bar.bar-style[aria-expanded="true"] .srcx-chev { transform: rotate(180deg); }
+.srcx-bar.bar-style .tool-tile svg { transform: none; color: inherit; }
+.srcx-bar.bar-style .msg-turn-label { color: var(--ink); font-weight: 600; letter-spacing: 0; text-transform: none; font-size: 12px; --fs: 12px; white-space: nowrap; }
+.srcx-bar.bar-style .msg-turn-totals { margin-left: 0; color: var(--ink-3); text-transform: none; letter-spacing: 0; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.srcx-bar.bar-style .msg-tools-count { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.srcx-bar.bar-style .msg-tools-summary { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 460px; }
+.msg-work > .msg-notes-toggle.bar-style { width: auto; margin: 0; }
+
+/* Tool tiles: a soft tint of the tool's own hue, like a site icon. */
+.tool-tile {
+    background: color-mix(in oklab, var(--tile, var(--accent)) 20%, var(--surface, var(--bg-elevated)));
+    color: color-mix(in oklab, var(--tile, var(--accent)) 70%, var(--ink));
+}
+
+/* Tool-call chips in the same frame. */
+.tool-chip {
+    border-radius: 8px; border-color: var(--rule);
+    background: color-mix(in oklab, var(--ink) 3%, transparent);
+    font-size: 12px; --fs: 12px;
+}
+.tool-chip-header { height: 30px; gap: 8px; padding: 0 8px 0 5px; color: var(--ink-2); }
+.tool-chip-header.has-detail:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); }
+.tool-chip:has(.tool-chip-header.has-detail:hover) { border-color: var(--ink-4); }
+.tool-chip-tile { flex-shrink: 0; }
+.tool-chip-status { width: 8px; height: 8px; order: 99; margin-left: 2px; }
+.tool-chip-status svg { display: none; }
+.tool-chip.is-running .tool-chip-status { animation: tool-pulse 1.2s ease-in-out infinite; }
+@keyframes tool-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.tool-chip-name { font-family: inherit; font-weight: 600; font-size: 12px; --fs: 12px; color: var(--ink); }
+.tool-chip-caption { color: var(--ink-3); }
+.tool-chip-chevron { order: 100; color: var(--ink-3); margin-left: 4px; }
+.tool-chip-chevron svg { width: 14px; height: 14px; }
+.tool-chip-caption { flex: 1 1 auto; min-width: 0; }
+.tool-chip-status { margin-left: auto; }
+.tool-chip-body { border-top-color: var(--rule); }
+@media (max-width: 640px) {
+    .srcx-bar.bar-style { height: 34px; min-height: 34px; }
+    .tool-chip-header { height: 34px; }
+    .srcx-bar.bar-style .msg-tools-summary { display: none; }
+}
+/* The bar keeps one line: an older mobile rule gave the totals their own
+   full-width line (flex-basis 100%), which overflowed the bar. A two-model
+   turn's bar also carries the lead/assistant pills, so it may wrap. */
+.srcx-bar.bar-style .msg-turn-totals { flex: 0 1 auto; flex-basis: auto; margin-left: 0; }
+.msg-work > .msg-notes-toggle.bar-style { height: auto; min-height: 30px; padding-top: 3px; padding-bottom: 3px; flex-wrap: wrap; }
+.msg-work > .msg-notes-toggle.bar-style .msg-turn-totals { white-space: nowrap; }
+@media (max-width: 640px) {
+    .msg-work > .msg-notes-toggle.bar-style .msg-turn-totals { flex-basis: auto; margin-left: 0; }
+    .srcx-bar.bar-style .srcx-stack > .srcx-icon:nth-child(n+4):not(.srcx-more) { display: none; }
+}
