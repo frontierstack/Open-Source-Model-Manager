@@ -327,6 +327,7 @@ const leadHandoff = require('./services/leadHandoff');
 const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
 const { webSourcesFromResult } = require('./services/webSources');
+const selfCorrect = require('./services/selfCorrect');
 const assistantQueue = require('./services/assistantQueue');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -445,6 +446,7 @@ const apiRateLimiter = rateLimit({
         const p = req.path; // full path — the limiter runs from a global gate
         if (/^\/api\/conversations\/[^/]+\/streaming$/.test(p)) return true; // ~100ms poll
         if (p === '/api/automations/events') return true; // long-lived SSE
+        if (p === '/api/memories/stats/stream') return true; // long-lived SSE
         return false;
     },
 });
@@ -16452,6 +16454,69 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     }
 }
 
+// ---- Self-correction (services/selfCorrect.js) ---------------------------
+// After recorded tasks (debounced), on boot and every 30 min: judge earlier
+// corrections (rolling back one that made a theme worse), then act on any
+// theme whose numbers are trending the wrong way — restore a playbook that
+// measured better, or rewrite the playbook against the slow tasks.
+const SELF_CORRECT_ENABLED = process.env.SELF_CORRECT !== '0';
+const SELF_CORRECT_DEBOUNCE_MS = parseInt(process.env.SELF_CORRECT_DEBOUNCE_MS, 10) || 90000;
+const selfCorrectTimers = new Map();
+const selfCorrectRunning = new Set();
+function scheduleSelfCorrection(userId, delayMs = SELF_CORRECT_DEBOUNCE_MS) {
+    if (!SELF_CORRECT_ENABLED || !userId || selfCorrectTimers.has(userId)) return;
+    const t = setTimeout(() => {
+        selfCorrectTimers.delete(userId);
+        runSelfCorrection(userId).catch(e => console.warn('[SelfCorrect] failed:', e.message));
+    }, delayMs);
+    if (t.unref) t.unref();
+    selfCorrectTimers.set(userId, t);
+}
+async function runSelfCorrection(userId) {
+    if (!SELF_CORRECT_ENABLED || selfCorrectRunning.has(userId)) return null;
+    if (await isMemoryDisabledForUser(userId)) return null;
+    selfCorrectRunning.add(userId);
+    try {
+        const { judged, plan } = await coreMemory.checkCorrections(userId);
+        for (const a of judged) {
+            const after = a.after ? selfCorrect.fmtMetric(a.metric, a.after.value) : '?';
+            logUserActivity(userId, `Memory self-correction: ${a.label} ${a.metricLabel.toLowerCase()} after the ${a.kind} — ${selfCorrect.fmtMetric(a.metric, a.baseline)} → ${after} over ${a.after ? a.after.n : 0} tasks: ${a.status.replace('_', ' ')}${a.status === 'rolled_back' ? ' (restored the playbook it replaced)' : ''}`);
+        }
+        for (const d of plan) {
+            let ref = null;
+            if (d.kind === 'refine') {
+                if (process.env.CORE_MEMORY_LLM_REFINE === '0') continue;
+                if (!chatCapacity().models.some(m => m.free > 0)) { scheduleSelfCorrection(userId, 5 * 60000); continue; }
+                const rec = await coreMemory.getByTheme(userId, d.th);
+                if (!rec) continue;
+                try {
+                    const raw = await Promise.race([
+                        runModelCompletion({
+                            messages: [
+                                { role: 'system', content: coreMemory.REFINE_PROMPT },
+                                { role: 'user', content: coreMemory.refinementInput(rec) + '\n\n' + d.input },
+                            ],
+                            temperature: 0, maxTokens: 800, disableThinking: true, preferFree: true, waitMs: 0, failIfBusy: true,
+                        }),
+                        new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('timed out')), CORE_REFINE_TIMEOUT_MS); if (t.unref) t.unref(); }),
+                    ]);
+                    ref = coreMemory.parseRefinement(raw);
+                } catch (e) {
+                    if (e && e.code === 'NO_FREE_SLOT') scheduleSelfCorrection(userId, 5 * 60000);
+                    else console.warn(`[SelfCorrect] refine for ${d.label} failed: ${e.message}`);
+                    continue;
+                }
+                if (!ref) { console.log(`[SelfCorrect] refine for ${d.label} returned nothing usable`); continue; }
+            }
+            const a = await coreMemory.applyCorrection(userId, d, { ref });
+            if (a) logUserActivity(userId, `Memory self-correction: ${d.label} — ${d.metricLabel.toLowerCase()} is trending worse (${d.trigger.evidence} evidence); ${d.kind === 'revert' ? `restored playbook v${d.toVersion}` : 'rewrote the playbook against the slow tasks'} → v${a.toVersion}. Checking it over the next ${selfCorrect.EVAL_K} tasks.`);
+        }
+        return { judged: judged.length, acted: plan.length };
+    } finally {
+        selfCorrectRunning.delete(userId);
+    }
+}
+
 // Fire-and-forget after a turn: build the EPISODE (task, successful tool path
 // with argument hints, outcome, pitfalls, lessons), classify its THEME from the
 // tools that ran + the ask + attachments, and fold it into that theme's core
@@ -16507,6 +16572,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         // A provisional mid-task snapshot refines the prose later, when the
         // task is complete or the gap timer fires; a finished turn right away.
         refineCoreMemory(userId, res.id, { delayMs: provisional ? CORE_REFINE_MIN_GAP_MS : 0 }).catch(() => {});
+        if (!provisional) scheduleSelfCorrection(userId);
     } catch (e) {
         console.warn('[Memory] core memory record failed:', e.message);
     }
@@ -31696,6 +31762,37 @@ app.get('/api/link-preview', requireAuth, async (req, res) => {
     }
 });
 
+// Live feed for the Stats view: one frame per recorded task, playbook
+// rewrite, correction or self-correction step for this account. The view
+// refetches the stats on each and animates the change.
+app.get('/api/memories/stats/stream', requireAuth, (req, res) => {
+    const own = memAccountId(req);
+    const userId = (req.query.userId && callerIsAdmin(req)) ? String(req.query.userId) : own;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    const send = (ev) => { try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch (_) { /* closed */ } };
+    send({ kind: 'connected', at: new Date().toISOString() });
+    const onChange = (ev) => { if (ev && ev.userId === String(userId)) { const { userId: _u, ...rest } = ev; send(rest); } };
+    coreMemory.events.on('change', onChange);
+    const keepalive = setInterval(() => { try { res.write(': keepalive\n\n'); } catch (_) {} }, 25000);
+    req.on('close', () => { clearInterval(keepalive); coreMemory.events.off('change', onChange); });
+});
+
+// Run the self-correction check now (the Stats view's "Check now").
+app.post('/api/memories/self-correct', requireAuth, async (req, res) => {
+    try {
+        const own = memAccountId(req);
+        const userId = (req.body && req.body.userId && callerIsAdmin(req)) ? String(req.body.userId) : own;
+        const out = await runSelfCorrection(userId);
+        res.json({ success: true, ran: !!out, ...(out || {}) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/memories/stats', requireAuth, async (req, res) => {
     try {
         const own = memAccountId(req);
@@ -37132,6 +37229,11 @@ server.listen(PORT, async () => {
     // `host` theme for terminal-agent work on the user's machine). Background,
     // after the embedding engine is up; idempotent via the shard's themeVersion.
     { const t = setTimeout(() => { repairCoreMemoryThemes().catch(e => console.warn('[Memory] theme repair failed:', e.message)); }, 20000); if (t.unref) t.unref(); }
+    if (SELF_CORRECT_ENABLED) {
+        const sweep = async () => { for (const uid of await coreMemory.listAllUsers().catch(() => [])) await runSelfCorrection(uid).catch(e => console.warn('[SelfCorrect] sweep failed:', e.message)); };
+        const t1 = setTimeout(() => sweep().catch(() => {}), 150000); if (t1.unref) t1.unref();
+        const t2 = setInterval(() => sweep().catch(() => {}), 30 * 60000); if (t2.unref) t2.unref();
+    }
 
     // Parallel initialization for faster startup
     console.log('Starting parallel initialization...');

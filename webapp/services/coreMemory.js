@@ -40,6 +40,7 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const memoryStats = require('./memoryStats');
+const selfCorrect = require('./selfCorrect');
 const experienceMemory = require('./experienceMemory');
 
 const DATA_DIR = '/models/.modelserver';
@@ -333,6 +334,14 @@ async function writeShard(userId, shard) {
 // One write queue per user so two concurrent turns cannot lose each other's
 // update (read → mutate → write is not atomic).
 const queues = new Map();
+// Live feed: every write that changes what the Stats view shows queues a
+// change on the shard (noteChange); mutate emits them once the write landed.
+const EventEmitter = require('events');
+const events = new EventEmitter();
+events.setMaxListeners(200);
+function noteChange(shard, ev) {
+    Object.defineProperty(shard, '__changes', { value: (shard.__changes || []).concat([{ ...ev, at: nowIso() }]), writable: true, configurable: true, enumerable: false });
+}
 function mutate(userId, fn) {
     const key = userIdSafe(userId);
     const prev = queues.get(key) || Promise.resolve();
@@ -340,6 +349,8 @@ function mutate(userId, fn) {
         const shard = await readShard(userId);
         const out = await fn(shard);
         await writeShard(userId, shard);
+        const changes = shard.__changes || [];
+        for (const ev of changes) { try { events.emit('change', { userId: String(userId), ...ev }); } catch (_) { /* listeners are best-effort */ } }
         return out;
     });
     queues.set(key, run);
@@ -539,6 +550,8 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
             });
             if (newBest) memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'best', calls, from: bestBefore });
         } catch (e) { log(`stats log failed: ${e.message}`); }
+        noteChange(shard, { kind: 'task', theme: rec.theme, label: rec.label, newBest, followed, sameRun,
+            task: { t, c: calls, f: failedCalls, s: seconds, rough, ok: converged, rt: !!(recalled && recalled.id === rec.id), fo: followed, src: meta && meta.source, prov: !!provisional, title: ep.task.slice(0, 120) } });
         rec.dirty = true;               // playbook refinement pending
         rec.updatedAt = t;
         return { id: rec.id, theme: rec.theme, label: rec.label, runs: s.runs, newBest, improvedVsBest, followed, provisional: !!provisional, sameRun, bestCalls: s.bestCalls, calls };
@@ -548,7 +561,11 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
 /** The user's next message corrected the newest task of this conversation. */
 async function markCorrection(userId, convId) {
     if (!userId || !convId) return false;
-    return mutate(userId, (shard) => memoryStats.markCorrection(shard, convId));
+    return mutate(userId, (shard) => {
+        const hit = memoryStats.markCorrection(shard, convId);
+        if (hit) noteChange(shard, { kind: 'correction' });
+        return hit;
+    });
 }
 
 /** A lesson the model (record_learning) or the user adds to a theme. */
@@ -637,6 +654,7 @@ function refinementInput(rec) {
     lines.push(`THEME: ${rec.label} — ${themeInfo(rec.theme).description}`);
     lines.push(`STATS: ${s.runs} tasks (${s.converged} converged, ${s.failedRuns} not), best ${s.bestCalls ?? '?'} calls, avg ${s.runs ? (s.totalCalls / s.runs).toFixed(1) : '?'} calls, recalled ${s.recalled}× followed ${s.followed}×`);
     lines.push(`CURRENT PLAYBOOK (v${rec.playbookVersion}): ${rec.playbook || '(empty)'}`);
+    if (rec.correction && rec.correction.note) lines.push(`ACTIVE CORRECTION (measured — keep addressing it): ${rec.correction.note}`);
     if (rec.bestApproach) lines.push(`PROVEN APPROACH (${rec.bestApproach.calls} calls${rec.bestApproach.seconds != null ? `, ${rec.bestApproach.seconds} s` : ''}) for "${rec.bestApproach.task}": ${experienceMemory.renderApproach(rec.bestApproach.steps)}`);
     if (rec.lessons.length) lines.push('LESSONS:\n' + rec.lessons.map(l => `- [${l.source || 'auto'}] ${l.text}`).join('\n'));
     if (rec.avoid.length) lines.push('AVOID:\n' + rec.avoid.map(a => `- ${a.text}`).join('\n'));
@@ -688,6 +706,7 @@ async function applyRefinement(userId, id, ref) {
             rec.playbookVersion += 1;
             rec.playbookUpdatedAt = t;
             try { memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'refine', v: rec.playbookVersion, runs: rec.stats.runs }); } catch (_) { /* stats only */ }
+            noteChange(shard, { kind: 'refine', theme: rec.theme, label: rec.label, v: rec.playbookVersion });
         }
         if (ref.lessons && ref.lessons.length) {
             const keep = rec.lessons.filter(l => l.source === 'user' || l.source === 'model');
@@ -955,10 +974,81 @@ async function stats(userId, archived = null) {
     if (!shard.statsSeeded && archived) {
         shard = await mutate(userId, (sh) => { memoryStats.seedFromHistory(sh, archived); return sh; });
     }
-    return memoryStats.computeStats(shard, allThemes());
+    const out = memoryStats.computeStats(shard, allThemes());
+    return { ...out, selfCorrect: selfCorrect.publicState(shard, (out.findings || {}).worsening) };
+}
+
+// ---------------------------------------------------------------------------
+// Self-correction (services/selfCorrect.js decides; these apply)
+// ---------------------------------------------------------------------------
+
+/** Judge finished corrections, roll back the ones that made things worse, and
+ *  return what should be done next. One write. */
+async function checkCorrections(userId, { now = Date.now() } = {}) {
+    if (!userId) return { judged: [], plan: [] };
+    const shard0 = await readShard(userId);
+    const findings = (memoryStats.computeStats(shard0, allThemes()).findings || {}).worsening || [];
+    return mutate(userId, (shard) => {
+        const st = selfCorrect.state(shard);
+        st.lastCheckAt = new Date(now).toISOString();
+        const judged = selfCorrect.evaluate(shard, { now });
+        for (const a of judged) {
+            const rec = shard.memories.find(r => r.theme === a.th);
+            if (rec && rec.correction && rec.correction.actionId === a.id) delete rec.correction;
+            if (a.rollback && rec && a.prevPlaybook) {
+                setPlaybook(rec, a.prevPlaybook, 'rolled back: the correction made this theme worse');
+                a.status = 'rolled_back';
+                a.rolledBackTo = rec.playbookVersion;
+                memoryStats.logEvent(shard, { t: nowIso(), th: rec.theme, kind: 'correct', action: 'rollback', metric: a.metric, v: rec.playbookVersion });
+            }
+            delete a.rollback;
+            noteChange(shard, { kind: 'self_correct', phase: 'judged', theme: a.th, label: a.label, action: { id: a.id, kind: a.kind, status: a.status, metricLabel: a.metricLabel, after: a.after } });
+        }
+        return { judged, plan: selfCorrect.plan(shard, findings, { now }) };
+    });
+}
+
+function setPlaybook(rec, text, note) {
+    if (rec.playbook) {
+        rec.playbookHistory.push({ version: rec.playbookVersion, at: rec.playbookUpdatedAt, runs: rec.stats.runs, playbook: rec.playbook, note });
+        while (rec.playbookHistory.length > MAX_HISTORY) rec.playbookHistory.shift();
+    }
+    rec.playbook = clean(text, PLAYBOOK_MAX_CHARS);
+    rec.playbookVersion += 1;
+    rec.playbookUpdatedAt = nowIso();
+    rec.updatedAt = rec.playbookUpdatedAt;
+}
+
+/** Apply one planned correction. For a refine, `ref` is the parsed model output. */
+async function applyCorrection(userId, d, { ref = null, now = Date.now() } = {}) {
+    return mutate(userId, (shard) => {
+        const rec = shard.memories.find(r => r.theme === d.th);
+        if (!rec) return null;
+        const fromVersion = rec.playbookVersion;
+        const prev = rec.playbook || null;
+        if (d.kind === 'revert') {
+            setPlaybook(rec, d.text, `replaced by self-correction (restored v${d.toVersion})`);
+        } else {
+            if (!ref || !ref.playbook || ref.playbook === rec.playbook) return null;
+            setPlaybook(rec, ref.playbook, `replaced by self-correction (${d.metricLabel})`);
+            if (Array.isArray(ref.lessons)) for (const l of ref.lessons.slice(0, 3)) addUnique(rec.lessons, l, MAX_LESSONS, { source: 'refined' });
+        }
+        rec.dirty = false;
+        const a = selfCorrect.recordAction(shard, d, { now, fromVersion, toVersion: rec.playbookVersion, prevPlaybook: prev });
+        rec.correction = {
+            actionId: a.id,
+            note: d.kind === 'revert'
+                ? `${d.metricLabel} got worse under the newer playbook; it was restored from v${d.toVersion}, which measured better. Keep its method unless the tasks show a clear reason to change it.`
+                : `${d.metricLabel} was getting worse (${selfCorrect.fmtMetric(d.metric, d.trigger.from)} → ${selfCorrect.fmtMetric(d.metric, d.trigger.to)}); this playbook was rewritten to bring it back down. Keep that focus.`,
+        };
+        memoryStats.logEvent(shard, { t: a.t, th: rec.theme, kind: 'correct', action: d.kind, metric: d.metric, v: rec.playbookVersion });
+        noteChange(shard, { kind: 'self_correct', phase: 'applied', theme: rec.theme, label: rec.label, action: { id: a.id, kind: a.kind, metricLabel: a.metricLabel, why: a.why, toVersion: a.toVersion } });
+        return a;
+    });
 }
 
 module.exports = {
+    events, checkCorrections, applyCorrection,
     stats, rethemeStored, dirtyRecords, HOST_TOOLS, THEME_VERSION,
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,

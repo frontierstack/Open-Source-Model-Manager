@@ -631,4 +631,4 @@ function analyze(rows, byTheme, events, label) {
     };
 }
 
-module.exports = { TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+module.exports = { METRICS, compareGroups, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };

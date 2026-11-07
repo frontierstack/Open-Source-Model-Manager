@@ -4247,3 +4247,54 @@ html:not(.theme-light):not(.theme-research) > body:not(.theme-light):not(.theme-
     .MuiTable-root .MuiTableCell-root .MuiBox-root { white-space: nowrap; flex-wrap: nowrap !important; }
     [class*="text-[0.66rem]"], [class*="text-[0.7rem]"] { font-size: 0.75rem !important; }
 }
+
+/* ---- Memory Stats: live motion (MemoryStats.jsx) ------------------------ */
+.ms-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: ms-draw 900ms cubic-bezier(.22,.61,.36,1) forwards; }
+.ms-draw--slow { animation-duration: 1300ms; }
+@keyframes ms-draw { to { stroke-dashoffset: 0; } }
+.ms-grow { transform-box: fill-box; transform-origin: center bottom; animation: ms-grow 650ms cubic-bezier(.22,.61,.36,1) both; }
+@keyframes ms-grow { from { transform: scaleY(0); opacity: .3; } to { transform: scaleY(1); opacity: 1; } }
+.ms-pop { transform-box: fill-box; transform-origin: center; animation: ms-pop 420ms cubic-bezier(.34,1.56,.64,1) both; }
+@keyframes ms-pop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.ms-fade-in { animation: ms-fade 700ms ease-out both; }
+@keyframes ms-fade { from { opacity: 0; } to { opacity: 1; } }
+.ms-ripple { transform-box: fill-box; transform-origin: center; animation: ms-ripple 1.6s ease-out 3; }
+@keyframes ms-ripple { from { transform: scale(1); opacity: .9; } to { transform: scale(3.2); opacity: 0; } }
+.ms-pulse-dot { transform-box: fill-box; transform-origin: center; animation: ms-dot 2.4s ease-in-out infinite; }
+@keyframes ms-dot { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+.ms-bar { transition: width 800ms cubic-bezier(.22,.61,.36,1); }
+
+.ms-tile { position: relative; transition: border-color .3s, box-shadow .3s, transform .3s; }
+.ms-tile:hover { border-color: var(--border-secondary, var(--border-primary)); transform: translateY(-1px); }
+.ms-flash { animation: ms-flash 1.4s ease-out; }
+@keyframes ms-flash {
+    0% { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-primary) 22%, transparent); }
+    100% { border-color: var(--border-primary); box-shadow: 0 0 0 3px transparent; }
+}
+.ms-delta { animation: ms-delta 2.6s ease-out forwards; }
+@keyframes ms-delta { 0% { opacity: 0; transform: translateY(6px); } 15% { opacity: 1; transform: translateY(0); } 75% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px); } }
+
+.ms-live-dot, .ms-status-dot { position: relative; display: inline-block; width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
+.ms-live-dot.is-on::after, .ms-status-dot.is-on::after {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit;
+    animation: ms-live 1.8s cubic-bezier(0,0,.2,1) infinite;
+}
+@keyframes ms-live { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2.8); opacity: 0; } }
+
+.ms-feed-row { transition: background-color .2s; }
+.ms-feed-row:hover { background-color: var(--bg-hover); }
+.ms-feed-in { animation: ms-feed-in 520ms cubic-bezier(.22,.61,.36,1) both; }
+@keyframes ms-feed-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+.ms-feed-row.ms-feed-in .ms-feed-icon { animation: ms-pop 420ms cubic-bezier(.34,1.56,.64,1) both; }
+
+.ms-progress-fill {
+    transition: width 900ms cubic-bezier(.22,.61,.36,1);
+    background-image: linear-gradient(45deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%);
+    background-size: 12px 12px; animation: ms-stripes 1s linear infinite;
+}
+@keyframes ms-stripes { to { background-position: 12px 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+    .ms-draw, .ms-grow, .ms-pop, .ms-fade-in, .ms-ripple, .ms-pulse-dot, .ms-flash, .ms-delta,
+    .ms-feed-in, .ms-progress-fill, .ms-live-dot.is-on::after, .ms-status-dot.is-on::after { animation: none !important; stroke-dashoffset: 0; }
+}
