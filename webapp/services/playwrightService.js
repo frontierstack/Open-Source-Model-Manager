@@ -3409,6 +3409,65 @@ async function sniffMediaStreams(url, options = {}) {
 // scraping misses all of these on SPA/lazy-loaded gallery pages (wallpaper
 // sites, Unsplash, Pexels, etc.), which is why the model otherwise loops trying
 // to parse image URLs out of dead markup. Returns absolute URLs, largest first.
+// Rank the images collected from a page (pure; exported for tests).
+// Content first: an image inside main/article or named by the page's own
+// meta/JSON-LD beats one in nav/header/footer/related rails; sponsored/ad
+// blocks and decorative assets are dropped; the same picture at several CDN
+// sizes or crops collapses to its largest copy.
+const IMG_ASSET_RE = /sprite|favicon|\/icons?\/|[-_]icon[-_.]|\/logos?\/|[-_]logo[-_.]|avatar|placeholder|spinner|loading|1x1|blank\.|pixel\.|spacer|badge|emoji|data:image|\.svg(?:[?#]|$)/i;
+const SIZE_PARAMS = /^(w|h|width|height|q|quality|fit|crop|auto|dpr|resize|fm|format|ixlib|ixid|s|sz|size|strip|scale|mode|anchor|cs|a|b|max|maxwidth|maxheight|utm_[a-z]+|ssl|v|ver|version|rect|im|_|c|t|tr)$/i;
+function imageIdentity(u) {
+    try {
+        const x = new URL(u);
+        // Size/crop/format knobs and bare cache-busters (?202611041552) do not change the picture.
+        const params = [...x.searchParams.entries()].filter(([k, v]) => !SIZE_PARAMS.test(k) && !(v === '' && /^[\w.-]+$/.test(k)) && !/^\d+$/.test(k)).map(([k, v]) => `${k}=${v}`).sort().join('&');
+        const host = x.hostname.replace(/^www\./, '').replace(/^(?:thumb|upload)\.wikimedia\.org$/, 'wikimedia');
+        const p = x.pathname
+            .replace(/\/\d{2,4}px-[^/]+$/i, '')                       // wikimedia …/Name.jpg/800px-Name.jpg
+            .replace(/\/(?:thmb|thumb|thumbs|resize|resized|w_\d+[^/]*|c_[^/]*|\d{2,4}x\d{0,4})(?=\/)/gi, '')
+            .replace(/\/(?!(?:19|20)\d{2}\/)\d{3,4}(?=\/)/g, '')         // /news/240/ vs /news/800/ (not /2026/)
+            .replace(/[-_]\d{2,4}x\d{2,4}(?=\.|$)/g, '')
+            .replace(/[-_](?:small|medium|large|xlarge|thumb|thumbnail|\d+w)(?:_2x)?(?=\.)/gi, '')
+            .replace(/\.(?:jpe?g|png|webp|avif)(?:\.(?:jpe?g|png|webp|avif))?$/i, '');
+        return `${host}${p}?${params}`.toLowerCase();
+    } catch (_) { return String(u); }
+}
+function rankPageImages(raw, { minDimension = 256, maxResults = 16, isAdUrl = () => false } = {}) {
+    const usable = (raw || []).filter((im) => im && im.url && !IMG_ASSET_RE.test(im.url) && !im.ad && !isAdUrl(im.url))
+        .filter((im) => {
+            if (im.meta || im.source === 'linked-full' || im.source === 'jsonld') return true;
+            if (im.width >= minDimension && im.height >= minDimension) return true;
+            // Dimension unknown (virtualized img, srcset without an element):
+            // keep a real image file.
+            if ((!im.width || !im.height) && /\.(jpe?g|png|webp|gif|avif|bmp|tiff?)(?:[?#]|$)/i.test(im.url)) return true;
+            return false;
+        });
+    // Collapse the same picture at several sizes/crops to its largest copy.
+    const groups = new Map();
+    for (const im of usable) {
+        const id = imageIdentity(im.url);
+        const g = groups.get(id);
+        if (!g) { groups.set(id, { ...im }); continue; }
+        const big = (im.width * im.height) > (g.width * g.height) ? im : g;
+        groups.set(id, { ...big, alt: g.alt || im.alt, meta: g.meta || im.meta, content: g.content || im.content, chrome: g.chrome && im.chrome, order: Math.min(g.order, im.order), thumb: g.thumb || im.thumb });
+    }
+    const score = (im) => {
+        const area = im.width * im.height || (im.meta ? 480000 : im.source === 'linked-full' ? 900000 : 250000);
+        let s = Math.log10(Math.max(area, 1));
+        if (im.content) s += 1.2;
+        if (im.meta) s += 0.8;            // the page names it as its main picture
+        if (im.alt) s += 0.2;
+        if (im.chrome) s -= 2.5;
+        s -= Math.min(im.order, 200) * 0.002;   // document order breaks ties
+        return s;
+    };
+    const ranked = [...groups.values()].sort((a, b) => score(b) - score(a));
+    // Page chrome only when nothing else exists.
+    const body = ranked.filter(im => !im.chrome);
+    const list = body.length ? body : ranked;
+    return list.slice(0, maxResults).map(({ url, width, height, source, alt, thumb }) => ({ url, width, height, source, alt: alt || undefined, thumb: thumb || undefined }));
+}
+
 async function extractPageImages(url, options = {}) {
     const {
         timeout = 22000,
@@ -3433,9 +3492,15 @@ async function extractPageImages(url, options = {}) {
         page = await context.newPage();
         await applyStealthPatches(page);
 
-        await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        const resp = await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        const httpStatus = resp ? resp.status() : null;
+        if (httpStatus === 404 || httpStatus === 410) {
+            return { success: false, notFound: true, httpStatus, error: `HTTP ${httpStatus} — the page does not exist`, url, images: [] };
+        }
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
         await page.waitForTimeout(settleMs);
+        // A cookie/age wall covers the page and stops lazy images from loading.
+        try { await dismissOverlays(page); } catch (_) {}
 
         // Scroll through the page to trigger lazy-loaded images, then settle.
         try {
@@ -3456,99 +3521,161 @@ async function extractPageImages(url, options = {}) {
 
         let raw = [];
         try {
-            raw = await page.evaluate(() => {
+            raw = await page.evaluate((adTokenSrc) => {
+                const AD_TOKEN = new RegExp(adTokenSrc, 'i');
                 const out = [];
-                const seen = new Set();
+                const byUrl = new Map();
                 const abs = (u) => { try { return new URL(u, location.href).href; } catch (_) { return null; } };
-                const push = (rawUrl, w, h, src) => {
-                    const u = abs(rawUrl);
-                    if (!u || !/^https?:/i.test(u) || seen.has(u)) return;
-                    seen.add(u);
-                    out.push({ url: u, width: w || 0, height: h || 0, source: src });
+                const IMG_EXT = /\.(jpe?g|png|webp|gif|avif|bmp|tiff?)(?:[?#]|$)/i;
+                const PLACEHOLDER = /^data:|1x1|blank\.|spacer|placeholder|lazy[-_]?load|transparent\.(gif|png)|grey\.gif|loading\./i;
+                // Where an element sits: page chrome (nav/header/footer/aside,
+                // cookie/promo/ad containers) vs the content (main/article).
+                const CHROME = /(^|[-_ ])(nav|navbar|menu|header|masthead|footer|sidebar|toolbar|breadcrumbs?|cookie|consent|newsletter|subscribe|social|share|related|recommended|promo|promotion|teaser-rail|banner)([-_ ]|$)/i;
+                const SPONSOR = /sponsor|promoted|advertis|(^|[-_ ])ads?([-_ ]|$)/i;
+                const where = (el) => {
+                    let chrome = false, ad = false, content = false;
+                    for (let n = el, d = 0; n && n !== document.body && d < 12; n = n.parentElement, d++) {
+                        const tag = (n.tagName || '').toLowerCase();
+                        if (tag === 'main' || tag === 'article' || n.getAttribute('role') === 'main' || n.getAttribute('itemprop') === 'articleBody') content = true;
+                        if (['nav', 'header', 'footer', 'aside'].includes(tag) && !content) chrome = true;
+                        const role = n.getAttribute('role');
+                        if (role === 'navigation' || role === 'banner' || role === 'contentinfo' || role === 'complementary') chrome = true;
+                        const cls = typeof n.className === 'string' ? n.className : '';
+                        const marker = `${n.id || ''} ${cls} ${n.getAttribute('data-testid') || ''} ${n.getAttribute('aria-label') || ''}`;
+                        if (marker.split(/\s+/).some(t => t && AD_TOKEN.test(t)) || SPONSOR.test(n.getAttribute('data-testid') || '') || SPONSOR.test(n.getAttribute('aria-label') || '')) ad = true;
+                        else if (d < 6 && CHROME.test(`${n.id || ''} ${cls}`)) chrome = true;
+                    }
+                    return { chrome, ad, content };
                 };
-                // Pick the highest-resolution candidate out of a srcset string.
-                const fromSrcset = (ss) => {
+                const caption = (img) => {
+                    const fig = img.closest('figure');
+                    const fc = fig && fig.querySelector('figcaption');
+                    const t = (fc && fc.innerText) || img.getAttribute('alt') || img.getAttribute('title') || (img.closest('a') && img.closest('a').getAttribute('title')) || '';
+                    return t.replace(/\s+/g, ' ').trim().slice(0, 160);
+                };
+                // srcset: candidates are separated by a comma FOLLOWED BY a
+                // descriptor boundary — CDN URLs carry commas of their own
+                // (w_800,h_600), so a plain split(',') cut them in pieces.
+                const parseSrcset = (ss) => {
                     if (!ss) return null;
-                    let best = null, bestW = -1;
-                    ss.split(',').forEach((part) => {
-                        const seg = part.trim().split(/\s+/);
-                        const u = seg[0];
-                        const w = seg[1] && seg[1].endsWith('w') ? parseInt(seg[1], 10) : 0;
-                        if (u && w > bestW) { bestW = w; best = u; }
-                    });
+                    const re = /\s*([^\s,][^\s]*?)(?:\s+(\d+(?:\.\d+)?)([wx]))?\s*(?:,|$)/g;
+                    let m, best = null;
+                    while ((m = re.exec(ss)) && m[0]) {
+                        const u = m[1];
+                        if (!u || u.startsWith('data:')) continue;
+                        const v = m[2] ? parseFloat(m[2]) : 1;
+                        const score = m[3] === 'w' ? v : v * 1000;
+                        if (!best || score > best.score) best = { url: u, score, w: m[3] === 'w' ? v : 0, x: m[3] === 'x' ? v : 0 };
+                        if (re.lastIndex >= ss.length) break;
+                    }
                     return best;
                 };
+                const add = (rawUrl, w, h, kind, extra = {}) => {
+                    const u = abs(rawUrl);
+                    if (!u || !/^https?:/i.test(u)) return;
+                    const prev = byUrl.get(u);
+                    if (prev) {
+                        // Same file seen twice (meta + img): keep the richer record.
+                        if ((w * h) > (prev.width * prev.height)) { prev.width = w; prev.height = h; }
+                        prev.alt = prev.alt || extra.alt || '';
+                        prev.content = prev.content || !!extra.content;
+                        if (extra.meta) prev.meta = true;
+                        return;
+                    }
+                    const rec = { url: u, width: w || 0, height: h || 0, source: kind, alt: extra.alt || '', chrome: !!extra.chrome, ad: !!extra.ad, content: !!extra.content, meta: !!extra.meta, order: out.length, thumb: extra.thumb || null };
+                    byUrl.set(u, rec);
+                    out.push(rec);
+                };
+                const lazyAttr = (img) => img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src')
+                    || img.getAttribute('data-lazy') || img.getAttribute('data-url') || img.getAttribute('data-hi-res-src') || img.getAttribute('data-full');
+
                 document.querySelectorAll('img').forEach((img) => {
-                    const ss = fromSrcset(img.getAttribute('srcset') || img.getAttribute('data-srcset'));
-                    // A dynamically-loaded post image (lazy / below the fold) may
-                    // still be undecoded when we read it — naturalWidth/Height are
-                    // 0 — even after scrolling. Fall back to the element's RENDERED
-                    // box size so a genuinely-displayed image still passes the size
-                    // gate; without this an extensionless CDN url (no .jpg to
-                    // whitelist on) with naturalWidth 0 is dropped on the floor.
                     const r = img.getBoundingClientRect();
-                    const w = img.naturalWidth || Math.round(r.width);
-                    const h = img.naturalHeight || Math.round(r.height);
-                    // Some lazy loaders keep the real url in data-src/data-original
-                    // until the image enters the viewport.
-                    const src = ss || img.currentSrc || img.src
-                        || img.getAttribute('data-src') || img.getAttribute('data-original')
-                        || img.getAttribute('data-lazy-src');
-                    push(src, w, h, 'img');
+                    const cs = getComputedStyle(img);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') { if (!lazyAttr(img)) return; }
+                    const set = parseSrcset(img.getAttribute('srcset') || img.getAttribute('data-srcset') || img.getAttribute('data-lazy-srcset'));
+                    const cur = img.currentSrc || img.src || '';
+                    const lazy = lazyAttr(img);
+                    // A lazy image's src is often a placeholder (1×1 gif, blur);
+                    // the real picture is in data-src.
+                    let src = set ? set.url : (cur && !PLACEHOLDER.test(cur) ? cur : (lazy || cur));
+                    if (!src) return;
+                    let w = img.naturalWidth || Math.round(r.width);
+                    let h = img.naturalHeight || Math.round(r.height);
+                    // The size of the version we return, not the small one the
+                    // browser happened to load (BBC cards: 320 px loaded, 800w offered).
+                    if (set && set.w && w && h && set.w > w) { h = Math.round(h * set.w / w); w = set.w; }
+                    else if (set && set.x > 1 && w && h) { w = Math.round(w * set.x); h = Math.round(h * set.x); }
+                    if (w && h && Math.max(w, h) < 64 && !set && !lazy) return;     // icons
+                    const pos = where(img);
+                    const a = img.closest('a');
+                    const href = a && a.getAttribute('href');
+                    const info = { alt: caption(img), chrome: pos.chrome, ad: pos.ad, content: pos.content };
+                    // A thumbnail that links to the full-size file: return the file.
+                    // (Not a wiki "File:Name.jpg" page — that is HTML describing the file.)
+                    const hrefPath = (() => { try { return new URL(href, location.href).pathname; } catch (_) { return ''; } })();
+                    if (href && IMG_EXT.test(href) && abs(href) !== abs(src) && !/:/.test(decodeURIComponent(hrefPath.split('/').pop() || '')) && !/\/wiki\//i.test(hrefPath)) {
+                        add(href, w && h ? Math.max(w, 1200) : 0, w && h ? Math.round(Math.max(w, 1200) * h / w) : 0, 'linked-full', { ...info, thumb: abs(src) });
+                        return;
+                    }
+                    add(src, w, h, 'img', info);
                 });
-                document.querySelectorAll('picture source[srcset]').forEach((s) => {
-                    push(fromSrcset(s.getAttribute('srcset')), 0, 0, 'source');
+                document.querySelectorAll('picture source[srcset], picture source[data-srcset]').forEach((so) => {
+                    const set = parseSrcset(so.getAttribute('srcset') || so.getAttribute('data-srcset'));
+                    if (!set) return;
+                    const img = so.parentElement && so.parentElement.querySelector('img');
+                    const pos = img ? where(img) : { chrome: false, ad: false, content: false };
+                    const r = img ? img.getBoundingClientRect() : { width: 0, height: 0 };
+                    const w = set.w || Math.round(r.width), h = set.w && r.width ? Math.round(r.height * set.w / r.width) : Math.round(r.height);
+                    add(set.url, w, h, 'source', { alt: img ? caption(img) : '', ...pos });
+                });
+                // noscript fallbacks of lazy loaders hold the real <img>.
+                document.querySelectorAll('noscript').forEach((ns) => {
+                    const m = (ns.textContent || '').match(/<img[^>]+src=["']([^"']+)["']/i);
+                    if (m) add(m[1], 0, 0, 'noscript', where(ns));
                 });
                 // Large CSS background images (hero/banner/tiles).
-                document.querySelectorAll('*').forEach((el) => {
+                document.querySelectorAll('div,section,figure,a,span,header,li').forEach((el) => {
                     const bg = getComputedStyle(el).backgroundImage;
                     if (bg && bg.indexOf('url(') === 0) {
                         const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
                         if (m) {
                             const r = el.getBoundingClientRect();
-                            if (r.width >= 200 && r.height >= 200) push(m[1], Math.round(r.width), Math.round(r.height), 'bg');
+                            if (r.width >= 200 && r.height >= 150) add(m[1], Math.round(r.width), Math.round(r.height), 'bg', where(el));
                         }
                     }
                 });
-                ['meta[property="og:image"]', 'meta[property="og:image:url"]', 'meta[name="twitter:image"]', 'link[rel="image_src"]'].forEach((sel) => {
+                document.querySelectorAll('video[poster]').forEach((v) => {
+                    const r = v.getBoundingClientRect();
+                    add(v.getAttribute('poster'), Math.round(r.width), Math.round(r.height), 'poster', where(v));
+                });
+                // The page's declared main image (og/twitter meta, JSON-LD).
+                ['meta[property="og:image"]', 'meta[property="og:image:url"]', 'meta[name="twitter:image"]', 'meta[name="twitter:image:src"]', 'link[rel="image_src"]'].forEach((sel) => {
                     const el = document.querySelector(sel);
-                    if (el) push(el.getAttribute('content') || el.getAttribute('href'), 0, 0, 'meta');
+                    if (el) add(el.getAttribute('content') || el.getAttribute('href'), 0, 0, 'meta', { meta: true, content: true });
+                });
+                document.querySelectorAll('script[type="application/ld+json"]').forEach((sc) => {
+                    try {
+                        const walk = (o, d) => {
+                            if (!o || d > 4) return;
+                            if (Array.isArray(o)) { o.forEach(x => walk(x, d + 1)); return; }
+                            if (typeof o !== 'object') return;
+                            const im = o.image || o.thumbnailUrl;
+                            const urls = [].concat(im || []).map(x => (typeof x === 'string' ? x : (x && (x.url || x.contentUrl)))).filter(Boolean);
+                            urls.slice(0, 4).forEach(u => add(u, 0, 0, 'jsonld', { meta: true, content: true }));
+                            Object.values(o).forEach(v => { if (v && typeof v === 'object') walk(v, d + 1); });
+                        };
+                        walk(JSON.parse(sc.textContent), 0);
+                    } catch (_) { /* malformed JSON-LD */ }
                 });
                 return out;
-            });
+            }, require('./adBlock').AD_TOKEN_RE ? require('./adBlock').AD_TOKEN_RE.source : '^$');
         } catch (_) { raw = []; }
 
         const finalUrl = page.url();
         const title = await page.title().catch(() => '');
-
-        // Keep substantial images (by natural size) plus og:image/srcset entries
-        // whose dimensions the DOM didn't expose; drop decorative assets.
-        // og:image/twitter:image is the page's DECLARED main image but carries
-        // no dimensions, so a plain area sort ranked it LAST — behind ad-sized
-        // page furniture (observed: a news article's "main image" came back as
-        // a 300×250 cross-promo tile). Give meta entries a synthetic area that
-        // beats ad formats (≤728×90/300×600) but loses to a genuinely larger
-        // rendered hero image.
-        const rankArea = (im) => ((im.source === 'meta' && !(im.width * im.height))
-            ? 480000
-            : (im.width * im.height));
-        const images = raw
-            .filter((im) => !ASSET.test(im.url))
-            .filter((im) => {
-                if (im.source === 'meta') return true;
-                // width/height is naturalWidth OR (for an undecoded lazy img) the
-                // rendered box size, so a displayed post image passes even when its
-                // url is extensionless and it had not decoded yet.
-                if (im.width >= minDimension && im.height >= minDimension) return true;
-                // dimension still unknown (virtualized/off-layout img, or a
-                // srcset/source with no element) — keep if it has a real image extension
-                if ((im.width === 0 || im.height === 0) && /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)(?:[?#]|$)/i.test(im.url)) return true;
-                return false;
-            })
-            .sort((a, b) => rankArea(b) - rankArea(a))
-            .slice(0, maxResults);
-
-        return { success: true, url, finalUrl, title, images };
+        const images = rankPageImages(raw, { minDimension, maxResults, isAdUrl: (u) => { try { return require('./adBlock').isAdUrl(u); } catch (_) { return false; } } });
+        return { success: true, url, finalUrl, title, images, httpStatus };
     } catch (error) {
         return { success: false, error: lease.errorOf(error), url, images: [] };
     } finally {
@@ -4162,6 +4289,8 @@ async function capturePage(url, options = {}) {
 
 module.exports = {
     capturePage,
+    rankPageImages,
+    imageIdentity,
     dismissOverlays,
     fetchUrlContent,
     fetchMultipleUrls,

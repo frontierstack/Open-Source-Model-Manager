@@ -33008,7 +33008,25 @@ app.use((req, res) => {
             // (a race that re-renders the same picture). The lock lives on the
             // per-turn toolCtx, so separate turns never block each other.
             const prev = (ctx && ctx._findImageLock) || Promise.resolve();
-            const run = prev.catch(() => {}).then(() => this._executeInner(args, ctx));
+            const run = prev.catch(() => {}).then(async () => {
+                const r = await this._executeInner(args, ctx);
+                // The model passed URLs of its own (often guessed image files)
+                // and none showed, while the user named a page: pull from that
+                // page instead of giving up.
+                const shown = r && r.imageSpec && Array.isArray(r.imageSpec.images) && r.imageSpec.images.length;
+                if (!shown && Array.isArray(args?.urls) && args.urls.length && ctx && ctx.latestUserText && !(r && r.alreadyDisplayed)) {
+                    const ask = String(ctx.latestUserText);
+                    const pull = /\b(extract|grab|pull|get|fetch|scrape|download|collect|gather|show|display|list|save)\b[^.\n]{0,60}\b(images?|pictures?|photos?|pics|thumbnails?|gallery)\b/i.test(ask);
+                    const named = (ask.match(/https?:\/\/[^\s<>"')\]]+/g) || []).map(u => u.replace(/[.,;:!?]+$/, ''))
+                        .filter(u => !args.urls.includes(u)).slice(0, 3);
+                    if (pull && named.length && !args.screenshot) {
+                        console.log(`[find_image] the model's ${args.urls.length} URL(s) showed nothing — pulling from the page named in the ask: ${named.join(', ').slice(0, 160)}`);
+                        const again = await this._executeInner({ ...args, urls: named }, ctx);
+                        if (again && again.imageSpec && Array.isArray(again.imageSpec.images) && again.imageSpec.images.length) return again;
+                    }
+                }
+                return r;
+            });
             if (ctx) ctx._findImageLock = run.catch(() => {});
             return run;
         },
@@ -33243,6 +33261,20 @@ app.use((req, res) => {
             // (not the conversation) so "show me those again" next turn works.
             const shownThisTurn = ctx ? (ctx._shownImageKeys || (ctx._shownImageKeys = new Set())) : null;
             let dupSkipped = 0;
+            // "Get / pull / extract the images from <page>": the user named the
+            // page, but the routed model often passes only a `query` and the
+            // tool searched the web instead (measured: Flickr pictures for an
+            // Unsplash page). The user's words decide, as for screenshots.
+            if (!(Array.isArray(args?.urls) && args.urls.length) && ctx && ctx.latestUserText) {
+                const ask = String(ctx.latestUserText);
+                const pull = /\b(extract|grab|pull|get|fetch|scrape|download|collect|gather|show|display|list|save)\b[^.\n]{0,60}\b(images?|pictures?|photos?|pics|thumbnails?|gallery)\b[^.\n]{0,40}\b(from|on|in|at)\b/i.test(ask)
+                    || /\b(images?|pictures?|photos?)\s+(from|on|in)\s+(this|that|the)?\s*(page|site|article|post|listing|gallery)?\s*https?:\/\//i.test(ask);
+                const pageLinks = (ask.match(/https?:\/\/[^\s<>"')\]]+/g) || []).map(u => u.replace(/[.,;:!?]+$/, '')).slice(0, 4);
+                if (pull && pageLinks.length) {
+                    args = { ...args, urls: pageLinks };
+                    console.log(`[find_image] using the page(s) named in the ask: ${pageLinks.join(', ').slice(0, 160)}`);
+                }
+            }
             const urlsProvided = Array.isArray(args?.urls) && args.urls.length > 0;
             // Provided URLs the origin says do not exist (404/410) — the model
             // guessed/enumerated them (gallery filenames are NOT sequential).
@@ -33380,6 +33412,7 @@ app.use((req, res) => {
                 // (full-page, height-capped) instead of extracting its images.
                 // Challenge walls abort service-side; flat frames are dropped.
                 const screenshotFailures = [];
+                const deadPages = [];
                 // A screenshot of a page is take_screenshot's job (real page
                 // capture, saved file, the page text for the model).
                 if (wantScreenshot && pageUrls.length && tools.toolRegistry.has('take_screenshot') && playwrightService && typeof playwrightService.capturePage === 'function') {
@@ -33442,9 +33475,14 @@ app.use((req, res) => {
                             .then(res => ({ pg, res }))
                             .catch(() => ({ pg, res: null }))));   // one bad page can't sink the batch
                     for (const { pg, res } of perPageResults) {
+                        if (res && res.notFound) { deadPages.push({ url: pg.url, reason: res.error || `HTTP ${res.httpStatus}` }); continue; }
                         if (res && res.success && Array.isArray(res.images)) {
                             for (const im of res.images.slice(0, perPage)) {
-                                images.push(mk(pg.meta, im.url, { source: 'page', sourceUrl: pg.url }));
+                                // The page's own caption names the picture; a
+                                // linked thumbnail renders fast while the tile
+                                // opens the full-size file.
+                                const meta = { ...(pg.meta || {}), ...(im.alt ? { title: im.alt } : {}), ...(im.thumb ? { thumbnail: im.thumb } : {}) };
+                                images.push(mk(meta, im.url, { source: 'page', sourceUrl: pg.url }));
                             }
                         }
                     }
@@ -33491,7 +33529,27 @@ app.use((req, res) => {
                 }
 
                 const out = await finalize(images, pageUrls.length ? (wantScreenshot ? 'screenshot' : 'page-extract') : 'provided');
-                if (out) return out;
+                if (out) {
+                    if (deadPages.length && out && typeof out === 'object') out.deadPages = deadPages;
+                    return out;
+                }
+                // The user named the page and it yielded nothing: say so. Falling
+                // through to an image SEARCH would show unrelated pictures as if
+                // they came from that page.
+                const askText = String((ctx && ctx.latestUserText) || '');
+                const namedPages = pageUrls.filter(pg => askText.includes(String(pg.url).replace(/^https?:\/\//, '').replace(/\/$/, '').slice(0, 60)));
+                if (deadPages.length && deadPages.length >= pageUrls.length) {
+                    return {
+                        success: false, error: 'page_not_found',
+                        message: `The page does not exist: ${deadPages.map(d => `${d.url} (${d.reason})`).join('; ')}. Find the right page first (web search), then pass its URL.`,
+                    };
+                }
+                if (pageUrls.length && namedPages.length && !wantScreenshot) {
+                    return {
+                        success: false, error: 'no_images_on_page',
+                        message: `No pictures could be pulled from ${namedPages.map(p => p.url).join(', ')} — the page has no content images, or they are drawn in a way that cannot be extracted. To show what the page looks like, use take_screenshot on it. Do not substitute pictures from an image search.`,
+                    };
+                }
                 // A screenshot ask that captured nothing must FAIL LOUDLY. It used
                 // to fall through to the built-in image SEARCH, which returned a
                 // picture of some unrelated site that the model then presented
