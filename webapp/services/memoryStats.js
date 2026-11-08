@@ -358,7 +358,7 @@ const METRICS = [
     { key: 'seconds', label: 'Response time', kind: 'value', get: r => r.s, unit: 'seconds' },
     { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls' },
     { key: 'failedShare', label: 'Failed tool calls', kind: 'value', get: r => (r.c + r.f) ? r.f / (r.c + r.f) : 0, unit: 'share' },
-    { key: 'rough', label: 'Tasks that flailed', kind: 'rate', get: r => (r.rough ? 1 : 0) },
+    { key: 'rough', label: 'Tasks with repeated failures', kind: 'rate', get: r => (r.rough ? 1 : 0) },
     { key: 'corrected', label: 'Answers corrected by you', kind: 'rate', get: r => (typeof r.cor === 'boolean' ? (r.cor ? 1 : 0) : null) },
 ];
 

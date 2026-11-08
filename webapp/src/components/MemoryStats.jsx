@@ -53,7 +53,7 @@ const METRIC_FMT = {
     seconds: { label: 'Response time', fmt: fmtSecs, unit: '' },
     calls: { label: 'Tool calls per task', fmt: n1 },
     failedShare: { label: 'Failed tool calls', fmt: (v) => pct(v, 0) },
-    rough: { label: 'Tasks that flailed', fmt: (v) => pct(v, 0) },
+    rough: { label: 'Tasks with repeated failures', fmt: (v) => pct(v, 0) },
     corrected: { label: 'Answers you corrected', fmt: (v) => pct(v, 0) },
 };
 
@@ -337,7 +337,7 @@ const WEEKLY_METRICS = [
     { key: 'medianSeconds', label: 'Response time', fmt: fmtSecs, band: 'p75Seconds', kind: 'line', hint: 'Median time from your message to the finished answer; the dashed line is the slowest quarter (75th percentile).' },
     { key: 'avgCalls', label: 'Tool calls', fmt: n1, kind: 'line', hint: 'Average tool calls per task. Fewer calls for the same kind of work means a shorter path.' },
     { key: 'failedCallRate', label: 'Failed calls', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tool calls that failed.' },
-    { key: 'roughRate', label: 'Flailing', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks where the loop guard stepped in or many calls failed.' },
+    { key: 'roughRate', label: 'Repeated failures', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks where the loop guard stepped in or many calls failed.' },
     { key: 'correctionRate', label: 'Corrections', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of answers your next message corrected ("that\'s wrong", "I said…"). Tracked from Nov 7, 2026 on.' },
     { key: 'recallRate', label: 'Memory recalled', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks that started with the theme\'s memory. Higher is better here.' },
     { key: 'followRate', label: 'Playbook followed', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Of the tasks given the memory, how many used the proven approach. Higher is better here.' },
@@ -510,7 +510,7 @@ function TaskTimeline({ tasks, field, height = 210, freshSince = 0 }) {
                         {t.rt ? (t.fo === true ? 'memory recalled · playbook followed' : t.fo === false ? 'memory recalled · not followed' : 'memory recalled') : t.rt === false ? 'cold start' : 'memory use not recorded'}
                     </div>
                     {t.cor && <div style={{ color: BAD }}>you corrected this answer</div>}
-                    {t.rough && <div style={{ color: 'var(--text-secondary)' }}>flailed (loop guard / many failures)</div>}
+                    {t.rough && <div style={{ color: 'var(--text-secondary)' }}>repeated failures (loop guard / many failed calls)</div>}
                     <div style={{ color: MUTED }}>rolling median {fmt(rolling[hover])}</div>
                 </Tooltip>
             )}
@@ -737,7 +737,7 @@ function feedItem(ev, labelOf) {
             const tags = [];
             if (ev.newBest) tags.push(['new best', GOOD]);
             if (t.rt) tags.push([t.fo === false ? 'memory not followed' : 'used memory', t.fo === false ? MUTED : ACCENT]);
-            if (t.rough) tags.push(['flailed', BAD]);
+            if (t.rough) tags.push(['repeated failures', BAD]);
             return { icon: ActivityIcon, color: ACCENT, title: `${L(ev.theme)} task`, detail: t.title || '', meta: bits.join(' · '), tags };
         }
         case 'refine': return { icon: RefineIcon, color: ACCENT, title: `${L(ev.theme)} playbook rewritten`, meta: `now v${ev.v}` };
@@ -1265,7 +1265,7 @@ export default function MemoryStats({ userId = null }) {
                     num={data.logged ? data.logged.failedCallRate : null} format={(v) => pct(v, 1)}
                     spark={rollingSpark(data.tasks, (t) => ((t.c + (t.f || 0)) ? (t.f || 0) / (t.c + (t.f || 0)) : 0))} sparkColor={BAD}
                     extra={chatF.failedShare ? <Change value={chatF.failedShare.change} kind="points" small /> : null}
-                    sub={`${pct(data.logged && data.logged.roughRate, 1)} of tasks flailed (loop guard or many failures)`} />
+                    sub={`${pct(data.logged && data.logged.roughRate, 1)} of tasks had repeated failures (loop guard or many failed calls)`} />
                 <Tile label="Answers you corrected" value={pct(corrRate, 0)} num={corrRate} format={(v) => pct(v, 0)}
                     sub={corrTracked.length ? `${corrTracked.filter((t) => t.cor).length} of ${corrTracked.length} tracked tasks` : 'tracked from today on: a "that\'s wrong / I said…" reply counts against the answer'} />
             </div>
