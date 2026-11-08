@@ -430,7 +430,8 @@ const App = () => {
         // Load logs from localStorage on mount
         try {
             const saved = localStorage.getItem('modelserver_logs');
-            return saved ? JSON.parse(saved) : [];
+            // Lines saved before 2026-11-07 used the old "Tasks that flailed" label.
+            return saved ? JSON.parse(saved.replace(/\b([Tt])asks that flailed\b/g, '$1asks with repeated failures')) : [];
         } catch {
             return [];
         }

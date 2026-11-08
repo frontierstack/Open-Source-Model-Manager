@@ -303,13 +303,20 @@ function scrubPairTools(rec) {
     return changed;
 }
 
+// The "rough task" measure was labelled "Tasks that flailed" until 2026-11-07;
+// self-correction notes stored before then carry the old label in their text.
+// Rewritten on read, so the next write stores the new wording.
+function relabelLegacyText(text) {
+    return String(text).replace(/\b([Tt])asks that flailed\b/g, '$1asks with repeated failures');
+}
+
 function shardPath(userId) { return path.join(STORE_DIR, `${userIdSafe(userId)}.json`); }
 
 function emptyShard(userId) { return { userId: String(userId), memories: [], cursors: {}, updatedAt: nowIso() }; }
 
 async function readShard(userId) {
     try {
-        const raw = await fsp.readFile(shardPath(userId), 'utf8');
+        const raw = relabelLegacyText(await fsp.readFile(shardPath(userId), 'utf8'));
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object') return emptyShard(userId);
         if (!Array.isArray(parsed.memories)) parsed.memories = [];
@@ -1061,6 +1068,7 @@ async function logCorrectionCheck(userId, entry) {
 }
 
 module.exports = {
+    relabelLegacyText,
     events, checkCorrections, applyCorrection, logCorrectionCheck,
     stats, rethemeStored, dirtyRecords, HOST_TOOLS, THEME_VERSION,
     peekBestApproach,

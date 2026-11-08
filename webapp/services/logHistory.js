@@ -58,7 +58,9 @@ function init(dataDir) {
     try {
         filePath = path.join(dataDir, 'process-logs.json');
         if (fs.existsSync(filePath)) {
-            const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            // Older memory self-correction lines used the "Tasks that flailed" label.
+            const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')
+                .replace(/\b([Tt])asks that flailed\b/g, '$1asks with repeated failures'));
             const list = Array.isArray(raw) ? raw : (Array.isArray(raw && raw.entries) ? raw.entries : []);
             entries = list
                 .filter(e => e && typeof e.message === 'string')
