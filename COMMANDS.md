@@ -8,6 +8,7 @@ Complete command reference for Open Source Model Manager utilities and managemen
 
 - [Service Management](#service-management)
 - [Build System](#build-system)
+- [Inference Engines](#inference-engines)
 - [WSL2 Setup (Windows hosts without Docker Desktop)](#wsl2-setup-windows-hosts-without-docker-desktop)
 - [Model Instance Management](#model-instance-management)
 - [Monitoring & Debugging](#monitoring--debugging)
@@ -151,6 +152,7 @@ sudo ./build.sh --no-cleanup         # Skip Docker build cache cleanup after bui
 # Build State
 sudo ./build.sh --no-resume          # Start fresh (ignore previous build state)
 sudo ./build.sh --retry 5            # Set retry attempts on failure (default: 2)
+sudo ./build.sh --engines strata,vllm  # Also install optional engines
 
 # Combined Examples
 sudo ./build.sh --no-parallel        # Sequential builds for low memory
@@ -179,6 +181,41 @@ sudo ./build.sh --no-cache --no-resume
 # Resume interrupted build
 sudo ./build.sh                 # Automatically resumes
 ```
+
+---
+
+## Inference Engines
+
+llama.cpp and SGLang are built by `build.sh`. Strata and vLLM are optional:
+
+```bash
+sudo ./engines.sh status                # Installed engines and versions
+sudo ./engines.sh install strata        # Strata; compiles an SSE4.2 engine when the CPU has no AVX2
+sudo ./engines.sh install vllm          # vLLM
+sudo ./engines.sh install all           # Both
+sudo ./engines.sh refresh               # Move installed engines to the pinned versions (update.sh runs this)
+```
+
+Pinned versions: llama.cpp in `llamacpp/Dockerfile` (`LLAMACPP_REF`), SGLang in `sglang/Dockerfile`, Strata and vLLM in `webapp/services/engineVersions.json`.
+
+Which engine a model will use:
+
+```bash
+curl -k -X POST https://localhost:3001/api/engines/plan \
+  -H "X-API-Key: $KEY" -H "X-API-Secret: $SECRET" -H "Content-Type: application/json" \
+  -d '{"hfRepoId": "Qwen/Qwen3-1.7B"}'
+```
+
+Load Qwen3.8-Flash-Next (sizes: `q2_0`, `iq2_xs`, `iq3_xxs`, `iq3_s`, `coder`):
+
+```bash
+curl -k -X POST https://localhost:3001/api/engines/strata/load \
+  -H "X-API-Key: $KEY" -H "X-API-Secret: $SECRET" -H "Content-Type: application/json" \
+  -d '{"size": "q2_0", "context": 262144}'
+docker logs -f strata-Qwen3.8-Flash-Next
+```
+
+Strata keeps its downloads and prepared packs in `models/.strata-data`, so deleting that folder is what frees the space. Keep `models/` on an SSD: Strata reads its lookup table from disk constantly and stalls on a hard drive. Instances are named `strata-*` and `vllm-hf-*`.
 
 ---
 

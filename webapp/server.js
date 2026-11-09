@@ -636,6 +636,10 @@ function isValidModelName(modelName) {
     return resolved.startsWith('/models/');
 }
 
+const engineRouter = require('./services/engineRouter');
+const engineManagerModule = require('./services/engineManager');
+let engineManager = null;   // created once the helpers it needs are defined
+
 // In-memory store for model instances (supports both sglang and llama.cpp backends)
 // Map structure: modelName -> { containerId, port, status, config, backend }
 const modelInstances = new Map();
@@ -2565,6 +2569,9 @@ async function syncModelInstances() {
                 } else if (name.startsWith('llamacpp-')) {
                     backend = 'llamacpp';
                     modelName = name.replace('llamacpp-', '');
+                } else if (engineManager) {
+                    const managed = engineManager.classifyContainer(name);
+                    if (managed) ({ backend, modelName } = managed);
                 }
 
                 return backend ? { containerInfo, backend, modelName } : null;
@@ -2594,6 +2601,7 @@ async function syncModelInstances() {
 
             // Extract port from environment or use default
             let port = 8000;
+            let managedConfig = null;
             const getEnvValue = (key) => {
                 if (!inspect.Config.Env) return null;
                 const env = inspect.Config.Env.find(e => e.startsWith(`${key}=`));
@@ -2604,10 +2612,14 @@ async function syncModelInstances() {
                 port = parseInt(getEnvValue('SGLANG_PORT') || '8000');
             } else if (backend === 'llamacpp') {
                 port = parseInt(getEnvValue('LLAMA_PORT') || '8000');
+            } else if (engineManager && (backend === 'strata' || backend === 'vllm')) {
+                const adopted = engineManager.adoptConfig(backend, containerInfo.Names[0].substring(1), inspect.Config.Env || []);
+                port = adopted.port;
+                managedConfig = adopted.config;
             }
 
             // Extract config from environment variables based on backend
-            let config = {};
+            let config = managedConfig || {};
 
             if (backend === 'sglang') {
                 const maxModelLen = parseInt(getEnvValue('SGLANG_MAX_MODEL_LEN') || '4096');
@@ -4949,7 +4961,7 @@ app.get('/api/models', requireAuth, async (req, res) => {
                     status = 'Slow to load (will auto-recover)';
                 } else if (instance.status === 'running') {
                     // Show correct backend name based on what's actually running
-                    const backendName = instance.backend === 'sglang' ? 'sglang' : 'llama.cpp';
+                    const backendName = engineRouter.ENGINES[instance.backend]?.label || 'llama.cpp';
                     status = `Loaded in ${backendName}`;
                 } else if (instance.status === 'stopped' || instance.status === 'oom_killed') {
                     // Crashed container kept in the map by the die-event listener
@@ -4999,6 +5011,21 @@ app.get('/api/models', requireAuth, async (req, res) => {
             };
         }));
 
+        // A running instance need not have a folder here: Strata, vLLM and
+        // Hugging Face repo loads are named after the model, not a directory.
+        for (const inst of instances) {
+            if (models.some(m => m.name === inst.name)) continue;
+            models.push({
+                name: inst.name,
+                status: engineRouter.ENGINES[inst.backend] ? `Loaded in ${engineRouter.ENGINES[inst.backend].label}` : 'Loaded',
+                port: inst.port,
+                contextSize: inst.config?.contextSize || inst.config?.maxModelLen || null,
+                backend: inst.backend,
+                loadedIn: inst.backend,
+                targetBackend: inst.backend,
+                externalInstance: true,
+            });
+        }
         res.json(models);
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -5080,10 +5107,26 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
         });
     }
     // Backend defaults to llamacpp (works with older GPUs)
-    const backend = req.body.backend || 'llamacpp';
+    let backend = req.body.backend || 'llamacpp';
 
     if (!isValidModelName(modelName)) {
         return res.status(400).json({ error: 'Invalid model name' });
+    }
+
+    if (backend === 'auto') {
+        try {
+            const files = await fs.readdir(path.join('/models', modelName), { recursive: true }).catch(() => []);
+            const { plan } = await engineManager.planFor({ modelName, files });
+            // Strata has its own load route: this path only starts engines that
+            // read the model's folder with the request's llama.cpp-style config.
+            const chosen = engineRouter.pickEngine(plan, ['llamacpp', 'sglang']);
+            if (!chosen) return res.status(400).json({ error: 'No installed engine can run this model on this hardware.', plan });
+            backend = chosen;
+            req.engineRouted = true;
+            broadcast({ type: 'log', message: `[Engine router] ${modelName}: ${plan.ranked.find(r => r.engine === chosen).reasons[0]} Using ${chosen}.` });
+        } catch (error) {
+            return res.status(500).json({ error: error.message });
+        }
     }
 
     console.log(`Request to load model: ${modelName} with backend: ${backend}`);
@@ -5550,6 +5593,14 @@ app.delete('/api/models/hf-cache/:dirName', requireAuth, async (req, res) => {
 
 // Load a HuggingFace repo directly via sglang (non-GGUF formats: safetensors,
 // AWQ, GPTQ, FP8, NVFP4, BnB, compressed-tensors). sglang handles the download.
+engineManager = engineManagerModule.create({
+    docker, modelInstances, broadcast, execPromise, allocatePort, instanceNetAlias, instanceNetworkingConfig, instanceHost,
+    gpuDeviceRequests, gpuDevicesEnv, getNvidiaDeviceCgroupRules, getGpuCount, normalizeGpuDevices, removeStaleContainerByName,
+    streamContainerLogs, monitorContainerHealth, startSystemMonitoring, stopSystemMonitoring, isValidModelName, isValidHfRepoId,
+    getModelsVolumeBind,
+});
+engineManager.registerRoutes(app, { requireAuth, checkPermission, callerIsAdmin });
+
 app.post('/api/models/load-hf', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'models')) {
         return res.status(403).json({ error: 'Models permission required' });
@@ -5557,6 +5608,18 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
     const { repoId, format } = req.body || {};
     if (!isValidHfRepoId(repoId)) {
         return res.status(400).json({ error: 'Invalid HuggingFace repo id (expected "owner/name")' });
+    }
+    if (req.body.engine === 'vllm' || req.body.engine === 'auto') {
+        const { plan } = await engineManager.planFor({ hfRepoId: repoId, format, weightBytes: req.body.weightBytes });
+        const chosen = req.body.engine === 'vllm' ? 'vllm' : engineRouter.pickEngine(plan, ['sglang', 'vllm']);
+        if (chosen === 'vllm') {
+            try {
+                const result = await engineManager.createVllmInstance({ ...req.body, repoId });
+                return res.json({ message: 'Instance created', backend: 'vllm', source: 'hf', repoId, ...result });
+            } catch (error) {
+                return res.status(error.statusCode || 500).json({ error: error.message });
+            }
+        }
     }
     if (modelInstances.has(repoId)) {
         return res.status(400).json({ error: `Instance for ${repoId} already running` });
@@ -6167,7 +6230,8 @@ async function monitorContainerHealth(container, modelName, port) {
     // Phase 3: Continuous monitoring to recover from unhealthy state (every 30 seconds)
     const PHASE1_DURATION = 120;   // 120 seconds of quick checks (sglang takes longer)
     const PHASE1_INTERVAL = 2000;  // 2 seconds
-    const PHASE2_DURATION = 600;   // 10 more minutes (600 seconds) for sglang model loading
+    // Strata's first start downloads and prepares tens of GB.
+    const PHASE2_DURATION = modelInstances.get(modelName)?.backend === 'strata' ? 21600 : 600;   // 10 more minutes for sglang model loading
     const PHASE2_INTERVAL = 5000;  // 5 seconds
     const PHASE3_INTERVAL = 30000; // 30 seconds for ongoing monitoring
 
@@ -19737,6 +19801,7 @@ function noteModelSpeedSample(name, decode, trusted, derived = false) {
     // is weaker evidence than one the backend measured itself, so it expires
     // sooner and gets re-taken rather than sitting for the full TTL.
     modelSpeed.set(name, { decode, at: Date.now(), trusted: !!trusted, derived: !!derived });
+    if (trusted && !derived && engineManager) engineManager.noteSpeed(name, modelInstances.get(name)?.backend, decode);
     if (!prev || Math.abs(prev.decode - decode) / decode > 0.15) {
         console.log(`[capacity] ${name}: ${decode.toFixed(1)} tok/s decode${trusted ? '' : ' (contended sample)'}${derived ? ' (wall-clock)' : ''}`);
     }
@@ -19781,7 +19846,7 @@ function startModelSpeedSweep() {
         try {
             for (const [name, inst] of modelInstances.entries()) {
                 if (!inst || inst.status !== 'running') continue;
-                if (inst.backend !== 'llamacpp' && inst.backend !== 'sglang') continue;
+                if (!engineRouter.ENGINE_IDS.includes(inst.backend)) continue;
                 // The KV-pool size is cheap, never changes for a running
                 // instance, and is needed for an honest slot count — so it is
                 // NOT gated on the speed figure being stale.

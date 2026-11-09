@@ -1,6 +1,7 @@
 import React from 'react';
 import { Cpu as MemoryIcon, Square as StopIcon } from 'lucide-react';
 import Tooltip from '@mui/material/Tooltip';
+import ModelsSection from './ModelsSection';
 
 // Phase 7: Tailwind rewrite of the Running Instances section in
 // the My Models tab. Replaces the densest remaining MUI surface —
@@ -146,6 +147,8 @@ function LlamacppPills({ cfg }) {
     );
 }
 
+const ENGINE_LABEL = { llamacpp: 'llama.cpp', sglang: 'sglang', vllm: 'vLLM', strata: 'Strata' };
+
 function InstanceCard({ instance, onStop }) {
     const cfg = instance.config || {};
     const isSglang = instance.backend === 'sglang';
@@ -181,8 +184,8 @@ function InstanceCard({ instance, onStop }) {
                     <div className="flex flex-wrap gap-1 mb-1">
                         <Pill label={`Port ${instance.port}`} tone="accent" />
                         <Pill
-                            tooltip={`Backend: ${isSglang ? 'sglang' : 'llama.cpp'}`}
-                            label={isSglang ? 'sglang' : 'llama.cpp'}
+                            tooltip={`Backend: ${ENGINE_LABEL[instance.backend] || 'llama.cpp'}`}
+                            label={ENGINE_LABEL[instance.backend] || 'llama.cpp'}
                             tone="brand"
                         />
                         <Pill tooltip="Context size" label={`${ctx} ctx`} />
@@ -190,7 +193,7 @@ function InstanceCard({ instance, onStop }) {
 
                     {/* Second row: backend-specific runtime details */}
                     <div className="flex flex-wrap gap-1">
-                        {isSglang ? <SglangPills cfg={cfg} /> : <LlamacppPills cfg={cfg} />}
+                        {isSglang ? <SglangPills cfg={cfg} /> : (instance.backend === 'llamacpp' || !instance.backend) ? <LlamacppPills cfg={cfg} /> : null}
                     </div>
                 </div>
 
@@ -217,37 +220,17 @@ function InstanceCard({ instance, onStop }) {
 export default function RunningInstancesPanel({ instances = [], onStop }) {
     if (!instances.length) return null;
     return (
-        <div
-            className="rounded-xl border p-4"
-            style={{
-                backgroundColor: 'var(--surface-primary)',
-                borderColor: 'var(--border-primary)',
-            }}
+        <ModelsSection
+            id="running"
+            icon={MemoryIcon}
+            title="Running instances"
+            summary={`${instances.length} model${instances.length > 1 ? 's' : ''} currently loaded`}
         >
-            {/* Section header — accent tile matches the rest of the page's
-                page-header pattern. */}
-            <div className="mb-3 flex items-center gap-3">
-                <span
-                    className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
-                >
-                    <MemoryIcon size={20} strokeWidth={1.75} />
-                </span>
-                <div>
-                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        Running Instances
-                    </div>
-                    <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
-                        {instances.length} model{instances.length > 1 ? 's' : ''} currently loaded
-                    </div>
-                </div>
-            </div>
-
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
                 {instances.map((instance) => (
                     <InstanceCard key={instance.name} instance={instance} onStop={onStop} />
                 ))}
             </div>
-        </div>
+        </ModelsSection>
     );
 }

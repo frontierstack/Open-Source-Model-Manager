@@ -109,6 +109,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import {
     Search as LucideSearch,
     HardDrive as LucideHardDrive,
+    DownloadCloud,
     Users as LucideUsers,
     KeyRound as LucideKey,
     BookOpen as LucideBookOpen,
@@ -124,7 +125,9 @@ import UsersPanel from './components/UsersPanel';
 import MemoryPanel from './components/MemoryPanel';
 import AppsPanel from './components/AppsPanel';
 import ModelRolesCard from './components/ModelRolesCard';
+import EnginesCard, { EngineHint } from './components/EnginesCard';
 import MyModelsPanel from './components/MyModelsPanel';
+import ModelsSection from './components/ModelsSection';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
 import UserDialog from './components/UserDialog';
 import { usePreferencesStore } from './stores/usePreferencesStore';
@@ -1232,9 +1235,10 @@ const App = () => {
 
     const fetchInstances = async () => {
         try {
-            const [llamacppRes, sglangRes] = await Promise.allSettled([
+            const [llamacppRes, sglangRes, enginesRes] = await Promise.allSettled([
                 fetch('/api/llamacpp/instances', { credentials: 'include' }),
                 fetch('/api/sglang/instances', { credentials: 'include' }),
+                fetch('/api/engines/instances', { credentials: 'include' }),
             ]);
 
             const allInstances = [];
@@ -1251,6 +1255,11 @@ const App = () => {
                 const sglangData = await sglangRes.value.json();
                 const sglangInstances = Array.isArray(sglangData) ? sglangData : (sglangData.instances || []);
                 allInstances.push(...sglangInstances);
+            }
+
+            if (enginesRes.status === 'fulfilled' && enginesRes.value.ok) {
+                const managed = await enginesRes.value.json();
+                if (Array.isArray(managed)) allInstances.push(...managed);
             }
 
             setInstances(allInstances);
@@ -7010,6 +7019,7 @@ console.log(chip);`
             body: JSON.stringify({
                 repoId,
                 format,
+                engine: hfLoadConfig.engine || 'auto',
                 maxModelLen: Number(hfLoadConfig.maxModelLen) || 4096,
                 memFractionStatic: Number(hfLoadConfig.memFractionStatic) || 0.88,
                 tensorParallelSize: Number(hfLoadConfig.tensorParallelSize) || 1,
@@ -7284,7 +7294,9 @@ console.log(chip);`
         const encodedName = encodeURIComponent(modelName);
         const endpoint = backend === 'sglang'
             ? `/api/sglang/instances/${encodedName}`
-            : `/api/llamacpp/instances/${encodedName}`;
+            : (backend === 'strata' || backend === 'vllm')
+                ? `/api/engines/instances/${encodedName}`
+                : `/api/llamacpp/instances/${encodedName}`;
         fetch(endpoint, {
             method: 'DELETE',
         })
@@ -9037,7 +9049,7 @@ console.log(chip);`
                         {/* My Models Tab */}
                         {visibleTabOrder[activeTab] === 1 && (
                             <MyModelsPanel instancesLoaded={liveInstances.length}>
-                            <Grid container spacing={3}>
+                            <Grid container spacing={1.5}>
                                 {/* Running Instances — Phase 7 Tailwind port */}
                                 {liveInstances.length > 0 && (
                                     <Grid item xs={12}>
@@ -9306,99 +9318,15 @@ console.log(chip);`
                                     </Grid>
                                 )}
 
-                                {/* Cached HuggingFace Models (sglang HF-repo loads) */}
-                                {hfCacheEntries.length > 0 && (
-                                    <Grid item xs={12}>
-                                        <Card>
-                                            <CardContent>
-                                                <SectionHeader
-                                                    icon={<CloudDownloadIcon />}
-                                                    title="Cached sglang Models (HuggingFace cache)"
-                                                    subtitle={`${hfCacheEntries.length} repo${hfCacheEntries.length > 1 ? 's' : ''} · ${formatBytes(hfCacheTotalBytes)} total — reloads use this cache (no re-download)`}
-                                                    action={
-                                                        <Tooltip title="Refresh cache list">
-                                                            <IconButton size="small" onClick={fetchHfCache} disabled={hfCacheLoading}>
-                                                                <RefreshIcon />
-                                                            </IconButton>
-                                                        </Tooltip>
-                                                    }
-                                                />
-                                                <Grid container spacing={2} sx={{ mt: 1 }}>
-                                                    {hfCacheEntries.map(entry => (
-                                                        <Grid item xs={12} sm={6} md={4} key={entry.dirName}>
-                                                            <Card variant="outlined" sx={{
-                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'var(--bg-hover)',
-                                                                borderColor: entry.loaded ? 'success.dark' : 'var(--border-focus)'
-                                                            }}>
-                                                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                                                    {/* Header row mirrors GGUF Available Models card:
-                                                                        name + Load/Delete IconButtons on the right. */}
-                                                                    <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.75 }}>
-                                                                        <Typography sx={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', mr: 1 }}>
-                                                                            {entry.repoId}
-                                                                        </Typography>
-                                                                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                                                                            {!entry.loaded && (
-                                                                                <Tooltip title="Load Model">
-                                                                                    <IconButton
-                                                                                        size="small"
-                                                                                        onClick={() => handleReloadHfCache(entry)}
-                                                                                        sx={{ color: 'primary.main' }}
-                                                                                    >
-                                                                                        <PlayArrowIcon fontSize="small" />
-                                                                                    </IconButton>
-                                                                                </Tooltip>
-                                                                            )}
-                                                                            <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
-                                                                                <span>
-                                                                                    <IconButton
-                                                                                        size="small"
-                                                                                        disabled={entry.loaded}
-                                                                                        onClick={() => handleDeleteHfCache(entry)}
-                                                                                        sx={{ color: 'error.main' }}
-                                                                                    >
-                                                                                        <DeleteIcon fontSize="small" />
-                                                                                    </IconButton>
-                                                                                </span>
-                                                                            </Tooltip>
-                                                                        </Box>
-                                                                    </Box>
-                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                                        <Chip label={formatBytes(entry.sizeBytes)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
-                                                                        {entry.loaded && (
-                                                                            <Chip label="Loaded" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem' }} />
-                                                                        )}
-                                                                        {entry.lastModified > 0 && (
-                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', ml: 'auto' }}>
-                                                                                {new Date(entry.lastModified).toLocaleDateString()}
-                                                                            </Typography>
-                                                                        )}
-                                                                    </Box>
-                                                                </CardContent>
-                                                            </Card>
-                                                        </Grid>
-                                                    ))}
-                                                </Grid>
-                                            </CardContent>
-                                        </Card>
-                                    </Grid>
-                                )}
-
-                                {/* Model roles: primary (does the work) / checker (reviews, edits, answers consult_expert) */}
-                                <Grid item xs={12}>
-                                    <ModelRolesCard instances={instances} isAdmin={user?.role === 'admin'} />
-                                </Grid>
-
                                 {/* Available Models */}
                                 <Grid item xs={12}>
-                                    <Card>
-                                        <CardContent>
-                                            <SectionHeader
-                                                icon={<StorageIcon />}
-                                                title="Available Models"
-                                                subtitle={models.length > 0 ? `${models.length} model${models.length > 1 ? 's' : ''} downloaded` : 'No models downloaded yet'}
-                                            />
-                                            {models.length === 0 ? (
+                                    <ModelsSection
+                                        id="available"
+                                        icon={LucideHardDrive}
+                                        title="Available models"
+                                        summary={models.filter(m => !m.externalInstance).length > 0 ? `${models.filter(m => !m.externalInstance).length} model${models.filter(m => !m.externalInstance).length > 1 ? 's' : ''} downloaded` : 'No models downloaded yet'}
+                                    >
+                                            {models.filter(m => !m.externalInstance).length === 0 ? (
                                                 <Box sx={{ textAlign: 'center', py: 6 }}>
                                                     <StorageIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 2 }} />
                                                     <Typography variant="body1" sx={{ color: 'text.secondary', mb: 2 }}>
@@ -9412,8 +9340,8 @@ console.log(chip);`
                                                     </Button>
                                                 </Box>
                                             ) : (
-                                                <Grid container spacing={2} sx={{ mt: 1 }}>
-                                                    {models.map((model) => {
+                                                <Grid container spacing={2}>
+                                                    {models.filter((m) => !m.externalInstance).map((model) => {
                                                         const paramSize = extractParameterSize(model.name);
                                                         // A crashed container stays in modelInstances (status stopped/oom_killed)
                                                         // so the UI can show it died — it must still be loadable from here.
@@ -9574,8 +9502,92 @@ console.log(chip);`
                                                     })}
                                                 </Grid>
                                             )}
-                                        </CardContent>
-                                    </Card>
+                                    </ModelsSection>
+                                </Grid>
+
+                                {/* Cached HuggingFace Models (sglang HF-repo loads) */}
+                                {hfCacheEntries.length > 0 && (
+                                    <Grid item xs={12}>
+                                        <ModelsSection
+                                            id="hf-cache"
+                                            icon={DownloadCloud}
+                                            title="Cached Hugging Face models"
+                                            summary={`${hfCacheEntries.length} repo${hfCacheEntries.length > 1 ? 's' : ''} · ${formatBytes(hfCacheTotalBytes)} total — reloads use this cache (no re-download)`}
+                                            defaultOpen={false}
+                                            actions={
+                                                        <Tooltip title="Refresh cache list">
+                                                            <IconButton size="small" onClick={fetchHfCache} disabled={hfCacheLoading}>
+                                                                <RefreshIcon />
+                                                            </IconButton>
+                                                        </Tooltip>}
+                                        >
+                                                <Grid container spacing={2}>
+                                                    {hfCacheEntries.map(entry => (
+                                                        <Grid item xs={12} sm={6} md={4} key={entry.dirName}>
+                                                            <Card variant="outlined" sx={{
+                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'var(--bg-hover)',
+                                                                borderColor: entry.loaded ? 'success.dark' : 'var(--border-focus)'
+                                                            }}>
+                                                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                                                                    {/* Header row mirrors GGUF Available Models card:
+                                                                        name + Load/Delete IconButtons on the right. */}
+                                                                    <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.75 }}>
+                                                                        <Typography sx={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', mr: 1 }}>
+                                                                            {entry.repoId}
+                                                                        </Typography>
+                                                                        <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                                                            {!entry.loaded && (
+                                                                                <Tooltip title="Load Model">
+                                                                                    <IconButton
+                                                                                        size="small"
+                                                                                        onClick={() => handleReloadHfCache(entry)}
+                                                                                        sx={{ color: 'primary.main' }}
+                                                                                    >
+                                                                                        <PlayArrowIcon fontSize="small" />
+                                                                                    </IconButton>
+                                                                                </Tooltip>
+                                                                            )}
+                                                                            <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
+                                                                                <span>
+                                                                                    <IconButton
+                                                                                        size="small"
+                                                                                        disabled={entry.loaded}
+                                                                                        onClick={() => handleDeleteHfCache(entry)}
+                                                                                        sx={{ color: 'error.main' }}
+                                                                                    >
+                                                                                        <DeleteIcon fontSize="small" />
+                                                                                    </IconButton>
+                                                                                </span>
+                                                                            </Tooltip>
+                                                                        </Box>
+                                                                    </Box>
+                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                                        <Chip label={formatBytes(entry.sizeBytes)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
+                                                                        {entry.loaded && (
+                                                                            <Chip label="Loaded" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem' }} />
+                                                                        )}
+                                                                        {entry.lastModified > 0 && (
+                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', ml: 'auto' }}>
+                                                                                {new Date(entry.lastModified).toLocaleDateString()}
+                                                                            </Typography>
+                                                                        )}
+                                                                    </Box>
+                                                                </CardContent>
+                                                            </Card>
+                                                        </Grid>
+                                                    ))}
+                                                </Grid>
+                                        </ModelsSection>
+                                    </Grid>
+                                )}
+
+                                <Grid item xs={12}>
+                                    <EnginesCard isAdmin={user?.role === 'admin'} showSnackbar={showSnackbar} onChanged={() => { fetchModels(); fetchInstances(); }} />
+                                </Grid>
+
+                                {/* Model roles: primary (does the work) / checker (reviews, edits, answers consult_expert) */}
+                                <Grid item xs={12}>
+                                    <ModelRolesCard instances={instances} isAdmin={user?.role === 'admin'} />
                                 </Grid>
 
                             </Grid>
@@ -11483,7 +11495,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                                         <Chip label="sglang" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Turing 7.5+ / driver R570+</Typography>
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Turing 7.5+ / driver R580+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
                                                         <TableBody>
@@ -11648,7 +11660,14 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all models</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download from HuggingFace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start model instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load HuggingFace repo directly into sglang</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load a HuggingFace repo. <code>engine</code>: <code>auto</code>, <code>sglang</code> (default) or <code>vllm</code></TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Engines, installed versions, available updates and this machine's hardware</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/plan</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rank the engines for a model (<code>modelName</code> or <code>hfRepoId</code>) with the reasons</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Running Strata and vLLM instances</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop a Strata or vLLM instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/strata/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start Qwen3.8-Flash-Next with Strata (<code>size</code>, <code>context</code>, <code>parallel</code>, <code>gpuDevices</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/vllm/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start a HuggingFace repo with vLLM (<code>repoId</code>, <code>maxModelLen</code>, <code>tensorParallelSize</code>, <code>gpuDevices</code>)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/engines/:id/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Admin: pull a published engine image</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete model</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/partial</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Remove an incomplete download (409 while it is downloading or loaded)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List HuggingFace cache contents (sglang downloads)</TableCell></TableRow>
@@ -11868,6 +11887,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./build.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Build every Docker image (llamacpp, sglang, sandbox-runtime, webapp, chat) with parallel builds, auto-resume, and state tracking — only images whose inputs changed are rebuilt.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rebuild and restart services without data loss. Options: webapp (= <code>update.sh --no-pull --force webapp</code>), all</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>sudo ./update.sh</code> — pull the latest code from GitHub, rebuild only the images whose build inputs changed, redeploy webapp / chat, run post-update tests, and clean up. Options: --dry-run, --no-pull, --force &lt;webapp|chat|sandbox-runtime|llamacpp|sglang|all&gt; (repeatable), --stop-instances, --ref, --repo, --discard-local, --skip-build, --skip-deploy, --skip-tests, --no-cleanup, --deep-clean.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./engines.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Install or refresh the optional engines: <code>status</code>, <code>install strata|vllm|all</code>, <code>refresh</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./reset.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart from a clean container state: stops model instances and services, removes the webapp_data volume, restarts. Accounts, API keys, conversations and models (all under ./models) are kept. Options: -f / --force (skip confirmation), --rebuild (rebuild llamacpp, sglang, webapp and chat with no cache — 20–30 min), --full (factory reset: also deletes ./models, including every account, key and conversation)</TableCell></TableRow>
                                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./wsl-setup.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>WSL Native-Docker bootstrap: installs Docker + NVIDIA Container Toolkit inside WSL2 (run once on Windows hosts before ./build.sh).</TableCell></TableRow>
                                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./wsl-expose.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Make :3001 / :3002 reachable from other machines on the LAN when running in WSL2 (portproxy for NAT mode, firewall rule for mirrored mode).</TableCell></TableRow>
@@ -13195,9 +13215,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                 fullWidth
             >
                 <DialogTitle sx={{ pb: 1 }}>
-                    Load via sglang
+                    Load from Hugging Face
                     <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
-                        {hfLoadDialog.format ? `${hfLoadDialog.format.toUpperCase()} · ` : ''}sglang downloads weights from HuggingFace on first start
+                        {hfLoadDialog.format ? `${hfLoadDialog.format.toUpperCase()} · ` : ''}The engine downloads weights from HuggingFace on first start
                     </Typography>
                 </DialogTitle>
                 <DialogContent>
@@ -13209,6 +13229,19 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             size="small"
                             InputProps={{ sx: { fontFamily: 'monospace' } }}
                         />
+                        <EngineHint hfRepoId={hfLoadDialog.open ? hfLoadDialog.repoId : ''} format={hfLoadDialog.format} />
+                        <FormControl size="small" fullWidth>
+                            <InputLabel>Engine</InputLabel>
+                            <Select
+                                label="Engine"
+                                value={hfLoadConfig.engine || 'auto'}
+                                onChange={e => setHfLoadConfig(c => ({ ...c, engine: e.target.value }))}
+                            >
+                                <MenuItem value="auto">Automatic</MenuItem>
+                                <MenuItem value="sglang">SGLang</MenuItem>
+                                <MenuItem value="vllm">vLLM</MenuItem>
+                            </Select>
+                        </FormControl>
                         <GpuSelector
                             gpus={gpuInventory}
                             value={hfLoadConfig.gpuDevices}
@@ -13346,6 +13379,7 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                             size="small"
                             InputProps={{ sx: { fontFamily: 'monospace' } }}
                         />
+                        <EngineHint modelName={llamacppLoadDialog.open ? llamacppLoadDialog.modelName : ''} />
 
                         {/* Optimal Settings — moved from the old Launch Settings
                             panel into the dialog so the user can apply them per

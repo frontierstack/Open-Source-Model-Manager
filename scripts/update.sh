@@ -824,6 +824,10 @@ if [ "$ANY_BUILD" = true ]; then
         docker ps -aq --filter "name=llamacpp-" 2>/dev/null | xargs -r docker rm > /dev/null 2>&1 || true
         docker ps -q --filter "name=sglang-" 2>/dev/null | xargs -r docker stop > /dev/null 2>&1 || true
         docker ps -aq --filter "name=sglang-" 2>/dev/null | xargs -r docker rm > /dev/null 2>&1 || true
+        for prefix in strata- vllm-hf-; do
+            docker ps -q --filter "name=$prefix" 2>/dev/null | xargs -r docker stop > /dev/null 2>&1 || true
+            docker ps -aq --filter "name=$prefix" 2>/dev/null | xargs -r docker rm > /dev/null 2>&1 || true
+        done
         stop_spinner
         log_success "Model instances stopped"
     fi
@@ -1226,6 +1230,12 @@ fi
 # ============================================================================
 # SUMMARY
 # ============================================================================
+
+# Strata and vLLM are opt-in: this only moves ones already installed to the
+# versions pinned in webapp/services/engineVersions.json.
+if [ "$DRY_RUN" != true ] && [ "$DO_BUILD" = true ] && [ -x "$PROJECT_DIR/scripts/engines.sh" ]; then
+    "$PROJECT_DIR/scripts/engines.sh" refresh || log_warning "Optional engine refresh failed; run sudo ./engines.sh status"
+fi
 
 section "Summary"
 for comp in "${COMPONENTS[@]}"; do

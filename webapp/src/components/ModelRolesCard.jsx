@@ -3,7 +3,8 @@ import {
     Card, CardContent, Typography, Box, Select, MenuItem, ToggleButtonGroup, ToggleButton,
     Switch, Chip, Alert, Collapse, Button,
 } from '@mui/material';
-import GroupWorkIcon from '@mui/icons-material/GroupWork';
+import { Users } from 'lucide-react';
+import ModelsSection from './ModelsSection';
 import StrongModelIcon from '@mui/icons-material/WorkspacePremium';
 import BoltIcon from '@mui/icons-material/Bolt';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -336,13 +337,8 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
     // The card is configuration people set once, so it starts collapsed and
     // remembers whatever the user last did with it. Private windows throw on
     // localStorage, so every touch is guarded.
-    const [open, setOpen] = useState(() => {
+    const [open] = useState(() => {
         try { return window.localStorage.getItem(ROLES_CARD_OPEN_KEY) === '1'; } catch (e) { return false; }
-    });
-    const toggleOpen = () => setOpen((v) => {
-        const next = !v;
-        try { window.localStorage.setItem(ROLES_CARD_OPEN_KEY, next ? '1' : '0'); } catch (e) { /* private window */ }
-        return next;
     });
 
     const load = () => {
@@ -402,48 +398,22 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
     const bodyOpen = open || forceOpen;
 
     return (
-        <Card sx={{ mb: 2 }}>
-            <CardContent>
-                {/* Header — also the toggle for the whole body */}
-                <Box
-                    role="button"
-                    tabIndex={0}
-                    aria-expanded={bodyOpen}
-                    onClick={toggleOpen}
-                    onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleOpen(); }
-                    }}
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', cursor: 'pointer', userSelect: 'none' }}
-                >
-                    <GroupWorkIcon fontSize="small" sx={{ color: 'var(--accent-primary)' }} />
-                    <Typography variant="h6" sx={{ mr: 1 }}>Model roles</Typography>
+        <ModelsSection
+            id="roles"
+            icon={Users}
+            title="Model roles"
+            summary={plan.summary}
+            defaultOpen={bodyOpen}
+            actions={(
+                <>
                     {savedAt > 0 && Date.now() - savedAt < 4000 && <Chip size="small" label="Saved" color="success" sx={{ fontSize: '0.7rem' }} />}
-                    {!bodyOpen && (
-                        <Typography
-                            variant="body2"
-                            sx={{ color: 'text.secondary', minWidth: 0, flex: '1 1 180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        >
-                            {plan.summary}
-                        </Typography>
-                    )}
-                    <Box sx={{ flex: 1 }} />
-                    {bodyOpen && (
-                        <Button
-                            size="small"
-                            onClick={(e) => { e.stopPropagation(); setShowHelp((v) => !v); }}
-                            endIcon={<ExpandMoreIcon sx={{ transform: showHelp ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }} />}
-                            sx={{ textTransform: 'none' }}
-                        >
-                            How it works
-                        </Button>
-                    )}
-                    <ExpandMoreIcon
-                        fontSize="small"
-                        sx={{ color: 'text.secondary', transform: bodyOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}
-                    />
-                </Box>
-
-                <Collapse in={bodyOpen}>
+                    <Button size="small" onClick={() => setShowHelp((v) => !v)} sx={{ textTransform: 'none', minWidth: 0, fontSize: '0.75rem' }}>
+                        How it works
+                    </Button>
+                </>
+            )}
+        >
+                <Box>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5, mb: 2 }}>
                     Your everyday model answers most turns on its own, so a quick question stays quick. When the ask is substantial it hands
                     over to a second model, which writes the answer while the everyday model runs background jobs for it on its own GPU.
@@ -591,8 +561,7 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
                         control={<Switch size="small" checked={roles.checkWorkers === true} disabled={jobsDisabled} onChange={(e) => save({ checkWorkers: e.target.checked })} />}
                     />
                 </Box>
-                </Collapse>
-            </CardContent>
-        </Card>
+                </Box>
+        </ModelsSection>
     );
 }

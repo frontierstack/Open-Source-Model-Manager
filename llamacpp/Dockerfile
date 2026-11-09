@@ -32,7 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Clone llama.cpp
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
+# Pinned to a release so a rebuild is reproducible; bump deliberately after a
+# speed + tool-call check (a floating master once meant an untested binary).
+ARG LLAMACPP_REF=v0.9.0
+RUN git clone --depth 1 --branch ${LLAMACPP_REF} https://github.com/ggml-org/llama.cpp.git
 
 # Build with CUDA support for multiple architectures
 # 52  = Maxwell (Quadro M4000, GTX 900 series)
@@ -80,6 +83,7 @@ ENV LDFLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined"
 #   into 120a automatically. Do NOT move to a CUDA 13.x base either: 13.0
 #   removed offline compilation for Maxwell/Pascal/Volta, which would break
 #   this project's advertised Maxwell 5.2+ support.
+ARG BUILD_JOBS
 RUN cmake -B build \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="52;60;70;75;80;86;89;90;120" \
@@ -89,10 +93,12 @@ RUN cmake -B build \
     -DLLAMA_CURL=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined" \
-    && cmake --build build --config Release -j$(nproc) --target llama-server
+    && cmake --build build --config Release -j${BUILD_JOBS:-$(nproc)} --target llama-server
 
 # Stage 2: Runtime image (smaller footprint)
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+ARG LLAMACPP_REF=v0.9.0
+LABEL modelserver.engine.version=${LLAMACPP_REF}
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

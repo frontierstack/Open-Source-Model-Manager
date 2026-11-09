@@ -1,6 +1,9 @@
-# Stay on the cu129 variant: cu130 exists for the same tag but raises the CUDA
-# runtime/driver floor, which is unverified against this project's R570 hosts.
-FROM lmsysorg/sglang:v0.5.17-cu129-runtime
+# Recent releases are published only as cu130 runtime images (the newest cu129
+# runtime is v0.5.19), so this base needs NVIDIA driver 580 or newer.
+ARG SGLANG_VERSION=v0.5.23
+FROM lmsysorg/sglang:${SGLANG_VERSION}-cu130-runtime
+ARG SGLANG_VERSION=v0.5.23
+LABEL modelserver.engine.version=${SGLANG_VERSION}
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -51,8 +54,8 @@ RUN pip install --no-cache-dir --root-user-action=ignore distro
 # accepted. We only use the non-disaggregated TP path here, so remove the
 # bundled UCX libs so sglang skips them. (Leaves nixl_cu12 itself
 # importable; only the AVX-compiled UCX transport is dropped.)
-RUN rm -rf /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/libucs*.so* \
-           /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/ucx \
+RUN rm -rf /usr/local/lib/python3.12/dist-packages/nixl_cu*.libs/libucs*.so* \
+           /usr/local/lib/python3.12/dist-packages/nixl_cu*.libs/ucx \
     2>/dev/null || true
 
 # Three of the four mixed-precision patches this file used to carry are now

@@ -17,12 +17,16 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 
 ## Features
 
-### Dual Backend Support
+### Inference Engines
+
+Each model is **routed to the engine that suits it**: its format, its family and this machine's CPU, RAM and GPUs. When a model has been measured on more than one engine here, the faster one wins. The load dialogs show the recommendation and why, and the **Inference engines** card on the Models tab lists what is installed and which updates are available.
 
 | Backend | GPU Requirement | Best For |
 |---------|-----------------|----------|
 | **llama.cpp** | Maxwell 5.2+ (GTX 900, Quadro M4000) | GGUF models, older GPUs, CPU offload, single-stream chat, **Multi-Token Prediction (MTP) & draft-model speculative decoding** for 1.5–2× tok/s on DeepSeek-V3/R1, Qwen3-Next-MTP, and Qwen3.5/3.6-MTP variants |
-| **sglang** | Turing 7.5+ (RTX 20-series, T4) — driver R570+ recommended | High-throughput concurrent serving, RadixAttention prefix caching, GGUF + safetensors + AWQ/GPTQ/FP8/NVFP4, native `--tool-call-parser` and `--reasoning-parser` for Qwen / DeepSeek / GLM / Kimi / Llama-3/4 / Mistral / GPT-OSS |
+| **sglang** | Turing 7.5+ (RTX 20-series, T4) — driver R580+ | High-throughput concurrent serving, RadixAttention prefix caching, GGUF + safetensors + AWQ/GPTQ/FP8/NVFP4, native `--tool-call-parser` and `--reasoning-parser` for Qwen / DeepSeek / GLM / Kimi / Llama-3/4 / Mistral / GPT-OSS |
+| **vLLM** (optional) | Turing 7.5+ (RTX 20-series, T4) | Hugging Face weights, the widest architecture coverage, mixed-precision compressed-tensors checkpoints |
+| **Strata** (optional) | Turing 7.5+ with driver 580+ | Very large MoE models on consumer hardware, such as **Qwen3.8-Flash-Next** (125B parameters, about 6B active per token): the busiest experts stay on the GPU and the rest in RAM. On a CPU without AVX2 it uses a source-built SSE4.2 engine, which upstream marks experimental |
 
 Each model can be **pinned to specific GPUs** at load time. By default a model is given every card and llama.cpp splits it across them — which buys VRAM, not speed, since a layer split runs the cards in sequence. Pinning one model to a subset leaves the others free to run a second model at full speed, which is what makes the two-model pairing above pay off. The load dialog shows each card's free VRAM and what already occupies it.
 
@@ -230,6 +234,21 @@ WSL2 (Docker Desktop or the native daemon).
 ./build.sh --no-parallel           # Sequential (low memory)
 ./build.sh --no-cache --no-resume  # Force full rebuild
 ```
+
+### Optional Engines
+
+Strata and vLLM are extra downloads, so they are not installed by default:
+
+```bash
+sudo ./engines.sh status                 # What is installed
+sudo ./engines.sh install strata         # Strata (published image, or an SSE4.2 build on CPUs without AVX2)
+sudo ./engines.sh install vllm           # vLLM (about 30 GB)
+sudo ./build.sh --engines strata,vllm    # The same, as part of a full install
+```
+
+`./update.sh` keeps installed engines at the versions pinned in `webapp/services/engineVersions.json`. To run **Qwen3.8-Flash-Next**, install Strata and use the **Inference engines** card on the Models tab. The first start downloads 60 to 92 GB depending on the size, prepares the model, and needs that much free disk again for the prepared pack. It also needs enough free GPU memory, so unload other models first.
+
+Keep `models/` on an SSD when using Strata: it reads a 28.8 GB lookup table from disk constantly, and on a hard drive it stalls and restarts.
 
 ### Windows + WSL2 Setup (no Docker Desktop)
 

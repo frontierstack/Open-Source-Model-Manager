@@ -133,6 +133,10 @@ while [[ $# -gt 0 ]]; do
             mkdir -p "$BUILD_STATE_DIR"
             shift
             ;;
+        --engines)
+            OPTIONAL_ENGINES="$2"
+            shift 2
+            ;;
         --retry)
             RETRY_COUNT="$2"
             shift 2
@@ -149,6 +153,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-cleanup     Skip Docker system cleanup after build"
             echo "  --no-parallel    Build images sequentially instead of parallel"
             echo "  --no-resume      Start fresh build (ignore previous state)"
+            echo "  --engines LIST   Also install optional engines: strata, vllm or all (comma separated)"
             echo "  --retry <n>      Number of retries on failure (default: 2)"
             echo "  --skip-ssl-check Skip SSL inspection detection"
             echo "  -h, --help       Show this help message"
@@ -1030,6 +1035,19 @@ if [ "$CLEANUP" = true ]; then
     docker builder prune -af > /dev/null 2>&1 || true
     stop_spinner
     log_success "Build cache cleaned"
+fi
+
+# Optional engines (Strata, vLLM) are extra downloads, so they are opt-in.
+if [ -n "${OPTIONAL_ENGINES:-}" ]; then
+    for engine in ${OPTIONAL_ENGINES//,/ }; do
+        if "$SCRIPT_DIR/engines.sh" install "$engine"; then
+            log_success "Optional engine installed: $engine"
+        else
+            log_warning "Optional engine failed: $engine (retry with sudo ./engines.sh install $engine)"
+        fi
+    done
+else
+    echo -e "  ${DIM}Optional engines: sudo ./engines.sh install strata|vllm${NC}"
 fi
 
 # Calculate total build time

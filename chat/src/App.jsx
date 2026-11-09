@@ -433,10 +433,11 @@ function AppContent() {
 
     const loadModels = async () => {
         try {
-            const [modelsRes, llamacppRes, sglangRes] = await Promise.all([
+            const [modelsRes, llamacppRes, sglangRes, enginesRes] = await Promise.all([
                 fetch('/api/models', { credentials: 'include' }),
                 fetch('/api/llamacpp/instances', { credentials: 'include' }),
                 fetch('/api/sglang/instances', { credentials: 'include' }),
+                fetch('/api/engines/instances', { credentials: 'include' }).catch(() => null),
             ]);
 
             if (modelsRes.ok) {
@@ -458,6 +459,10 @@ function AppContent() {
                 const runningMap = new Map();
                 llamacppArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'llamacpp' }));
                 sglangArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'sglang' }));
+                if (enginesRes && enginesRes.ok) {
+                    const managed = await enginesRes.json();
+                    if (Array.isArray(managed)) managed.forEach(i => runningMap.set(i.name, i));
+                }
 
                 const merged = modelsArray.map(m => {
                     const runningInfo = runningMap.get(m.name);

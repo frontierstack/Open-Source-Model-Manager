@@ -85,6 +85,8 @@ collect_model_containers() {
     {
         docker ps -a --filter "name=llamacpp-" -q
         docker ps -a --filter "name=sglang-" -q
+        docker ps -a --filter "name=strata-" -q
+        docker ps -a --filter "name=vllm-hf-" -q
         docker ps -a --filter "ancestor=modelserver-llamacpp:latest" -q
         docker ps -a --filter "ancestor=modelserver-sglang:latest" -q
     } 2>/dev/null | sort -u

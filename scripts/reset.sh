@@ -154,6 +154,10 @@ docker ps --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker stop 2>/dev
 docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
 docker ps --filter "name=sglang-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
 docker ps -a --filter "name=sglang-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
+for prefix in strata- vllm-hf-; do
+    docker ps --filter "name=$prefix" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
+    docker ps -a --filter "name=$prefix" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
+done
 stop_spinner
 log_success "Model instances stopped"
 

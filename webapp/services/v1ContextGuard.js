@@ -57,7 +57,7 @@ function effectiveContextSize(instance) {
     const cfg = instance?.config || {};
     const ctx = cfg.contextSize || cfg.maxModelLen || 0;
     if (!ctx) return 0;
-    if (instance?.backend !== 'sglang') {
+    if (instance?.backend !== 'sglang' && instance?.backend !== 'vllm') {
         const slots = parseInt(cfg.parallelSlots, 10) || 1;
         if (slots > 1) return Math.floor(ctx / slots);
     }

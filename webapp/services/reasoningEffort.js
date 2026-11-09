@@ -86,7 +86,7 @@ function buildEffortDirectives({ effort, modelName, backend, loadedThinkingOff =
     const out = { effort: e, support, requestFields: {}, templateKwargs: {}, systemHint: null, noThinkPrefix: false, warnings: [] };
     if (!e) return out;
 
-    const isSglang = backend === 'sglang';
+    const isSglang = backend === 'sglang' || backend === 'vllm';
     const isLlama = backend === 'llamacpp' || !isSglang;
     out.systemHint = HINTS[e];
 
