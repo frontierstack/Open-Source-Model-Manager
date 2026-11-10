@@ -1070,8 +1070,9 @@ export default React.memo(function ChatMessage({
                         reply itself (the notes are folded while streaming), so
                         the user watches each step's screenshot as it lands. */}
                     {isStreaming && (() => {
+                        // browser_agent itself, or a web read that handed a
+                        // blocked page to it — any running call carrying the state.
                         const live = Array.isArray(toolCalls) && [...toolCalls].reverse().find(tc => tc
-                            && (tc.label === 'browser_agent' || tc.name === 'browser_agent')
                             && (tc.status === 'partial' || tc.status === 'running') && tc.browserAgent);
                         return live ? <div className="bagent-live-wrap"><BrowserAgentPanel state={live.browserAgent} running /></div> : null;
                     })()}

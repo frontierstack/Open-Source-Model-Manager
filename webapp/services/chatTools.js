@@ -517,7 +517,7 @@ async function executeToolCall(call, ctx) {
 
     const def = toolRegistry.get(toolName);
     const dispatch = def
-        ? (a, c) => def.execute(a, c)
+        ? (a, c) => def.execute(a, c, call)
         : (fallbackDispatch
             ? (a, c) => fallbackDispatch(toolName, a, c)
             : null);

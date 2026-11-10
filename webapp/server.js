@@ -26427,7 +26427,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         // browser_agent: the live-panel state (every step's
                         // screenshot URL) is for the chat only; the model gets
                         // the report and the compact step list.
-                        if (!parsedFullSpec && call.function.name === 'browser_agent' && typeof resultMsg.content === 'string' && resultMsg.content.includes('"browserAgent"')) {
+                        if (!parsedFullSpec && typeof resultMsg.content === 'string' && resultMsg.content.includes('"browserAgent"')) {
                             try {
                                 const full = JSON.parse(resultMsg.content);
                                 if (full && full.browserAgent) {
@@ -32690,7 +32690,7 @@ app.use((req, res) => {
                 },
             };
         },
-        async execute(args, ctx) {
+        async execute(args, ctx, call) {
             const a = args || {};
             const reg = tools.toolRegistry;
             // A stub query is a mis-fired call, not a search: the 27B lead,
@@ -32978,8 +32978,69 @@ app.use((req, res) => {
                 const k = r.obstacle && r.obstacle.kind;
                 return !!(k && ARCHIVE_KINDS.has(k) && (r.success === false || r.obstacle.action === 'switch_source'));
             };
+            // A page every automated layer was refused on goes to the browser
+            // agent first: a model driving a real browser can accept a prompt,
+            // wait out a check or reload, and the user watches it on this
+            // chip. Bot walls only (a paywall or login stays shut for it too),
+            // once per host per turn, never inside a background job.
+            const agentWorthIt = (r) => {
+                if (!r || r.success !== false) return false;
+                const k = r.obstacle && r.obstacle.kind;
+                if (k === 'login' || k === 'paywall' || k === 'geo' || k === 'ratelimit') return false;
+                return r.error === 'bot_protected' || /^HTTP (?:401|403|503)\b/.test(String(r.error || '')) || k === 'bot_challenge' || k === 'blocked';
+            };
+            const tryBrowserAgent = async (url, r) => {
+                if (process.env.WEB_BLOCKED_BROWSER_AGENT === '0' || !agentWorthIt(r)) return null;
+                if (!ctx || (ctx.delegateDepth || 0) > 0 || !browserAgentSvc || !browserAgentSvc.available()) return null;
+                const tool = tools.toolRegistry.get('browser_agent');
+                if (!tool) return null;
+                let h = '';
+                try { h = new URL(url).hostname.toLowerCase(); } catch (_) { return null; }
+                ctx._agentTriedHosts = ctx._agentTriedHosts || new Set();
+                if (ctx._agentTriedHosts.has(h)) return null;
+                ctx._agentTriedHosts.add(h);
+                const why = r.obstacle ? `${r.obstacle.kind}${r.obstacle.vendor ? ' (' + r.obstacle.vendor + ')' : ''}` : (r.error || 'blocked');
+                console.log(`[web] ${url} refused every automated read (${why}) — handing it to the browser agent`);
+                const ask = String(ctx.latestUserText || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+                const ag = await tool.execute({
+                    task: `Open ${url} and read it the way a person would. If a cookie or consent prompt appears, accept it. If a "checking your browser" / bot check page appears, wait about 10 seconds, then reload once. ` +
+                        `Then report the page's title and its main content as completely and faithfully as you can (headlines with their links, article text, listings or tables), and the final URL. ` +
+                        (ask ? `The user's request, for context on what matters on this page: "${ask}". ` : '') +
+                        'If the site still shows a block or bot check after that, stop and say exactly what it shows.',
+                    maxSteps: parseInt(process.env.WEB_BLOCKED_AGENT_STEPS, 10) || 10,
+                }, (call && call.id) ? Object.assign(Object.create(ctx), { _toolCallId: call.id }) : ctx).catch(e => ({ success: false, error: e.message }));
+                const report = String((ag && ag.report) || '').trim();
+                const stillBlocked = !report || report.length < 200 || (ag && ag.success === false)
+                    || /\b(bot check|captcha|access (is )?denied|blocked|verify you are (a )?human|press (&|and) hold)\b/i.test(report.slice(0, 400));
+                const panel = ag && ag.browserAgent ? { browserAgent: ag.browserAgent } : {};
+                const shots = ag && ag._artifacts ? { _artifacts: ag._artifacts } : {};
+                if (stillBlocked) {
+                    console.log(`[web] Browser agent could not read ${url} either (${(ag && (ag.error || ag.agentVerdict)) || 'still blocked'})`);
+                    return { failed: true, extra: { ...panel, ...shots }, note: `browser-agent:${ag && ag.error ? 'failed' : 'blocked'}` };
+                }
+                noteSeen(url); noteRead(url);
+                if (ag.finalUrl) noteSeen(ag.finalUrl);
+                return {
+                    result: {
+                        success: true, url, finalUrl: ag.finalUrl || url, source: 'browser-agent',
+                        title: '', content: smartTruncate(report, a.maxLength || 15000),
+                        tried: `${r.tried || r.error || why} → browser-agent:ok`,
+                        note: 'Automated reads of this page were refused, so the browser agent opened it in a real browser; `content` is its report of what the page showed (the user watched it live). Cite the page URL.',
+                        ...panel, ...shots,
+                    },
+                };
+            };
             const withArchive = async (url, r) => {
                 if (!archiveWorthIt(r)) return r;
+                const viaAgent = await tryBrowserAgent(url, r);
+                if (viaAgent && viaAgent.result) return viaAgent.result;
+                if (viaAgent && viaAgent.failed) {
+                    const after = await withArchiveInner(url, { ...r, tried: `${r.tried || r.error || 'blocked'} → ${viaAgent.note}` });
+                    return { ...after, ...viaAgent.extra };
+                }
+                return withArchiveInner(url, r);
+            };
+            const withArchiveInner = async (url, r) => {
                 if (r.success === false && blockedPageRecovery) {
                     const recovered = await blockedPageRecovery(url, r, a.maxLength);
                     if (recovered !== r) harvestLinks(recovered);
@@ -33143,7 +33204,10 @@ app.use((req, res) => {
             if (Array.isArray(a.urls) && a.urls.length) {
                 const list = a.urls.slice(0, 3);
                 const results = await Promise.all(list.map(u => readOne(u).catch(e => ({ url: u, success: false, error: String(e && e.message || e) }))));
-                return { mode: 'read', results };
+                const withPanel = results.find(x => x && x.browserAgent);
+                const arts = results.flatMap(x => (x && Array.isArray(x._artifacts)) ? x._artifacts : []);
+                for (const x of results) { if (x) { delete x.browserAgent; delete x._artifacts; } }
+                return { mode: 'read', results, ...(withPanel ? { browserAgent: withPanel.browserAgent } : {}), ...(arts.length ? { _artifacts: arts } : {}) };
             }
             if (a.url) return withVsixHint({ mode: 'read', ...(await readOne(a.url)) }, a.url);
             return { error: 'web: provide `query` to search or `url`/`urls` to read.' };
@@ -33418,8 +33482,8 @@ app.use((req, res) => {
         const webTool = tools.toolRegistry.get('web');
         if (webTool && !webTool._previewWrapped) {
             const orig = webTool.execute.bind(webTool);
-            webTool.execute = async (args, ctx) => {
-                const r = await orig(args, ctx);
+            webTool.execute = async (args, ctx, call) => {
+                const r = await orig(args, ctx, call);
                 try { linkPreview.warm(linkPreview.urlsFromWebResult(r)); } catch (_) { /* previews are best-effort */ }
                 return r;
             };
