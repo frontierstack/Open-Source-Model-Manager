@@ -338,6 +338,8 @@ function buildNativeChipEntries(streamingToolCalls) {
             // what each agent did after the message commits.
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
             agentResults: agentResultsOf(tc.name, tc.result),
+            // browser_agent: the live browser panel (steps + screenshots).
+            browserAgent: tc.browserAgent || (tc.result && typeof tc.result === 'object' && tc.result.browserAgent) || undefined,
         });
     }
     return out;
@@ -919,6 +921,7 @@ export default function ChatContainer({
                 startedAt: rc.startedAt || Date.now(),
                 sandboxed: rc.sandboxed,
                 sandboxSource: rc.source,
+                browserAgent: rc.browserAgent || undefined,
             });
         });
         const sig = (l) => l.map(t => `${t.tool_call_id}:${t.status}`).join('|');
@@ -2188,6 +2191,16 @@ export default function ChatContainer({
                                 });
                                 continue;
                             }
+                            if (parsed.type === 'browser_agent_progress') {
+                                // browser_agent: each step's screenshot + action.
+                                if (parsed.tool_call_id) {
+                                    patchStreamingToolCall(parsed.tool_call_id, {
+                                        purpose: parsed.summary || undefined,
+                                        browserAgent: parsed.state || undefined,
+                                    });
+                                }
+                                continue;
+                            }
                             if (parsed.type === 'delegate_progress') {
                                 // Worker-agent status from the delegate tool:
                                 // the running chip's purpose line becomes the
@@ -3282,6 +3295,15 @@ export default function ChatContainer({
                                             seconds: parsed.seconds,
                                         } } : null),
                                     });
+                                    continue;
+                                }
+                                if (parsed.type === 'browser_agent_progress') {
+                                    if (parsed.tool_call_id) {
+                                        patchStreamingToolCall(parsed.tool_call_id, {
+                                            purpose: parsed.summary || undefined,
+                                            browserAgent: parsed.state || undefined,
+                                        });
+                                    }
                                     continue;
                                 }
                                 if (parsed.type === 'delegate_progress') {

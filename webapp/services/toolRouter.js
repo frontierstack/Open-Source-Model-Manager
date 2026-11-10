@@ -121,6 +121,9 @@ const INTENT_RULES = [
     // web/parse_html loops and never reaches find_image's browser extraction
     // (observed: 15 tool calls, no image, on a "extract the main image" ask).
     [/\b(extract|grab|pull|capture|fetch|scrape|display|show|save|get|download|collect|gather|list|give me|find)\b[^.\n]{0,60}\b(main |hero |lead |og:?|cover )?(image|picture|photo|img|thumbnail)s?\b|\b(image|picture|photo)s?\b[^.\n]{0,40}\bfrom (this|that|the|a) (page|site|url|link|article|listing)/i, ['find_image']],
+    // A multi-step goal on a live site (forms, filters, carts, multi-page
+    // flows) or an explicit ask for a browser agent → the browser-use agent.
+    [/\b(browser[- ]?(agent|use)|ai browser|drive (a|the) browser|use (a|the) (real )?browser to|automate (the|this|that|a) (browser|website|site|web ?page))\b|\b(fill (in|out)|complete|submit) (the |this |that |a |an )?(web ?|online |search |contact |signup |sign-up |registration |application )?form\b|\b(go|navigate|head) to (https?:\/\/\S+|www\.\S+|[\w-]+\.(com|org|net|io|gov|edu|co|dev|app)\S*) (and|then)\b[^.\n]{0,80}\b(click|select|choose|search|filter|sort|fill|type|enter|submit|add|book|check out|sign up|log ?in|page through|open)\b|\b(add (it|this|that|them|\w+) to (the |my )?cart|check ?out on|book (a|an|the) .{0,40}\bon\b)/i, ['browser_agent']],
     [/\bscreen ?(shot|grab|cap(ture)?)s?\b|\bsnapshot of\b|\bcapture (the|this|that|a) (page|site|website|screen)\b|\bwhat (does|do) .{1,60} look like\b/i, ['take_screenshot']],
     // Testing/previewing a page the MODEL wrote ("test it in playwright", "the
     // animator isn't displaying", "console error …", "blank canvas"). Without

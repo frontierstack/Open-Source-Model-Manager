@@ -56,6 +56,7 @@ const VERBS = {
     run_npm:           ['Running npm',             'Ran npm'],
     make_downloadable: ['Preparing download',      'Prepared download'],
     delegate:          ['Running worker agents',   'Ran worker agents'],
+    browser_agent:     ['Browsing with the browser agent', 'Browsed with the browser agent'],
     first_pass:        ['Planning lookups',        'Planned lookups'],
     ask_assistant:     ['Handing work to the other model', 'Handed work to the other model'],
     await_assistant:   ['Waiting on the other model', 'Waited on the other model'],

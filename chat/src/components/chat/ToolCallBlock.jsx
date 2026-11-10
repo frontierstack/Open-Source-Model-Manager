@@ -73,7 +73,9 @@ export default function ToolCallBlock({ tool }) {
         // single-model chat renders exactly as before.
         model,
         assistantJobs,
+        browserAgent,
     } = tool;
+    const hasBrowser = !!(browserAgent && typeof browserAgent === 'object');
     // Per-agent view for a delegate chip: live progress frames while running,
     // else the compact results lifted off the tool result, else (a chip saved
     // server-side in the background) the raw delegate result if it is there.
@@ -166,7 +168,7 @@ export default function ToolCallBlock({ tool }) {
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts || hasAgents || hasJobs;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts || hasAgents || hasJobs || hasBrowser;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -225,6 +227,7 @@ export default function ToolCallBlock({ tool }) {
             </button>
             {open && hasDetail && (
                 <div className="tool-chip-body">
+                    {hasBrowser && <BrowserAgentPanel state={browserAgent} running={isRunning} />}
                     {hasAgents && <AgentsPanel rows={agentRows} running={isRunning} />}
                     {hasJobs && <AgentsPanel rows={jobRows} running={isRunning} />}
                     {chartSpec && (
@@ -236,10 +239,10 @@ export default function ToolCallBlock({ tool }) {
                     {videoSpec && (
                         <VideoBlock spec={videoSpec} />
                     )}
-                    {hasArtifacts && (
+                    {hasArtifacts && !hasBrowser && (
                         <ArtifactList artifacts={artifacts} previews={false} />
                     )}
-                    {hasArgs && (
+                    {hasArgs && !hasBrowser && (
                         argEntries && argEntries.length > 0 ? (
                             <ArgsTable entries={argEntries} />
                         ) : (
@@ -251,7 +254,7 @@ export default function ToolCallBlock({ tool }) {
                     )}
                     {isFailed && error && <ErrorBlock error={error} toolName={toolName} />}
                     {hasSources && <SearchSources sources={sourceList} />}
-                    {preview && !isFailed && !hasSources && !chartSpec && !imageSpec && !videoSpec && (
+                    {preview && !isFailed && !hasSources && !chartSpec && !imageSpec && !videoSpec && !hasBrowser && (
                         <pre className="tool-chip-pre">{preview}</pre>
                     )}
                 </div>
@@ -493,6 +496,75 @@ function ErrorBlock({ error, toolName }) {
                 </div>
                 <pre>{display}</pre>
             </div>
+        </div>
+    );
+}
+
+// browser_agent: what the AI browser is doing. The view follows the newest
+// step while it runs; clicking a step shows that step's screenshot.
+function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return ''; }
+}
+
+export function BrowserAgentPanel({ state, running }) {
+    const steps = Array.isArray(state.steps) ? state.steps : [];
+    const [picked, setPicked] = useState(null);
+    const [broken, setBroken] = useState({});
+    const listRef = React.useRef(null);
+    const latest = steps.length ? steps[steps.length - 1] : null;
+    const shown = (picked != null && steps.find(s => s.n === picked)) || latest;
+    const shot = shown && shown.shot && !broken[shown.shot] ? shown.shot : null;
+    useEffect(() => {
+        // Keep the newest step in view while following live.
+        if (picked == null && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    }, [steps.length, picked]);
+    const status = running ? 'running' : (state.status || 'done');
+    const statusText = running
+        ? (steps.length ? `Step ${latest.n}` : 'Starting the browser…')
+        : status === 'done' ? `Finished · ${steps.length} step${steps.length === 1 ? '' : 's'}${state.seconds ? ` · ${Math.round(state.seconds)}s` : ''}`
+        : status === 'stopped' ? 'Stopped'
+        : `Did not finish · ${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    return (
+        <div className={`bagent is-${status}`}>
+            <div className="bagent-bar">
+                <span className="bagent-dots" aria-hidden="true"><i /><i /><i /></span>
+                <span className="bagent-url" title={shown && shown.url ? shown.url : ''}>
+                    {shown && shown.url ? shown.url.replace(/^https?:\/\//, '') : 'about:blank'}
+                </span>
+                <span className="bagent-status">
+                    {running && <Loader2 className="animate-spin" strokeWidth={2.5} />}
+                    {statusText}
+                </span>
+            </div>
+            <div className="bagent-view">
+                {shot ? (
+                    <a href={shot} target="_blank" rel="noopener noreferrer" title="Open full size">
+                        <img src={shot} alt={shown.title || shown.action || 'Browser screenshot'} loading="lazy"
+                            onError={() => setBroken(b => ({ ...b, [shot]: true }))} />
+                    </a>
+                ) : (
+                    <div className="bagent-empty">{running ? 'Opening the browser…' : 'No screenshot for this step'}</div>
+                )}
+                {picked != null && running && (
+                    <button type="button" className="bagent-live" onClick={() => setPicked(null)}>Back to live</button>
+                )}
+            </div>
+            {steps.length > 0 && (
+                <ol className="bagent-steps" ref={listRef}>
+                    {steps.map(st => (
+                        <li key={st.n}>
+                            <button type="button"
+                                className={`bagent-step${shown && shown.n === st.n ? ' is-active' : ''}${st.error ? ' is-error' : ''}`}
+                                onClick={() => setPicked(st.n === (latest && latest.n) && running ? null : st.n)}>
+                                <span className="bagent-n">{st.n}</span>
+                                <span className="bagent-action">{st.action}</span>
+                                {hostOf(st.url) && <span className="bagent-host">{hostOf(st.url)}</span>}
+                                {st.error && <span className="bagent-err" title={st.error}>{st.error}</span>}
+                            </button>
+                        </li>
+                    ))}
+                </ol>
+            )}
         </div>
     );
 }

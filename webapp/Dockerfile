@@ -159,6 +159,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -c "import pycab, cabarchive, pymsi; print('[archive] python cab/msi libs OK')" \
     && for b in cabextract unshield msiextract innoextract unar lsar bsdtar zstd lz4 lzip lzop brotli rpm2cpio cpio lha arj unsquashfs; do command -v $b >/dev/null || { echo "[archive] missing $b"; exit 1; }; done
 
+# browser-use (AI browser agent, the browser_agent chat tool). Its own venv:
+# it pins exact versions of pydantic/mcp/pillow/idna that must not replace the
+# ones Scrapling and the other in-process tools use. It reuses the Chromium
+# installed above; services/browserAgentService.js runs it in a throwaway
+# container, never in this one.
+RUN python3 -m venv --without-pip /opt/browser-use \
+    && pip3 --python /opt/browser-use/bin/python install --no-cache-dir browser-use==1.0.1 \
+    && /opt/browser-use/bin/python -c "import browser_use, importlib.metadata as m; print('[browser-use]', m.version('browser-use'))"
+
 COPY . .
 RUN npm run build
 

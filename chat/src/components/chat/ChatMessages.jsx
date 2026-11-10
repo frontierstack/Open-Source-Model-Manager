@@ -121,6 +121,7 @@ function StreamingMessage() {
             // delegate: live worker-agent progress (delegate_progress frames)
             // and, once the result is in, each agent's compact outcome.
             agents: Array.isArray(tc.agents) && tc.agents.length ? tc.agents : undefined,
+            browserAgent: tc.browserAgent || (r && typeof r === 'object' && r.browserAgent) || undefined,
             agentResults: (tc.name === 'delegate' && r && typeof r === 'object' && Array.isArray(r.results))
                 ? r.results.slice(0, 8).map(x => ({
                     name: x && x.name, status: x && x.status, model: x && x.model, calls: x && x.toolCalls, seconds: x && x.seconds,

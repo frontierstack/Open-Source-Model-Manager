@@ -5795,3 +5795,31 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 @media (prefers-reduced-motion: reduce) {
     .smooth-collapse, .srcx-chev, .srcx-bar.bar-style .srcx-chev, .msg-notes.msg-work, .msg-work > .msg-notes-toggle.bar-style { transition: none; }
 }
+
+/* ---- browser_agent live panel (ToolCallBlock BrowserAgentPanel) ---- */
+.bagent { border: 1px solid var(--border-primary); border-radius: 10px; overflow: hidden; background: var(--bg-secondary); margin: 2px 0 8px; }
+.bagent-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border-primary); background: var(--bg-tertiary); font-size: 12px; min-width: 0; }
+.bagent-dots { display: inline-flex; gap: 4px; flex: none; }
+.bagent-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border-primary); display: block; }
+.bagent-url { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-secondary); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 2px 8px; }
+.bagent-status { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--text-tertiary, var(--text-secondary)); white-space: nowrap; }
+.bagent-status svg { width: 12px; height: 12px; color: var(--accent-primary); }
+.bagent.is-failed .bagent-status { color: var(--danger, #e5484d); }
+.bagent-view { position: relative; background: var(--bg-primary); aspect-ratio: 1440 / 757; max-height: 420px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.bagent-view a { display: block; width: 100%; height: 100%; }
+.bagent-view img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top center; }
+.bagent-empty { font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
+.bagent-live { position: absolute; right: 8px; bottom: 8px; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-primary); background: var(--bg-elevated, var(--bg-secondary)); color: var(--text-primary); cursor: pointer; }
+.bagent-steps { list-style: none; margin: 0; padding: 4px; max-height: 190px; overflow-y: auto; border-top: 1px solid var(--border-primary); }
+.bagent-step { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; min-width: 0; }
+.bagent-step:hover { background: var(--bg-hover); }
+.bagent-step.is-active { background: var(--bg-active, var(--bg-hover)); }
+.bagent-n { flex: none; min-width: 18px; text-align: right; color: var(--text-tertiary, var(--text-secondary)); font-variant-numeric: tabular-nums; }
+.bagent-action { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagent-host { flex: none; color: var(--text-tertiary, var(--text-secondary)); font-size: 11px; }
+.bagent-err { flex: 0 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger, #e5484d); font-size: 11px; }
+@media (max-width: 640px) {
+  .bagent-host { display: none; }
+  .bagent-view { max-height: 260px; }
+}
+.bagent-live-wrap { margin: 8px 0 10px; max-width: 760px; }

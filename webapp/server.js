@@ -7630,6 +7630,28 @@ async function resolveWorkspaceArtifact(userId, safeName, conv) {
 
 // Security: runId is a crypto-random 24-hex string; unguessable per run.
 // We still require auth + validate the filename against path traversal.
+// browser_agent step screenshots (services/browserAgentService.js), stored per
+// account outside the workspace and served to that account only.
+let browserAgentSvc = null;
+try {
+    browserAgentSvc = require('./services/browserAgentService');
+    browserAgentSvc.init({ dataDir: DATA_DIR });
+    console.log(`[browser_agent] ${browserAgentSvc.available() ? 'browser-use available' : 'browser-use not installed in this image — tool hidden'}`);
+} catch (e) {
+    console.warn('[browser_agent] service failed to load:', e.message);
+    browserAgentSvc = null;
+}
+app.get('/api/browser-agent/shots/:runId/:file', requireAuth, async (req, res) => {
+    const p = browserAgentSvc && browserAgentSvc.shotPath(req.userId ?? null, req.params.runId, req.params.file);
+    if (!p) return res.status(404).end();
+    try {
+        await fs.access(p);
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+        res.sendFile(p);
+    } catch (_) { res.status(404).end(); }
+});
+
 app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) => {
     const path_ = require('path');
     const { runId, filename } = req.params;
@@ -22128,13 +22150,15 @@ const chatStreamHandlerInner = async (req, res) => {
         Object.defineProperty(toolCtx, '_req', { value: req, enumerable: false });
         toolCtx.emitEvent = (ev) => {
             if (!ev || typeof ev !== 'object') return;
-            if (ev.type === 'delegate_progress' && streamingConversationId && ev.tool_call_id) {
+            if ((ev.type === 'delegate_progress' || ev.type === 'browser_agent_progress') && streamingConversationId && ev.tool_call_id) {
                 try {
                     const job = activeStreamingJobs.get(streamingConversationId);
                     const entry = job && job.runningToolCalls && job.runningToolCalls.get(ev.tool_call_id);
                     if (entry && ev.summary) {
                         if (!entry.purposeOriginal) entry.purposeOriginal = entry.purpose || '';
                         entry.purpose = ev.summary;
+                        // A refreshed tab rebuilds the live browser panel from this.
+                        if (ev.type === 'browser_agent_progress' && ev.state) entry.browserAgent = ev.state;
                         job.toolRev = (job.toolRev || 0) + 1;
                     }
                 } catch (_) { /* best-effort */ }
@@ -26284,7 +26308,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             // call that dispatched it (on the shared ctx the id
                             // was never set, so every batch was filed under the
                             // auto-dispatched chip — "just 3 tasks").
-                            p = chatTools.executeToolCall(call, /^(delegate|ask_assistant|await_assistant)$/.test(call.function.name)
+                            p = chatTools.executeToolCall(call, /^(delegate|ask_assistant|await_assistant|browser_agent)$/.test(call.function.name)
                                 ? Object.assign(Object.create(toolCtx), { _toolCallId: call.id })
                                 : toolCtx);
                             // A background job past its soft deadline stops
@@ -26399,6 +26423,19 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     resultMsg = { ...resultMsg, content: JSON.stringify(lean) };
                                 }
                             } catch (_) { /* not JSON — leave as-is */ }
+                        }
+                        // browser_agent: the live-panel state (every step's
+                        // screenshot URL) is for the chat only; the model gets
+                        // the report and the compact step list.
+                        if (!parsedFullSpec && call.function.name === 'browser_agent' && typeof resultMsg.content === 'string' && resultMsg.content.includes('"browserAgent"')) {
+                            try {
+                                const full = JSON.parse(resultMsg.content);
+                                if (full && full.browserAgent) {
+                                    parsedFullSpec = full;
+                                    const { browserAgent: _panel, ...lean } = full;
+                                    resultMsg = { ...resultMsg, content: JSON.stringify(lean) };
+                                }
+                            } catch (_) { /* leave as-is */ }
                         }
 
                         // Per-tool-result size cap. Trims at ARRAY-ELEMENT
@@ -26912,6 +26949,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 // full spec (real data URLs), not the model-facing lean copy
                                 imageSpec: ((parsedFullSpec && parsedFullSpec.imageSpec) || (parsedForChip && parsedForChip.imageSpec)) || undefined,
                                 videoSpec: (parsedForChip && parsedForChip.videoSpec) || undefined,
+                                browserAgent: ((parsedFullSpec && parsedFullSpec.browserAgent) || (parsedForChip && parsedForChip.browserAgent)) || undefined,
                                 artifacts: (chipArtifacts && chipArtifacts.length) ? chipArtifacts : undefined,
                                 sandboxed: policy.sandboxed,
                                 sandboxSource: policy.source,
@@ -26934,7 +26972,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 // renders from — exempt them from the size cap
                                 // like charts (a captured/screenshot thumbnail
                                 // is a data URL well past 32k by nature).
-                                const isSpecPayload = !!(parsedResult && (parsedResult.imageSpec || parsedResult.videoSpec));
+                                const isSpecPayload = !!(parsedResult && (parsedResult.imageSpec || parsedResult.videoSpec || parsedResult.browserAgent));
                                 const resultPayload = parsedResult && (isChartTool || isSpecPayload || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
                                     ? parsedResult
                                     : undefined;
@@ -34289,6 +34327,157 @@ app.use((req, res) => {
             return tools.toolRegistry.get('take_screenshot').execute({
                 ...args, url: args?.url || args?.page || (Array.isArray(args?.urls) ? args.urls[0] : ''),
             }, ctx);
+        },
+    });
+
+    // ----- browser_agent ---------------------------------------------------
+    // An AI browser agent (browser-use) that drives a real Chromium through a
+    // multi-step task: open pages, click, type, fill and submit forms, page
+    // through results, and report what it found. It runs in a throwaway
+    // container (services/browserAgentService.js) on this turn's model, and
+    // every step's screenshot streams into the chat (browser_agent_progress).
+    tools.registerTool({
+        name: 'browser_agent',
+        build(ctx) {
+            if (!browserAgentSvc || !browserAgentSvc.available()) return null;
+            if (ctx && ctx.delegateDepth > 0) return null; // jobs and workers have the web tool
+            return {
+                type: 'function',
+                function: {
+                    name: 'browser_agent',
+                    description: 'Hand a multi-step browser task to an AI browser agent that clicks, types, fills forms and navigates a real browser; the user watches it live. ' +
+                        'Use it when a goal needs several interactions on a site (search forms, filters, multi-page flows, carts, settings, "go to X, then do Y and Z") or when web reads failed because the page only works when used. ' +
+                        'For reading one page or a web search, use web instead (much faster). Describe the whole goal in `task`, including the start URL and exactly what to report back; it returns the agent\'s report and the steps it took.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            task: { type: 'string', description: 'The complete goal in plain words: where to start, what to do, and what to report back.' },
+                            url: { type: 'string', description: 'Start page (optional when the task names it).' },
+                            maxSteps: { type: 'integer', description: 'Step budget (default 20, max 40).' },
+                        },
+                        required: ['task'],
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            let task = String(args?.task || args?.goal || args?.instructions || '').trim();
+            const startUrl = String(args?.url || '').trim();
+            if (!task && startUrl) task = `Open ${startUrl} and report what the page shows.`;
+            if (!task) return { success: false, error: 'task required: describe the goal, the start page and what to report' };
+            if (startUrl && /^https?:\/\//i.test(startUrl) && !task.includes(startUrl)) task = `Start at ${startUrl}. ${task}`;
+            for (const u of (task.match(/https?:\/\/[^\s"'<>)]+/g) || []).slice(0, 5)) {
+                const blocked = urlBlockReason(u);
+                if (blocked) return { success: false, error: blocked };
+            }
+            const maxSteps = Math.max(3, Math.min(40, parseInt(args?.maxSteps, 10) || 20));
+            const timeoutS = Math.max(60, Math.min(1200, parseInt(process.env.BROWSER_AGENT_TIMEOUT_S || '', 10) || maxSteps * 25));
+            // The turn's own model drives the browser: while this tool runs the
+            // turn is waiting, so its slot is free.
+            const running = Array.from(modelInstances.values()).filter(i => i.status === 'running');
+            const inst = running.find(i => i.modelName === ctx?.model) || modelInstances.get(ctx?.model) || running[0];
+            if (!inst) return { success: false, error: 'no model is running' };
+            const host = instanceHost(inst);
+            const port = inst.internalPort || inst.port;
+            let modelId = inst.config && inst.config.hfRepoId ? inst.config.hfRepoId : (inst.modelName || 'default');
+            try {
+                const r = await axios.get(`http://${host}:${port}/v1/models`, { timeout: 5000 });
+                const first = r.data && Array.isArray(r.data.data) && r.data.data[0];
+                if (first && first.id) modelId = first.id;
+            } catch (_) { /* keep the registry name */ }
+
+            const callId = ctx?._toolCallId || null;
+            const started = Date.now();
+            const shotUrl = (runId, file) => file ? `/api/browser-agent/shots/${runId}/${file}` : null;
+            const state = { runId: null, task: task.slice(0, 600), model: inst.modelName, status: 'starting', steps: [], current: null };
+            let lastEmit = 0;
+            const publish = (force) => {
+                if (!ctx || typeof ctx.emitEvent !== 'function' || !callId) return;
+                if (!force && Date.now() - lastEmit < 250) return;
+                lastEmit = Date.now();
+                const cur = state.current;
+                const summary = cur ? `Step ${cur.n}: ${cur.action}${cur.title ? ` — ${cur.title}` : ''}` : 'Starting the browser';
+                ctx.emitEvent({ type: 'browser_agent_progress', tool_call_id: callId, summary: summary.slice(0, 300), state: { ...state, steps: state.steps.slice(-40) } });
+            };
+            publish(true);
+            const result = await browserAgentSvc.run({
+                task, maxSteps, timeoutS,
+                target: { host, port, model: modelId },
+                userId: ctx?.userId ?? null,
+                allowInternal: allowInternalNetwork(),
+                signal: ctx?.abortSignal,
+                onEvent: (ev, { runId }) => {
+                    state.runId = runId;
+                    if (ev.type === 'start') { state.status = 'running'; publish(true); }
+                    else if (ev.type === 'step') {
+                        const step = {
+                            n: ev.n, action: String(ev.action || '').slice(0, 160), url: String(ev.url || '').slice(0, 400),
+                            title: String(ev.title || '').slice(0, 160), error: ev.error ? String(ev.error).slice(0, 240) : undefined,
+                            shot: shotUrl(runId, ev.shot), at: Date.now() - started,
+                        };
+                        state.steps.push(step);
+                        state.current = step;
+                        publish(true);
+                    } else if (ev.type === 'done') {
+                        state.status = ev.status === 'completed' ? 'done' : (ev.status || 'done');
+                    }
+                },
+            });
+            const done = result.done || {};
+            const answer = String(done.result || '').trim();
+            const last = [...state.steps].reverse().find(s => s.shot) || null;
+            state.status = result.aborted ? 'stopped' : (result.ok && (done.status === 'completed')) ? 'done' : 'failed';
+            state.finalUrl = last ? last.url : undefined;
+            state.seconds = Math.round((Date.now() - started) / 100) / 10;
+            state.success = done.success ?? null;
+            publish(true);
+            console.log(`[browser_agent] ${result.ok ? done.status : 'failed'} in ${state.seconds}s, ${state.steps.length} steps on ${inst.modelName}${result.error ? `: ${String(result.error).slice(0, 200)}` : ''}`);
+
+            // The last screenshot goes into the workspace too, so it shows under
+            // the answer and can be downloaded or used by other tools.
+            let artifacts;
+            if (last && result.runId) {
+                try {
+                    const src = browserAgentSvc.shotPath(ctx?.userId ?? null, result.runId, last.shot.split('/').pop());
+                    const sbRunner = require('./services/sandboxRunner');
+                    const ws = await sbRunner.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId || null, ctx?.workspaceBucket || null);
+                    const dir = path.join(ws.localInContainer, 'artifacts');
+                    await fs.mkdir(dir, { recursive: true });
+                    const host = (() => { try { return new URL(last.url).hostname.replace(/^www\./, '').replace(/[^a-z0-9.-]/gi, '_').slice(0, 50); } catch (_) { return 'page'; } })();
+                    const name = `browser-agent-${host}-${result.runId.slice(0, 6)}.jpg`;
+                    await fs.copyFile(src, path.join(dir, name));
+                    await fs.chmod(path.join(dir, name), 0o666).catch(() => {});
+                    const convQ = ctx?.conversationId ? `?conv=${encodeURIComponent(String(ctx.conversationId))}` : '';
+                    const st = await fs.stat(path.join(dir, name));
+                    artifacts = [{ name, size: st.size, url: `/api/tool-artifacts/${crypto.randomBytes(8).toString('hex')}/${encodeURIComponent(name)}${convQ}` }];
+                } catch (e) { console.warn('[browser_agent] final screenshot save failed:', e.message); }
+            }
+            const steps = state.steps.map(s => ({ n: s.n, action: s.action, url: s.url || undefined, error: s.error }));
+            const base = {
+                browserAgent: { ...state, steps: state.steps.slice(-60) },
+                steps,
+                finalUrl: state.finalUrl,
+                seconds: state.seconds,
+                ...(artifacts ? { _artifacts: artifacts } : {}),
+            };
+            if (!result.ok) {
+                return {
+                    success: false,
+                    error: result.error || done.error || 'the browser agent failed',
+                    ...(done.partial ? { partial: String(done.partial).slice(0, 3000) } : {}),
+                    ...base,
+                };
+            }
+            return {
+                success: done.status === 'completed' && done.success !== false,
+                status: done.status,
+                agentVerdict: done.success === false ? 'the agent reported the task as NOT completed' : undefined,
+                report: answer.slice(0, 12000),
+                ...(done.partial ? { partial: String(done.partial).slice(0, 3000) } : {}),
+                ...(done.error ? { error: String(done.error).slice(0, 600) } : {}),
+                note: 'The user watched these steps and screenshots live in the chat. Answer from `report` (it is what the agent saw); do not invent details it did not report. If the agent did not finish, say what is missing.',
+                ...base,
+            };
         },
     });
 

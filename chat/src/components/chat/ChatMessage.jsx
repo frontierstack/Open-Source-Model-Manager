@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, User, RefreshCw, Eye, Code as CodeIcon } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
-import ToolCallBlock from './ToolCallBlock';
+import ToolCallBlock, { BrowserAgentPanel } from './ToolCallBlock';
 import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
 import SourceCluster from './SourceCluster';
 import ToolIconStack, { ToolTile } from './ToolIconStack';
@@ -85,6 +85,7 @@ const TOOL_VERBS = {
     run_node: 'Running script',
     make_downloadable: 'Preparing download',
     delegate: 'Running worker agents',
+    browser_agent: 'Browsing with the browser agent',
     first_pass: 'Planning lookups',
     ask_assistant: 'Handing work to the other model',
     await_assistant: 'Waiting on the other model',
@@ -736,7 +737,7 @@ export default React.memo(function ChatMessage({
     // agent's tool calls stream into it) — unfold the strip for it unless the
     // user has folded it by hand.
     const toolsToggledRef = useRef(false);
-    const delegateRunning = !!(isStreaming && Array.isArray(toolCalls) && toolCalls.some(tc => tc && (tc.name === 'delegate' || tc.label === 'delegate') && (tc.status === 'partial' || tc.status === 'running')));
+    const delegateRunning = !!(isStreaming && Array.isArray(toolCalls) && toolCalls.some(tc => tc && /^(delegate|browser_agent)$/.test(tc.name || tc.label || '') && (tc.status === 'partial' || tc.status === 'running')));
     React.useEffect(() => {
         if (delegateRunning && !toolsToggledRef.current) setToolsExpanded(true);
     }, [delegateRunning]);
@@ -1065,6 +1066,15 @@ export default React.memo(function ChatMessage({
                             pair={notesPair}
                         />
                     )}
+                    {/* browser_agent at work: the live browser view sits in the
+                        reply itself (the notes are folded while streaming), so
+                        the user watches each step's screenshot as it lands. */}
+                    {isStreaming && (() => {
+                        const live = Array.isArray(toolCalls) && [...toolCalls].reverse().find(tc => tc
+                            && (tc.label === 'browser_agent' || tc.name === 'browser_agent')
+                            && (tc.status === 'partial' || tc.status === 'running') && tc.browserAgent);
+                        return live ? <div className="bagent-live-wrap"><BrowserAgentPanel state={live.browserAgent} running /></div> : null;
+                    })()}
                     {/* The ANSWER label is held until the turn ends: while it
                         streams, text after the last call may still turn out to
                         be narration (the next tool call moves it up into the
