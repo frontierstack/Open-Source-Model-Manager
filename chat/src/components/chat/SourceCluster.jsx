@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ExternalLink, ChevronDown, Loader2 } from 'lucide-react';
 import { getHostname, colorForHostname, avatarLetter, usePreview } from './SearchSources';
+import SmoothCollapse from './SmoothCollapse';
 import { warmPreview } from '../../utils/linkPreview';
 
 /**
@@ -217,7 +218,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
                 </span>
                 <ChevronDown className="srcx-chev" style={{ width: 14, height: 14 }} strokeWidth={1.75} />
             </button>
-            {open && (
+            <SmoothCollapse open={open}>
                 <ul className="srcx-list">
                     {sites.map((s) => (
                         <li key={s.host} className="srcx-site">
@@ -239,7 +240,7 @@ export default function SourceCluster({ toolCalls, searchResults, maxIcons = 6 }
                         </li>
                     ))}
                 </ul>
-            )}
+            </SmoothCollapse>
             {hover && <PreviewCard page={hover.page} anchor={hover.anchor} />}
         </div>
     );

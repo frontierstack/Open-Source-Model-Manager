@@ -5767,7 +5767,7 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 .msg-thinking-panel { border-radius: 8px; border: 1px solid var(--rule); background: color-mix(in oklab, var(--ink) 3%, transparent); }
 /* A collapsed two-model "Working notes" is just its bar: the card frame
    (border, padding, fill) only wraps the expanded content. */
-.msg-notes.msg-work:not(.is-open) { background: transparent; border: 0; padding: 0; margin: 2px 0 6px; border-radius: 0; }
+.msg-notes.msg-work:not(.is-open) { background: transparent; border-width: 0; border-color: transparent; padding: 0; margin: 2px 0 6px; border-radius: 0; }
 .msg-notes.msg-work.is-open > .msg-notes-toggle.bar-style { margin-bottom: 2px; }
 /* Desktop: the two-model bar stays on one line (totals truncate), so the
    chevron never drops to a second line. Phones keep the wrap. */
@@ -5775,4 +5775,23 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     .msg-work > .msg-notes-toggle.bar-style { flex-wrap: nowrap; height: 30px; padding-top: 0; padding-bottom: 0; }
     .msg-work > .msg-notes-toggle.bar-style .msg-turn-pair { flex-shrink: 0; }
     .msg-work > .msg-notes-toggle.bar-style .msg-turn-totals { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+/* Expand/collapse for the srcx-bar dropdowns. 0fr -> 1fr animates to the
+   content's real height, and open panels still grow freely while streaming.
+   SETTLE_MS in SmoothCollapse.jsx must outlast this transition. */
+.smooth-collapse {
+    --collapse-ease: 260ms cubic-bezier(.22, .61, .36, 1);
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 0fr; opacity: 0;
+    transition: grid-template-rows var(--collapse-ease), opacity var(--collapse-ease);
+}
+.smooth-collapse.is-open { grid-template-rows: 1fr; opacity: 1; }
+.smooth-collapse-inner { min-height: 0; min-width: 0; overflow: hidden; }
+.smooth-collapse.is-settled > .smooth-collapse-inner { overflow: visible; }
+.srcx-chev, .srcx-bar.bar-style .srcx-chev { transition: transform 260ms cubic-bezier(.22, .61, .36, 1); }
+/* The two-model card's frame eases away with its content. */
+.msg-notes.msg-work { transition: padding 260ms cubic-bezier(.22, .61, .36, 1), margin 260ms cubic-bezier(.22, .61, .36, 1), background-color 260ms ease, border-color 260ms ease, border-width 260ms ease, border-radius 260ms ease; }
+.msg-work > .msg-notes-toggle.bar-style { transition: background .12s, border-color .12s, margin 260ms cubic-bezier(.22, .61, .36, 1); }
+@media (prefers-reduced-motion: reduce) {
+    .smooth-collapse, .srcx-chev, .srcx-bar.bar-style .srcx-chev, .msg-notes.msg-work, .msg-work > .msg-notes-toggle.bar-style { transition: none; }
 }

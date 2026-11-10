@@ -6,6 +6,7 @@ import ToolCallBlock from './ToolCallBlock';
 import ToolMilestones, { stepVerb, callSubject } from './ToolMilestones';
 import SourceCluster from './SourceCluster';
 import ToolIconStack, { ToolTile } from './ToolIconStack';
+import SmoothCollapse from './SmoothCollapse';
 import { distinctTools } from '../../utils/toolIcons';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
@@ -642,14 +643,14 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming, pair }
                 <span className="msg-turn-totals">{[...(pair ? pair.totals : []), ...meta].join(' \u00b7 ')}</span>
                 <ChevronDown className="srcx-chev" strokeWidth={1.75} />
             </button>
-            {open && pair && pair.body && (
+            <SmoothCollapse open={open}>{() => (<>
+            {pair && pair.body && (
                 <div className="msg-work-section">
                     <div className="msg-work-sublabel">{isStreaming ? 'Two models working' : 'Two models'}</div>
                     {pair.body}
                 </div>
             )}
-            {open && pair && <div className="msg-work-sublabel msg-work-sublabel--steps">Steps</div>}
-            {open && (
+            {pair && <div className="msg-work-sublabel msg-work-sublabel--steps">Steps</div>}
                 <ol className="msg-notes-steps">
                     {segments.map((seg, i) => {
                         const state = stepState(seg.calls);
@@ -683,7 +684,7 @@ function WorkingNotes({ segments, toolCalls, open, onToggle, isStreaming, pair }
                         );
                     })}
                 </ol>
-            )}
+            </>)}</SmoothCollapse>
         </div>
     );
 }
@@ -1009,7 +1010,7 @@ export default React.memo(function ChatMessage({
                                 <span className="msg-thinking-count">{displayReasoning.length.toLocaleString()} chars</span>
                                 <ChevronDown className="srcx-chev" strokeWidth={1.75} />
                             </button>
-                            {reasoningExpanded && (() => {
+                            <SmoothCollapse open={reasoningExpanded}>{() => {
                                 const steps = splitReasoningIntoSteps(displayReasoning);
                                 const structured = steps.length >= 3;
                                 return (
@@ -1028,7 +1029,7 @@ export default React.memo(function ChatMessage({
                                         )}
                                     </div>
                                 );
-                            })()}
+                            }}</SmoothCollapse>
 
                         </div>
                     )}
@@ -1310,13 +1311,13 @@ export default React.memo(function ChatMessage({
                                     <span className="msg-tools-summary">· {summary}</span>
                                     <ChevronDown className="srcx-chev" strokeWidth={1.75} />
                                 </button>
-                                {toolsExpanded && (
+                                <SmoothCollapse open={toolsExpanded}>
                                     <div className="msg-tools-list">
                                         {toolCalls.map((tc, idx) => (
                                             <ToolCallBlock key={idx} tool={tc} />
                                         ))}
                                     </div>
-                                )}
+                                </SmoothCollapse>
                             </div>
                         );
                     })()}
