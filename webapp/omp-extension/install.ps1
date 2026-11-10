@@ -42,7 +42,7 @@ $AgentDir      = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else
 $ExtensionDir  = Join-Path $AgentDir 'extensions\modelserver'
 $ConfigPath    = Join-Path $AgentDir 'config.yml'
 $OmpDir        = if ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'omp' }
-$OmpMinVersion = [version]'18.14.0'
+$OmpMinVersion = [version]'18.18.6'
 $IsPowerShell7 = $PSVersionTable.PSVersion.Major -ge 6
 
 # ---------- output helpers ----------

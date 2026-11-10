@@ -46,7 +46,7 @@ EXT_DIR="$AGENT_DIR/extensions/modelserver"
 CONFIG="$AGENT_DIR/config.yml"
 # Oldest omp this extension is tested against (TypeBox shim, array system
 # prompts, getBranch session entries, session_before_compact preparation).
-OMP_MIN_VERSION="18.14.0"
+OMP_MIN_VERSION="18.18.6"
 
 # ---------- terminal output helpers ----------
 c_red=$'\033[0;31m'; c_green=$'\033[0;32m'; c_yellow=$'\033[1;33m'
