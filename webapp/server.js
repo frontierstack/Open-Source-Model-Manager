@@ -16479,6 +16479,9 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     if (coreRefineInFlight >= CORE_REFINE_MAX_INFLIGHT) return defer(15000);
     const rec = await coreMemory.get(userId, id);
     if (!rec || !rec.dirty) return null;
+    // A correction under test must stay the playbook its tasks run with; `dirty`
+    // keeps, so the refinement happens on the first task after the verdict.
+    if (rec.correction) return null;
     // One task is an anecdote, not a pattern — the deterministic parts (proven
     // approach, observed lessons) carry the theme until a second task lands.
     if ((rec.stats?.runs || 0) < coreMemory.MIN_REFINE_RUNS) return null;

@@ -3,17 +3,26 @@
 // do something about it, then check whether it worked.
 //
 //   detect   — a theme measure (response time, tool calls, failed calls,
-//              flailing, corrections) getting worse with at least moderate
-//              evidence (memoryStats findings, earliest vs latest third).
+//              repeated failures, corrections) getting worse with moderate or
+//              strong evidence (memoryStats findings, earliest vs latest third).
 //   act      — REVERT when the data shows an earlier playbook did better on
 //              that measure (by the playbook version each task ran with, else
 //              by the tasks around each rewrite); otherwise a TARGETED
 //              re-refinement that is told what regressed and shown the slow
 //              and the fast recent tasks.
-//   evaluate — after EVAL_K (3) tasks compare every corrected measure with
-//              its baseline: helped / no effect / worse; a clear regression is
-//              rolled back after EARLY_K (2). One correction per theme covers
-//              all its worsening measures; themes are corrected in parallel.
+//   evaluate — ONE look, after EVAL_K (8) tasks that actually received the
+//              corrected playbook: a measure counts as better or worse only
+//              with strong evidence against the tasks before the fix, else it
+//              is no effect. Closed as inconclusive if too few tasks ever use
+//              it. One correction per theme covers all its worsening measures;
+//              themes are corrected in parallel.
+//
+// Why these bars (placebo over the real task history, 2026-11-09: the verdict
+// applied at positions where nothing was corrected): the old 3-task median rule
+// called 89% of them better or worse, and "any of two measures worse" rolled
+// back 61%. Moderate evidence at 8 tasks still misfired 31-53%, looking at
+// 3..8 tasks repeatedly 45-63%; strong evidence at one look at 8 misfired 4-8%.
+// One task's calls run from 1 to 34, so a handful of tasks cannot say more.
 //
 // Everything here is pure (plain shard objects in, decisions out); the server
 // owns the model call and the scheduling. State lives in shard.selfCorrect.
@@ -21,18 +30,19 @@
 const memoryStats = require('./memoryStats');
 const { METRICS, compareGroups } = memoryStats;
 
-const EVAL_K = parseInt(process.env.SELF_CORRECT_EVAL_TASKS, 10) || 3;     // tasks to a verdict
-const EARLY_K = 2;                  // a clear regression is rolled back after this many
+const EVAL_K = parseInt(process.env.SELF_CORRECT_EVAL_TASKS, 10) || 8;     // tasks that used the fix, to a verdict
+const MIN_READINGS = Math.ceil(EVAL_K * 0.75);   // response time can be missing on a task
 const BASE_K = 8;
+// A correction that too few tasks ever use must not stay open: while it is
+// active the theme gets no new correction and no ordinary refinement.
+const EVAL_MAX_TASKS = parseInt(process.env.SELF_CORRECT_EVAL_MAX_TASKS, 10) || 20;   // theme tasks since the fix
+const EVAL_MAX_MS = (parseFloat(process.env.SELF_CORRECT_EVAL_MAX_DAYS) || 21) * 86400000;
 const COOLDOWN_MS = (parseFloat(process.env.SELF_CORRECT_COOLDOWN_H) || 1) * 3600 * 1000;
 const MAX_ATTEMPTS = parseInt(process.env.SELF_CORRECT_MAX_ATTEMPTS, 10) || 4;   // per theme in ATTEMPT_WINDOW
 const ATTEMPT_WINDOW_MS = 24 * 3600 * 1000;
 const MIN_GROUP = 5;                // tasks per playbook version / per side of a rewrite to judge it
-// When to act. Strong or moderate evidence may restore an earlier playbook;
-// a weaker signal only gets a targeted rewrite, and only when the change is
-// large — the 3-task verdict and the rollback guard every one of them.
-const ACT_MIN = { strong: 4, moderate: 5, weak: 5 };
-const WEAK_FACTOR = 2;              // weak evidence: change must be ≥ 2× the meaningful threshold
+// When to act: strong or moderate evidence only. Weak findings are watched.
+const ACT_MIN = { strong: 4, moderate: 5 };
 const ACTIONS_MAX = 120;
 const metricByKey = new Map(METRICS.map(m => [m.key, m]));
 
@@ -158,14 +168,10 @@ function correctionInput(rec, fs) {
  * being evaluated or inside its cooldown.
  */
 function eligibility(f) {
+    const need = ACT_MIN[f.evidence];
+    if (!need) return { ok: false, decision: 'wait', reason: 'could still be chance — watching until the evidence is real' };
     const have = Math.min(f.nFrom || 0, f.nTo || 0);
-    const need = ACT_MIN[f.evidence] || ACT_MIN.weak;
     if (have < need) return { ok: false, decision: 'wait', reason: `only ${have} tasks a side so far; acts at ${need}+` };
-    if (f.evidence === 'weak') {
-        const m = metricByKey.get(f.metric);
-        const big = m && f.change != null && Math.abs(f.change) >= WEAK_FACTOR * THRESH(m);
-        if (!big) return { ok: false, decision: 'wait', reason: 'could still be chance and the change is small — watching' };
-    }
     return { ok: true };
 }
 
@@ -224,7 +230,7 @@ function plan(shard, findings, { now = Date.now() } = {}) {
         };
         // Restoring an earlier playbook needs real evidence AND must not make
         // another of the theme's worsening measures worse.
-        let better = primary.evidence !== 'weak' ? betterPlaybook(shard, rec, pm) : null;
+        let better = betterPlaybook(shard, rec, pm);
         if (better && better.oldRows && better.newRows) {
             for (const f of eligible.slice(1)) {
                 const m2 = metricByKey.get(f.metric);
@@ -284,25 +290,37 @@ function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prev
     return a;
 }
 
-// Per-measure readings for an action over the tasks that ran after it.
+// Only tasks that were handed this theme's memory, at the corrected playbook
+// or later, can say anything about the correction. Measured 2026-11-09: 3 of
+// the 12 tasks behind the first five verdicts qualified, and none of the 6
+// behind the three rollbacks.
+function measuredRows(shard, a) {
+    return themeRows(shard, a.th).filter(r => r.t > a.t && r.rt
+        && (!Number.isFinite(r.pv) || !Number.isFinite(a.toVersion) || r.pv >= a.toVersion));
+}
+
+// Per-measure readings for an action over the tasks that used it.
 function readings(shard, a, k = EVAL_K) {
-    const after = themeRows(shard, a.th).filter(r => r.t > a.t);
+    const after = measuredRows(shard, a);
+    const before = themeRows(shard, a.th).filter(r => r.t < a.t).slice(-BASE_K);
     return actionMetrics(a).map(x => {
         const m = metricByKey.get(x.metric);
         if (!m) return { ...x, n: 0, value: null, change: null };
         const vals = after.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); }).slice(0, k);
         const value = vals.length ? centre(vals, m) : null;
         const change = worseBy(x.baseline, value, m);
+        const cmp = vals.length ? compareGroups(before, vals, m) : null;
+        const real = cmp && cmp.evidence === 'strong';
         return { metric: x.metric, metricLabel: x.metricLabel, baseline: x.baseline, n: vals.length, value, change, changeKind: kindOf(m),
-            direction: change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat',
-            clearlyWorse: change != null && change >= 2 * THRESH(m) };
+            p: cmp ? cmp.p : null, evidence: cmp ? cmp.evidence : null,
+            direction: !real || change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat' };
     });
 }
 
 /**
- * Judge active actions. Verdict after EVAL_K tasks; a clear regression on
- * any measure is rolled back already after EARLY_K. Worse on any measure →
- * rollback; better on one or more and worse on none → helped.
+ * Judge active actions, once, after EVAL_K tasks that used the fix. Worse on
+ * any measure (strong evidence) → rollback; better on one or more and worse on
+ * none → helped; otherwise no effect.
  */
 function evaluate(shard, { now = Date.now() } = {}) {
     const st = state(shard);
@@ -311,17 +329,25 @@ function evaluate(shard, { now = Date.now() } = {}) {
         if (a.status !== 'active') continue;
         const rs = readings(shard, a);
         const n = Math.min(...rs.map(r => r.n));
-        const tasksAfter = themeRows(shard, a.th).filter(r => r.t > a.t).length;
-        a.progress = Math.min(tasksAfter, EVAL_K);
-        const early = n >= EARLY_K && rs.some(r => r.clearlyWorse);
+        const measured = measuredRows(shard, a).length;
+        a.progress = Math.min(measured, EVAL_K);
         // Response time can be missing on a task; do not wait forever for it.
-        const ready = n >= EVAL_K || (tasksAfter >= EVAL_K + 2 && rs.every(r => r.n >= EARLY_K));
-        if (!early && !ready) continue;
+        const ready = n >= EVAL_K || (measured >= EVAL_K + 2 && rs.every(r => r.n >= MIN_READINGS));
+        if (!ready) {
+            const themeTasks = themeRows(shard, a.th).filter(r => r.t > a.t).length;
+            if (themeTasks < EVAL_MAX_TASKS && now - Date.parse(a.t) < EVAL_MAX_MS) continue;
+            a.results = rs;
+            a.after = rs[0].n ? { value: rs[0].value, n: rs[0].n, change: rs[0].change, changeKind: rs[0].changeKind } : null;
+            a.judgedAt = new Date(now).toISOString();
+            a.status = 'no_effect';
+            a.inconclusive = true;
+            judged.push(a);
+            continue;
+        }
         const prim = rs[0];
-        a.results = rs.map(({ clearlyWorse, ...r }) => r);
+        a.results = rs;
         a.after = { value: prim.value, n: prim.n, change: prim.change, changeKind: prim.changeKind };
         a.judgedAt = new Date(now).toISOString();
-        a.early = early && !ready;
         if (rs.some(r => r.direction === 'worse')) { a.status = 'worse'; if (a.prevPlaybook) a.rollback = true; }
         else if (rs.some(r => r.direction === 'better')) a.status = 'helped';
         else a.status = 'no_effect';
@@ -341,14 +367,14 @@ function assessFinding(f) {
 // measure over them against the baseline (an interim reading, not a verdict).
 function liveProgress(shard, a) {
     const rs = readings(shard, a);
-    const all = themeRows(shard, a.th);
-    const after = all.filter(r => r.t > a.t);
+    const all = themeRows(shard, a.th).filter(r => r.rt);
+    const after = measuredRows(shard, a);
     const now = Date.now();
     const recent = all.filter(r => now - Date.parse(r.t) < 14 * 86400000).length;
     const perDay = recent / 14;
     const progress = Math.min(after.length, EVAL_K);
     const remaining = Math.max(0, EVAL_K - progress);
-    const interims = rs.filter(r => r.value != null).map(({ clearlyWorse, ...r }) => r);
+    const interims = rs.filter(r => r.value != null);
     return {
         lastThemeTaskAt: all.length ? all[all.length - 1].t : null,
         themeTasks14d: recent,
@@ -387,4 +413,4 @@ function publicState(shard, worsening = []) {
     };
 }
 
-module.exports = { actionMetrics, readings, EARLY_K, logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };
+module.exports = { actionMetrics, readings, logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };

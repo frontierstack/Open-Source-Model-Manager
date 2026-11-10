@@ -978,7 +978,7 @@ function CorrectionTracker({ a, evalTasks, now }) {
                 })}
             </ul>
             <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                {anyReading ? <span>Readings over {n} task{n === 1 ? '' : 's'} since the fix.</span> : <span>No {a.label} task has run since the fix — nothing to measure yet.</span>}
+                {anyReading ? <span>Readings over {n} task{n === 1 ? '' : 's'} that used the fix.</span> : <span>No {a.label} task has used the fix yet — nothing to measure.</span>}
                 <span className="tabular-nums" style={{ color: MUTED }}>
                     {a.remaining ? `${a.remaining} more task${a.remaining === 1 ? '' : 's'} to a verdict` : 'verdict due at the next check'}{a.lastTaskAt ? ` · last ${ago(a.lastTaskAt, now)}` : ''}
                 </span>
@@ -989,10 +989,10 @@ function CorrectionTracker({ a, evalTasks, now }) {
                     const paceTxt = pace == null ? '' : pace >= 1 ? `about ${Math.round(pace)} a day` : pace > 0 ? `about ${Math.max(1, Math.round(pace * 7))} a week` : 'none in the last two weeks';
                     return (
                         <>
-                            <b style={{ color: 'var(--text-primary)' }}>What it's waiting for:</b> the fix is judged only on new {a.label} tasks, so it advances when you next do {a.label.toLowerCase()} work
+                            <b style={{ color: 'var(--text-primary)' }}>What it's waiting for:</b> the fix is judged only on new {a.label} tasks that were given this playbook, so it advances when the next such task runs
                             {a.lastThemeTaskAt ? ` (the last one was ${ago(a.lastThemeTaskAt, now)}` : ''}{paceTxt ? `${a.lastThemeTaskAt ? '; ' : ' ('}${paceTxt} lately` : ''}{(a.lastThemeTaskAt || paceTxt) ? ')' : ''}.
                             {a.etaDays != null && a.remaining ? ` At that pace the verdict lands in about ${a.etaDays < 1 ? 'a day' : `${Math.round(a.etaDays)} day${Math.round(a.etaDays) === 1 ? '' : 's'}`}.` : ''}
-                            {' '}After {evalTasks} tasks it compares {metricsList.length > 1 ? `each of the ${metricsList.length} measures` : a.metricLabel.toLowerCase()} with before the fix: better → kept, no change → tried again differently after an hour, worse on any measure → the old playbook comes back (already after 2 tasks if it is clearly worse).
+                            {' '}After {evalTasks} such tasks it compares {metricsList.length > 1 ? `each of the ${metricsList.length} measures` : a.metricLabel.toLowerCase()} with before the fix, and only a difference too large to be chance counts: clearly better → kept, clearly worse on any measure → the old playbook comes back, anything else → no clear effect.
                         </>
                     );
                 })()}

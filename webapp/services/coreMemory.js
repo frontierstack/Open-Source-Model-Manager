@@ -210,9 +210,13 @@ const NON_CODE_RE = /\b(zip|postal|post|area|country|dialing|promo|promotional|d
 const GENERIC_TOOLS = new Set(['run_python', 'run_node', 'run_bash', 'read_file', 'head_file', 'tail_file', 'list_directory',
     'search_files', 'get_file_metadata', 'make_downloadable', 'extract_archive', 'unzip_file', 'tar_extract', 'copy_file', 'move_file']);
 
+const REPO_LINK_RE = /(?:^|[\s(<])(?:https?:\/\/)?(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org)\/[\w.-]+\/[\w.-]+\/?(?=$|[\s)>#?])/i;
+
 function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new Set(), hasTools = null, hostAgent = false } = {}) {
     const scores = new Map();
     const bump = (k, w) => scores.set(k, (scores.get(k) || 0) + w);
+    // A bare repository link is coding work, and carries no other words to go on.
+    if (REPO_LINK_RE.test(String(userText || ''))) bump('coding', 1.5);
     // Words inside a URL are its path, not the user's intent: the ".html"
     // of an article link filed "summarize <article>" under Coding.
     const q = clean(String(userText || '').replace(/\b(?:https?:\/\/|www\.)\S+/gi, ' link ').replace(NON_CODE_RE, ' '), 4000);
