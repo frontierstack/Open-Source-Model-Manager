@@ -1030,8 +1030,11 @@ function SelfCorrection({ data, now }) {
     const active = actions.filter((a) => a.status === 'active');
     // Watching = the server's all-time list (the view's range filter does not apply).
     const watching = (SC.watch || []).filter((w) => !active.some((a) => a.th === w.scope));
-    const helped = actions.filter((a) => a.status === 'helped').length;
-    const rolled = actions.filter((a) => a.status === 'rolled_back' || a.status === 'worse').length;
+    // Verdicts reached on fewer tasks than today's rule needs (the early 2–3-task
+    // rule) were mostly chance — shown in the history, not counted here.
+    const solid = (a) => !(a.after && a.after.n < (SC.evalTasks || 8));
+    const helped = actions.filter((a) => a.status === 'helped' && solid(a)).length;
+    const rolled = actions.filter((a) => (a.status === 'rolled_back' || a.status === 'worse') && solid(a)).length;
     const fmt = (m, v) => (METRIC_FMT[m] || { fmt: n1 }).fmt(v);
     const statusFor = (w) => {
         const last = actions.find((a) => a.th === w.scope);
@@ -1041,7 +1044,7 @@ function SelfCorrection({ data, now }) {
     };
     return (
         <Card title="Self-correction"
-            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it judges the result and rolls back a fix that made things worse. Checks run after every task, and always judge on your full history — the time range above does not change what gets corrected.`}
+            hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. It looks only at tasks that were given the theme's memory, since a playbook cannot change the others. After ${SC.evalTasks || 8} such tasks it judges the result and rolls back a fix that made things worse. Checks run after every task, on your full history — the time range above does not change what gets corrected.`}
             right={SC.lastCheckAt ? <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>checked {ago(SC.lastCheckAt, now)}</span> : null}
             className="flex flex-col xl:max-h-[720px]">
             {/* Capped side by side: this card sets the row height, so unbounded it left Live activity mostly empty. */}
@@ -1099,6 +1102,8 @@ function SelfCorrection({ data, now }) {
                                     <span className="rounded-full px-1.5 py-px text-[0.7rem] font-medium" style={{ color: STATUS_COLOR[a.status], backgroundColor: `color-mix(in oklab, ${STATUS_COLOR[a.status]} 12%, transparent)` }}>{STATUS_TEXT[a.status] || a.status}</span>
                                 </div>
                                 <div className="truncate text-xs" style={{ color: 'var(--text-secondary)' }} title={a.why}>{a.why}</div>
+                                {a.closedReason && <div className="text-[0.7rem]" style={{ color: MUTED }}>{a.closedReason}</div>}
+                                {!a.closedReason && a.status !== 'active' && !solid(a) && <div className="text-[0.7rem]" style={{ color: MUTED }}>judged on only {a.after.n} task{a.after.n === 1 ? '' : 's'} under the early rule — likely chance, not counted above</div>}
                                 <div className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>
                                     {ago(a.t, now)}{a.fromVersion != null ? ` · v${a.fromVersion} → v${a.toVersion}` : ''}
                                     {a.after ? ` · ${fmt(a.metric, a.baseline)} → ${fmt(a.metric, a.after.value)} over ${a.after.n} tasks` : a.status === 'active' ? ` · ${a.progress || 0}/${SC.evalTasks} tasks so far` : ''}

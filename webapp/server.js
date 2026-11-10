@@ -16524,6 +16524,7 @@ async function repairCoreMemoryThemes() {
     }
 }
 
+const CORE_REFINE_EVERY_TASKS = parseInt(process.env.CORE_MEMORY_REFINE_EVERY, 10) || 4;
 async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     if (process.env.CORE_MEMORY_LLM_REFINE === '0') return null;
     if (!userId || !id) return null;
@@ -16550,6 +16551,11 @@ async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     // One task is an anecdote, not a pattern — the deterministic parts (proven
     // approach, observed lessons) carry the theme until a second task lands.
     if ((rec.stats?.runs || 0) < coreMemory.MIN_REFINE_RUNS) return null;
+    // A playbook rewritten after every task never runs long enough to be
+    // judged (Research reached v49 over 175 tasks; across 37 updates the next
+    // 5 tasks were faster 14 times and slower 17). New lessons and the proven
+    // approach still land on every task; the prose waits for a few more.
+    if (rec.playbook && (rec.stats?.runs || 0) - (rec.refinedAtRuns || 0) < CORE_REFINE_EVERY_TASKS) return null;
     // Every model busy (a paired turn holds the lead and the assistant's job
     // slots): come back later rather than squeeze in beside a generation —
     // the old in-call wait outlived the refine's own timeout and then posted
@@ -16763,7 +16769,16 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // Similar past tasks from the vector archive get up to ~40% of the budget
     // (at most 400 tokens); the theme block gets the rest. Both are bounded, so
     // the injected text stays the same size however large the archive grows.
-    const cls = coreMemory.classifyTheme({ toolLabels, userText: query, attachmentKinds, hasTools: toolLabels.length > 0, hostAgent });
+    let cls = coreMemory.classifyTheme({ toolLabels, userText: query, attachmentKinds, hasTools: toolLabels.length > 0, hostAgent });
+    // No theme in the ask's own words: a follow-up continues its conversation's
+    // theme ("?", "how about now?", "that link didn't load").
+    let themeSource = cls ? 'ask' : null;
+    if (!cls && currentConvId) {
+        try {
+            const th = await coreMemory.conversationTheme(userId, currentConvId);
+            if (th && (th !== 'host' || hostAgent)) { cls = { theme: th }; themeSource = 'conversation'; }
+        } catch (_) { /* no conversation theme */ }
+    }
     let themeRec = null;
     try { themeRec = cls ? await coreMemory.peekBestApproach(userId, cls.theme) : null; } catch (_) { themeRec = null; }
     let similar = [];
@@ -16773,10 +16788,19 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
             skipApproach: themeRec ? episodeIndex.redactSecrets(themeRec).slice(0, 320) : '',
         });
     } catch (e) { console.warn('[Memory] similar-task recall failed:', e.message); similar = []; }
+    // Still none: what the most similar past tasks were filed under, else a
+    // lookup-shaped ask (a page, a phone number, a release date) is research.
+    if (!cls) {
+        const voted = coreMemory.themeFromSimilar(similar);
+        if (voted && (voted !== 'host' || hostAgent)) { cls = { theme: voted }; themeSource = 'similar tasks'; }
+        else if (coreMemory.looksLikeLookup(query, { needsLookup: leadHandoff.needsLookup, isSingleReadAsk: leadHandoff.isSingleReadAsk })) { cls = { theme: 'research' }; themeSource = 'lookup question'; }
+    }
+    if (cls && themeSource !== 'ask') console.log(`[Memory] Theme ${cls.theme} from the ${themeSource} (the ask names none) conv=${currentConvId || '-'}`);
     const simBudget = Math.min(400, Math.floor(tokenBudget * 0.4));
     let rec = null;
     try {
         rec = await coreMemory.recall(userId, {
+            theme: cls ? cls.theme : null,
             userText: query, attachmentKinds, toolLabels, hostAgent,
             tokenBudget: similar.length ? Math.max(200, tokenBudget - simBudget) : tokenBudget,
         });

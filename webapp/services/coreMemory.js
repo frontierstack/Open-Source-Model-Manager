@@ -242,6 +242,9 @@ function classifyTheme({ toolLabels = [], userText = '', attachmentKinds = new S
         if (!best || s > best.score) best = { key: t.key, score: s };
     }
     const usedTools = hasTools == null ? toolLabels.length > 0 : !!hasTools;
+    // Before the turn, a topic word alone ("game", "python") is not a theme:
+    // "when does the new Zelda game come out?" recalled the Coding playbook.
+    if (best && !usedTools && best.score < 1) best = null;
     if (!best) {
         if (usedTools) return { theme: 'general', label: GENERAL_THEME.label, scores: Object.fromEntries(scores), confident: false };
         return null;
@@ -569,6 +572,59 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
     });
 }
 
+// ---------------------------------------------------------------------------
+// Recall coverage (2026-11-10): which theme a turn should recall when its own
+// words name none. Measured since Nov 1: 51 of 94 web-chat tasks recalled no
+// theme memory at all — "Slim's Motor Clinic phone number", "When is the next
+// Diablo 4 season", bare article links, follow-ups like "?" and "how about
+// now?" — while tasks that DID get it ran 44% faster with 57% fewer calls
+// (strong evidence). These fallbacks run only when classifyTheme returns null.
+// ---------------------------------------------------------------------------
+
+const CONV_THEME_MAX_AGE_MS = 6 * 3600 * 1000;
+
+/** The theme this conversation's latest recorded task was filed under (null if none recent). */
+async function conversationTheme(userId, convId, { now = Date.now(), maxAgeMs = CONV_THEME_MAX_AGE_MS } = {}) {
+    if (!userId || !convId) return null;
+    const shard = await readShard(userId);
+    const rows = shard.statsLog || [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (!r || r.cv !== convId || !r.th) continue;
+        const age = now - Date.parse(r.t);
+        return Number.isFinite(age) && age <= maxAgeMs ? r.th : null;
+    }
+    return null;
+}
+
+/**
+ * A theme by vote of the most similar past tasks (from episodeIndex.recallSimilar,
+ * already above its similarity floor). Needs one clear winner: ≥60% of the
+ * score mass and a top match ≥ minTop.
+ */
+function themeFromSimilar(similar, { minTop = 0.5, minShare = 0.6 } = {}) {
+    const hits = (Array.isArray(similar) ? similar : []).filter(h => h && h.theme && h.theme !== 'general' && Number.isFinite(h.score));
+    if (!hits.length || Math.max(...hits.map(h => h.score)) < minTop) return null;
+    const w = new Map();
+    for (const h of hits) w.set(h.theme, (w.get(h.theme) || 0) + h.score);
+    const total = [...w.values()].reduce((a, b) => a + b, 0);
+    const [theme, mass] = [...w.entries()].sort((a, b) => b[1] - a[1])[0];
+    return mass / total >= minShare ? theme : null;
+}
+
+// One real-world fact or a page to read: research work even without a research word.
+const LOOKUP_FACT_RE = /\b(phone (number|#)|address|opening hours|hours (of|for)|open (now|today|on)|near me|within .{0,30} area|where (can|do|is|are|to)|when (is|does|will|are|was)|how much (is|does|are)|price of|cost of|ratings?|reviews?|weather|forecast|scores?|results?|standings|schedule|season|episode|release|launch|news|update[sd]? on|who (won|is|are|was)|is (it|this|that|the) (still|open|real|legit|safe)|stats|statistics|polls?|info(rmation)? (on|about)|what (county|state|city|town|country)|rated|(open|close)s? (today|tonight|now|at)|what time does)\b/i;
+
+/** Lookup-shaped ask (a URL that is not a repo, or a real-world fact question). */
+function looksLikeLookup(text, { needsLookup = null, isSingleReadAsk = null } = {}) {
+    const q = String(text || '').trim();
+    if (!q) return false;
+    if (/\bhttps?:\/\/\S+|\bwww\.\S+/i.test(q) && !REPO_LINK_RE.test(q)) return true;
+    try { if (needsLookup && needsLookup(q)) return true; } catch (_) { /* fall through */ }
+    try { if (isSingleReadAsk && isSingleReadAsk(q)) return true; } catch (_) { /* fall through */ }
+    return LOOKUP_FACT_RE.test(q);
+}
+
 /** The user's next message corrected the newest task of this conversation. */
 async function markCorrection(userId, convId) {
     if (!userId || !convId) return false;
@@ -731,6 +787,7 @@ async function applyRefinement(userId, id, ref) {
             rec.lessons = merged.slice(-MAX_LESSONS);
         }
         rec.dirty = false;
+        rec.refinedAtRuns = rec.stats.runs || 0;
         rec.updatedAt = t;
         return rec;
     });
@@ -987,8 +1044,7 @@ async function stats(userId, archived = null, { since = null, bucket = 'week' } 
     }
     const out = memoryStats.computeStats(shard, allThemes(), { since, bucket });
     // Self-correction always works on the whole history, whatever the view's range.
-    const full = since ? memoryStats.computeStats(shard, allThemes()) : out;
-    return { ...out, selfCorrect: selfCorrect.publicState(shard, (full.findings || {}).worsening) };
+    return { ...out, selfCorrect: selfCorrect.publicState(shard, memoryStats.correctionFindings(shard, allThemes())) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,7 +1056,7 @@ async function stats(userId, archived = null, { since = null, bucket = 'week' } 
 async function checkCorrections(userId, { now = Date.now() } = {}) {
     if (!userId) return { judged: [], plan: [] };
     const shard0 = await readShard(userId);
-    const findings = (memoryStats.computeStats(shard0, allThemes()).findings || {}).worsening || [];
+    const findings = memoryStats.correctionFindings(shard0, allThemes());
     return mutate(userId, (shard) => {
         const st = selfCorrect.state(shard);
         st.lastCheckAt = new Date(now).toISOString();
@@ -1048,6 +1104,7 @@ async function applyCorrection(userId, d, { ref = null, now = Date.now() } = {})
             if (Array.isArray(ref.lessons)) for (const l of ref.lessons.slice(0, 3)) addUnique(rec.lessons, l, MAX_LESSONS, { source: 'refined' });
         }
         rec.dirty = false;
+        rec.refinedAtRuns = rec.stats.runs || 0;
         const a = selfCorrect.recordAction(shard, d, { now, fromVersion, toVersion: rec.playbookVersion, prevPlaybook: prev, newPlaybook: rec.playbook });
         const ms = (d.metrics || [{ metric: d.metric, metricLabel: d.metricLabel, trigger: d.trigger }]);
         const list = ms.map(x => `${x.metricLabel.toLowerCase()} ${selfCorrect.fmtMetric(x.metric, x.trigger && x.trigger.from)} → ${selfCorrect.fmtMetric(x.metric, x.trigger && x.trigger.to)}`).join('; ');
@@ -1074,6 +1131,7 @@ async function logCorrectionCheck(userId, entry) {
 module.exports = {
     relabelLegacyText,
     events, checkCorrections, applyCorrection, logCorrectionCheck,
+    conversationTheme, themeFromSimilar, looksLikeLookup,
     stats, rethemeStored, dirtyRecords, HOST_TOOLS, THEME_VERSION,
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,

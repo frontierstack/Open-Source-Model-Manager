@@ -4,7 +4,8 @@
 //
 //   detect   — a theme measure (response time, tool calls, failed calls,
 //              repeated failures, corrections) getting worse with moderate or
-//              strong evidence (memoryStats findings, earliest vs latest third).
+//              strong evidence, over the tasks that RECEIVED the theme's memory
+//              (memoryStats.correctionFindings, earliest vs latest third).
 //   act      — REVERT when the data shows an earlier playbook did better on
 //              that measure (by the playbook version each task ran with, else
 //              by the tasks around each rewrite); otherwise a TARGETED
@@ -55,6 +56,14 @@ function state(shard) {
 function themeRows(shard, th) {
     return (shard.statsLog || []).filter(r => r && r.t && r.th === th && !r.prov)
         .sort((a, b) => String(a.t).localeCompare(String(b.t)));
+}
+
+// The comparison group for a correction: tasks that received the memory, as
+// the tasks that judge it do (measuredRows). Mixing in tasks that never saw a
+// playbook (44% slower on this account) made any fix look like it helped.
+function memoryRows(rows) {
+    const rt = rows.filter(r => r.rt === true);
+    return rt.length >= MIN_GROUP ? rt : rows;
 }
 
 function centre(rows, m) {
@@ -272,7 +281,7 @@ const kindOf = (m) => ((m.kind === 'rate' || m.key === 'failedShare') ? 'points'
 /** Record an applied action (inside a shard mutation). */
 function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prevPlaybook, newPlaybook = null }) {
     const st = state(shard);
-    const rows = themeRows(shard, d.th).slice(-BASE_K);
+    const rows = memoryRows(themeRows(shard, d.th)).slice(-BASE_K);
     const metrics = (d.metrics || [{ metric: d.metric, metricLabel: d.metricLabel, trigger: d.trigger }]).map(x => {
         const m = metricByKey.get(x.metric);
         return { metric: x.metric, metricLabel: x.metricLabel, trigger: x.trigger, baseline: m ? centre(rows, m) : null };
@@ -302,7 +311,7 @@ function measuredRows(shard, a) {
 // Per-measure readings for an action over the tasks that used it.
 function readings(shard, a, k = EVAL_K) {
     const after = measuredRows(shard, a);
-    const before = themeRows(shard, a.th).filter(r => r.t < a.t).slice(-BASE_K);
+    const before = memoryRows(themeRows(shard, a.th).filter(r => r.t < a.t)).slice(-BASE_K);
     return actionMetrics(a).map(x => {
         const m = metricByKey.get(x.metric);
         if (!m) return { ...x, n: 0, value: null, change: null };
@@ -327,6 +336,20 @@ function evaluate(shard, { now = Date.now() } = {}) {
     const judged = [];
     for (const a of st.actions) {
         if (a.status !== 'active') continue;
+        // Opened under the old rules on evidence that could be chance (every
+        // trigger weak): today's rules would not have acted, and while it stays
+        // open the theme's playbook cannot learn. Close it, keep the playbook.
+        const trig = actionMetrics(a).map(x => x.trigger && x.trigger.evidence).filter(Boolean);
+        if (trig.length && trig.every(e => e === 'weak')) {
+            a.results = readings(shard, a);
+            a.after = a.results[0] && a.results[0].n ? { value: a.results[0].value, n: a.results[0].n, change: a.results[0].change, changeKind: a.results[0].changeKind } : null;
+            a.judgedAt = new Date(now).toISOString();
+            a.status = 'no_effect';
+            a.inconclusive = true;
+            a.closedReason = 'started on a change that could be chance — closed so the playbook can keep learning';
+            judged.push(a);
+            continue;
+        }
         const rs = readings(shard, a);
         const n = Math.min(...rs.map(r => r.n));
         const measured = measuredRows(shard, a).length;

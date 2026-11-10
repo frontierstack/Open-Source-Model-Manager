@@ -681,6 +681,24 @@ function headlineFor(rows, m) {
     return out;
 }
 
+// What self-correction acts on (2026-11-10): only tasks that RECEIVED the
+// theme's memory (`rt`). A playbook rewrite can only change those, and since
+// Nov 6 most of a theme's tasks never saw it (no theme cue in the ask), so a
+// trend over every task mostly measured the kind of work asked for. Acting on
+// it rewrote playbooks that had nothing to do with the change.
+function correctionFindings(shard, themes = []) {
+    const label = new Map((themes || []).map(t => [t.key, t.label]));
+    const rows = (shard.statsLog || []).filter(r => r && r.t && !r.prov && r.rt === true)
+        .sort((a, b) => String(a.t).localeCompare(String(b.t)));
+    const out = [];
+    for (const th of [...new Set(rows.map(r => r.th))]) {
+        out.push(...findingsFor(rows.filter(r => r.th === th), th, label.get(th) || th).map(f => ({ ...f, population: 'memory' })));
+    }
+    const rank = { strong: 0, moderate: 1, weak: 2 };
+    return out.filter(f => f.direction === 'worse')
+        .sort((a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0)));
+}
+
 /** Everything beyond the basic counters; merged into computeStats' result. */
 function analyze(rows, byTheme, events, label) {
     // Overall findings use chat and agent rows separately (they differ by an
@@ -716,4 +734,4 @@ function analyze(rows, byTheme, events, label) {
     };
 }
 
-module.exports = { METRICS, compareGroups, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+module.exports = { METRICS, compareGroups, correctionFindings, FIND_MIN, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
