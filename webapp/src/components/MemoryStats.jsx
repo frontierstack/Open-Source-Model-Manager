@@ -281,9 +281,9 @@ function Tile({ label, value, sub, extra, num = null, format = null, spark = nul
     );
 }
 
-function Card({ title, hint, children, right }) {
+function Card({ title, hint, children, right, className = '' }) {
     return (
-        <div className="min-w-0 rounded-lg border p-3.5" style={{ borderColor: RULE, backgroundColor: 'var(--bg-secondary)' }}>
+        <div className={`min-w-0 rounded-lg border p-3.5 ${className}`} style={{ borderColor: RULE, backgroundColor: 'var(--bg-secondary)' }}>
             <div className="mb-0.5 flex flex-wrap items-baseline justify-between gap-2">
                 <div className="text-sm font-semibold">{title}</div>
                 {right}
@@ -766,9 +766,12 @@ function feedItem(ev, labelOf) {
 function ActivityFeed({ items, labelOf, now, live }) {
     return (
         <Card title="Live activity" hint="Each task, memory update and self-correction as it happens."
-            right={<LiveBadge live={live} />}>
+            right={<LiveBadge live={live} />} className="flex flex-col">
             {items.length ? (
-                <ul className="ms-feed -mx-1 max-h-[340px] overflow-y-auto">
+                // Side by side the row height comes from Self-correction: the list is taken out
+                // of flow so it fills that height (and scrolls to the card's edge) without adding to it.
+                <div className="relative min-h-0 flex-1 xl:min-h-[340px]">
+                <ul className="ms-feed -mx-1 max-h-[340px] overflow-y-auto xl:absolute xl:inset-0 xl:max-h-none">
                     {items.map((ev) => {
                         const it = feedItem(ev, labelOf);
                         if (!it) return null;
@@ -798,6 +801,7 @@ function ActivityFeed({ items, labelOf, now, live }) {
                         );
                     })}
                 </ul>
+                </div>
             ) : <Empty>Waiting for the next task…</Empty>}
         </Card>
     );
@@ -1016,7 +1020,10 @@ function SelfCorrection({ data, now }) {
     return (
         <Card title="Self-correction"
             hint={`When a theme's numbers trend the wrong way with real evidence, the system acts on its own: it restores a playbook that measured better, or rewrites the playbook against the slow tasks. After ${SC.evalTasks || 6} more tasks it judges the result and rolls back a fix that made things worse. Checks run after every task, and always judge on your full history — the time range above does not change what gets corrected.`}
-            right={SC.lastCheckAt ? <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>checked {ago(SC.lastCheckAt, now)}</span> : null}>
+            right={SC.lastCheckAt ? <span className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}>checked {ago(SC.lastCheckAt, now)}</span> : null}
+            className="flex flex-col xl:max-h-[720px]">
+            {/* Capped side by side: this card sets the row height, so unbounded it left Live activity mostly empty. */}
+            <div className="min-h-0 flex-1 xl:overflow-y-auto xl:pr-1">
             <div className="mb-3 grid grid-cols-3 gap-2">
                 {[['Correcting', active.length, '#f59e0b'], ['Helped', helped, GOOD], ['Rolled back / worse', rolled, BAD]].map(([l, v, c]) => (
                     <div key={l} className="rounded-md border px-2.5 py-2" style={{ borderColor: RULE }}>
@@ -1060,7 +1067,7 @@ function SelfCorrection({ data, now }) {
             <div className="mb-3"><ChecksLog checks={SC.checks} now={now} /></div>
             <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>History</div>
             {actions.length ? (
-                <ul className="max-h-[220px] overflow-y-auto">
+                <ul className="max-h-[220px] overflow-y-auto xl:max-h-none xl:overflow-visible">
                     {actions.slice(0, 12).map((a) => (
                         <li key={a.id} className="flex items-start gap-2.5 border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
                             {a.kind === 'revert' ? <RevertIcon size={14} style={{ color: MUTED, marginTop: 3, flexShrink: 0 }} /> : <FixIcon size={14} style={{ color: MUTED, marginTop: 3, flexShrink: 0 }} />}
@@ -1079,6 +1086,7 @@ function SelfCorrection({ data, now }) {
                     ))}
                 </ul>
             ) : <div className="py-2 text-xs" style={{ color: MUTED }}>No corrections yet{SC.lastCheckAt ? ` · last checked ${ago(SC.lastCheckAt, now)}` : ''}.</div>}
+            </div>
         </Card>
     );
 }
