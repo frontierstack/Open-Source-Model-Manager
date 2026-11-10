@@ -453,6 +453,10 @@ export function renderSandboxStaticBlock(opts: { hostHasWorkspaceDir: boolean })
         "Your OWN read / write / edit / ls / grep / bash CANNOT see any of it — they run on the host. " +
         "A /workspace path handed to one of them is a bug, not a missing file."
     );
+    L.push(
+        "Server skills have a time limit. If one times out, or you expect a long job such as a large " +
+        "download, pass timeoutSeconds (up to 1800) to give it longer; a timeout does not mean the tool is broken."
+    );
     if (opts.hostHasWorkspaceDir) {
         L.push("");
         L.push(
@@ -1257,7 +1261,8 @@ export default async function (ompApi: ExtensionAPI) {
             continue;
         }
 
-        const params = toTypeboxSchema(skill.parameters || {});
+        // Native routes manage their own time; a Python skill's limit can be raised per call.
+        const params = toTypeboxSchema(nativeRoute ? (skill.parameters || {}) : { ...(skill.parameters || {}), timeoutSeconds: "number?" });
         const baseDescription = skill.description
             || (skill.systemPrompt ? skill.systemPrompt.split(/[.\n]/)[0] : skill.name);
         // Sandbox skills whose chat-written prompt pushes /workspace or
@@ -1319,8 +1324,10 @@ export default async function (ompApi: ExtensionAPI) {
                         r = await authedFetch(`/api/skills/${encodeURIComponent(skill.name)}/execute`, {
                             method: "POST",
                             body: JSON.stringify(bridged ?? {}),
-                            signal
-                        });
+                            signal,
+                            // omp runs on Bun, whose fetch gives up at 5 minutes by default.
+                            timeout: false
+                        } as RequestInit);
                     }
                     const raw = await r.text();
                     let parsed: any;

@@ -161,6 +161,7 @@ async function runscAvailable() {
  *                                     Enables file-op skills without giving
  *                                     them access to the host filesystem.
  * @param {number}   [opts.timeoutMs]
+ * @param {AbortSignal} [opts.signal] — kills the run when aborted
  * @param {string}   [opts.memory]    — Docker memory limit (e.g. "256m")
  * @param {string}   [opts.cpus]      — Docker cpu limit (e.g. "0.5")
  * @param {string}   [opts.toolName]  — for logging / egress grants
@@ -179,6 +180,7 @@ async function runPythonSkill(opts) {
         allowlist = [],
         workspace = false,
         timeoutMs = DEFAULT_TIMEOUT_MS,
+        signal = null,
         memory = DEFAULT_MEMORY,
         cpus = DEFAULT_CPUS,
         toolName = 'anonymous',
@@ -582,10 +584,19 @@ except Exception as _e:
         // the container object alive for the whole timeout (30s by default, up to
         // several minutes for the long-running skills) and then firing a doomed
         // `container.kill()` against a container that had already been removed.
-        let killTimer;
+        let killTimer, onAbort;
         try {
             const waitResult = await Promise.race([
                 container.wait(),
+                new Promise(resolve => {
+                    if (!signal) return;
+                    onAbort = async () => {
+                        try { await container.kill({ signal: 'SIGKILL' }); } catch (_) {}
+                        resolve({ StatusCode: 137 });
+                    };
+                    if (signal.aborted) onAbort();
+                    else signal.addEventListener('abort', onAbort, { once: true });
+                }),
                 new Promise(resolve => {
                     killTimer = setTimeout(async () => {
                         timedOut = true;
@@ -597,6 +608,7 @@ except Exception as _e:
             exitCode = waitResult.StatusCode;
         } finally {
             clearTimeout(killTimer);
+            if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         }
 
         // Wait for the last bytes, but only as long as they actually take.

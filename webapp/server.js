@@ -328,6 +328,7 @@ const { normalizeChartArgs } = require('./services/chartSpec');
 const answerHygiene = require('./services/answerHygiene');
 const { webSourcesFromResult } = require('./services/webSources');
 const selfCorrect = require('./services/selfCorrect');
+const skillTimeout = require('./services/skillTimeout');
 const assistantQueue = require('./services/assistantQueue');
 
 // Model-download integrity: `downloadState` reads the .download-state.json
@@ -1510,7 +1511,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `PRIORITY: the user's instructions — their system prompt and their messages — come first; these runtime rules come second; background notes (memory, hints, tool advice) come last. When a rule here conflicts with what the user asked, follow the user. Anything the user forbids (a tool, a format, a topic, a length) is off-limits for the whole turn.`,
         `ANSWER OR LOOK UP: answer directly when you reliably know the answer — general knowledge, explanations, reasoning, arithmetic, writing or editing text and code. Use a tool only when it adds something you cannot produce: current or external facts (\`web\`: search, or read a URL), exact data to look up or compute, a file to read, or a file to produce. When the user explicitly asks you to search, open a URL, run code or create a file, do it with the matching tool even if you know the answer. When unsure whether your knowledge is current, look it up rather than guess.`,
         `HOW TO WORK WITH TOOLS: first decide what the finished answer needs (which facts, files or outputs) and the most direct source for each. Make the call that gets the most of it in one step — gather broadly (every file or record at once, as a compact summary) and put independent calls in the same response. After each result ask: can I answer now? If yes, stop calling tools and answer. If not, name the ONE thing still missing and get only that. A result you already have stays in your context: never repeat a call that succeeded — re-reading the same page, re-downloading the same URL or re-running the same check returns the same thing.`,
-        `WHEN A CALL FAILS OR COMES BACK EMPTY: read the error and any \`hint\`, \`obstacle\` or \`note\` in the result — they usually name the next step; do that. Never re-send a call that failed with the same arguments, and do not try a third variation of an approach that failed twice: change the route — a different tool, a different source (the official site or docs, the project's GitHub, a package registry or API, an archived copy), or a different way to get the same fact. A page that is missing, blocked or empty is a finding, not a dead end: say so in one line and answer from what you could get, marking anything you could not confirm. When the user asked about one SPECIFIC page, file, article or item and it does not exist or cannot be reached, say that FIRST and never pass a different one off as it — a closest match may be offered only when clearly labelled as a different item.`,
+        `WHEN A CALL FAILS OR COMES BACK EMPTY: read the error and any \`hint\`, \`obstacle\` or \`note\` in the result — they usually name the next step; do that. Never re-send a call that failed with the same arguments, and do not try a third variation of an approach that failed twice: change the route — a different tool, a different source (the official site or docs, the project's GitHub, a package registry or API, an archived copy), or a different way to get the same fact. A page that is missing, blocked or empty is a finding, not a dead end: say so in one line and answer from what you could get, marking anything you could not confirm. When the user asked about one SPECIFIC page, file, article or item and it does not exist or cannot be reached, say that FIRST and never pass a different one off as it — a closest match may be offered only when clearly labelled as a different item. A skill that timed out is not broken: every skill accepts \`timeoutSeconds\`, so call it again with a higher value (up to ${Math.round(skillTimeout.MAX_MS / 1000)}), or set it from the start when you expect a long job such as a large download.`,
         `WEB RESEARCH: a search query is 2–6 plain keywords — the exact name plus what you want ("Kubernetes release notes", "pandas latest version PyPI", "Steam Deck OLED battery life"). No OR chains, no stacked quotes, no past years; add the current year only when the ask is about recent events. Then READ the best one to three results (\`read:N\`, or \`url\`) — snippets are leads, not sources. For versions, releases, prices and specs go to the primary source (the official site, the registry, GitHub releases). Generic or off-topic results mean the QUERY was weak (\`relevance\`/\`hint\` say so): quote the exact name, add one distinguishing detail or a site:. When a search returns pages you already saw (noNewResults), stop searching: read one of them, or use find:"<name or number>" on an index page you already have. Try three genuinely different queries before calling something unavailable. Never guess or retype a URL — copy it from the user or a result.`,
         `EVIDENCE: copy identifiers, URLs, hashes, keys, paths, IPs, quoted strings and code exactly and in full — never "…" or "etc." inside a value; if a value is too long for a table cell, give it in full below the table. Never invent file contents, URLs, numbers or data you did not get from a tool, and say plainly when a tool failed. A result marked truncated means: ask for a narrower slice, do not guess the rest. When sources disagree, say which says what.`,
         `RUNNING CODE (run_python / run_node) is a last resort, for what no tool does: parsing a format no tool reads (pcap, binary, dataset), numeric work, transforming data you already have. Never script what a tool does — web pages, searches and JSON APIs (\`web\`), DNS (dns_lookup), reputation (virustotal_lookup), custom HTTP (http_request), downloads (download_file), reading or searching files (read_file / grep_code), hashing, hex and base64, charts (render_chart), archives (extract_archive); hand-rolled HTTP/DNS scripts are refused. The sandbox has no web browser and cannot install one: test or preview a page you wrote with preview_html. When you do run code: one focused script, well under 80 lines, that prints a structured result — never one statement per keyword, never the same script again with one more regex. If it fails, read the traceback and fix that line; do not start over. Pass data between scripts through FILES: a script's large output is saved for you (stdoutFile in its result, e.g. /workspace/outputs/run-1.json) — the next script loads that file, or the script saves its own results with json.dump. Never paste a previous tool output back into code (retyping a large JSON costs minutes of generation and breaks on quoting). COUNTING the entries on a page (posts per month, releases per year, items per category) is never done by eye: call count_entries with the listing page's url — it counts the page's own data exactly and returns chartData for render_chart; for data already in /workspace, count with one run_python script. When a script you wrote WORKED and the same capability is likely to be needed again (a converter, a parser, a scraper for a site, an API client), offer it to the user or save it yourself with save_tool when that tool is available.`,
@@ -12728,6 +12729,9 @@ async function repoInventory(dir) {
 
 async function executePythonSkill(skill, params, ctx = null) {
     const sandbox = require('./services/sandboxRunner');
+    const timeLimit = skillTimeout.resolve(skill, params, { delegated: !!(ctx && ctx.delegateDepth > 0) });
+    params = timeLimit.params;
+    if (timeLimit.timeoutMs !== timeLimit.baseMs) console.log(`[executePythonSkill] "${skill.name}" time limit raised to ${Math.round(timeLimit.timeoutMs / 1000)} s (default ${Math.round(timeLimit.baseMs / 1000)} s)`);
     // Sandbox policy:
     //   - explicit skill.sandbox true/false → respect it
     //   - user-created skill (has userId) → sandbox by default (untrusted origin)
@@ -12806,7 +12810,9 @@ async function executePythonSkill(skill, params, ctx = null) {
                 // repo-relative filter ('.', 'src/app.py'), not a
                 // filesystem path to be rerouted under /workspace.
                 pathNormalize: skill.pathNormalize !== false,
-                timeoutMs: skill.timeoutMs || 30_000,
+                timeoutMs: timeLimit.timeoutMs,
+                // Stop ends the run: a raised limit can otherwise outlive the turn by many minutes.
+                signal: (ctx && ctx.abortSignal) || null,
                 memory: skill.memory || '512m',
                 cpus: skill.cpus || '1.0',
                 toolName: skill.name,
@@ -12829,7 +12835,7 @@ async function executePythonSkill(skill, params, ctx = null) {
                 // Runs with no artifacts are cleaned up immediately; nothing
                 // downstream will need them.
                 sandbox.cleanupRun(run.runId).catch(() => {});
-                return { success: false, error: 'Skill timed out', timedOut: true };
+                return skillTimeout.timedOutResult(timeLimit);
             }
             // Runs that produced artifacts are kept on disk so the
             // `/api/tool-artifacts/:runId/:filename` endpoint can stream
@@ -12908,7 +12914,7 @@ except Exception as e:
         await fs.writeFile(tempFile, pythonScript, { mode: 0o755 });
         const { stdout, stderr } = await execPromise(
             `python3 "${tempFile}"`,
-            { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }
+            { timeout: timeLimit.timeoutMs, maxBuffer: 10 * 1024 * 1024 }
         );
         await fs.unlink(paramsFile).catch(() => {});
         await fs.unlink(tempFile).catch(() => {});
@@ -22134,6 +22140,8 @@ const chatStreamHandlerInner = async (req, res) => {
                         properties: {
                             ...props,
                             purpose: { type: 'string', description: 'One short line for the user: what this call is for / what you are checking. Shown as live progress.' },
+                            // Skills only: native tools manage their own time.
+                            ...(chatTools.toolRegistry.has(fn.name) ? {} : { timeoutSeconds: { type: 'number', description: 'Optional. More run time in seconds, for a large job or after a timeout.' } }),
                         },
                     },
                 },
@@ -26460,7 +26468,8 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 recFailed = !!(parsedRes && (parsedRes.error || parsedRes.success === false
                                     || (typeof parsedRes.returncode === 'number' && parsedRes.returncode !== 0)
                                     || (typeof parsedRes.exitCode === 'number' && parsedRes.exitCode !== 0)));
-                                if (recFailed) roundFailedCalls.push(recName);
+                                // "Change the route" is the wrong advice for a time limit: the hint says to give it longer.
+                                if (recFailed && !parsedRes.timedOut) roundFailedCalls.push(recName);
                                 if (recFailed) {
                                     escalationFails++; escalationStreak++;
                                     escalationLastErrors.push(`${recName}: ${String(parsedRes.error || parsedRes.stderr || parsedRes.message || '').split('\n')[0].slice(0, 100)}`);
