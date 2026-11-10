@@ -1,8 +1,6 @@
 import React from 'react';
 import {
     Loader2 as SpinnerIcon,
-    TrendingDown as DownIcon,
-    TrendingUp as UpIcon,
     Minus as FlatIcon,
     Award as BestIcon,
     PenLine as RefineIcon,
@@ -13,6 +11,7 @@ import {
     ShieldCheck as SteadyIcon,
     RotateCcw as RevertIcon,
     MessageSquareWarning as CorrectedIcon,
+    HelpCircle as ChanceIcon,
 } from 'lucide-react';
 
 // Memory tab → Stats. Is core memory making the work better? Shows what is
@@ -83,23 +82,101 @@ function niceTicks(max, count = 4) {
     return { top, ticks };
 }
 
-// Change chip. `kind` relative → %, points → percentage points. Lower is
-// better unless `invert`. Direction is carried by an icon and a sign.
-function Change({ value, kind = 'relative', invert = false, small = false, threshold }) {
-    if (value == null) return <span style={{ color: MUTED }}>—</span>;
+// Plain words for each lower-is-better measure: [when it went down, when it went up].
+const CHANGE_WORDS = {
+    seconds: ['faster', 'slower', 'as long'],
+    calls: ['fewer calls', 'more calls', 'as many calls'],
+    failedShare: ['fewer failed calls', 'more failed calls'],
+    rough: ['fewer repeated failures', 'more repeated failures'],
+    corrected: ['fewer corrections', 'more corrections'],
+};
+
+/** {text, good, flat} for a change: "25% slower", "2.0× as many calls", "9 pts more failed calls". */
+function describeChange(value, kind = 'relative', metric = null, invert = false, threshold) {
+    if (value == null) return null;
     const t = threshold ?? (kind === 'points' ? 0.03 : 0.08);
-    const good = invert ? value > t : value < -t;
-    const bad = invert ? value < -t : value > t;
-    const Icon = value < -t ? DownIcon : value > t ? UpIcon : FlatIcon;
-    const color = good ? GOOD : bad ? BAD : MUTED;
-    const txt = kind === 'points'
-        ? `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)} pts`
-        : `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)}%`;
-    const dir = value < -t ? 'down' : value > t ? 'up' : 'flat';
+    const flat = Math.abs(value) < t;
+    const up = value > 0;
+    const good = flat ? null : (invert ? up : !up);
+    const w = CHANGE_WORDS[metric] || (invert ? ['lower', 'higher'] : ['better', 'worse']);
+    const word = up ? w[1] : w[0];
+    let text;
+    if (flat) text = 'no real change';
+    else if (kind === 'points') text = `${Math.abs(Math.round(value * 100))} pts ${word}`;
+    else if (up && value >= 1 && w[2]) text = `${(1 + value).toFixed(1)}× ${w[2]}`;
+    else text = `${Math.abs(Math.round(value * 100))}% ${word}`;
+    return { text, good, flat };
+}
+
+// Change chip, in words. Green = better, red = worse — but only when the
+// evidence says it is probably real; a change that could be chance is grey
+// with a "?" so a noisy +47% never looks like a verdict.
+function Change({ value, kind = 'relative', metric = null, evidence = null, invert = false, small = false, threshold, showChance = false }) {
+    const d = describeChange(value, kind, metric, invert, threshold);
+    if (!d) return <span style={{ color: MUTED }}>—</span>;
+    const chance = evidence === 'weak' && !d.flat;
+    const color = d.flat || chance ? MUTED : d.good ? GOOD : BAD;
+    const Icon = d.flat ? FlatIcon : chance ? ChanceIcon : d.good ? BetterIcon : WorseIcon;
+    const dir = d.flat ? 'flat' : value < 0 ? 'down' : 'up';
+    const title = `${d.text}${d.flat ? '' : d.good ? ' (better)' : ' (worse)'}${evidence ? ` · ${(EVIDENCE[evidence] || EVIDENCE.weak).label}` : ''}`;
     return (
-        <span key={txt} className={`ms-chg ms-chg--${dir} inline-flex items-center gap-1 font-medium tabular-nums ${small ? 'text-xs' : ''}`} style={{ color }}>
-            <span className="ms-chg-icon inline-flex"><Icon size={small ? 12 : 14} strokeWidth={2} /></span>{txt}
+        <span key={d.text} title={title} className={`ms-chg ms-chg--${dir} inline-flex items-center gap-1 font-medium tabular-nums ${small ? 'text-xs' : ''}`} style={{ color }}>
+            <span className="ms-chg-icon inline-flex"><Icon size={small ? 12 : 14} strokeWidth={2} /></span>
+            <span style={chance ? { textDecoration: 'underline dotted', textUnderlineOffset: 3 } : undefined}>{d.text}</span>
+            {chance && showChance && <span className="font-normal" style={{ color: MUTED }}>· could be chance</span>}
         </span>
+    );
+}
+
+// One sentence a person can read: what the recent tasks look like against the
+// earlier ones, and whether it is likely real.
+function verdictSentence(h) {
+    if (!h) return 'no tasks yet';
+    if (h.from == null) return `${h.n} task${h.n === 1 ? '' : 's'} so far — needs 10 to compare earlier with recent`;
+    const d = describeChange(h.change, h.changeKind, h.metric);
+    const span = `first ${h.window} vs latest ${h.window} tasks`;
+    if (d.flat) return `About the same — ${span}.`;
+    const head = d.good ? 'Better' : 'Worse';
+    if (h.evidence === 'weak') return `${head}, but could be chance — ${span}.`;
+    return `${head} — ${span}, ${h.evidence === 'strong' ? 'strong evidence it is real' : 'some evidence it is real'}.`;
+}
+
+// The tile's line: rolling median of the SAME tasks the comparison used, with
+// the earlier and recent windows shaded and their medians dashed — the line
+// can no longer seem to go one way while the label says the other.
+function HeadSpark({ h, fmt, width = 220, height = 44 }) {
+    const pts = (h && h.series) || [];
+    if (pts.length < 3) return null;
+    // Scale to the bulk of the line: one 10-minute task must not flatten the rest.
+    const sorted = pts.map((p) => p.y).sort((a, b) => a - b);
+    const p90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+    const max = Math.max(p90 * 1.25, h.from || 0, h.to || 0) || 1, min = 0;
+    const span = max - min || 1;
+    const X = (x) => x * width;
+    const Y = (y) => height - 3 - ((Math.min(y, max) - min) / span) * (height - 8);
+    const line = pts.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ');
+    const d = h.from != null ? describeChange(h.change, h.changeKind, h.metric) : null;
+    const real = d && !d.flat && h.evidence !== 'weak';
+    const recentColor = !d || d.flat || !real ? 'var(--text-secondary)' : d.good ? GOOD : BAD;
+    const wf = h.window && h.n > 1 ? Math.min(0.5, (h.window - 1) / (h.n - 1)) : 0;
+    const k = `${pts.length}:${pts[pts.length - 1].y}`;
+    return (
+        <div>
+            <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" height={height} aria-hidden style={{ display: 'block', overflow: 'visible' }}>
+                {wf > 0 && <rect x={0} y={0} width={X(wf)} height={height} fill="var(--bg-hover)" opacity="0.55" />}
+                {wf > 0 && <rect x={X(1 - wf)} y={0} width={X(wf)} height={height} fill={recentColor} opacity="0.10" />}
+                <polyline key={k} points={line} pathLength="1" className="ms-draw" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+                {wf > 0 && <line x1={0} x2={X(wf)} y1={Y(h.from)} y2={Y(h.from)} stroke="var(--text-secondary)" strokeWidth="2" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />}
+                {wf > 0 && <line x1={X(1 - wf)} x2={width} y1={Y(h.to)} y2={Y(h.to)} stroke={recentColor} strokeWidth="2.5" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />}
+            </svg>
+            {wf > 0 && (
+                <div className="mt-1 flex justify-between text-[0.65rem] tabular-nums" style={{ color: MUTED }}>
+                    <span>first {h.window}: {fmt(h.from)}</span>
+                    <span>{h.n} tasks</span>
+                    <span style={{ color: recentColor === 'var(--text-secondary)' ? undefined : recentColor }}>latest {h.window}: {fmt(h.to)}</span>
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -108,31 +185,6 @@ function Num({ value, fmt }) {
     const v = useTween(value, 800);
     const bump = useBump(value);
     return <span key={bump} className={bump ? 'ms-num-flash' : undefined}>{value == null ? '—' : fmt(v)}</span>;
-}
-
-// Which way a series is heading: median of its last third against its first.
-function trendOf(values, lowerIsBetter = true) {
-    const v = (values || []).filter((x) => x != null && Number.isFinite(x));
-    if (v.length < 4) return null;
-    const k = Math.max(2, Math.floor(v.length / 3));
-    const a = median(v.slice(0, k)), b = median(v.slice(-k));
-    const base = Math.abs(a) > 1e-9 ? Math.abs(a) : (Math.abs(b) || 1);
-    const change = (b - a) / base;
-    const dir = change > 0.05 ? 'up' : change < -0.05 ? 'down' : 'flat';
-    const good = dir === 'flat' ? null : (dir === 'down') === lowerIsBetter;
-    return { dir, change, good, color: good == null ? MUTED : good ? GOOD : BAD };
-}
-
-function TrendBadge({ trend, label }) {
-    if (!trend) return null;
-    const Icon = trend.dir === 'up' ? UpIcon : trend.dir === 'down' ? DownIcon : FlatIcon;
-    const text = trend.dir === 'flat' ? 'steady' : trend.good ? 'improving' : 'worsening';
-    return (
-        <span key={`${trend.dir}${trend.good}`} className={`ms-chg ms-chg--${trend.dir} inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[0.65rem] font-semibold`}
-            style={{ color: trend.color, backgroundColor: `color-mix(in oklab, ${trend.color} 12%, transparent)` }} title={label ? `${label}: ${text}` : text}>
-            <span className="ms-chg-icon inline-flex"><Icon size={11} strokeWidth={2.25} /></span>{text}
-        </span>
-    );
 }
 
 const EVIDENCE = {
@@ -214,42 +266,9 @@ function ago(iso, now) {
     return shortDate(new Date(t).toISOString());
 }
 
-// Small trend line under a tile: draws in, and the last point glows.
-function TileSpark({ values, color = ACCENT, width = 120, height = 28, lowerIsBetter = true }) {
-    const gid = React.useMemo(() => `ms-g${Math.random().toString(36).slice(2, 8)}`, []);
-    const v = (values || []).filter((x) => x != null && Number.isFinite(x));
-    if (v.length < 3) return null;
-    const max = Math.max(...v), min = Math.min(...v);
-    const span = max - min || 1;
-    const step = width / (v.length - 1);
-    const py = (x) => height - 3 - ((x - min) / span) * (height - 6);
-    const pts = v.map((x, i) => `${(i * step).toFixed(1)},${py(x).toFixed(1)}`);
-    const area = `M0,${height} L${pts.join(' L')} L${width},${height} Z`;
-    const key = v.length + ':' + v[v.length - 1];
-    const tr = trendOf(v, lowerIsBetter);
-    const endY = py(v[v.length - 1]);
-    return (
-        <span className="inline-flex items-center gap-2">
-        <svg width={width} height={height} className="ms-spark" aria-hidden style={{ display: 'block', overflow: 'visible' }}>
-            <defs>
-                <linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor={color} stopOpacity="0.28" />
-                    <stop offset="100%" stopColor={color} stopOpacity="0" />
-                </linearGradient>
-            </defs>
-            <path key={`a${key}`} d={area} fill={`url(#${gid})`} className="ms-fade-in" />
-            <polyline key={`l${key}`} points={pts.join(' ')} pathLength="1" className="ms-draw" fill="none" stroke={color} strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
-            <circle cx={(v.length - 1) * step} cy={endY} r="3" fill={tr ? tr.color : color} className="ms-pulse-dot" />
-            <circle cx={(v.length - 1) * step} cy={endY} r="3" fill="none" stroke={tr ? tr.color : color} strokeWidth="1.5" className="ms-ripple-loop" />
-        </svg>
-        <TrendBadge trend={tr} />
-        </span>
-    );
-}
-
 // A headline number: counts to its new value, flashes when it changes and
 // floats the difference up beside it.
-function Tile({ label, value, sub, extra, num = null, format = null, spark = null, sparkColor, lowerIsBetter = true }) {
+function Tile({ label, value, sub, extra, num = null, format = null, chart = null, lowerIsBetter = true }) {
     const tw = useTween(num);
     const bump = useBump(num);
     const prev = React.useRef(num);
@@ -276,7 +295,7 @@ function Tile({ label, value, sub, extra, num = null, format = null, spark = nul
                 )}
             </div>
             {sub && <div className="mt-0.5 text-xs leading-snug" style={{ color: MUTED }}>{sub}</div>}
-            {spark && <div className="mt-2"><TileSpark values={spark} color={sparkColor} lowerIsBetter={lowerIsBetter} /></div>}
+            {chart && <div className="mt-2.5">{chart}</div>}
         </div>
     );
 }
@@ -339,8 +358,8 @@ const WEEKLY_METRICS = [
     { key: 'failedCallRate', label: 'Failed calls', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tool calls that failed.' },
     { key: 'roughRate', label: 'Repeated failures', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks where the loop guard stepped in or many calls failed.' },
     { key: 'correctionRate', label: 'Corrections', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of answers your next message corrected ("that\'s wrong", "I said…"). Tracked from Nov 7, 2026 on.' },
-    { key: 'recallRate', label: 'Memory recalled', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks that started with the theme\'s memory. Higher is better here.' },
-    { key: 'followRate', label: 'Playbook followed', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Of the tasks given the memory, how many used the proven approach. Higher is better here.' },
+    { key: 'recallRate', label: 'Memory recalled', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, higherIsBetter: true, hint: 'Share of tasks that started with the theme\'s memory. Higher is better here.' },
+    { key: 'followRate', label: 'Playbook followed', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, higherIsBetter: true, hint: 'Of the tasks given the memory, how many used the proven approach. Higher is better here.' },
     { key: 'tasks', label: 'Tasks', fmt: (v) => String(v), kind: 'bar', hint: 'How much work was recorded in each period.' },
 ];
 
@@ -403,7 +422,8 @@ function WeeklyChart({ data, metric, height = 180, unit = 'week' }) {
                     <polyline key={`m${field}`} points={path(field)} pathLength="1" className="ms-draw ms-draw--slow" fill="none" stroke={ACCENT} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
                 )}
                 {metric.kind === 'line' && data.map((dd, i) => (dd[field] == null ? null : (
-                    <circle key={`${field}${dd.week}`} cx={x(i)} cy={y(dd[field])} r={hover === i ? 5 : 4} fill={ACCENT} stroke="var(--bg-secondary)" strokeWidth="2"
+                    // A bucket with under 5 tasks is a hollow dot: it can swing the line on its own.
+                    <circle key={`${field}${dd.week}`} cx={x(i)} cy={y(dd[field])} r={hover === i ? 5 : 4} fill={(dd.tasks || 0) < 5 ? 'var(--bg-secondary)' : ACCENT} stroke={(dd.tasks || 0) < 5 ? ACCENT : 'var(--bg-secondary)'} strokeWidth="2"
                         className="ms-pop" style={{ animationDelay: `${300 + Math.min(i, 30) * 25}ms` }} />
                 )))}
                 {hover != null && metric.kind === 'line' && <line x1={x(hover)} x2={x(hover)} y1={padT} y2={y(0)} stroke={MUTED} strokeWidth="1" strokeDasharray="3 3" />}
@@ -415,10 +435,14 @@ function WeeklyChart({ data, metric, height = 180, unit = 'week' }) {
                         onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} onTouchStart={() => setHover(i)} />
                 ))}
             </svg>
-            {metric.band && (
-                <div className="mt-1 flex gap-4 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    <LegendItem swatch={lineSwatch(ACCENT)} label="median" />
-                    <LegendItem swatch={lineSwatch(MUTED, true)} label="slowest quarter (p75)" />
+            {metric.kind === 'line' && (
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    {metric.band && <LegendItem swatch={lineSwatch(ACCENT)} label="median" />}
+                    {metric.band && <LegendItem swatch={lineSwatch(MUTED, true)} label="slowest quarter (p75)" />}
+                    {data.some((dd) => dd[field] != null && (dd.tasks || 0) < 5) && (
+                        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ border: `2px solid ${ACCENT}` }} />under 5 tasks — one task can move it</span>
+                    )}
+                    <span style={{ color: MUTED }}>{metric.higherIsBetter ? 'Up is better.' : 'Down is better.'}</span>
                 </div>
             )}
             {d && (
@@ -532,7 +556,7 @@ function ImpactRows({ rows, fromLabel, toLabel }) {
                         <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2">
                             <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>{(METRIC_FMT[r.metric] || {}).label || r.metricLabel}</span>
                             <span className="inline-flex items-center gap-2">
-                                <Change value={r.change} kind={r.changeKind} small />
+                                <Change value={r.change} kind={r.changeKind} metric={r.metric} evidence={r.evidence} small />
                                 <Evidence level={r.evidence} p={r.p} nFrom={r.nFrom} nTo={r.nTo} />
                             </span>
                         </div>
@@ -547,7 +571,7 @@ function ImpactRows({ rows, fromLabel, toLabel }) {
                         ))}
                         {r.matchedChange != null && r.matchedThemes > 0 && (
                             <div className="text-[0.7rem]" style={{ color: MUTED }}>
-                                Same theme against itself ({r.matchedThemes} theme{r.matchedThemes === 1 ? '' : 's'}): <Change value={r.matchedChange} kind={r.changeKind} small />
+                                Same theme against itself ({r.matchedThemes} theme{r.matchedThemes === 1 ? '' : 's'}): <Change value={r.matchedChange} kind={r.changeKind} metric={r.metric} small />
                             </div>
                         )}
                     </div>
@@ -670,22 +694,20 @@ function HistChart({ bins, height = 170 }) {
     );
 }
 
-function Spark({ values, width = 84, height = 22, label = 'values', lowerIsBetter = true }) {
+// Small neutral line (rolling median). No verdict of its own: the trend
+// column beside it is the verdict, computed from the same tasks.
+function Spark({ values, width = 84, height = 22, label = 'values' }) {
     if (!values || values.length < 2) return <span style={{ color: MUTED }}>—</span>;
     const max = Math.max(1, ...values);
     const step = width / (values.length - 1);
     const yOf = (v) => height - 2 - (v / max) * (height - 4);
     const pts = values.map((v, i) => `${(i * step).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
-    const tr = trendOf(values, lowerIsBetter);
     const k = `${values.length}:${values[values.length - 1]}`;
     return (
-        <span className="inline-flex items-center gap-1.5">
-            <svg width={width} height={height} aria-label={`last ${values.length} tasks: ${label}`} style={{ display: 'block', overflow: 'visible' }}>
-                <polyline key={k} points={pts} pathLength="1" className="ms-draw" fill="none" stroke={ACCENT} strokeWidth="1.5" strokeLinejoin="round" />
-                <circle cx={(values.length - 1) * step} cy={yOf(values[values.length - 1])} r="2.5" fill={tr ? tr.color : ACCENT} className="ms-pulse-dot" />
-            </svg>
-            <TrendBadge trend={tr} label={label} />
-        </span>
+        <svg width={width} height={height} aria-label={`${label}, rolling median`} style={{ display: 'block', overflow: 'visible' }}>
+            <polyline key={k} points={pts} pathLength="1" className="ms-draw" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinejoin="round" />
+            <circle cx={(values.length - 1) * step} cy={yOf(values[values.length - 1])} r="2.5" fill="var(--text-secondary)" />
+        </svg>
     );
 }
 
@@ -698,7 +720,7 @@ function FindingRow({ f }) {
     return (
         <li className="ms-feed-in flex items-start gap-2.5 border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
             <span className={`ms-chg ms-chg--${better ? 'down' : 'up'} inline-flex`} style={{ flexShrink: 0, marginTop: 2 }}>
-                <span className="ms-chg-icon inline-flex"><Icon size={15} style={{ color: better ? GOOD : BAD }} aria-label={better ? 'improving' : 'getting worse'} /></span>
+                <span className="ms-chg-icon inline-flex"><Icon size={15} style={{ color: f.evidence === 'weak' ? MUTED : better ? GOOD : BAD }} aria-label={better ? 'improving' : 'getting worse'} /></span>
             </span>
             <div className="min-w-0 flex-1">
                 <div className="text-sm">
@@ -709,12 +731,12 @@ function FindingRow({ f }) {
                     {f.matched
                         ? <span>each theme against itself ({(f.themes || []).length} themes)</span>
                         : <span className="tabular-nums"><Num value={f.from} fmt={fmt} /> → <b style={{ color: 'var(--text-primary)' }}><Num value={f.to} fmt={fmt} /></b></span>}
-                    <Change value={f.change} kind={f.changeKind} small />
+                    <Change value={f.change} kind={f.changeKind} metric={f.metric} evidence={f.evidence} small />
                     <Evidence level={f.evidence} p={f.p} nFrom={f.nFrom} nTo={f.nTo} />
                 </div>
                 <div className="mt-0.5 text-[0.7rem]" style={{ color: MUTED }}>
                     {f.matched
-                        ? <>All chat tasks pooled: {fmt(f.from)} → {fmt(f.to)}{f.pooled && f.pooled.change != null ? ` (${f.pooled.change > 0 ? '+' : ''}${Math.round(f.pooled.change * 100)}${f.changeKind === 'points' ? ' pts' : '%'})` : ''}, which also counts the change in what kind of work you asked for</>
+                        ? <>All chat tasks pooled: {fmt(f.from)} → {fmt(f.to)}{f.pooled && f.pooled.change != null ? ` (${describeChange(f.pooled.change, f.changeKind, f.metric).text})` : ''}, which also counts the change in what kind of work you asked for</>
                         : <>earliest {f.nFrom} tasks (from {shortDate(f.since)}) vs latest {f.nTo} (since {shortDate(f.recentSince)})</>}
                 </div>
             </div>
@@ -969,7 +991,7 @@ function CorrectionTracker({ a, evalTasks, now }) {
                                 <>
                                     <span>so far <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}><Num value={r.value} fmt={f} /></b></span>
                                     <span style={{ color: MUTED }}>vs {f(x.baseline)} before</span>
-                                    <Change value={r.change} kind={r.changeKind} small />
+                                    <Change value={r.change} kind={r.changeKind} metric={r.metric} evidence={r.evidence} small />
                                     <span className="font-medium" style={{ color: col }}>{r.direction === 'better' ? 'trending better' : r.direction === 'worse' ? 'trending worse' : 'no clear change yet'}</span>
                                 </>
                             ) : <span style={{ color: MUTED }}>was {f(x.baseline)} before the fix — no reading yet</span>}
@@ -1103,17 +1125,6 @@ const MIN_COMPARE = 3;
 const RANGES = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['1y', 'Year'], ['all', 'All time']];
 const RANGE_TEXT = { '24h': 'the last 24 hours', '7d': 'the last 7 days', '30d': 'the last 30 days', '90d': 'the last 90 days', '1y': 'the last year', all: 'all time' };
 
-// Running median of the last 7 tasks over the last 40 — a tile's trend line
-// without one slow task spiking it.
-function rollingSpark(tasks, get) {
-    const v = (tasks || []).slice(-46).map(get).filter((x) => x != null && Number.isFinite(x));
-    // Short windows hold few tasks: shrink the smoothing so a line still shows.
-    const k = Math.max(1, Math.min(6, Math.floor(v.length / 5)));
-    const out = [];
-    for (let i = k; i < v.length; i++) out.push(median(v.slice(i - k, i + 1)));
-    return out.slice(-40);
-}
-
 export default function MemoryStats({ userId = null }) {
     const [data, setData] = React.useState(null);
     const [error, setError] = React.useState(null);
@@ -1217,6 +1228,15 @@ export default function MemoryStats({ userId = null }) {
     const L = data.lifetime || {};
     const F = data.findings || { improving: [], worsening: [], chat: {} };
     const chatF = F.chat || {};
+    const H = data.headline || {};
+    // Like for like (each theme against itself) only when it tells a different
+    // story from the plain comparison above it, and says how sure it is.
+    const lflNote = (f, h) => {
+        if (!f || f.change == null || !h || h.change == null) return null;
+        const a = describeChange(f.change, f.changeKind, f.metric), b = describeChange(h.change, h.changeKind, h.metric);
+        if (a.flat === b.flat && a.good === b.good) return null;
+        return <span className="block">same kind of work only: {a.text} ({(EVIDENCE[f.evidence] || EVIDENCE.weak).label}) — the mix of tasks changed</span>;
+    };
     const RT = data.responseTime || {};
     const I = data.impact;
     const U = data.updateImpact;
@@ -1231,7 +1251,6 @@ export default function MemoryStats({ userId = null }) {
     const followReady = I && I.followedTasks >= MIN_COMPARE && I.notFollowedTasks >= MIN_COMPARE;
     const corrTracked = (data.tasks || []).filter((t) => typeof t.cor === 'boolean');
     const corrRate = corrTracked.length ? corrTracked.filter((t) => t.cor).length / corrTracked.length : null;
-    const trendSub = (f) => (f ? `trend: each theme's earliest vs latest tasks (${EVIDENCE[f.evidence].label})` : 'trend needs 6+ tasks in a theme');
 
     const scopeSelect = (
         <select value={scope} onChange={(e) => setScope(e.target.value)} className="rounded-md border px-2 py-1 text-xs"
@@ -1259,21 +1278,21 @@ export default function MemoryStats({ userId = null }) {
             </div>
             {/* Headline numbers */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <Tile label="Median response time" value={fmtSecs(RT.chat ? RT.chat.median : RT.all && RT.all.median)}
-                    num={RT.chat ? RT.chat.median : RT.all ? RT.all.median : null} format={fmtSecs}
-                    spark={rollingSpark(data.tasks, (t) => (t.src === 'agent' ? null : t.s))}
-                    extra={chatF.seconds ? <Change value={chatF.seconds.change} kind="relative" small /> : null}
-                    sub={RT.chat ? `half of chat answers take ${fmtSecs(RT.chat.p25)}–${fmtSecs(RT.chat.p75)} · ${trendSub(chatF.seconds)}` : 'no timed tasks yet'} />
-                <Tile label="Tool calls per task" value={n1(data.logged && data.logged.avgCalls)}
-                    num={data.logged ? data.logged.avgCalls : null} format={n1}
-                    spark={rollingSpark(data.tasks, (t) => t.c)}
-                    extra={chatF.calls ? <Change value={chatF.calls.change} kind="relative" small /> : null}
-                    sub={`median ${n1(data.logged && data.logged.medianCalls)} · ${trendSub(chatF.calls)}`} />
-                <Tile label="Failed calls" value={pct(data.logged && data.logged.failedCallRate, 1)}
-                    num={data.logged ? data.logged.failedCallRate : null} format={(v) => pct(v, 1)}
-                    spark={rollingSpark(data.tasks, (t) => ((t.c + (t.f || 0)) ? (t.f || 0) / (t.c + (t.f || 0)) : 0))} sparkColor={BAD}
-                    extra={chatF.failedShare ? <Change value={chatF.failedShare.change} kind="points" small /> : null}
-                    sub={`${pct(data.logged && data.logged.roughRate, 1)} of tasks had repeated failures (loop guard or many failed calls)`} />
+                <Tile label="Median response time · web chat" value={fmtSecs(H.seconds ? H.seconds.value : null)}
+                    num={H.seconds ? H.seconds.value : null} format={fmtSecs}
+                    extra={H.seconds && H.seconds.from != null ? <Change value={H.seconds.change} kind="relative" metric="seconds" evidence={H.seconds.evidence} small /> : null}
+                    chart={<HeadSpark h={H.seconds} fmt={fmtSecs} />}
+                    sub={<>{verdictSentence(H.seconds)}{lflNote(chatF.seconds, H.seconds)}</>} />
+                <Tile label="Tool calls per task · web chat" value={n1(H.calls ? H.calls.value : null)}
+                    num={H.calls ? H.calls.value : null} format={n1}
+                    extra={H.calls && H.calls.from != null ? <Change value={H.calls.change} kind="relative" metric="calls" evidence={H.calls.evidence} small /> : null}
+                    chart={<HeadSpark h={H.calls} fmt={n1} />}
+                    sub={<>Median. {verdictSentence(H.calls)}{lflNote(chatF.calls, H.calls)}</>} />
+                <Tile label="Failed tool calls · web chat" value={pct(H.failedShare ? H.failedShare.value : null, 1)}
+                    num={H.failedShare ? H.failedShare.value : null} format={(v) => pct(v, 1)}
+                    extra={H.failedShare && H.failedShare.from != null ? <Change value={H.failedShare.change} kind="points" metric="failedShare" evidence={H.failedShare.evidence} small /> : null}
+                    chart={<HeadSpark h={H.failedShare} fmt={(v) => pct(v, 1)} />}
+                    sub={<>{verdictSentence(H.failedShare)} {pct(data.logged && data.logged.roughRate, 1)} of all tasks had repeated failures.</>} />
                 <Tile label="Answers you corrected" value={pct(corrRate, 0)} num={corrRate} format={(v) => pct(v, 0)}
                     sub={corrTracked.length ? `${corrTracked.filter((t) => t.cor).length} of ${corrTracked.length} tracked tasks` : 'tracked from today on: a "that\'s wrong / I said…" reply counts against the answer'} />
             </div>
@@ -1391,17 +1410,17 @@ export default function MemoryStats({ userId = null }) {
 
             {/* After each memory update */}
             <Card title="After each memory update"
-                hint={U ? `For every new proven approach or playbook rewrite: the theme's last ${U.window} tasks before it against its first ${U.window} after (updates with no task between them share a row). Neighbouring windows overlap — read the totals, not one row.` : ''}>
+                hint={U ? `For every new proven approach or playbook rewrite: the theme's last ${U.window} tasks before it against its first ${U.window} after (updates with no task between them share a row). Neighbouring windows overlap — read the totals, not one row. With 5 tasks a side a single row is rarely more than chance, so most rows stay grey.` : ''}>
                 {U && U.updates ? (
                     <>
                         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                             <div className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: RULE }}>
                                 <div className="text-xs" style={{ color: MUTED }}>Response time after an update</div>
-                                <div className="mt-0.5"><b>{U.fasterAfter}</b> faster · <b>{U.slowerAfter}</b> slower of {U.updates} <span className="ml-1"><Change value={U.medianSecondsChange} small /></span> <span className="text-xs" style={{ color: MUTED }}>median change</span></div>
+                                <div className="mt-0.5"><b>{U.fasterAfter}</b> faster · <b>{U.slowerAfter}</b> slower of {U.updates} <span className="ml-2 text-xs" style={{ color: MUTED }}>typical update:</span> <Change value={U.medianSecondsChange} metric="seconds" small /></div>
                             </div>
                             <div className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: RULE }}>
                                 <div className="text-xs" style={{ color: MUTED }}>Tool calls after an update</div>
-                                <div className="mt-0.5"><b>{U.leanerAfter}</b> leaner · <b>{U.heavierAfter}</b> heavier of {U.updates} <span className="ml-1"><Change value={U.medianCallsChange} small /></span> <span className="text-xs" style={{ color: MUTED }}>median change</span></div>
+                                <div className="mt-0.5"><b>{U.leanerAfter}</b> leaner · <b>{U.heavierAfter}</b> heavier of {U.updates} <span className="ml-2 text-xs" style={{ color: MUTED }}>typical update:</span> <Change value={U.medianCallsChange} metric="calls" small /></div>
                             </div>
                         </div>
                         <div className="overflow-x-auto">
@@ -1431,9 +1450,9 @@ export default function MemoryStats({ userId = null }) {
                                             </td>
                                             <td className="py-1.5 pr-3 text-xs" style={{ color: MUTED }}>{shortDate(e.t)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{e.seconds ? `${fmtSecs(e.seconds.from)} → ${fmtSecs(e.seconds.to)}` : '—'}</td>
-                                            <td className="py-1.5 pr-3">{e.seconds ? <Change value={e.seconds.change} small /> : null}</td>
+                                            <td className="py-1.5 pr-3">{e.seconds ? <Change value={e.seconds.change} metric="seconds" evidence={e.seconds.evidence} small /> : null}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{e.callsChange ? `${n1(e.callsChange.from)} → ${n1(e.callsChange.to)}` : '—'}</td>
-                                            <td className="py-1.5">{e.callsChange ? <Change value={e.callsChange.change} small /> : null}</td>
+                                            <td className="py-1.5">{e.callsChange ? <Change value={e.callsChange.change} metric="calls" evidence={e.callsChange.evidence} small /> : null}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -1444,7 +1463,7 @@ export default function MemoryStats({ userId = null }) {
             </Card>
 
             {/* Per theme */}
-            <Card title="By theme" hint="Trends compare a theme's earliest and latest third of tasks. Follow rate = recalled tasks that used the proven approach.">
+            <Card title="By theme" hint="Trends compare a theme's earliest and latest third of tasks in the range (median). Green or red only when the difference is probably real; grey with a ? could be chance. The line is the rolling median of the same tasks. Follow rate = recalled tasks that used the proven approach.">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm" style={{ minWidth: 900 }}>
                         <thead>
@@ -1455,7 +1474,7 @@ export default function MemoryStats({ userId = null }) {
                                 <th className="py-1.5 pr-3 font-semibold">Time trend</th>
                                 <th className="py-1.5 pr-3 text-right font-semibold">Avg calls</th>
                                 <th className="py-1.5 pr-3 font-semibold">Calls trend</th>
-                                <th className="py-1.5 pr-3 font-semibold">Last 30 (time)</th>
+                                <th className="py-1.5 pr-3 font-semibold">Time over the range</th>
                                 <th className="py-1.5 pr-3 text-right font-semibold">Recalled</th>
                                 <th className="py-1.5 pr-3 text-right font-semibold">Followed</th>
                                 <th className="py-1.5 text-right font-semibold">Playbook</th>
@@ -1471,13 +1490,13 @@ export default function MemoryStats({ userId = null }) {
                                     <td className="py-2 pr-3 text-right tabular-nums">{t.lifetimeTasks}</td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{fmtSecs(t.logged && t.logged.medianSeconds)}</td>
                                     <td className="py-2 pr-3" title={t.secondsTrend ? `${fmtSecs(t.secondsTrend.from)} → ${fmtSecs(t.secondsTrend.to)} (${t.secondsTrend.nFrom} vs ${t.secondsTrend.nTo} tasks, ${EVIDENCE[t.secondsTrend.evidence].label})` : ''}>
-                                        {t.secondsTrend ? <Change value={t.secondsTrend.change} small /> : <span className="text-xs" style={{ color: MUTED }}>too few</span>}
+                                        {t.secondsTrend ? <Change value={t.secondsTrend.change} metric="seconds" evidence={t.secondsTrend.evidence} small /> : <span className="text-xs" style={{ color: MUTED }}>too few</span>}
                                     </td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{n1(t.lifetimeAvgCalls)}</td>
-                                    <td className="py-2 pr-3" title={t.trend ? `${n1(t.trend.early.avgCalls)} → ${n1(t.trend.recent.avgCalls)} calls (${t.trend.window} tasks each)` : ''}>
-                                        {t.trend ? <Change value={t.trend.callsChange} small /> : <span className="text-xs" style={{ color: MUTED }}>too few</span>}
+                                    <td className="py-2 pr-3" title={t.callsTrend ? `median ${n1(t.callsTrend.from)} → ${n1(t.callsTrend.to)} calls (${t.callsTrend.nFrom} vs ${t.callsTrend.nTo} tasks, ${EVIDENCE[t.callsTrend.evidence].label})` : ''}>
+                                        {t.callsTrend ? <Change value={t.callsTrend.change} metric="calls" evidence={t.callsTrend.evidence} small /> : <span className="text-xs" style={{ color: MUTED }}>too few</span>}
                                     </td>
-                                    <td className="py-2 pr-3"><Spark values={t.sparkSeconds} label="response time" /></td>
+                                    <td className="py-2 pr-3"><Spark values={(t.seriesSeconds || []).map((p) => p.y)} label="response time" /></td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{t.recalled}</td>
                                     <td className="py-2 pr-3 text-right tabular-nums">{pct(t.followRate)}</td>
                                     <td className="py-2 text-right tabular-nums">v{t.playbookVersion}</td>

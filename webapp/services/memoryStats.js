@@ -237,6 +237,12 @@ function computeStats(shard, themes, { since = null, bucket = 'week' } = {}) {
             memoryEffect: withVsWithout(rs),
             spark: rs.slice(-30).map(r => r.c),
             sparkSeconds: rs.slice(-30).map(r => r.s).filter(x => x != null),
+            seriesSeconds: rollingSeries(rs.map(r => r.s).filter(x => x != null), 30),
+            callsTrend: (() => {
+                if (rs.length < FIND_MIN) return null;
+                const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
+                return compareGroups(rs.slice(0, w), rs.slice(-w), METRICS[1]);
+            })(),
             weekly: weeklySeries(rs, bucket),
             secondsTrend: (() => {
                 const v = rs.filter(r => r.s != null);
@@ -428,6 +434,7 @@ function normInv(p) {
 // tasks that barely existed before) as "chat got 50% slower" while research,
 // the most common kind, had got faster. The pooled change is kept as `pooled`.
 const STRAT_MIN = 6;
+const STRAT_SHRINK = 5;
 function stratifiedFindings(rows, scope, label) {
     const out = [];
     const themes = [...new Set(rows.map(r => r.th))];
@@ -443,7 +450,11 @@ function stratifiedFindings(rows, scope, label) {
             const wt = Math.min(c.nFrom, c.nTo);
             // Ratios average on a log scale: +100% and −50% cancel, and one
             // theme going 1 → 6 calls cannot outweigh every other theme.
-            const contrib = c.changeKind === 'relative' ? Math.log(Math.max(0.05, 1 + c.change)) : c.change;
+            // Shrunk toward "no change" by n/(n+STRAT_SHRINK): a theme with 3
+            // tasks a side going 45 s → 140 s is mostly noise and must not set
+            // the headline on its own (it read as "+47%" over a flat median).
+            const raw = c.changeKind === 'relative' ? Math.log(Math.max(0.05, 1 + c.change)) : c.change;
+            const contrib = raw * (wt / (wt + STRAT_SHRINK));
             acc += contrib * wt; wsum += wt;
             if (c.p != null) {
                 const z = normInv(1 - Math.max(1e-9, c.p) / 2) * Math.sign(c.change || 0);
@@ -598,8 +609,8 @@ function updateImpact(rows, events, label) {
         const cal = compareGroups(before, after, METRICS[1]);
         list.push({ split, t: e.t, th: e.th, label: label.get(e.th) || e.th, kind: e.kind, v: e.v ?? null, vFrom: e.v ?? null, calls: e.calls ?? null, from: e.from ?? null,
             before: before.length, after: after.length,
-            seconds: sec ? { from: sec.from, to: sec.to, change: sec.change } : null,
-            callsChange: cal ? { from: cal.from, to: cal.to, change: cal.change } : null });
+            seconds: sec ? { from: sec.from, to: sec.to, change: sec.change, evidence: sec.evidence } : null,
+            callsChange: cal ? { from: cal.from, to: cal.to, change: cal.change, evidence: cal.evidence } : null });
     }
     const sec = list.filter(x => x.seconds && x.seconds.change != null);
     const cal = list.filter(x => x.callsChange && x.callsChange.change != null);
@@ -627,6 +638,49 @@ function responseTime(rows) {
     return { all: stat(secs), chat: stat(chat), agent: stat(agent), histogram: hist };
 }
 
+
+// Rolling median of a value over rows in time order, thinned to ≤ maxPts
+// points. Each point keeps its position (0..1) so a chart can mark the
+// earlier and recent windows the comparison used.
+function rollingSeries(vals, maxPts = 60) {
+    const n = vals.length;
+    if (n < 3) return [];
+    const k = Math.max(1, Math.min(7, Math.floor(n / 8)));
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push({ x: n > 1 ? i / (n - 1) : 0, y: median(vals.slice(Math.max(0, i - k), i + 1)) });
+    if (pts.length <= maxPts) return pts.map(p => ({ x: round(p.x, 4), y: round(p.y, 3) }));
+    const out = [];
+    for (let j = 0; j < maxPts; j++) out.push(pts[Math.round(j * (n - 1) / (maxPts - 1))]);
+    return out.map(p => ({ x: round(p.x, 4), y: round(p.y, 3) }));
+}
+
+// The headline tiles: ONE comparison per measure (all web-chat tasks in the
+// range, earliest window vs latest window), and the line drawn from the same
+// tasks — so the chip, the sentence and the picture can never disagree.
+function headlineFor(rows, m) {
+    const rs = rows.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+    if (!rs.length) return null;
+    const vals = rs.map(m.get);
+    const out = { metric: m.key, n: rs.length, value: round(metricCentre(vals, m), 3), series: rollingSeries(vals) };
+    if (m.key === 'failedShare') {
+        const calls = rs.reduce((a, r) => a + (r.c || 0) + (r.f || 0), 0);
+        out.value = calls ? round(rs.reduce((a, r) => a + (r.f || 0), 0) / calls, 4) : 0;
+    }
+    if (rs.length >= FIND_MIN) {
+        const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
+        const c = compareGroups(rs.slice(0, w), rs.slice(-w), m);
+        if (c && m.key === 'failedShare') {
+            // Shown as "N% of calls failed": compare that same rate per window
+            // (most tasks have no failures, so the median share is always 0).
+            const rate = (a) => { const t = a.reduce((x, r) => x + (r.c || 0) + (r.f || 0), 0); return t ? a.reduce((x, r) => x + (r.f || 0), 0) / t : 0; };
+            c.from = round(rate(rs.slice(0, w)), 4); c.to = round(rate(rs.slice(-w)), 4); c.change = round(c.to - c.from, 3);
+        }
+        if (c) Object.assign(out, c, { direction: direction(c), window: w,
+            since: rs[0].t, recentSince: rs[rs.length - w].t });
+    }
+    return out;
+}
+
 /** Everything beyond the basic counters; merged into computeStats' result. */
 function analyze(rows, byTheme, events, label) {
     // Overall findings use chat and agent rows separately (they differ by an
@@ -651,6 +705,7 @@ function analyze(rows, byTheme, events, label) {
     }));
     return {
         findings: { improving, worsening, steady, total: findings.length, minTasks: FIND_MIN, chat: Object.fromEntries(chatFindings.map(f => [f.metric, f])) },
+        headline: Object.fromEntries(METRICS.slice(0, 3).map(m => [m.key, headlineFor(chatRows, m)])),
         responseTime: responseTime(rows),
         impact: memoryImpact(rows),
         learningCurve: learningCurve(rows),
