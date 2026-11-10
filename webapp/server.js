@@ -292,6 +292,7 @@ const attachmentStore = require('./services/attachmentStore');
 // automation engine so every layer draws the line in the same place.
 const { unusableContentReason: contentUnusableReason, errorPageReason: contentErrorPageReason } = require('./services/contentQuality');
 const pageObstacles = require('./services/pageObstacles');
+const blockedFallback = require('./services/blockedFallback');
 const paginationSvc = require('./services/pagination');
 const tally = require('./services/tally');
 const urlRecovery = require('./services/urlRecovery');
@@ -15748,6 +15749,26 @@ async function fetchUrlContent(url, options = {}) {
         }
     }
 
+    // A bot challenge from a cheaper layer sends the cascade straight to Playwright
+    // and past the stealth layer above. When Playwright is refused too, the stealth
+    // browser still gets its turn, because some hosts answer it and refuse Playwright.
+    const tryStealthAfterBlock = async () => {
+        if (!scraplingService || trace.some(t => t.startsWith('scrapling:'))) return null;
+        try {
+            const s = await scraplingService.fetchUrl(url, { timeout, extractLinks: options.includeLinks || false });
+            noteStatus(s.httpStatus);
+            const obs = s.success ? obstacleOf('scrapling', s, s.httpStatus || 200) : null;
+            if (s.success && s.content && !isContentTooThin(s.content, url) && !contentUnusableReason(s.content) && !(obs && obs.escalate)) {
+                setHostMemo(url, 'scrapling');
+                clearHostBotWall(url);
+                mark('scrapling', obs ? obs.kind : 'ok');
+                return finish({ success: true, url, content: smartTruncate(s.content, maxLength), title: s.title || '', links: s.links || [], source: 'scrapling', ...(obs ? { obstacle: obs } : {}) });
+            }
+            mark('scrapling', s.success ? (obs ? obs.kind : 'thin') : String(s.error || 'fail').replace(/\s+/g, ' ').slice(0, 40));
+        } catch (_) { mark('scrapling', 'error'); }
+        return null;
+    };
+
     // Use Playwright if available (handles JS-rendered pages, avoids bot detection,
     // waits out Cloudflare-style auto-clearing challenges, dismisses consent
     // overlays and simple age gates).
@@ -15786,6 +15807,7 @@ async function fetchUrlContent(url, options = {}) {
                     // impersonate layer never ran (host was memoized to the
                     // browser), give it its turn before giving up.
                     if (!tried.impersonate) { const served = await tryImpersonate(); if (served) return served; }
+                    { const served = await tryStealthAfterBlock(); if (served) return served; }
                     if (best) return finish(best);
                     return finish({ ...result, success: false, error: obs ? obs.kind : 'no_usable_content', source: 'playwright', ...(unusable ? { contentUnusable: unusable } : {}), ...(obs ? { obstacle: obs, message: obs.hint } : {}) });
                 }
@@ -15820,6 +15842,11 @@ async function fetchUrlContent(url, options = {}) {
         // that serves this host.
         setHostMemo(url, null);
         if (!tried.impersonate) { const served = await tryImpersonate(); if (served) return served; }
+        if (/^HTTP (?:401|403|429|503)\b/.test(pwFailed)) {
+            const served = await tryStealthAfterBlock();
+            if (served) return served;
+            if (notFound) return notFoundResult();
+        }
         if (best) return finish(best);
         return finish(await axiosLastResort(url, timeout));
     }
@@ -15830,9 +15857,12 @@ async function fetchUrlContent(url, options = {}) {
     return finish(await axiosLastResort(url, timeout));
 }
 
+// Set by the native-tool block below, which owns the archive and search helpers.
+let blockedPageRecovery = null;
+
 // URL fetch endpoint for chat - fetches content from URLs in messages
 app.post('/api/url/fetch', requireAuth, async (req, res) => {
-    const { urls, maxLength = 50000, timeout = 30000 } = req.body;
+    const { urls, maxLength = 50000, timeout = 30000, fallback = true } = req.body;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
         return res.status(400).json({ error: 'URLs array required' });
@@ -15852,11 +15882,14 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
         const results = await Promise.all(
             urlsToFetch.map(async (url) => {
                 try {
-                    const result = await fetchUrlContent(url, {
+                    let result = await fetchUrlContent(url, {
                         timeout,
                         maxLength,
                         waitForJS: true,
                     });
+                    if (fallback !== false && blockedPageRecovery && blockedFallback.isBlockedResult(result)) {
+                        result = await blockedPageRecovery(url, result, maxLength);
+                    }
 
                     if (result.success) {
                         return {
@@ -15865,6 +15898,10 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
                             content: result.content?.slice(0, maxLength) || '',
                             title: result.title || '',
                             source: result.source || 'unknown',
+                            ...(result.note ? { note: result.note } : {}),
+                            ...(result.partial ? { partial: true, exactPageFound: !!result.exactPageFound } : {}),
+                            ...(result.archivedAt ? { archivedAt: result.archivedAt, archiveUrl: result.archiveUrl } : {}),
+                            ...(result.alternatives ? { alternatives: result.alternatives } : {}),
                             ...(result.tried ? { tried: result.tried } : {}),
                             ...(result.published ? { published: result.published } : {}),
                             ...(result.dismissed ? { dismissed: result.dismissed } : {}),
@@ -32195,6 +32232,21 @@ app.use((req, res) => {
         } catch (_) { return null; }
     }
 
+    const raceTimeout = (promise, ms) => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(null), ms).unref())]);
+    blockedPageRecovery = async (url, result, maxLength) => {
+        const out = await blockedFallback.recoverBlockedPage({
+            url, result, maxLength,
+            deps: {
+                archive: (u) => raceTimeout(fetchArchivedCopy(u, maxLength), 15000),
+                search: (query) => raceTimeout(tools.toolRegistry.get('web_search').execute({ query, limit: 8 }), 15000),
+                readPage: (u) => (urlBlockReason(u) ? Promise.resolve(null) : raceTimeout(fetchUrlContent(u, { timeout: 8000, maxLength: 2500, waitForJS: true }), 10000)),
+                isBlockedHost: (u) => !!hostBlockReason(u),
+            },
+        });
+        if (out !== result) console.log(`[web] Blocked page recovered via ${out.source}: ${url} (${(out.content || '').length} chars) after ${out.tried}`);
+        return out;
+    };
+
     // ----- web_search ------------------------------------------------------
     tools.registerTool({
         name: 'web_search',
@@ -32806,9 +32858,19 @@ app.use((req, res) => {
                     // stale search's whole value is the unread remainder).
                     const isRead = (u) => { try { return ctx._webReadUrls.has(loopGuard.normalizeSearchUrl(u)); } catch (_) { return false; } };
                     const fresh = copied.filter(r => r && r.url && !isRead(r.url));
-                    const top = fresh.slice(0, readN);   // every result already read → nothing to fetch
-                    const reads = await Promise.all(top.map(r =>
-                        run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null)));
+                    // Reads go to sites that will answer: a host already refusing
+                    // automated access is skipped, and a read that gets refused is
+                    // replaced by the next unread result.
+                    const BLOCKED_NOTE = 'this site refuses automated reads right now; use this excerpt or another result';
+                    const readTop = (r) => run('fetch_url', { url: r.url, maxLength: 2500 }).catch(() => null);
+                    copied.forEach(r => { if (r && r.url && hostBlockReason(r.url)) r.blocked = BLOCKED_NOTE; });
+                    const readable = fresh.filter(r => !r.blocked);
+                    const top = readable.slice(0, readN);   // every result already read → nothing to fetch
+                    const reads = await Promise.all(top.map(readTop));
+                    const refused = top.filter((r, i) => blockedFallback.isBlockedResult(reads[i]));
+                    refused.forEach(r => { r.blocked = BLOCKED_NOTE; });
+                    const spares = readable.slice(readN, readN + refused.length);
+                    if (spares.length) { reads.push(...await Promise.all(spares.map(readTop))); top.push(...spares); }
                     top.forEach((r, i) => {
                         const c = reads[i] && reads[i].content;
                         if (!c) return;
@@ -32824,7 +32886,13 @@ app.use((req, res) => {
                     top.forEach(r => { if (r && r.content) noteRead(r.url); });
                     return { mode: 'search', ...sr, results: copied, ...(staleExtra || {}) };
                 }
-                if (sr && Array.isArray(sr.results)) sr.results.forEach(r => noteSeen(r && r.url));
+                if (sr && Array.isArray(sr.results)) {
+                    sr.results.forEach(r => noteSeen(r && r.url));
+                    if (sr.results.some(r => r && r.url && hostBlockReason(r.url))) {
+                        const results = sr.results.map(r => (r && r.url && hostBlockReason(r.url) ? { ...r, blocked: 'this site refuses automated reads right now; use this excerpt or another result' } : r));
+                        return { mode: 'search', ...sr, results, ...(staleExtra || {}) };
+                    }
+                }
                 return { mode: 'search', ...(sr || {}), ...(staleExtra || {}) };
             }
 
@@ -32868,12 +32936,17 @@ app.use((req, res) => {
             const ARCHIVE_KINDS = new Set(['bot_challenge', 'blocked', 'login', 'paywall', 'geo']);
             const archiveWorthIt = (r) => {
                 if (!r) return false;
-                if (r.error === 'bot_protected') return true;
+                if (blockedFallback.isBlockedResult(r)) return true;
                 const k = r.obstacle && r.obstacle.kind;
                 return !!(k && ARCHIVE_KINDS.has(k) && (r.success === false || r.obstacle.action === 'switch_source'));
             };
             const withArchive = async (url, r) => {
                 if (!archiveWorthIt(r)) return r;
+                if (r.success === false && blockedPageRecovery) {
+                    const recovered = await blockedPageRecovery(url, r, a.maxLength);
+                    if (recovered !== r) harvestLinks(recovered);
+                    return recovered;
+                }
                 const arch = await fetchArchivedCopy(url, a.maxLength).catch(() => null);
                 if (!arch) return r;
                 console.log(`[web] Archived copy served for ${url} (${arch.archivedAt}) after: ${r.tried || r.error || (r.obstacle && r.obstacle.kind)}`);
