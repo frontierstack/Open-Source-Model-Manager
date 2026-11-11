@@ -1066,15 +1066,20 @@ export default React.memo(function ChatMessage({
                             pair={notesPair}
                         />
                     )}
-                    {/* browser_agent at work: the live browser view sits in the
-                        reply itself (the notes are folded while streaming), so
-                        the user watches each step's screenshot as it lands. */}
-                    {isStreaming && (() => {
+                    {/* browser_agent: the browser view sits in the reply itself, live
+                        while it runs and kept afterwards (the notes are folded), so
+                        the panel never vanishes and shifts the page when the tool ends. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && (() => {
                         // browser_agent itself, or a web read that handed a
-                        // blocked page to it — any running call carrying the state.
-                        const live = Array.isArray(toolCalls) && [...toolCalls].reverse().find(tc => tc
-                            && (tc.status === 'partial' || tc.status === 'running') && tc.browserAgent);
-                        return live ? <div className="bagent-live-wrap"><BrowserAgentPanel state={live.browserAgent} running /></div> : null;
+                        // blocked page to it — any call carrying the state.
+                        const runs = toolCalls.filter(tc => tc && tc.browserAgent && typeof tc.browserAgent === 'object');
+                        if (!runs.length) return null;
+                        return runs.map((tc, i) => (
+                            <div className="bagent-live-wrap" key={tc.id || tc.toolCallId || i}>
+                                <BrowserAgentPanel state={tc.browserAgent}
+                                    running={!!isStreaming && (tc.status === 'partial' || tc.status === 'running')} />
+                            </div>
+                        ));
                     })()}
                     {/* The ANSWER label is held until the turn ends: while it
                         streams, text after the last call may still turn out to
@@ -1232,7 +1237,7 @@ export default React.memo(function ChatMessage({
                         for (const tc of toolCalls) {
                             if (Array.isArray(tc?.artifacts)) {
                                 for (const a of tc.artifacts) {
-                                    if (a && a.url && a.name) all.push(a);
+                                    if (a && a.url && a.name && !(tc.browserAgent && /^browser-agent-/.test(a.name))) all.push(a);
                                 }
                             }
                         }

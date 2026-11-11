@@ -6533,33 +6533,127 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
     .smooth-collapse, .srcx-chev, .srcx-bar.bar-style .srcx-chev, .msg-notes.msg-work, .msg-work > .msg-notes-toggle.bar-style { transition: none; }
 }
 
-/* ---- browser_agent live panel (ToolCallBlock BrowserAgentPanel) ---- */
-.bagent { border: 1px solid var(--border-primary); border-radius: 10px; overflow: hidden; background: var(--bg-secondary); margin: 2px 0 8px; }
-.bagent-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border-primary); background: var(--bg-tertiary); font-size: 12px; min-width: 0; }
+/* ---- browser_agent panel (ToolCallBlock BrowserAgentPanel) ----
+   Text sizes go through --fs: inside .msg-root/.tool-chip the type-scale
+   guard overrides font-size on every element (a plain font-size here is
+   ignored, which is why the first version rendered every line at 15px).
+   No inner scroll boxes: the step list opens inline, the step strip scrolls
+   sideways only. */
+.bagent { --fs: 12.5px; position: relative; border: 1px solid var(--border-primary); border-radius: 12px; overflow: hidden; background: var(--bg-secondary); margin: 2px 0 8px; min-width: 0; }
+.bagent-live-wrap { margin: 8px 0 12px; max-width: 760px; min-width: 0; }
+.bagent-head { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 9px; min-width: 0; }
+.bagent-icon { flex: none; width: 26px; height: 26px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in oklab, var(--accent-primary) 16%, transparent); color: var(--accent-primary); }
+.bagent-icon svg { width: 15px; height: 15px; }
+.bagent-head-main { flex: 1 1 auto; min-width: 0; }
+.bagent-title { --fs: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 7px; min-width: 0; line-height: 1.35; }
+.bagent-model { --fs: 11px; font-weight: 500; color: var(--text-tertiary, var(--text-secondary)); border: 1px solid var(--border-primary); border-radius: 999px; padding: 0 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.bagent-task { --fs: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.bagent-pill { --fs: 11.5px; flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); white-space: nowrap; line-height: 1.4; }
+.bagent-pill svg { width: 12px; height: 12px; flex: none; }
+.bagent-pill.is-running svg { color: var(--accent-primary); }
+.bagent-pill.is-done { color: var(--ok, #22c55e); background: color-mix(in oklab, var(--ok, #22c55e) 12%, transparent); }
+.bagent-pill.is-failed { color: var(--danger, #e5484d); background: color-mix(in oklab, var(--danger, #e5484d) 12%, transparent); }
+.bagent-pill.is-stopped { color: var(--warning, #f59e0b); background: color-mix(in oklab, var(--warning, #f59e0b) 12%, transparent); }
+.bagent-time { --fs: 11px; color: var(--text-tertiary, var(--text-secondary)); font-variant-numeric: tabular-nums; padding-left: 5px; border-left: 1px solid var(--border-primary); }
+.bagent-progress { height: 2px; background: var(--border-primary); margin: 0 12px 8px; border-radius: 2px; overflow: hidden; }
+.bagent-progress i { display: block; height: 100%; background: var(--accent-primary); transition: width .4s ease; }
+.bagent-frame { margin: 0 12px; border: 1px solid var(--border-primary); border-radius: 9px; overflow: hidden; background: var(--bg-primary); }
+.bagent-bar { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--border-primary); background: var(--bg-tertiary); min-width: 0; }
 .bagent-dots { display: inline-flex; gap: 4px; flex: none; }
-.bagent-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border-primary); display: block; }
-.bagent-url { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-secondary); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 2px 8px; }
-.bagent-status { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--text-tertiary, var(--text-secondary)); white-space: nowrap; }
-.bagent-status svg { width: 12px; height: 12px; color: var(--accent-primary); }
-.bagent.is-failed .bagent-status { color: var(--danger, #e5484d); }
-.bagent-view { position: relative; background: var(--bg-primary); aspect-ratio: 1440 / 757; max-height: 420px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.bagent-view a { display: block; width: 100%; height: 100%; }
-.bagent-view img { display: block; width: 100%; height: 100%; -o-object-fit: contain; object-fit: contain; -o-object-position: top center; object-position: top center; }
-.bagent-empty { font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
-.bagent-live { position: absolute; right: 8px; bottom: 8px; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-primary); background: var(--bg-elevated, var(--bg-secondary)); color: var(--text-primary); cursor: pointer; }
-.bagent-steps { list-style: none; margin: 0; padding: 4px; max-height: 190px; overflow-y: auto; border-top: 1px solid var(--border-primary); }
-.bagent-step { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; min-width: 0; }
+.bagent-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--border-primary); display: block; }
+.bagent-url { --fs: 11.5px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-secondary); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 1px 8px; line-height: 1.6; }
+.bagent-view { position: relative; width: 100%; max-height: min(400px, 40vh); background: var(--bg-primary); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* The shot box keeps the screenshot's own ratio inside a height-capped view,
+   so click markers (percent of the viewport) land on the image, not the letterbox. */
+.bagent-shot { position: relative; display: block; height: 100%; width: auto; max-width: 100%; aspect-ratio: inherit; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+.bagent-shot img { display: block; width: 100%; height: 100%; -o-object-fit: fill; object-fit: fill; animation: bagent-fade .25s ease; }
+@keyframes bagent-fade { from { opacity: .35; } to { opacity: 1; } }
+.bagent-click { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; border: 2px solid var(--accent-primary); background: color-mix(in oklab, var(--accent-primary) 22%, transparent); pointer-events: none; opacity: .55; }
+.bagent-click.is-last { opacity: 1; box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-primary) 25%, transparent); }
+.bagent-click.is-last::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--accent-primary); animation: bagent-ping 1.4s ease-out infinite; }
+@keyframes bagent-ping { from { transform: scale(1); opacity: .9; } to { transform: scale(2.3); opacity: 0; } }
+.bagent-empty { --fs: 12px; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--text-tertiary, var(--text-secondary)); }
+.bagent-empty svg { width: 14px; height: 14px; }
+.bagent-badge { --fs: 11px; position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--bg-elevated, var(--bg-secondary)) 92%, transparent); border: 1px solid var(--border-primary); color: var(--text-primary); }
+.bagent-badge svg { width: 11px; height: 11px; }
+.bagent-badge.is-ok { color: var(--ok, #22c55e); }
+.bagent-badge.is-warn { color: var(--warning, #f59e0b); }
+.bagent-nav { --fs: 18px; position: absolute; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-primary); background: color-mix(in oklab, var(--bg-elevated, var(--bg-secondary)) 88%, transparent); color: var(--text-primary); display: inline-flex; align-items: center; justify-content: center; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.bagent-nav.is-prev { left: 8px; } .bagent-nav.is-next { right: 8px; }
+.bagent-view:hover .bagent-nav:not(:disabled), .bagent-nav:focus-visible { opacity: .92; }
+.bagent-nav:disabled { cursor: default; }
+@media (hover: none) { .bagent-nav:not(:disabled) { opacity: .8; } }
+.bagent-live { --fs: 11px; position: absolute; left: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border-primary); background: color-mix(in oklab, var(--bg-elevated, var(--bg-secondary)) 92%, transparent); color: var(--text-primary); cursor: pointer; }
+.bagent-live.is-on { cursor: default; }
+.bagent-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary, var(--text-secondary)); }
+.bagent-live.is-on .bagent-live-dot { background: var(--danger, #e5484d); animation: bagent-blink 1.2s ease-in-out infinite; }
+@keyframes bagent-blink { 50% { opacity: .3; } }
+.bagent-detail { padding: 9px 12px 2px; min-width: 0; }
+.bagent-detail-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.bagent-detail-action { --fs: 13px; font-weight: 500; color: var(--text-primary); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.bagent-n { --fs: 11px; flex: none; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 6px; background: var(--bg-tertiary); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.bagent-at { --fs: 11px; flex: none; color: var(--text-tertiary, var(--text-secondary)); font-variant-numeric: tabular-nums; }
+.bagent-note { --fs: 12px; color: var(--text-secondary); margin: 3px 0 0 28px; line-height: 1.45; overflow-wrap: anywhere; }
+.bagent-page { --fs: 11.5px; color: var(--text-tertiary, var(--text-secondary)); margin: 2px 0 0 28px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagent-errline { --fs: 12px; color: var(--danger, #e5484d); margin: 3px 0 0 28px; overflow-wrap: anywhere; }
+.bagent-code { margin: 4px 0 0 28px; }
+.bagent-code summary { --fs: 11.5px; color: var(--text-tertiary, var(--text-secondary)); cursor: pointer; list-style: revert; }
+.bagent-code pre { --fs: 11px; margin: 5px 0 0; padding: 7px 9px; border-radius: 7px; background: var(--bg-primary); border: 1px solid var(--border-primary); color: var(--text-secondary); font-family: var(--font-mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+.bagent-code pre.is-out { color: var(--text-tertiary, var(--text-secondary)); }
+.bagent-strip-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px 10px; min-width: 0; }
+.bagent-strip { flex: 1 1 auto; min-width: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
+.bagent-chip { --fs: 11px; flex: none; min-width: 24px; height: 22px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border-primary); background: transparent; color: var(--text-secondary); cursor: pointer; font-variant-numeric: tabular-nums; }
+.bagent-chip:hover { background: var(--bg-hover); }
+.bagent-chip.is-active { background: var(--accent-primary); border-color: var(--accent-primary); color: var(--accent-ink, #fff); }
+.bagent-chip.is-error:not(.is-active) { border-color: color-mix(in oklab, var(--danger, #e5484d) 60%, transparent); color: var(--danger, #e5484d); }
+.bagent-chip.is-check:not(.is-active) { border-color: color-mix(in oklab, var(--warning, #f59e0b) 60%, transparent); }
+.bagent-toggle { --fs: 11.5px; flex: none; display: inline-flex; align-items: center; gap: 3px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.bagent-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+.bagent-toggle svg { width: 13px; height: 13px; transition: transform .15s; }
+.bagent-toggle svg.is-open { transform: rotate(180deg); }
+.bagent-steps { list-style: none; margin: 0; padding: 0 8px 8px; border-top: 1px solid var(--border-primary); }
+.bagent-steps li:first-child { margin-top: 6px; }
+.bagent-step { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; padding: 5px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-primary); cursor: pointer; min-width: 0; }
 .bagent-step:hover { background: var(--bg-hover); }
 .bagent-step.is-active { background: var(--bg-active, var(--bg-hover)); }
-.bagent-n { flex: none; min-width: 18px; text-align: right; color: var(--text-tertiary, var(--text-secondary)); font-variant-numeric: tabular-nums; }
-.bagent-action { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bagent-host { flex: none; color: var(--text-tertiary, var(--text-secondary)); font-size: 11px; }
-.bagent-err { flex: 0 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger, #e5484d); font-size: 11px; }
+.bagent-step-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.bagent-action { --fs: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.45; }
+.bagent-step-note { --fs: 11.5px; color: var(--text-tertiary, var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagent-host { --fs: 11px; flex: none; color: var(--text-tertiary, var(--text-secondary)); line-height: 1.6; }
+.bagent-err { --fs: 11.5px; color: var(--danger, #e5484d); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagent-report { margin: 0 12px 12px; padding: 9px 11px; border-radius: 9px; background: var(--bg-primary); border: 1px solid var(--border-primary); }
+.bagent-report.is-error { border-color: color-mix(in oklab, var(--danger, #e5484d) 45%, var(--border-primary)); }
+.bagent-report-label { --fs: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-tertiary, var(--text-secondary)); margin-bottom: 4px; }
+.bagent-report-text { --fs: 12.5px; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.bagent-report-text.is-clamped { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.bagent-more { --fs: 11.5px; margin-top: 4px; border: 0; background: transparent; color: var(--accent-primary); cursor: pointer; padding: 0; }
+/* Full-size viewer (portal on <body>, outside the type-scale roots). */
+.bagent-lightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.78); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.bagent-lightbox-inner { width: min(1280px, 100%); max-height: 100%; display: flex; flex-direction: column; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 12px; overflow: hidden; }
+.bagent-lightbox-bar, .bagent-lightbox-nav { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; color: var(--text-primary); min-width: 0; }
+.bagent-lightbox-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.bagent-lightbox-bar a { color: var(--accent-primary); font-size: 12px; white-space: nowrap; }
+.bagent-lightbox-bar button { border: 0; background: transparent; color: var(--text-primary); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.bagent-lightbox .bagent-view { max-height: calc(100vh - 150px); }
+.bagent-lightbox .bagent-shot { cursor: default; }
+.bagent-lightbox-nav button { font-size: 12.5px; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-tertiary); color: var(--text-primary); padding: 4px 10px; cursor: pointer; }
+.bagent-lightbox-nav button:disabled { opacity: .4; cursor: default; }
+.bagent-lightbox-url { flex: 1 1 auto; min-width: 0; text-align: center; font-size: 11.5px; color: var(--text-tertiary, var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); }
 @media (max-width: 640px) {
+  .bagent-head { padding: 9px 10px 8px; gap: 8px; flex-wrap: wrap; }
+  .bagent-head-main { flex-basis: calc(100% - 40px); }
+  .bagent-pill { margin-left: 34px; }
+  .bagent-frame, .bagent-progress { margin-left: 8px; margin-right: 8px; }
+  .bagent-detail { padding: 8px 10px 2px; }
+  .bagent-strip-row { padding: 8px 10px 9px; }
+  .bagent-report { margin: 0 8px 10px; }
   .bagent-host { display: none; }
-  .bagent-view { max-height: 260px; }
+  .bagent-view { max-height: min(260px, 34vh); }
+  .bagent-lightbox { padding: 8px; }
 }
-.bagent-live-wrap { margin: 8px 0 10px; max-width: 760px; }
+@media (prefers-reduced-motion: reduce) {
+  .bagent-shot img, .bagent-click.is-last::after, .bagent-live.is-on .bagent-live-dot, .bagent-progress i { animation: none; transition: none; }
+}
 .hover\:underline:hover{
   text-decoration-line: underline;
 }

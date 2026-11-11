@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { modelDisplayName } from '../../utils/modelDisplayName';
 import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText, ArrowLeftRight } from 'lucide-react';
 import SearchSources from './SearchSources';
@@ -500,70 +501,270 @@ function ErrorBlock({ error, toolName }) {
     );
 }
 
-// browser_agent: what the AI browser is doing. The view follows the newest
-// step while it runs; clicking a step shows that step's screenshot.
+// browser_agent: what the AI browser is doing. The viewer follows the newest
+// step while it runs (or shows the step you picked), marks where the agent
+// clicked, and lists every step below it without an inner scroll box.
 function hostOf(url) {
     try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return ''; }
 }
 
+function fmtBaSecs(s) {
+    if (!Number.isFinite(s) || s < 0) return '';
+    s = Math.round(s);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+const OBSTACLE_LABEL = {
+    turnstile: 'Cloudflare check', interstitial: '“Just a moment” page', recaptcha: 'reCAPTCHA',
+    'recaptcha-images': 'Picture CAPTCHA', hcaptcha: 'hCaptcha', 'hcaptcha-images': 'Picture CAPTCHA',
+    'press-hold': 'Press-and-hold check', datadome: 'DataDome CAPTCHA', arkose: 'Puzzle CAPTCHA', geetest: 'Puzzle CAPTCHA',
+};
+
+// Swap screenshots only once the next one has loaded: no blank flash between steps.
+function useLoadedSrc(src) {
+    const [shown, setShown] = useState(src || null);
+    useEffect(() => {
+        if (!src || src === shown) return undefined;
+        let live = true;
+        const im = new window.Image();
+        im.onload = () => { if (live) setShown(src); };
+        im.onerror = () => { if (live) setShown(src); };
+        im.src = src;
+        return () => { live = false; };
+    }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
+    return shown;
+}
+
+// The screenshot is taken AFTER the step, so a click that loaded another page
+// would be drawn on the wrong layout: markers only when the page stayed put.
+function BrowserShot({ step, prevUrl, src, onOpen, children }) {
+    const vp = step && Array.isArray(step.viewport) && step.viewport[0] > 0 && step.viewport[1] > 0 ? step.viewport : null;
+    const ratio = vp ? `${vp[0]} / ${vp[1]}` : '16 / 10';
+    const samePage = !prevUrl || !step || !step.url || prevUrl === step.url;
+    const clicks = vp && samePage && Array.isArray(step.clicks) ? step.clicks : [];
+    return (
+        <div className="bagent-view" style={{ aspectRatio: ratio }}>
+            {src ? (
+                <button type="button" className="bagent-shot" onClick={onOpen} title="Open full size">
+                    <img key={src} src={src} alt={(step && (step.title || step.action)) || 'Browser screenshot'} />
+                    {clicks.map((c, i) => (
+                        <span key={`${src}-${i}`} className={`bagent-click${i === clicks.length - 1 ? ' is-last' : ''}`}
+                            style={{ left: `${Math.min(100, Math.max(0, (c[0] / vp[0]) * 100))}%`, top: `${Math.min(100, Math.max(0, (c[1] / vp[1]) * 100))}%` }} />
+                    ))}
+                </button>
+            ) : null}
+            {children}
+        </div>
+    );
+}
+
+function BrowserLightbox({ steps, allSteps, index, onIndex, onClose }) {
+    const step = steps[index];
+    const k = step ? allSteps.indexOf(step) : -1;
+    const prevUrl = k > 0 ? allSteps[k - 1].url : null;
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === 'Escape') onClose();
+            else if (e.key === 'ArrowLeft' && index > 0) onIndex(index - 1);
+            else if (e.key === 'ArrowRight' && index < steps.length - 1) onIndex(index + 1);
+        };
+        window.addEventListener('keydown', onKey);
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
+    }, [index, steps.length, onClose, onIndex]);
+    if (!step) return null;
+    return createPortal(
+        <div className="bagent-lightbox" role="dialog" aria-modal="true" onClick={onClose}>
+            <div className="bagent-lightbox-inner" onClick={e => e.stopPropagation()}>
+                <div className="bagent-lightbox-bar">
+                    <span className="bagent-lightbox-title">Step {step.n} · {step.action}</span>
+                    <a href={step.shot} target="_blank" rel="noopener noreferrer">Open image</a>
+                    <button type="button" onClick={onClose} aria-label="Close">×</button>
+                </div>
+                <BrowserShot step={step} src={step.shot} prevUrl={prevUrl} onOpen={() => {}} />
+                <div className="bagent-lightbox-nav">
+                    <button type="button" disabled={index <= 0} onClick={() => onIndex(index - 1)}>‹ Previous</button>
+                    <span className="bagent-lightbox-url">{step.url || ''}</span>
+                    <button type="button" disabled={index >= steps.length - 1} onClick={() => onIndex(index + 1)}>Next ›</button>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+}
+
 export function BrowserAgentPanel({ state, running }) {
     const steps = Array.isArray(state.steps) ? state.steps : [];
-    const [picked, setPicked] = useState(null);
-    const [broken, setBroken] = useState({});
-    const listRef = React.useRef(null);
-    const latest = steps.length ? steps[steps.length - 1] : null;
-    const shown = (picked != null && steps.find(s => s.n === picked)) || latest;
-    const shot = shown && shown.shot && !broken[shown.shot] ? shown.shot : null;
+    const [picked, setPicked] = useState(null);      // step n the user chose; null = follow the newest
+    const [listOpen, setListOpen] = useState(false);
+    const [reportOpen, setReportOpen] = useState(false);
+    const [lightbox, setLightbox] = useState(null);  // index into shotSteps
+    const [, setTick] = useState(0);
+    const stripRef = React.useRef(null);
     useEffect(() => {
-        // Keep the newest step in view while following live.
-        if (picked == null && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-    }, [steps.length, picked]);
+        if (!running) return undefined;
+        const t = setInterval(() => setTick(x => x + 1), 1000);
+        return () => clearInterval(t);
+    }, [running]);
+    const latest = steps.length ? steps[steps.length - 1] : null;
+    const idx = picked != null ? Math.max(0, steps.findIndex(s => s.n === picked)) : steps.length - 1;
+    const shown = steps[idx] || null;
+    const following = picked == null;
+    // Nearest screenshot at or before the shown step (a dialog step has none).
+    const shotStep = shown && shown.shot ? shown : [...steps.slice(0, idx + 1)].reverse().find(s => s.shot) || null;
+    const src = useLoadedSrc(shotStep ? shotStep.shot : null);
+    const shotSteps = steps.filter(s => s.shot);
+    useEffect(() => {
+        // Keep the newest step chip in view inside the strip (never scrolls the page).
+        const el = stripRef.current;
+        if (el && following) el.scrollLeft = el.scrollWidth;
+    }, [steps.length, following]);
+
     const status = running ? 'running' : (state.status || 'done');
+    const elapsed = running && state.startedAt ? (Date.now() - state.startedAt) / 1000 : state.seconds;
+    const maxSteps = state.maxSteps || 0;
     const statusText = running
-        ? (steps.length ? `Step ${latest.n}` : 'Starting the browser…')
-        : status === 'done' ? `Finished · ${steps.length} step${steps.length === 1 ? '' : 's'}${state.seconds ? ` · ${Math.round(state.seconds)}s` : ''}`
+        ? (steps.length ? `Step ${latest.n}${maxSteps ? ` of ${maxSteps}` : ''}` : 'Starting the browser…')
+        : status === 'done' ? `Done · ${steps.length} step${steps.length === 1 ? '' : 's'}`
         : status === 'stopped' ? 'Stopped'
-        : `Did not finish · ${steps.length} step${steps.length === 1 ? '' : 's'}`;
+        : `Didn't finish · ${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    const go = (i) => {
+        if (i < 0 || i >= steps.length) return;
+        setPicked(running && i === steps.length - 1 ? null : steps[i].n);
+    };
+    const obstacle = shown && (shown.captcha || shown.obstacle);
+    const ob = shown && shown.captcha ? shown.captcha : (shown && shown.obstacle ? { kind: shown.obstacle } : null);
+    const rawResult = !running && typeof state.result === 'string' ? state.result.trim() : '';
+    // Agents often finish with JSON: show it as readable lines, not one blob.
+    const result = React.useMemo(() => {
+        if (!/^[\[{]/.test(rawResult)) return rawResult;
+        try {
+            const v = JSON.parse(rawResult);
+            const line = (o) => (o && typeof o === 'object' && !Array.isArray(o)
+                ? Object.entries(o).map(([k, x]) => `${k}: ${Array.isArray(x) ? x.join(', ') : (x && typeof x === 'object' ? JSON.stringify(x) : x)}`).join('\n')
+                : String(o));
+            return Array.isArray(v) ? v.map((o, i) => `${i + 1}. ${line(o).replace(/\n/g, '\n   ')}`).join('\n\n') : line(v);
+        } catch (_) { return rawResult; }
+    }, [rawResult]);
+    const longResult = result.length > 420;
+
     return (
         <div className={`bagent is-${status}`}>
-            <div className="bagent-bar">
-                <span className="bagent-dots" aria-hidden="true"><i /><i /><i /></span>
-                <span className="bagent-url" title={shown && shown.url ? shown.url : ''}>
-                    {shown && shown.url ? shown.url.replace(/^https?:\/\//, '') : 'about:blank'}
-                </span>
-                <span className="bagent-status">
+            <div className="bagent-head">
+                <span className="bagent-icon" aria-hidden="true"><Globe strokeWidth={2} /></span>
+                <div className="bagent-head-main">
+                    <div className="bagent-title">Browser agent{state.model ? <span className="bagent-model" title={state.model}>{modelDisplayName(state.model)}</span> : null}</div>
+                    {state.task && <div className="bagent-task" title={state.task}>{state.task}</div>}
+                </div>
+                <span className={`bagent-pill is-${status}`}>
                     {running && <Loader2 className="animate-spin" strokeWidth={2.5} />}
-                    {statusText}
+                    {!running && status === 'done' && <Check strokeWidth={2.5} />}
+                    {!running && status !== 'done' && <AlertCircle strokeWidth={2.5} />}
+                    <span>{statusText}</span>
+                    {fmtBaSecs(elapsed) && <span className="bagent-time">{fmtBaSecs(elapsed)}</span>}
                 </span>
             </div>
-            <div className="bagent-view">
-                {shot ? (
-                    <a href={shot} target="_blank" rel="noopener noreferrer" title="Open full size">
-                        <img src={shot} alt={shown.title || shown.action || 'Browser screenshot'} loading="lazy"
-                            onError={() => setBroken(b => ({ ...b, [shot]: true }))} />
-                    </a>
-                ) : (
-                    <div className="bagent-empty">{running ? 'Opening the browser…' : 'No screenshot for this step'}</div>
-                )}
-                {picked != null && running && (
-                    <button type="button" className="bagent-live" onClick={() => setPicked(null)}>Back to live</button>
-                )}
+            {running && maxSteps > 0 && (
+                <div className="bagent-progress" aria-hidden="true"><i style={{ width: `${Math.min(100, (steps.length / maxSteps) * 100)}%` }} /></div>
+            )}
+
+            <div className="bagent-frame">
+                <div className="bagent-bar">
+                    <span className="bagent-dots" aria-hidden="true"><i /><i /><i /></span>
+                    <span className="bagent-url" title={shown && shown.url ? shown.url : ''}>
+                        {shown && shown.url ? shown.url.replace(/^https?:\/\//, '') : 'about:blank'}
+                    </span>
+                </div>
+                <BrowserShot step={shotStep} src={src}
+                    prevUrl={(() => { const k = steps.indexOf(shotStep); return k > 0 ? steps[k - 1].url : null; })()}
+                    onOpen={() => { const i = shotSteps.indexOf(shotStep); if (i >= 0) setLightbox(i); }}>
+                    {!src && <div className="bagent-empty">{running ? <><Loader2 className="animate-spin" strokeWidth={2} /> Opening the browser…</> : 'No screenshot for this step'}</div>}
+                    {obstacle && ob && (
+                        <span className={`bagent-badge${ob.solved ? ' is-ok' : ob.found === false ? '' : ' is-warn'}`} title={ob.detail || ''}>
+                            <Shield strokeWidth={2.5} />
+                            {OBSTACLE_LABEL[ob.kind] || 'Human check'}{shown.captcha ? (ob.solved ? ' · passed' : ' · needs a person') : ''}
+                        </span>
+                    )}
+                    {steps.length > 1 && (
+                        <>
+                            <button type="button" className="bagent-nav is-prev" disabled={idx <= 0} onClick={() => go(idx - 1)} aria-label="Previous step">‹</button>
+                            <button type="button" className="bagent-nav is-next" disabled={idx >= steps.length - 1} onClick={() => go(idx + 1)} aria-label="Next step">›</button>
+                        </>
+                    )}
+                    {!following && running && (
+                        <button type="button" className="bagent-live" onClick={() => setPicked(null)}><span className="bagent-live-dot" />Back to live</button>
+                    )}
+                    {following && running && steps.length > 0 && <span className="bagent-live is-on"><span className="bagent-live-dot" />Live</span>}
+                </BrowserShot>
             </div>
+
+            {shown && (
+                <div className={`bagent-detail${shown.error ? ' is-error' : ''}`}>
+                    <div className="bagent-detail-line">
+                        <span className="bagent-n">{shown.n}</span>
+                        <span className="bagent-detail-action">{shown.action}</span>
+                        {Number.isFinite(shown.at) && <span className="bagent-at">{fmtBaSecs(shown.at / 1000)}</span>}
+                    </div>
+                    {shown.note && <div className="bagent-note">{shown.note}</div>}
+                    {shown.title && <div className="bagent-page">{shown.title}</div>}
+                    {shown.captcha && shown.captcha.detail && <div className="bagent-note">Human check: {shown.captcha.detail}</div>}
+                    {shown.error && <div className="bagent-errline">{shown.error}</div>}
+                    {(shown.code || shown.output) && (
+                        <details className="bagent-code">
+                            <summary>What it ran</summary>
+                            {shown.code && <pre>{shown.code}</pre>}
+                            {shown.output && <pre className="is-out">{shown.output}</pre>}
+                        </details>
+                    )}
+                </div>
+            )}
+
             {steps.length > 0 && (
-                <ol className="bagent-steps" ref={listRef}>
-                    {steps.map(st => (
+                <div className="bagent-strip-row">
+                    <div className="bagent-strip" ref={stripRef}>
+                        {steps.map((st, i) => (
+                            <button key={st.n} type="button" title={`${st.n}. ${st.action}${st.error ? ` — ${st.error}` : ''}`}
+                                className={`bagent-chip${i === idx ? ' is-active' : ''}${st.error ? ' is-error' : ''}${st.captcha || st.obstacle ? ' is-check' : ''}`}
+                                onClick={() => go(i)}>{st.n}</button>
+                        ))}
+                    </div>
+                    <button type="button" className="bagent-toggle" onClick={() => setListOpen(o => !o)} aria-expanded={listOpen}>
+                        {listOpen ? 'Hide steps' : 'All steps'}<ChevronDown strokeWidth={2} className={listOpen ? 'is-open' : ''} />
+                    </button>
+                </div>
+            )}
+            {listOpen && (
+                <ol className="bagent-steps">
+                    {steps.map((st, i) => (
                         <li key={st.n}>
-                            <button type="button"
-                                className={`bagent-step${shown && shown.n === st.n ? ' is-active' : ''}${st.error ? ' is-error' : ''}`}
-                                onClick={() => setPicked(st.n === (latest && latest.n) && running ? null : st.n)}>
+                            <button type="button" className={`bagent-step${i === idx ? ' is-active' : ''}${st.error ? ' is-error' : ''}`} onClick={() => go(i)}>
                                 <span className="bagent-n">{st.n}</span>
-                                <span className="bagent-action">{st.action}</span>
+                                <span className="bagent-step-text">
+                                    <span className="bagent-action">{st.action}</span>
+                                    {st.note && <span className="bagent-step-note">{st.note}</span>}
+                                    {st.error && <span className="bagent-err">{st.error}</span>}
+                                </span>
                                 {hostOf(st.url) && <span className="bagent-host">{hostOf(st.url)}</span>}
-                                {st.error && <span className="bagent-err" title={st.error}>{st.error}</span>}
+                                {Number.isFinite(st.at) && <span className="bagent-at">{fmtBaSecs(st.at / 1000)}</span>}
                             </button>
                         </li>
                     ))}
                 </ol>
+            )}
+
+            {(result || (!running && state.error)) && (
+                <div className={`bagent-report${state.error && !result ? ' is-error' : ''}`}>
+                    <div className="bagent-report-label">{result ? "Agent's report" : 'What went wrong'}</div>
+                    <div className={`bagent-report-text${longResult && !reportOpen ? ' is-clamped' : ''}`}>{result || state.error}</div>
+                    {longResult && (
+                        <button type="button" className="bagent-more" onClick={() => setReportOpen(o => !o)}>{reportOpen ? 'Show less' : 'Show more'}</button>
+                    )}
+                </div>
+            )}
+
+            {lightbox != null && (
+                <BrowserLightbox steps={shotSteps} allSteps={steps} index={lightbox} onIndex={setLightbox} onClose={() => setLightbox(null)} />
             )}
         </div>
     );

@@ -34477,15 +34477,18 @@ app.use((req, res) => {
             const callId = ctx?._toolCallId || null;
             const started = Date.now();
             const shotUrl = (runId, file) => file ? `/api/browser-agent/shots/${runId}/${file}` : null;
-            const state = { runId: null, task: task.slice(0, 600), model: inst.modelName, status: 'starting', steps: [], current: null };
+            // Code/output only on the newest steps: every frame resends the list.
+            const leanSteps = (list) => list.map((st, i) => (i < list.length - 12 ? { ...st, code: undefined, output: undefined } : st));
+            const state = { runId: null, task: task.slice(0, 600), model: inst.modelName, status: 'starting', steps: [], current: null, maxSteps, startedAt: started };
             let lastEmit = 0;
             const publish = (force) => {
                 if (!ctx || typeof ctx.emitEvent !== 'function' || !callId) return;
                 if (!force && Date.now() - lastEmit < 250) return;
                 lastEmit = Date.now();
                 const cur = state.current;
-                const summary = cur ? `Step ${cur.n}: ${cur.action}${cur.title ? ` — ${cur.title}` : ''}` : 'Starting the browser';
-                ctx.emitEvent({ type: 'browser_agent_progress', tool_call_id: callId, summary: summary.slice(0, 300), state: { ...state, steps: state.steps.slice(-40) } });
+                const summary = cur ? `Step ${cur.n}: ${cur.action}${cur.title ? ` — ${cur.title}` : ''}`
+                    : state.status === 'starting' || state.status === 'running' ? 'Starting the browser' : `Browser agent ${state.status} after ${state.steps.length} steps`;
+                ctx.emitEvent({ type: 'browser_agent_progress', tool_call_id: callId, summary: summary.slice(0, 300), state: { ...state, steps: leanSteps(state.steps.slice(-40)) } });
             };
             publish(true);
             const result = await browserAgentSvc.run({
@@ -34502,6 +34505,13 @@ app.use((req, res) => {
                             n: ev.n, action: String(ev.action || '').slice(0, 160), url: String(ev.url || '').slice(0, 400),
                             title: String(ev.title || '').slice(0, 160), error: ev.error ? String(ev.error).slice(0, 240) : undefined,
                             shot: shotUrl(runId, ev.shot), at: Date.now() - started,
+                            note: ev.note ? String(ev.note).slice(0, 160) : undefined,
+                            code: ev.code ? String(ev.code).slice(0, 700) : undefined,
+                            output: ev.output ? String(ev.output).slice(0, 360) : undefined,
+                            clicks: Array.isArray(ev.clicks) && ev.clicks.length ? ev.clicks.slice(-6).map(c => [Number(c[0]) || 0, Number(c[1]) || 0]) : undefined,
+                            viewport: Array.isArray(ev.viewport) && ev.viewport[0] ? [Number(ev.viewport[0]), Number(ev.viewport[1])] : undefined,
+                            obstacle: ev.obstacle ? String(ev.obstacle).slice(0, 40) : undefined,
+                            captcha: ev.captcha && ev.captcha.found ? { kind: String(ev.captcha.kind || '').slice(0, 40), solved: !!ev.captcha.solved, detail: String(ev.captcha.detail || '').slice(0, 200) } : undefined,
                         };
                         state.steps.push(step);
                         state.current = step;
@@ -34518,6 +34528,9 @@ app.use((req, res) => {
             state.finalUrl = last ? last.url : undefined;
             state.seconds = Math.round((Date.now() - started) / 100) / 10;
             state.success = done.success ?? null;
+            state.result = answer ? answer.slice(0, 1500) : undefined;
+            state.error = result.ok ? undefined : String(result.error || done.error || '').slice(0, 300) || undefined;
+            state.current = null;
             publish(true);
             console.log(`[browser_agent] ${result.ok ? done.status : 'failed'} in ${state.seconds}s, ${state.steps.length} steps on ${inst.modelName}${result.error ? `: ${String(result.error).slice(0, 200)}` : ''}`);
 
@@ -34542,7 +34555,7 @@ app.use((req, res) => {
             }
             const steps = state.steps.map(s => ({ n: s.n, action: s.action, url: s.url || undefined, error: s.error }));
             const base = {
-                browserAgent: { ...state, steps: state.steps.slice(-60) },
+                browserAgent: { ...state, steps: leanSteps(state.steps.slice(-60)) },
                 steps,
                 finalUrl: state.finalUrl,
                 seconds: state.seconds,

@@ -28,6 +28,7 @@ const egressProxy = require('./egressProxy');
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const VENV_PYTHON = process.env.BROWSER_AGENT_PYTHON || '/opt/browser-use/bin/python';
 const RUNNER = path.join(__dirname, 'browser_agent_runner.py');
+const HELPERS = path.join(__dirname, 'browser_agent_helpers.py');
 const NETWORK = process.env.COMPOSE_PROJECT_NAME ? `${process.env.COMPOSE_PROJECT_NAME}_default` : 'modelserver_default';
 const MAX_CONCURRENT = Math.max(1, parseInt(process.env.BROWSER_AGENT_MAX_CONCURRENT || '2', 10));
 const MEMORY_BYTES = Math.max(1, parseFloat(process.env.BROWSER_AGENT_MEMORY_GB || '3')) * 1024 ** 3;
@@ -153,6 +154,22 @@ async function removeStrayContainers() {
     for (const c of list) await docker.getContainer(c.Id).remove({ force: true }).catch(() => {});
 }
 
+// Cookie-consent rules shared with the Playwright layer (pageObstacles), so the
+// agent's dismiss_popups() clicks the same buttons the web tool does.
+let _helperConfig = null;
+function helperConfig() {
+    if (_helperConfig) return _helperConfig;
+    try {
+        const po = require('./pageObstacles');
+        _helperConfig = {
+            consentRe: po.CONSENT_BUTTON_RE ? po.CONSENT_BUTTON_RE.source : undefined,
+            // querySelector-compatible ones only (Playwright :has-text() etc. would throw)
+            consentSelectors: (po.CONSENT_SELECTORS || []).filter(x => typeof x === 'string' && !/:has|:text|>>/.test(x)),
+        };
+    } catch (_) { _helperConfig = {}; }
+    return _helperConfig;
+}
+
 // ---- run -------------------------------------------------------------------
 /**
  * Run one task. target = { host, port, model } of the model instance.
@@ -187,6 +204,8 @@ async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowI
             apiKey: 'relay',
             extraSystem,
             shotMaxDim: 1024,
+            autoCaptcha: process.env.BROWSER_AGENT_AUTO_CAPTCHA !== '0',
+            helperConfig: helperConfig(),
         };
         container = await docker.createContainer({
             name: `bagent-${runId}`,
@@ -201,6 +220,7 @@ async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowI
             Env: [
                 `BU_JOB=${Buffer.from(JSON.stringify(job)).toString('base64')}`,
                 `BU_RUNNER=${(await fsp.readFile(RUNNER)).toString('base64')}`,
+                `BU_HELPERS=${(await fsp.readFile(HELPERS).catch(() => Buffer.alloc(0))).toString('base64')}`,
                 'HOME=/tmp/home', 'XDG_RUNTIME_DIR=/tmp/run', 'XDG_CONFIG_HOME=/tmp/home/.config', 'XDG_CACHE_HOME=/tmp/home/.cache',
                 'ANONYMIZED_TELEMETRY=false', 'BH_TELEMETRY=0', 'PYTHONDONTWRITEBYTECODE=1', 'PYTHONUNBUFFERED=1',
                 `HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`, `http_proxy=${proxyUrl}`, `https_proxy=${proxyUrl}`,
