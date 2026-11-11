@@ -16524,6 +16524,54 @@ async function repairCoreMemoryThemes() {
     }
 }
 
+// One-time (2026-11-11): tool timing for tasks logged before it was recorded,
+// from the chips saved on each task's assistant message (`startedAt` +
+// `durationMs`; overlapping parallel calls are counted once for `tm`).
+const TIMING_SKIP_TOOLS = new Set(['record_learning', 'find_tools', ...coreMemory.PAIR_TOOLS]);
+function timingFromChips(toolCalls) {
+    const chips = (toolCalls || []).filter(c => c && c.label && !TIMING_SKIP_TOOLS.has(c.label));
+    if (!chips.length) return null;
+    const spans = chips.filter(c => Number.isFinite(c.startedAt) && Number.isFinite(c.durationMs) && c.durationMs >= 0)
+        .map(c => [c.startedAt, c.startedAt + c.durationMs]).sort((a, b) => a[0] - b[0]);
+    let wall = 0, end = -Infinity;
+    for (const [a, b] of spans) { if (a > end) { wall += b - a; end = b; } else if (b > end) { wall += b - end; end = b; } }
+    return { tm: spans.length ? wall / 1000 : null, tu: coreMemory.summarizeToolUse(chips) };
+}
+async function backfillCoreMemoryTiming() {
+    const dirs = await fs.readdir(CONVERSATIONS_DIR).catch(() => []);
+    const cache = new Map();
+    const loadConv = async (cv) => {
+        if (cache.has(cv)) return cache.get(cv);
+        let msgs = null;
+        for (const d of dirs) {
+            try {
+                const raw = await fs.readFile(path.join(CONVERSATIONS_DIR, d, `${cv}.json`), 'utf8');
+                const data = decodeConversationData(raw, null);
+                msgs = Array.isArray(data) ? data : (data && Array.isArray(data.messages) ? data.messages : null);
+                if (msgs) break;
+            } catch (_) { /* not in this dir */ }
+        }
+        cache.set(cv, msgs);
+        return msgs;
+    };
+    for (const uid of await coreMemory.listAllUsers()) {
+        const out = await coreMemory.backfillTiming(uid, async (row) => {
+            if (!/^[a-zA-Z0-9_-]+$/.test(row.cv)) return null;
+            const msgs = await loadConv(row.cv);
+            if (!msgs) return null;
+            const at = Date.parse(row.t);
+            let best = null, bestGap = Infinity;
+            for (const m of msgs) {
+                if (!m || m.role !== 'assistant' || !Array.isArray(m.toolCalls) || !m.toolCalls.length) continue;
+                const gap = Math.abs(Date.parse(m.timestamp) - at);
+                if (gap < bestGap) { bestGap = gap; best = m; }
+            }
+            return best && bestGap < 15 * 60000 ? timingFromChips(best.toolCalls) : null;
+        }).catch(e => { console.warn('[Memory] timing backfill failed:', e.message); return null; });
+        if (out) console.log(`[Memory] Timing backfill for ${uid}: ${out.rows} task(s) got tool timing (${out.tried} matched)`);
+    }
+}
+
 const CORE_REFINE_EVERY_TASKS = parseInt(process.env.CORE_MEMORY_REFINE_EVERY, 10) || 4;
 async function refineCoreMemory(userId, id, { delayMs = 0 } = {}) {
     if (process.env.CORE_MEMORY_LLM_REFINE === '0') return null;
@@ -16726,7 +16774,14 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         if (!episode.task) return;
         const res = await coreMemory.recordEpisode(userId, {
             episode, theme, convId: conversationId || null, recalled, taskKey, provisional,
-            meta: { model, source: hostAgent ? 'agent' : 'chat', answerChars: quality && Number.isFinite(quality.answerChars) ? quality.answerChars : null },
+            meta: {
+                model, source: hostAgent ? 'agent' : 'chat',
+                answerChars: quality && Number.isFinite(quality.answerChars) ? quality.answerChars : null,
+                // Where the time went: waiting on tools (wall clock) vs the
+                // model, and how each tool was used (calls, failed, ms).
+                toolMs: quality && Number.isFinite(quality.toolMs) ? quality.toolMs : null,
+                toolUse: coreMemory.summarizeToolUse(chips),
+            },
         });
         if (!res) return;
         // Every eligible episode also goes into the account's vector archive,
@@ -23045,6 +23100,12 @@ const chatStreamHandlerInner = async (req, res) => {
         let pendingJobsNote = null;
         let silentRoundReminders = 0;
         let failureReminders = 0;
+        // Time the turn spent waiting on tools (wall clock per round, so
+        // parallel calls count once) and each call's own duration — the stats
+        // split a task's time into tool time and model time with these.
+        let toolWallMs = 0;
+        let lateMemoryTried = false;
+        const callDurations = new Map();
         // On-the-fly escalation (same rule as omp's /v1 path, piStruggle.js):
         // failed calls this turn, and the current run of them in a row.
         let escalationFails = 0, escalationStreak = 0, escalatedFrom = null;
@@ -26359,6 +26420,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                     }),
                                 ]).finally(() => clearTimeout(cutTimer));
                             }
+                            { const t0 = Date.now(); p = p.then((r) => { callDurations.set(call.id, Date.now() - t0); return r; }); }
                             dispatchCache.set(k, p);
                             return p;
                         }
@@ -26368,6 +26430,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                         const shared = await p;
                         return { ...shared, tool_call_id: call.id };
                     });
+                    toolWallMs += Date.now() - parallelStart;
                     if (finalizedCalls.length > 1) {
                         console.log(`[Chat Stream] Parallel dispatch: ${finalizedCalls.length} calls in ${Date.now() - parallelStart}ms`);
                     }
@@ -26946,6 +27009,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                                 ...(pairedTurn ? { model: targetModel, toolCallId: call.id } : {}),
                                 query: argPreview,
                                 args: parsedArgsForChip,
+                                durationMs: callDurations.has(call.id) ? callDurations.get(call.id) : undefined,
                                 status: failedChip ? 'failed' : 'success',
                                 // A refusal never RAN (loop-guard nudge, quarantine,
                                 // prohibited tool). It is flail telemetry about this
@@ -27245,6 +27309,39 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             escalationMsg = { role: 'system', content: `[You are ${targetModel}, taking over this turn from ${escalatedFrom} after ${why}. Any earlier instruction about consulting a stronger model refers to you. Read why those calls failed, change the approach rather than the spelling, and finish the user's request.]` };
                         }
                     }
+                    // ── Late theme memory ────────────────────────────────────
+                    // The theme memory is picked from the ask's words before any
+                    // tool runs, and the task is filed under the theme its TOOLS
+                    // show. They disagreed on 23 of 73 tasks (2026-11-11: a repo
+                    // link recalled Research, the turn cloned and grepped — Coding),
+                    // so most tasks never got their own theme's playbook, and a
+                    // correction to it could neither be seen nor judged. Once two
+                    // calls show the kind of work, a different theme's memory is
+                    // handed over once, next to the results (append-only: the
+                    // prompt prefix stays cached).
+                    let lateMemoryMsg = null;
+                    if (!lateMemoryTried && !req.delegate && !req.sidecar && !toolMemoryDisabled && !(handoff && handoff.easy)
+                        && process.env.CORE_MEMORY_LATE_RECALL !== '0') {
+                        const labels = toolCtx ? toolCtx._turnToolLabels : [];
+                        if (labels.length >= 2) {
+                            lateMemoryTried = true;
+                            try {
+                                const cls = coreMemory.classifyTheme({ toolLabels: labels, userText: experienceMemory.summarizeTask(latestUserText) || latestUserText, attachmentKinds: coreMemory.deriveAttachmentKinds(req.body?.attachments), hasTools: true });
+                                const have = recalledCore ? [recalledCore.theme, ...((recalledCore.also || []).map(x => x.theme))] : [];
+                                if (cls && cls.theme !== 'host' && !have.includes(cls.theme)) {
+                                    const late = await coreMemory.recall(memUserId, { theme: cls.theme, tokenBudget: Math.min(600, memoryBudgetForCtx(contextSize)) });
+                                    if (late && late.block) {
+                                        late.late = true;
+                                        if (recalledCore) recalledCore.also = [...(recalledCore.also || []), late];
+                                        else recalledCore = late;
+                                        lateMemoryMsg = { role: 'system', content: `[Core memory for this kind of work (${late.label}) — the tools so far show this is ${late.label.toLowerCase()} work. Use it for the rest of the task; the user's request takes precedence.]\n${late.block}` };
+                                        console.log(`[Memory] Late recall: ${late.label} core memory after ${labels.length} calls (${late.tokens} tokens; ask recalled ${have.length ? have.join(', ') : 'none'})`);
+                                        logUserActivity(memUserId, `Memory: recalled the ${late.label} core memory mid-turn — the first tools showed ${late.label.toLowerCase()} work (${late.tokens} tok)`);
+                                    }
+                                }
+                            } catch (e) { console.warn('[Memory] late recall skipped:', e.message); }
+                        }
+                    }
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -27253,6 +27350,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                             tool_calls: safeToolCalls,
                         },
                         ...toolResultMessages,
+                        ...(lateMemoryMsg ? [lateMemoryMsg] : []),
                         ...(escalationMsg ? [escalationMsg] : []),
                         ...(skillPromptMsg ? [skillPromptMsg] : []),
                         ...(assistantMsg ? [assistantMsg] : []),
@@ -28517,6 +28615,7 @@ const INTERP_NET_SCRIPT_MAX = parseInt(process.env.INTERP_NET_SCRIPT_MAX || '3',
                     capHit: toolCallCapHit,
                     loopExhausted: reasoningLoopExhausted || loopNudgeExhausted,
                     answerChars: String(fullResponse || '').length,
+                    toolMs: toolWallMs,
                 },
             }).catch(() => {});
         }
@@ -31491,7 +31590,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             && req.body.messages.length) {
             // (1) build persona from Pi usage (fire-and-forget). Pass a shallow
             // snapshot so the async walk can't race with (2) mutating the array.
-            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice(), req._v1RecalledCore || null).catch(() => {});
+            // Recorded AFTER (2), with what (2) handed this request: recorded
+            // first, `_v1RecalledCore` was never set yet, so every terminal-agent
+            // task was logged as having had no memory and its theme could never
+            // be measured or corrected (0 of 11 host tasks, 2026-11-11).
+            const v1Snapshot = req.body.messages.slice();
             // (2) inject persona into THIS request (awaited — must land before
             // forward). Bounded by a timeout so a slow/large memory read can
             // never stall the proxy: on timeout we forward without memory.
@@ -31505,6 +31608,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         `omp memory: recalled the ${injected.label} core memory (${injected.runs} task${injected.runs === 1 ? '' : 's'}, ${injected.tokens} tok)`);
                 }
             } catch (e) { console.warn('[omp/Memory] injection skipped:', e.message); }
+            recordV1TurnActivity(piMemId, req.apiKeyData, v1Snapshot, req._v1RecalledCore || null).catch(() => {});
         }
 
         // ── /v1 context guard (all API callers) ─────────────────────────────
@@ -37712,6 +37816,7 @@ server.listen(PORT, async () => {
     // `host` theme for terminal-agent work on the user's machine). Background,
     // after the embedding engine is up; idempotent via the shard's themeVersion.
     { const t = setTimeout(() => { repairCoreMemoryThemes().catch(e => console.warn('[Memory] theme repair failed:', e.message)); }, 20000); if (t.unref) t.unref(); }
+    { const t = setTimeout(() => { backfillCoreMemoryTiming().catch(e => console.warn('[Memory] timing backfill failed:', e.message)); }, 35000); if (t.unref) t.unref(); }
     if (SELF_CORRECT_ENABLED) {
         const sweep = async () => { for (const uid of await coreMemory.listAllUsers().catch(() => [])) await runSelfCorrection(uid).catch(e => console.warn('[SelfCorrect] sweep failed:', e.message)); };
         const t1 = setTimeout(() => sweep().catch(() => {}), 150000); if (t1.unref) t1.unref();

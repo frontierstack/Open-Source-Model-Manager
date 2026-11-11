@@ -51,6 +51,12 @@ function logRun(shard, row) {
     if (Number.isFinite(row.ac)) r.ac = row.ac;
     if (row.src) r.src = row.src;
     if (row.cv) { r.cv = String(row.cv).slice(0, 64); r.cor = false; }
+    // Added 2026-11-11: seconds spent waiting on tools (wall clock), per-tool
+    // use {name: [calls, failed, ms, timed]}, and whether the theme's memory
+    // arrived mid-turn rather than with the ask.
+    if (Number.isFinite(row.tm)) r.tm = Math.round(row.tm * 10) / 10;
+    if (row.tu && typeof row.tu === 'object') r.tu = row.tu;
+    if (row.rl) r.rl = true;
     if (r.k) {
         const i = shard.statsLog.findIndex(x => x.k === r.k);
         if (i >= 0) { shard.statsLog[i] = { ...shard.statsLog[i], ...r, t: shard.statsLog[i].t }; return; }
@@ -360,12 +366,22 @@ const isHostRow = (r) => r.src === 'agent' || r.th === 'host';
 
 // Outcome measures. `kind: 'value'` compares medians (Mann–Whitney), `'rate'`
 // compares shares (z-test). All are lower-is-better.
+// Time is split (rows carry `tm`, seconds spent waiting on tools, from
+// 2026-11-11, backfilled from saved conversations): a task that took longer
+// because a site was slow, or because it was a bigger job, is not a worse
+// playbook. "Model time per step" (model seconds per tool call) is the
+// size-neutral time measure self-correction uses when timing is known.
+const hasTm = (r) => Number.isFinite(r.tm) && Number.isFinite(r.s);
+const modelSecs = (r) => (hasTm(r) ? Math.max(0, r.s - Math.min(r.tm, r.s)) : null);
 const METRICS = [
-    { key: 'seconds', label: 'Response time', kind: 'value', get: r => r.s, unit: 'seconds' },
-    { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls' },
-    { key: 'failedShare', label: 'Failed tool calls', kind: 'value', get: r => (r.c + r.f) ? r.f / (r.c + r.f) : 0, unit: 'share' },
-    { key: 'rough', label: 'Tasks with repeated failures', kind: 'rate', get: r => (r.rough ? 1 : 0) },
-    { key: 'corrected', label: 'Answers corrected by you', kind: 'rate', get: r => (typeof r.cor === 'boolean' ? (r.cor ? 1 : 0) : null) },
+    { key: 'seconds', label: 'Response time', kind: 'value', get: r => r.s, unit: 'seconds', correct: 'fallback' },
+    { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls', correct: true },
+    { key: 'failedShare', label: 'Failed tool calls', kind: 'value', get: r => (r.c + r.f) ? r.f / (r.c + r.f) : 0, unit: 'share', correct: true },
+    { key: 'rough', label: 'Tasks with repeated failures', kind: 'rate', get: r => (r.rough ? 1 : 0), correct: true },
+    { key: 'corrected', label: 'Answers corrected by you', kind: 'rate', get: r => (typeof r.cor === 'boolean' ? (r.cor ? 1 : 0) : null), correct: true },
+    { key: 'stepSeconds', label: 'Model time per step', kind: 'value', get: r => (hasTm(r) ? modelSecs(r) / Math.max(1, (r.c || 0) + (r.f || 0)) : null), unit: 'seconds', correct: true },
+    { key: 'modelSeconds', label: 'Model time per task', kind: 'value', get: modelSecs, unit: 'seconds', correct: false },
+    { key: 'toolWait', label: 'Tool wait per call', kind: 'value', get: r => (hasTm(r) && ((r.c || 0) + (r.f || 0)) ? r.tm / ((r.c || 0) + (r.f || 0)) : null), unit: 'seconds', correct: false },
 ];
 
 function metricVals(rows, m) { return rows.map(m.get).filter(v => v != null && Number.isFinite(v)); }
@@ -398,20 +414,106 @@ function direction(c) {
 // Earlier vs recent for one scope: the oldest and newest third (window capped,
 // so a long history still compares "then" with "lately").
 const FIND_MIN = parseInt(process.env.CORE_MEMORY_FIND_MIN, 10) || 10;
-function findingsFor(rows, scope, label) {
+function findingsFor(rows, scope, label, { window = 'overall', min = FIND_MIN, metrics = METRICS } = {}) {
     const out = [];
-    for (const m of METRICS) {
+    for (const m of metrics) {
         const rs = rows.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
-        if (rs.length < FIND_MIN) continue;
-        const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
-        const early = rs.slice(0, w), recent = rs.slice(-w);
+        const split = window === 'recent' ? recentSplit(rs) : overallSplit(rs, min);
+        if (!split) continue;
+        const { early, recent } = split;
         const c = compareGroups(early, recent, m);
         if (!c) continue;
-        out.push({ scope, scopeLabel: label, metric: m.key, metricLabel: m.label, ...c,
+        const f = { scope, scopeLabel: label, metric: m.key, metricLabel: m.label, ...c, window,
             since: early[0].t, until: recent[recent.length - 1].t, recentSince: recent[0].t,
-            direction: direction(c) });
+            direction: direction(c) };
+        if (f.direction !== 'flat') f.drivers = explainChange(early, recent, m);
+        out.push(f);
     }
     return out;
+}
+function overallSplit(rs, min = FIND_MIN) {
+    if (rs.length < min) return null;
+    const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
+    return { early: rs.slice(0, w), recent: rs.slice(-w) };
+}
+// "Lately": the newest tasks against the ones just before them. The thirds
+// comparison measures drift since the start, so a regression that began last
+// week is diluted by weeks of older tasks; this catches it while it is new.
+const RECENT_MIN = parseInt(process.env.CORE_MEMORY_RECENT_MIN, 10) || 5;
+function recentSplit(rs) {
+    if (rs.length < RECENT_MIN * 2) return null;
+    const w = Math.max(RECENT_MIN, Math.min(10, Math.floor(rs.length / 3)));
+    const recent = rs.slice(-w);
+    const early = rs.slice(Math.max(0, rs.length - w * 3), rs.length - w);
+    return early.length >= RECENT_MIN ? { early, recent } : null;
+}
+
+/**
+ * What moved a measure between two groups of tasks: the time split (tool wait
+ * vs model time, per task) and the tools whose use changed most (calls, failed
+ * calls or seconds per task). Built from `tm`/`tu`; null when neither side has them.
+ */
+function explainChange(a, b, m) {
+    const tuA = a.filter(r => r.tu), tuB = b.filter(r => r.tu);
+    const out = {};
+    const tmA = a.filter(hasTm), tmB = b.filter(hasTm);
+    if (tmA.length >= 3 && tmB.length >= 3 && (m.key === 'seconds' || m.key === 'modelSeconds' || m.key === 'stepSeconds' || m.key === 'toolWait')) {
+        out.time = {
+            toolFrom: round(median(tmA.map(r => r.tm)), 1), toolTo: round(median(tmB.map(r => r.tm)), 1),
+            modelFrom: round(median(tmA.map(modelSecs)), 1), modelTo: round(median(tmB.map(modelSecs)), 1),
+            n: Math.min(tmA.length, tmB.length),
+        };
+    }
+    if (tuA.length >= 3 && tuB.length >= 3) {
+        const field = m.key === 'failedShare' || m.key === 'rough' ? 1 : (m.key === 'seconds' || m.key === 'toolWait') ? 2 : 0;
+        const per = (rows) => {
+            const acc = new Map();
+            for (const r of rows) for (const [name, e] of Object.entries(r.tu)) {
+                const v = field === 2 ? (e[3] ? e[2] / 1000 : 0) : (e[field] || 0);
+                acc.set(name, (acc.get(name) || 0) + v);
+            }
+            return new Map([...acc].map(([k, v]) => [k, v / rows.length]));
+        };
+        const pa = per(tuA), pb = per(tuB);
+        const names = new Set([...pa.keys(), ...pb.keys()]);
+        const deltas = [...names].map(n => ({ tool: n, from: round(pa.get(n) || 0, 1), to: round(pb.get(n) || 0, 1) }))
+            .map(d => ({ ...d, delta: round(d.to - d.from, 1) }))
+            .filter(d => Math.abs(d.delta) >= (field === 2 ? 2 : 0.3))
+            .sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta)).slice(0, 4);
+        if (deltas.length) out.tools = { per: field === 2 ? 'seconds' : field === 1 ? 'failed' : 'calls', list: deltas, n: Math.min(tuA.length, tuB.length) };
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * How each tool is used, over rows that carry `tu`: calls, tasks using it,
+ * failed share, median seconds per call (one sample per task: its mean), share
+ * of all timed tool seconds, and the time per call earlier vs lately.
+ */
+function toolUsage(rows) {
+    const rs = rows.filter(r => r.tu);
+    if (!rs.length) return { tasks: 0, tools: [] };
+    const by = new Map();
+    let totalMs = 0;
+    for (const r of rs) for (const [name, e] of Object.entries(r.tu)) {
+        if (!by.has(name)) by.set(name, { tool: name, calls: 0, failed: 0, tasks: 0, ms: 0, timed: 0, samples: [] });
+        const t = by.get(name);
+        t.calls += e[0] || 0; t.failed += e[1] || 0; t.tasks += 1;
+        if (e[3]) { t.ms += e[2]; t.timed += e[3]; totalMs += e[2]; t.samples.push({ t: r.t, v: e[2] / e[3] / 1000 }); }
+    }
+    const tools = [...by.values()].map(t => {
+        const v = t.samples.map(x => x.v);
+        const o = { tool: t.tool, calls: t.calls, tasks: t.tasks, failedShare: t.calls ? round(t.failed / t.calls, 3) : 0,
+            perCall: v.length ? round(median(v), 2) : null, timeShare: totalMs ? round(t.ms / totalMs, 3) : null, timed: t.timed };
+        if (v.length >= 8) {
+            const w = Math.max(4, Math.floor(v.length / 3));
+            const m = { key: 'perCall', kind: 'value', get: x => x.v };
+            const c = compareGroups(t.samples.slice(0, w), t.samples.slice(-w), m);
+            if (c) o.trend = { from: c.from, to: c.to, change: c.change, p: c.p, evidence: c.evidence, direction: direction(c) };
+        }
+        return o;
+    }).sort((a, b) => (b.timeShare || 0) - (a.timeShare || 0) || b.calls - a.calls);
+    return { tasks: rs.length, timedTasks: rs.filter(hasTm).length, tools: tools.slice(0, 30) };
 }
 
 // Inverse standard normal (Acklam's rational approximation).
@@ -507,8 +609,12 @@ function weeklySeries(rows, unit = 'week') {
         const fol = rec.filter(r => r.fo != null);
         const corr = rs.filter(r => typeof r.cor === 'boolean');
         const allCalls = rs.reduce((n, r) => n + r.c + r.f, 0);
+        const timed = rs.filter(hasTm);
         return {
             week, tasks: rs.length,
+            medianToolSeconds: timed.length ? Math.round(median(timed.map(r => r.tm))) : null,
+            medianModelSeconds: timed.length ? Math.round(median(timed.map(modelSecs))) : null,
+            medianStepSeconds: timed.length ? round(median(timed.map(r => modelSecs(r) / Math.max(1, r.c + r.f))), 1) : null,
             avgCalls: round(avg(rs.map(r => r.c))),
             medianCalls: median(rs.map(r => r.c)),
             medianSeconds: secs.length ? Math.round(median(secs)) : null,
@@ -686,15 +792,37 @@ function headlineFor(rows, m) {
 // Nov 6 most of a theme's tasks never saw it (no theme cue in the ask), so a
 // trend over every task mostly measured the kind of work asked for. Acting on
 // it rewrote playbooks that had nothing to do with the change.
+const CORRECTION_MIN = parseInt(process.env.CORE_MEMORY_CORRECTION_MIN, 10) || 8;
 function correctionFindings(shard, themes = []) {
     const label = new Map((themes || []).map(t => [t.key, t.label]));
     const rows = (shard.statsLog || []).filter(r => r && r.t && !r.prov && r.rt === true)
         .sort((a, b) => String(a.t).localeCompare(String(b.t)));
     const out = [];
-    for (const th of [...new Set(rows.map(r => r.th))]) {
-        out.push(...findingsFor(rows.filter(r => r.th === th), th, label.get(th) || th).map(f => ({ ...f, population: 'memory' })));
-    }
     const rank = { strong: 0, moderate: 1, weak: 2 };
+    for (const th of [...new Set(rows.map(r => r.th))]) {
+        const rs = rows.filter(r => r.th === th);
+        // Time: the size-neutral "model time per step" once enough tasks carry
+        // their tool time; raw response time only before that (a bigger job or
+        // a slow site is not a worse playbook).
+        const timed = rs.filter(hasTm).length;
+        const ms = METRICS.filter(m => m.correct === true || (m.correct === 'fallback' && timed < CORRECTION_MIN));
+        // Both views: drift since the start, and the newest tasks against the
+        // ones just before them (catches a fresh regression early). Per measure
+        // the better-evidenced one is kept.
+        const best = new Map();
+        for (const w of ['overall', 'recent']) {
+            for (const f of findingsFor(rs, th, label.get(th) || th, { window: w, min: CORRECTION_MIN, metrics: ms })) {
+                if (f.direction !== 'worse') continue;
+                // Placebo (rows shuffled, 400 runs per theme, 2026-11-11): the
+                // recent window flagged a moderate change in 30-42% of checks
+                // with nothing going on, a strong one in 5-12% — so only strong.
+                if (w === 'recent' && f.evidence !== 'strong') continue;
+                const cur = best.get(f.metric);
+                if (!cur || rank[f.evidence] < rank[cur.evidence] || (rank[f.evidence] === rank[cur.evidence] && (f.p ?? 1) < (cur.p ?? 1))) best.set(f.metric, f);
+            }
+        }
+        out.push(...[...best.values()].map(f => ({ ...f, population: 'memory' })));
+    }
     return out.filter(f => f.direction === 'worse')
         .sort((a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0)));
 }
@@ -707,9 +835,12 @@ function analyze(rows, byTheme, events, label) {
     const chatRows = rows.filter(r => !isHostRow(r));
     const chatFindings = stratifiedFindings(chatRows, 'chat', 'Web chat (like for like)');
     findings.push(...chatFindings);
+    // "Lately" per theme: the newest tasks against the ones just before them.
+    const lately = [];
     for (const t of byTheme) {
         const rs = rows.filter(r => r.th === t.theme);
         findings.push(...findingsFor(rs, t.theme, t.label));
+        lately.push(...findingsFor(rs, t.theme, t.label, { window: 'recent' }));
     }
     const rank = { strong: 0, moderate: 1, weak: 2 };
     const sortF = (a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0));
@@ -719,10 +850,19 @@ function analyze(rows, byTheme, events, label) {
 
     const tasks = rows.slice(-400).map(r => ({
         t: r.t, th: r.th, c: r.c, f: r.f, s: r.s, rough: r.rough || undefined,
-        rt: r.rt, fo: r.fo, cor: r.cor, src: isHostRow(r) ? 'agent' : 'chat', pv: r.pv,
+        rt: r.rt, fo: r.fo, cor: r.cor, src: isHostRow(r) ? 'agent' : 'chat', pv: r.pv, tm: r.tm,
     }));
     return {
-        findings: { improving, worsening, steady, total: findings.length, minTasks: FIND_MIN, chat: Object.fromEntries(chatFindings.map(f => [f.metric, f])) },
+        findings: { improving, worsening, steady, total: findings.length, minTasks: FIND_MIN, recentMin: RECENT_MIN, chat: Object.fromEntries(chatFindings.map(f => [f.metric, f])), lately },
+        toolUsage: toolUsage(rows),
+        // How many of each theme's tasks were handed its memory: a correction
+        // can only see (and judge) those, so a theme with few of them cannot
+        // be corrected however clear its trend is.
+        coverage: Object.fromEntries(byTheme.map(t => {
+            const rs = rows.filter(r => r.th === t.theme && !r.prov);
+            return [t.theme, { tasks: rs.length, withMemory: rs.filter(r => r.rt === true).length, late: rs.filter(r => r.rl).length, timed: rs.filter(hasTm).length }];
+        })),
+        timing: { timedTasks: rows.filter(hasTm).length, tasks: rows.length },
         headline: Object.fromEntries(METRICS.slice(0, 3).map(m => [m.key, headlineFor(chatRows, m)])),
         responseTime: responseTime(rows),
         impact: memoryImpact(rows),
@@ -734,4 +874,4 @@ function analyze(rows, byTheme, events, label) {
     };
 }
 
-module.exports = { METRICS, compareGroups, correctionFindings, FIND_MIN, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+module.exports = { METRICS, compareGroups, correctionFindings, explainChange, toolUsage, findingsFor, CORRECTION_MIN, FIND_MIN, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };

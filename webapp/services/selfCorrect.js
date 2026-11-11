@@ -32,7 +32,15 @@ const memoryStats = require('./memoryStats');
 const { METRICS, compareGroups } = memoryStats;
 
 const EVAL_K = parseInt(process.env.SELF_CORRECT_EVAL_TASKS, 10) || 8;     // tasks that used the fix, to a verdict
-const MIN_READINGS = Math.ceil(EVAL_K * 0.75);   // response time can be missing on a task
+const MIN_READINGS = Math.ceil(EVAL_K * 0.75);
+// Two looks instead of one (2026-11-11): a clear effect is decided after
+// EARLY_K tasks at a much stricter bar, otherwise at EVAL_K as before.
+// Placebo over the real history: false verdicts 5.1% with both looks vs 5.9%
+// for the single look at p < 0.05; a real 2-3x change in calls is decided at
+// the early look 5-12% of the time.
+const EARLY_K = parseInt(process.env.SELF_CORRECT_EARLY_TASKS, 10) || 5;
+const P_EARLY = 0.01;
+const P_FINAL = 0.04;   // response time can be missing on a task
 const BASE_K = 8;
 // A correction that too few tasks ever use must not stay open: while it is
 // active the theme gets no new correction and no ordinary refinement.
@@ -136,6 +144,7 @@ function betterPlaybook(shard, rec, m) {
 function contrastTasks(rec, m) {
     const eps = (rec.episodes || []).filter(e => e && !e.provisional);
     const val = (e) => (m.key === 'seconds' ? e.seconds : m.key === 'calls' ? e.calls
+        : m.key === 'stepSeconds' ? (Number.isFinite(e.seconds) && Number.isFinite(e.toolSeconds) ? Math.max(0, e.seconds - e.toolSeconds) / Math.max(1, (e.calls || 0) + (e.failed || 0)) : null)
         : m.key === 'failedShare' ? ((e.calls + (e.failed || 0)) ? (e.failed || 0) / (e.calls + (e.failed || 0)) : 0)
         : m.key === 'rough' ? (e.rough ? 1 : 0) : e.calls);
     const scored = eps.filter(e => val(e) != null).map(e => ({ e, v: val(e) })).sort((a, b) => a.v - b.v);
@@ -154,7 +163,7 @@ function fmtMetric(key, v) { const m = metricByKey.get(key); return m ? fmtVal(v
 
 function correctionInput(rec, fs) {
     const list = (Array.isArray(fs) ? fs : [fs]).map(f => ({ f, m: metricByKey.get(f.metric) })).filter(x => x.m);
-    const line = (e) => `- "${e.task}" → ${e.calls} call${e.calls === 1 ? '' : 's'}${e.failed ? ` (${e.failed} failed)` : ''}${e.seconds != null ? `, ${e.seconds} s` : ''}${e.rough ? ' [ROUGH]' : ''}: ${e.approach || 'no tools'}`;
+    const line = (e) => `- "${e.task}" → ${e.calls} call${e.calls === 1 ? '' : 's'}${e.failed ? ` (${e.failed} failed)` : ''}${e.seconds != null ? `, ${e.seconds} s` : ''}${Number.isFinite(e.toolSeconds) ? ` (${Math.round(e.toolSeconds)} s waiting on tools)` : ''}${e.rough ? ' [ROUGH]' : ''}: ${e.approach || 'no tools'}`;
     const parts = [
         `REGRESSION${list.length > 1 ? 'S' : ''} TO FIX for this theme (earliest vs latest tasks):\n` +
             list.map(({ f, m }) => `- ${m.label}: ${fmtVal(f.from, m)} → ${fmtVal(f.to, m)} (${f.nFrom} vs ${f.nTo} tasks)`).join('\n'),
@@ -309,7 +318,7 @@ function measuredRows(shard, a) {
 }
 
 // Per-measure readings for an action over the tasks that used it.
-function readings(shard, a, k = EVAL_K) {
+function readings(shard, a, k = EVAL_K, pMax = P_FINAL) {
     const after = measuredRows(shard, a);
     const before = memoryRows(themeRows(shard, a.th).filter(r => r.t < a.t)).slice(-BASE_K);
     return actionMetrics(a).map(x => {
@@ -319,7 +328,7 @@ function readings(shard, a, k = EVAL_K) {
         const value = vals.length ? centre(vals, m) : null;
         const change = worseBy(x.baseline, value, m);
         const cmp = vals.length ? compareGroups(before, vals, m) : null;
-        const real = cmp && cmp.evidence === 'strong';
+        const real = cmp && cmp.p != null && cmp.p < pMax && Math.min(cmp.nFrom, cmp.nTo) >= Math.min(k, MIN_GROUP);
         return { metric: x.metric, metricLabel: x.metricLabel, baseline: x.baseline, n: vals.length, value, change, changeKind: kindOf(m),
             p: cmp ? cmp.p : null, evidence: cmp ? cmp.evidence : null,
             direction: !real || change == null ? 'flat' : change <= -THRESH(m) ? 'better' : change >= THRESH(m) ? 'worse' : 'flat' };
@@ -356,6 +365,19 @@ function evaluate(shard, { now = Date.now() } = {}) {
         a.progress = Math.min(measured, EVAL_K);
         // Response time can be missing on a task; do not wait forever for it.
         const ready = n >= EVAL_K || (measured >= EVAL_K + 2 && rs.every(r => r.n >= MIN_READINGS));
+        if (!ready && measured >= EARLY_K) {
+            const early = readings(shard, a, EARLY_K, P_EARLY);
+            if (early.every(r => r.n >= EARLY_K) && early.some(r => r.direction !== 'flat')) {
+                a.results = early;
+                a.after = { value: early[0].value, n: early[0].n, change: early[0].change, changeKind: early[0].changeKind };
+                a.judgedAt = new Date(now).toISOString();
+                a.early = true;
+                if (early.some(r => r.direction === 'worse')) { a.status = 'worse'; if (a.prevPlaybook) a.rollback = true; }
+                else a.status = 'helped';
+                judged.push(a);
+                continue;
+            }
+        }
         if (!ready) {
             const themeTasks = themeRows(shard, a.th).filter(r => r.t > a.t).length;
             if (themeTasks < EVAL_MAX_TASKS && now - Date.parse(a.t) < EVAL_MAX_MS) continue;
@@ -424,6 +446,7 @@ function publicState(shard, worsening = []) {
                 from: f.from, to: f.to, change: f.change, changeKind: f.changeKind, evidence: f.evidence, nFrom: f.nFrom, nTo: f.nTo,
                 ...assessFinding(f) })),
         evalTasks: EVAL_K,
+        earlyTasks: EARLY_K,
         cooldownHours: COOLDOWN_MS / 3600000,
         actions: st.actions.slice(-40).reverse().map(({ prevPlaybook, rollback, ...a }) => ({
             ...a, canRollBack: !!prevPlaybook,
@@ -436,4 +459,4 @@ function publicState(shard, worsening = []) {
     };
 }
 
-module.exports = { actionMetrics, readings, logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };
+module.exports = { EARLY_K, actionMetrics, readings, logCheck, assessFinding, plan, evaluate, recordAction, publicState, betterPlaybook, correctionInput, state, EVAL_K, COOLDOWN_MS, fmtVal, fmtMetric };

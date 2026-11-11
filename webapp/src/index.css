@@ -4324,3 +4324,15 @@ html:not(.theme-light):not(.theme-research) > body:not(.theme-light):not(.theme-
     .ms-draw, .ms-grow, .ms-pop, .ms-fade-in, .ms-ripple, .ms-ripple-loop, .ms-pulse-dot, .ms-flash, .ms-delta, .ms-chg, .ms-chg-icon, .ms-num-flash, .ms-step-dot,
     .ms-feed-in, .ms-progress-fill, .ms-live-dot.is-on::after, .ms-status-dot.is-on::after { animation: none !important; stroke-dashoffset: 0; }
 }
+
+/* Memory Stats — change board rows: four columns, stacked on phones. */
+.ms-board-row { display: grid; grid-template-columns: 26% 22% 22% 1fr; gap: 0 0.75rem; align-items: start; }
+.ms-board-head { padding-bottom: 0.25rem; }
+.ms-board-label { display: none; }
+@media (max-width: 640px) {
+  .ms-board-row { grid-template-columns: 1fr 1fr; gap: 0.25rem 0.75rem; }
+  .ms-board-row > :first-child, .ms-board-row > :last-child { grid-column: 1 / -1; }
+  .ms-board-row > :last-child:empty { display: none; }
+  .ms-board-head { display: none; }
+  .ms-board-label { display: block; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+}

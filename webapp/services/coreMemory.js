@@ -462,6 +462,65 @@ function addUnique(arr, text, cap, extra = {}) {
  *   taskKey  — /v1 in-progress snapshot key: the same task re-records ONE episode
  * Returns { id, theme, label, runs, newBest, improvedVsBest, followed, provisional }.
  */
+/**
+ * One-time: give logged tasks their tool timing from the saved conversation
+ * (`lookup(row)` → { tm, tu } or null). Rows that already have `tm` are left
+ * alone; the shard is marked so it never runs twice.
+ */
+async function backfillTiming(userId, lookup) {
+    const shard = await readShard(userId);
+    if (shard.timingBackfilled || !Array.isArray(shard.statsLog)) return null;
+    const patches = new Map();
+    for (const r of shard.statsLog) {
+        if (!r || !r.cv || Number.isFinite(r.tm)) continue;
+        try { const p = await lookup(r); if (p) patches.set(r.t + '|' + r.cv, p); } catch (_) { /* skip this row */ }
+    }
+    let n = 0;
+    await mutate(userId, (sh) => {
+        for (const r of sh.statsLog || []) {
+            const p = r && patches.get(r.t + '|' + r.cv);
+            if (!p || Number.isFinite(r.tm)) continue;
+            if (Number.isFinite(p.tm)) r.tm = Math.round(p.tm * 10) / 10;
+            if (p.tu) r.tu = p.tu;
+            n += 1;
+        }
+        sh.timingBackfilled = new Date().toISOString();
+    });
+    return { rows: n, tried: patches.size };
+}
+
+/** The memory of this theme the turn was handed, pre-turn or mid-turn (`also`). */
+function recalledFor(recalled, id) {
+    if (!recalled || !id) return null;
+    if (recalled.id === id) return recalled;
+    const also = Array.isArray(recalled.also) ? recalled.also : [];
+    return also.find(x => x && x.id === id) || null;
+}
+
+/**
+ * How a task used its tools: { name: [calls, failed, ms, timed] } — `ms` sums
+ * the calls whose duration is known (`timed` of them; the terminal agent
+ * reports none). Hand-off plumbing is left out by the caller.
+ */
+function summarizeToolUse(chips) {
+    const out = {};
+    for (const c of Array.isArray(chips) ? chips : []) {
+        if (!c || !c.label || c.refusal) continue;
+        const name = String(c.label).slice(0, 40);
+        const e = out[name] || (out[name] = [0, 0, 0, 0]);
+        e[0] += 1;
+        if (c.status === 'failed') e[1] += 1;
+        if (Number.isFinite(c.durationMs) && c.durationMs >= 0) { e[2] += Math.round(c.durationMs); e[3] += 1; }
+    }
+    const names = Object.keys(out);
+    if (!names.length) return null;
+    if (names.length > 16) {
+        const keep = names.sort((a, b) => out[b][0] - out[a][0]).slice(0, 16);
+        return Object.fromEntries(keep.map(n => [n, out[n]]));
+    }
+    return out;
+}
+
 async function recordEpisode(userId, { episode, theme, convId = null, recalled = null, taskKey = null, provisional = false, meta = null }) {
     if (!userId || !episode) return null;
     const themeKey = THEME_BY_KEY.has(theme) ? theme : 'general';
@@ -489,6 +548,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
             task: clean(episode.task, 200), approach: approachText.slice(0, 600), calls, failed: failedCalls,
             seconds, converged, rough, at: t, convId: convId || null, taskKey: taskKey || null, provisional: !!provisional,
         };
+        if (meta && Number.isFinite(meta.toolMs)) ep.toolSeconds = Math.round(meta.toolMs / 100) / 10;
         if (sameRun) {
             const idx = rec.episodes.findIndex(e => e.taskKey === taskKey);
             // A later snapshot of the same task: the counters follow its growth
@@ -545,8 +605,12 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         }
 
         // Adherence: the memory was handed to this turn — did the model follow it?
+        // A turn can be handed a second theme's memory mid-turn, once its first
+        // tools showed what kind of work it is (`recalled.also`).
+        const got = recalledFor(recalled, rec.id);
         let followed = null;
-        if (recalled && recalled.id === rec.id) {
+        if (got) {
+            recalled = got;
             s.recalled += 1;
             const adh = experienceMemory.pathAdherence(recalled.steps || [], episode.approach || []);
             followed = !!adh.followed;
@@ -557,15 +621,17 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
                 t, th: rec.theme, c: calls, f: failedCalls, s: seconds, ok: converged, rough,
                 prov: !!provisional, k: taskKey || null,
                 tools: [...new Set(experienceMemory.approachTools(episode.approach || []))].slice(0, 8),
-                r: !!recalled, rt: !!(recalled && recalled.id === rec.id), fo: followed,
+                r: !!recalled, rt: !!got, fo: followed, rl: !!(got && got.late),
                 pv: rec.playbookVersion || 0,
                 m: meta && meta.model, ac: meta && meta.answerChars, src: meta && meta.source,
+                tm: meta && Number.isFinite(meta.toolMs) ? meta.toolMs / 1000 : null,
+                tu: meta && meta.toolUse,
                 cv: provisional || taskKey ? null : convId,
             });
             if (newBest) memoryStats.logEvent(shard, { t, th: rec.theme, kind: 'best', calls, from: bestBefore });
         } catch (e) { log(`stats log failed: ${e.message}`); }
         noteChange(shard, { kind: 'task', theme: rec.theme, label: rec.label, newBest, followed, sameRun,
-            task: { t, c: calls, f: failedCalls, s: seconds, rough, ok: converged, rt: !!(recalled && recalled.id === rec.id), fo: followed, src: meta && meta.source, prov: !!provisional, title: ep.task.slice(0, 120) } });
+            task: { t, c: calls, f: failedCalls, s: seconds, rough, ok: converged, rt: !!got, fo: followed, src: meta && meta.source, prov: !!provisional, title: ep.task.slice(0, 120) } });
         rec.dirty = true;               // playbook refinement pending
         rec.updatedAt = t;
         return { id: rec.id, theme: rec.theme, label: rec.label, runs: s.runs, newBest, improvedVsBest, followed, provisional: !!provisional, sameRun, bestCalls: s.bestCalls, calls };
@@ -1136,7 +1202,7 @@ module.exports = {
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
-    recordEpisode, markCorrection, addLesson, setNotes, setEnabled, remove, clearAll,
+    recordEpisode, summarizeToolUse, recalledFor, backfillTiming, markCorrection, addLesson, setNotes, setEnabled, remove, clearAll,
     getCursor, setCursor,
     REFINE_PROMPT, refinementInput, parseRefinement, applyRefinement,
     recall, renderBlock,

@@ -54,7 +54,11 @@ const METRIC_FMT = {
     failedShare: { label: 'Failed tool calls', fmt: (v) => pct(v, 0) },
     rough: { label: 'Tasks with repeated failures', fmt: (v) => pct(v, 0) },
     corrected: { label: 'Answers you corrected', fmt: (v) => pct(v, 0) },
+    stepSeconds: { label: 'Model time per step', fmt: (v) => fmtShortSecs(v) },
+    modelSeconds: { label: 'Model time per task', fmt: fmtSecs },
+    toolWait: { label: 'Tool wait per call', fmt: (v) => fmtShortSecs(v) },
 };
+function fmtShortSecs(v) { return v == null ? '—' : v < 10 ? `${(Math.round(v * 10) / 10).toFixed(1)}s` : fmtSecs(v); }
 
 // --------------------------------------------------------------- primitives
 
@@ -89,6 +93,9 @@ const CHANGE_WORDS = {
     failedShare: ['fewer failed calls', 'more failed calls'],
     rough: ['fewer repeated failures', 'more repeated failures'],
     corrected: ['fewer corrections', 'more corrections'],
+    stepSeconds: ['faster per step', 'slower per step', 'as long per step'],
+    modelSeconds: ['less model time', 'more model time', 'as much model time'],
+    toolWait: ['tools answer faster', 'tools answer slower', 'as long a tool wait'],
 };
 
 /** {text, good, flat} for a change: "25% slower", "2.0× as many calls", "9 pts more failed calls". */
@@ -354,6 +361,8 @@ const dotSwatch = (fill, stroke) => (
 
 const WEEKLY_METRICS = [
     { key: 'medianSeconds', label: 'Response time', fmt: fmtSecs, band: 'p75Seconds', kind: 'line', hint: 'Median time from your message to the finished answer; the dashed line is the slowest quarter (75th percentile).' },
+    { key: 'medianToolSeconds', label: 'Tool wait', fmt: fmtSecs, kind: 'line', hint: 'Median seconds per task spent waiting on tools (parallel calls counted once). Recorded from Nov 11, 2026.' },
+    { key: 'medianStepSeconds', label: 'Model time per step', fmt: fmtShortSecs, kind: 'line', hint: 'Median model seconds per tool call: response time minus tool wait, divided by the calls. A bigger job does not move it; a slower or wordier model does.' },
     { key: 'avgCalls', label: 'Tool calls', fmt: n1, kind: 'line', hint: 'Average tool calls per task. Fewer calls for the same kind of work means a shorter path.' },
     { key: 'failedCallRate', label: 'Failed calls', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tool calls that failed.' },
     { key: 'roughRate', label: 'Repeated failures', fmt: (v) => pct(v, 0), kind: 'line', pctAxis: true, hint: 'Share of tasks where the loop guard stepped in or many calls failed.' },
@@ -713,34 +722,206 @@ function Spark({ values, width = 84, height = 22, label = 'values' }) {
 
 // --------------------------------------------------------------- findings
 
-function FindingRow({ f }) {
+
+
+// ------------------------------------------------------- change board
+
+// One row per theme: every measure LATELY (newest tasks against the ones just
+// before them — a new change shows here first) and SINCE THE START (earliest
+// third against latest third), what drove it (time split into tool wait and
+// model time, the tools whose use changed), how many of the theme's tasks got
+// its memory, and what self-correction is doing about it.
+const BOARD_METRICS = ['seconds', 'stepSeconds', 'toolWait', 'calls', 'failedShare', 'rough', 'corrected'];
+const TIME_METRICS = new Set(['seconds', 'stepSeconds', 'toolWait', 'modelSeconds']);
+
+function driverText(f) {
+    const d = f && f.drivers;
+    if (!d) return null;
+    const bits = [];
+    if (d.time && TIME_METRICS.has(f.metric)) {
+        const dt = d.time.toolTo - d.time.toolFrom, dm = d.time.modelTo - d.time.modelFrom;
+        bits.push(`waiting on tools ${fmtSecs(d.time.toolFrom)} → ${fmtSecs(d.time.toolTo)}, model ${fmtSecs(d.time.modelFrom)} → ${fmtSecs(d.time.modelTo)}`
+            + (Math.abs(dt) > Math.abs(dm) * 1.5 ? ' — mostly the tools' : Math.abs(dm) > Math.abs(dt) * 1.5 ? ' — mostly the model' : ''));
+    }
+    if (d.tools && d.tools.list.length) {
+        const unit = d.tools.per === 'seconds' ? ' s' : d.tools.per === 'failed' ? ' failed' : '';
+        bits.push(d.tools.list.slice(0, 3).map((x) => `${x.tool} ${x.delta > 0 ? '+' : ''}${x.delta}${unit}`).join(', ') + ' per task');
+    }
+    return bits.length ? bits.join(' · ') : null;
+}
+
+function BoardCell({ f }) {
+    if (!f) return <span className="text-xs" style={{ color: MUTED }}>—</span>;
     const fmt = (METRIC_FMT[f.metric] || { fmt: n1 }).fmt;
-    const better = f.direction === 'better';
-    const Icon = better ? BetterIcon : WorseIcon;
+    const e = EVIDENCE[f.evidence] || EVIDENCE.weak;
     return (
-        <li className="ms-feed-in flex items-start gap-2.5 border-t py-2 first:border-t-0" style={{ borderColor: RULE }}>
-            <span className={`ms-chg ms-chg--${better ? 'down' : 'up'} inline-flex`} style={{ flexShrink: 0, marginTop: 2 }}>
-                <span className="ms-chg-icon inline-flex"><Icon size={15} style={{ color: f.evidence === 'weak' ? MUTED : better ? GOOD : BAD }} aria-label={better ? 'improving' : 'getting worse'} /></span>
-            </span>
-            <div className="min-w-0 flex-1">
-                <div className="text-sm">
-                    <b className="font-medium">{f.scopeLabel}</b>
-                    <span style={{ color: 'var(--text-secondary)' }}> · {(METRIC_FMT[f.metric] || {}).label || f.metricLabel}</span>
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    {f.matched
-                        ? <span>each theme against itself ({(f.themes || []).length} themes)</span>
-                        : <span className="tabular-nums"><Num value={f.from} fmt={fmt} /> → <b style={{ color: 'var(--text-primary)' }}><Num value={f.to} fmt={fmt} /></b></span>}
-                    <Change value={f.change} kind={f.changeKind} metric={f.metric} evidence={f.evidence} small />
-                    <Evidence level={f.evidence} p={f.p} nFrom={f.nFrom} nTo={f.nTo} />
-                </div>
-                <div className="mt-0.5 text-[0.7rem]" style={{ color: MUTED }}>
-                    {f.matched
-                        ? <>All chat tasks pooled: {fmt(f.from)} → {fmt(f.to)}{f.pooled && f.pooled.change != null ? ` (${describeChange(f.pooled.change, f.changeKind, f.metric).text})` : ''}, which also counts the change in what kind of work you asked for</>
-                        : <>earliest {f.nFrom} tasks (from {shortDate(f.since)}) vs latest {f.nTo} (since {shortDate(f.recentSince)})</>}
-                </div>
+        <div className="min-w-0">
+            <Change value={f.change} kind={f.changeKind} metric={f.metric} evidence={f.evidence} small />
+            <div className="text-[0.7rem] tabular-nums" style={{ color: MUTED }}
+                title={`${e.label}${f.p != null ? ` · p = ${f.p < 0.001 ? '<0.001' : f.p.toFixed(3)}` : ''} · ${f.nFrom} vs ${f.nTo} tasks`}>
+                {f.matched ? `${(f.themes || []).length} themes, like for like` : `${fmt(f.from)} → ${fmt(f.to)}`}
+                <span className="ml-1.5 inline-flex gap-0.5 align-middle" aria-label={e.label}>
+                    {[0, 1, 2].map((i) => <span key={i} className="inline-block h-1 w-1 rounded-full" style={{ backgroundColor: i < e.dots ? 'var(--text-secondary)' : 'var(--bg-hover)' }} />)}
+                </span>
             </div>
-        </li>
+        </div>
+    );
+}
+
+const notable = (f) => f && f.direction !== 'flat';
+function themeStatus({ th, rows, cov, SC }) {
+    const act = (SC.actions || []).find((a) => a.th === th && a.status === 'active');
+    if (act) return { tone: 'accent', text: `Being corrected · ${act.progress || 0} of ${SC.evalTasks || 8} tasks measured`, detail: `${act.kind === 'revert' ? `restored playbook v${act.toVersion}` : 'rewrote the playbook'} for ${String(act.metricLabel || '').toLowerCase()}; an unmistakable effect is decided after ${SC.earlyTasks || 5}` };
+    const watch = (SC.watch || []).filter((w) => w.scope === th);
+    if (watch.some((w) => w.actionable)) return { tone: 'bad', text: 'Correction starts at the next check', detail: watch.filter((w) => w.actionable).map((w) => w.metricLabel).join(', ') };
+    const worse = rows.filter((r) => [r.lately, r.overall].some((f) => f && f.direction === 'worse' && f.evidence !== 'weak'));
+    if (worse.length && cov && cov.tasks && cov.withMemory < 8) {
+        return { tone: 'bad', text: `Getting worse — can't be corrected yet`, detail: `only ${cov.withMemory} of ${cov.tasks} tasks were handed this theme's memory; a correction needs 8 to measure` };
+    }
+    if (worse.length) return { tone: 'bad', text: 'Getting worse', detail: watch.length ? watch[0].reason : 'watching until the evidence is real' };
+    const better = rows.filter((r) => [r.lately, r.overall].some((f) => f && f.direction === 'better' && f.evidence !== 'weak'));
+    if (better.length) return { tone: 'good', text: 'Improving', detail: null };
+    return { tone: 'muted', text: 'Steady', detail: rows.some((r) => notable(r.lately) || notable(r.overall)) ? 'changes so far could be chance' : null };
+}
+const TONE = { accent: ACCENT, bad: BAD, good: GOOD, muted: MUTED };
+
+function ChangeBoard({ F, coverage, SC, labelOf, showWeak }) {
+    const byTheme = new Map();
+    const put = (f, slot) => {
+        if (!f || !BOARD_METRICS.includes(f.metric)) return;
+        if (!byTheme.has(f.scope)) byTheme.set(f.scope, { label: f.scopeLabel, m: new Map() });
+        const t = byTheme.get(f.scope);
+        if (!t.m.has(f.metric)) t.m.set(f.metric, { metric: f.metric });
+        t.m.get(f.metric)[slot] = f;
+    };
+    for (const f of [...(F.improving || []), ...(F.worsening || [])]) put(f, 'overall');
+    for (const f of F.lately || []) put(f, 'lately');
+    // Steady overall findings are not in the improving/worsening lists; the
+    // row still shows the measure when "lately" has something.
+    const themesOut = [...byTheme.entries()].map(([th, t]) => {
+        const all = BOARD_METRICS.map((k) => t.m.get(k)).filter(Boolean);
+        const shown = all.filter((r) => [r.lately, r.overall].some((f) => notable(f) && (showWeak || f.evidence !== 'weak')));
+        const status = th === 'chat' ? null : themeStatus({ th, rows: all, cov: coverage && coverage[th], SC });
+        const score = all.reduce((n, r) => n + [r.lately, r.overall].reduce((k, f) => k + (f && f.direction === 'worse' ? (f.evidence === 'strong' ? 4 : f.evidence === 'moderate' ? 2 : 0) : 0), 0), 0);
+        return { th, label: labelOf.get(th) || t.label || th, all, shown, status, score, hidden: all.length - shown.length };
+    }).filter((t) => t.all.length)
+        .sort((a, b) => (a.th === 'chat') - (b.th === 'chat') || b.score - a.score || a.label.localeCompare(b.label));
+    if (!themesOut.length) return <Empty>Not enough tasks yet — a theme needs {F.recentMin ? F.recentMin * 2 : 10}+ tasks before its newest ones can be compared.</Empty>;
+    return (
+        <div className="divide-y" style={{ borderColor: RULE }}>
+            {themesOut.map((t) => {
+                const cov = coverage && coverage[t.th];
+                return (
+                    <section key={t.th} className="py-3 first:pt-0" style={{ borderColor: RULE }}>
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                            <div className="text-sm">
+                                <b className="font-medium">{t.th === 'chat' ? 'All web chat' : t.label}</b>
+                                {cov && <span className="ml-2 text-xs tabular-nums" style={{ color: cov.tasks && cov.withMemory / cov.tasks < 0.5 ? BAD : MUTED }}
+                                    title="Tasks handed this theme's memory (at the start, or mid-turn once the first tools showed the kind of work). Self-correction can only see and judge these.">
+                                    {cov.tasks} tasks · memory reached {cov.withMemory}
+                                </span>}
+                            </div>
+                            {t.status && (
+                                <div className="text-xs" style={{ color: TONE[t.status.tone] }}>
+                                    <span className="font-medium">{t.status.text}</span>
+                                    {t.status.detail && <span style={{ color: MUTED }}> — {t.status.detail}</span>}
+                                </div>
+                            )}
+                        </div>
+                        {t.shown.length ? (
+                            <div className="mt-2">
+                                <div className="ms-board-row ms-board-head text-[0.66rem] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                                    <span>Measure</span>
+                                    <span title="Newest tasks against the ones just before them">Lately</span>
+                                    <span title="Earliest third of tasks against the latest third">Since the start</span>
+                                    <span>What drove it</span>
+                                </div>
+                                {t.shown.map((r) => {
+                                    const why = driverText(r.lately) || driverText(r.overall) || (TIME_METRICS.has(r.metric) ? 'tool timing not recorded for these tasks' : '');
+                                    return (
+                                        <div key={r.metric} className="ms-feed-in ms-board-row border-t py-1.5" style={{ borderColor: RULE }}>
+                                            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{(METRIC_FMT[r.metric] || {}).label || r.metric}</span>
+                                            <span><span className="ms-board-label">Lately</span><BoardCell f={r.lately} /></span>
+                                            <span><span className="ms-board-label">Since the start</span><BoardCell f={r.overall} /></span>
+                                            <span className="text-[0.72rem]" style={{ color: MUTED }}>{why}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="mt-1 text-xs" style={{ color: MUTED }}>
+                                No change{showWeak ? '' : ' with evidence'} on {t.all.length} measure{t.all.length === 1 ? '' : 's'}.
+                            </div>
+                        )}
+                        {t.shown.length > 0 && t.hidden > 0 && (
+                            <div className="mt-1 text-[0.7rem]" style={{ color: MUTED }}>{t.hidden} other measure{t.hidden === 1 ? '' : 's'} steady{showWeak ? '' : ' or could be chance'}.</div>
+                        )}
+                    </section>
+                );
+            })}
+        </div>
+    );
+}
+
+// How each tool is used: calls, failures, time per call and its share of all
+// time spent waiting on tools, with time per call earlier vs lately.
+function ToolUsageCard({ U }) {
+    const [all, setAll] = React.useState(false);
+    const tools = (U && U.tools) || [];
+    const list = all ? tools : tools.slice(0, 10);
+    return (
+        <Card title="How tools are used"
+            hint="Per tool, over tasks with per-call records (from Nov 11, 2026, plus older tasks whose conversation still exists). Time per call is the median of each task's average; the share is of all time spent waiting on tools. Trend compares time per call in the earliest and latest tasks.">
+            {!tools.length ? <Empty>Per-call timing is recorded from Nov 11, 2026 on — this fills in as tasks run.</Empty> : (
+                <>
+                    <div className="mb-2 text-xs" style={{ color: MUTED }}>{U.tasks} task{U.tasks === 1 ? '' : 's'} with per-tool records · {U.timedTasks || 0} with tool timing</div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm" style={{ minWidth: 560 }}>
+                            <thead>
+                                <tr className="text-[0.66rem] uppercase tracking-wide" style={{ color: MUTED }}>
+                                    <th className="pb-1 font-semibold">Tool</th>
+                                    <th className="pb-1 text-right font-semibold">Calls</th>
+                                    <th className="pb-1 text-right font-semibold">Tasks</th>
+                                    <th className="pb-1 text-right font-semibold">Failed</th>
+                                    <th className="pb-1 text-right font-semibold">Per call</th>
+                                    <th className="w-[22%] pb-1 pl-3 font-semibold">Share of tool time</th>
+                                    <th className="pb-1 font-semibold">Time per call</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {list.map((t) => (
+                                    <tr key={t.tool} className="border-t" style={{ borderColor: RULE }}>
+                                        <td className="py-1.5 pr-2 font-mono text-xs">{t.tool}</td>
+                                        <td className="py-1.5 text-right tabular-nums">{t.calls}</td>
+                                        <td className="py-1.5 text-right tabular-nums">{t.tasks}</td>
+                                        <td className="py-1.5 text-right tabular-nums" style={{ color: t.failedShare >= 0.2 ? BAD : undefined }}>{pct(t.failedShare, 0)}</td>
+                                        <td className="py-1.5 text-right tabular-nums">{fmtShortSecs(t.perCall)}</td>
+                                        <td className="py-1.5 pl-3">
+                                            {t.timeShare != null ? (
+                                                <div className="flex items-center gap-2">
+                                                    <div className="h-1.5 flex-1 rounded-full" style={{ backgroundColor: 'var(--bg-hover)' }}>
+                                                        <div className="h-1.5 rounded-full" style={{ width: `${Math.max(2, t.timeShare * 100)}%`, backgroundColor: ACCENT }} />
+                                                    </div>
+                                                    <span className="w-9 text-right text-xs tabular-nums" style={{ color: MUTED }}>{pct(t.timeShare, 0)}</span>
+                                                </div>
+                                            ) : <span style={{ color: MUTED }}>—</span>}
+                                        </td>
+                                        <td className="py-1.5 pl-2">
+                                            {t.trend ? <Change value={t.trend.change} kind="relative" metric="toolWait" evidence={t.trend.evidence} small /> : <span className="text-xs" style={{ color: MUTED }}>needs 8 timed tasks</span>}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    {tools.length > 10 && (
+                        <button type="button" className="mt-2 text-xs underline" style={{ color: MUTED }} onClick={() => setAll((v) => !v)}>
+                            {all ? 'show fewer' : `show all ${tools.length} tools`}
+                        </button>
+                    )}
+                </>
+            )}
+        </Card>
     );
 }
 
@@ -1248,7 +1429,8 @@ export default function MemoryStats({ userId = null }) {
     const visible = (list) => list.filter((f) => showWeak || f.evidence !== 'weak');
     const improving = visible(F.improving || []);
     const worsening = visible(F.worsening || []);
-    const hiddenWeak = (F.improving || []).length + (F.worsening || []).length - improving.length - worsening.length;
+    const hiddenWeak = (F.improving || []).length + (F.worsening || []).length - improving.length - worsening.length
+        + (F.lately || []).filter((f) => f.direction !== 'flat' && f.evidence === 'weak').length;
     const solidBetter = (F.improving || []).filter((f) => f.evidence !== 'weak').length;
     const solidWorse = (F.worsening || []).filter((f) => f.evidence !== 'weak').length;
     const wm = WEEKLY_METRICS.find((m) => m.key === weeklyMetric) || WEEKLY_METRICS[0];
@@ -1317,7 +1499,7 @@ export default function MemoryStats({ userId = null }) {
             {/* What is changing */}
             <Card
                 title="What's improving — and what isn't"
-                hint={`Within ${RANGE_TEXT[range]}: each measure compares a theme's earliest third of tasks with its latest third (needs ${F.minTasks || 10}+ tasks). The dots show how likely the change is real rather than chance. Updates with every task.`}
+                hint={`Within ${RANGE_TEXT[range]}, per theme. "Lately" compares the newest tasks with the ones just before them, so a new change shows up within a few tasks; "Since the start" compares the earliest third with the latest third (${F.minTasks || 10}+ tasks). Time is split into waiting on tools and model time, so a slow site or a bigger job is not read as a worse playbook. Dots show how likely a change is real rather than chance.`}
                 right={(
                     <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs" style={{ color: MUTED }}>
                         <input type="checkbox" checked={showWeak} onChange={(e) => setShowWeak(e.target.checked)} />
@@ -1326,25 +1508,18 @@ export default function MemoryStats({ userId = null }) {
                 )}
             >
                 <div className="mb-3 text-sm" style={{ color: 'var(--text-secondary)' }}>
-                    {solidBetter || solidWorse
-                        ? <>{solidBetter} measure{solidBetter === 1 ? '' : 's'} improving and {solidWorse} getting worse with at least some evidence; {F.steady || 0} steady.</>
-                        : <>No change with real evidence yet — {F.total || 0} measure{F.total === 1 ? '' : 's'} checked, {F.steady || 0} steady.</>}
+                    {(() => {
+                        const lw = (F.lately || []).filter((f) => f.direction === 'worse' && f.evidence !== 'weak').length;
+                        const lb = (F.lately || []).filter((f) => f.direction === 'better' && f.evidence !== 'weak').length;
+                        const active = ((data.selfCorrect && data.selfCorrect.actions) || []).filter((a) => a.status === 'active').length;
+                        if (!solidBetter && !solidWorse && !lw && !lb) return <>No change with real evidence yet — {F.total || 0} measure{F.total === 1 ? '' : 's'} checked, {F.steady || 0} steady.</>;
+                        return <>Lately: {lb} improving, {lw} getting worse. Since the start: {solidBetter} improving, {solidWorse} getting worse{active ? ` · ${active} correction${active === 1 ? '' : 's'} being measured` : ''}.</>;
+                    })()}
                 </div>
-                <div className="grid grid-cols-1 gap-x-6 lg:grid-cols-2">
-                    <div>
-                        <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: GOOD }}>Improving</div>
-                        {improving.length
-                            ? <ul>{improving.map((f) => <FindingRow key={`${f.scope}|${f.metric}`} f={f} />)}</ul>
-                            : <div className="py-2 text-xs" style={{ color: MUTED }}>Nothing yet{!showWeak && (F.improving || []).length ? ' with evidence (tick the box to see weaker signals)' : ''}.</div>}
-                    </div>
-                    <div>
-                        <div className="mb-1 mt-3 text-[0.68rem] font-semibold uppercase tracking-wide lg:mt-0" style={{ color: BAD }}>Getting worse</div>
-                        {worsening.length
-                            ? <ul>{worsening.map((f) => <FindingRow key={`${f.scope}|${f.metric}`} f={f} />)}</ul>
-                            : <div className="py-2 text-xs" style={{ color: MUTED }}>Nothing{!showWeak && (F.worsening || []).length ? ' with evidence' : ''}.</div>}
-                    </div>
-                </div>
+                <ChangeBoard F={F} coverage={data.coverage} SC={data.selfCorrect || {}} labelOf={labelOf} showWeak={showWeak} />
             </Card>
+
+            <ToolUsageCard U={data.toolUsage} />
 
             {/* Trends by week */}
             <Card title={`${wm.label}, by ${data.bucket || 'week'}`} hint={wm.hint} right={scopeSelect}>
