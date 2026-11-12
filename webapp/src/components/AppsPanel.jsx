@@ -11,7 +11,7 @@ import {
 // Phase 5: Tailwind chrome for the Apps tab.
 // Owns the page header and the grid of *non-integrated* app cards
 // (start/stop/restart controls, port chips, status pill). The
-// integrated open-model-agents block — with its Tools/Skills sub-tabs,
+// integrated open-model-agents block — with its Tools library,
 // dialog forms, and ToggleButtonGroup filters — stays MUI for now and
 // is rendered by App.js after this panel; rebuilding those forms as
 // Tailwind primitives is a multi-day port for marginal visual gain

@@ -676,18 +676,6 @@ const App = () => {
         systemPrompt: ''
     });
 
-    // Markdown Skills state — instructional .md files the LLM consults
-    // via the `load_skill` tool. NOT executable.
-    const [mdSkills, setMdSkills] = useState([]);
-    const [mdSkillDialogOpen, setMdSkillDialogOpen] = useState(false);
-    const [editingMdSkill, setEditingMdSkill] = useState(null);
-    const [mdSkillFormData, setMdSkillFormData] = useState({
-        name: '',
-        description: '',
-        triggers: '',
-        body: '',
-    });
-
     // Tasks state
     const [tasks, setTasks] = useState([]);
     const [taskDialogOpen, setTaskDialogOpen] = useState(false);
@@ -696,9 +684,6 @@ const App = () => {
         description: '',
         priority: 'medium'
     });
-
-    // Agent sub-tab state
-    const [agentSubTab, setAgentSubTab] = useState(0);
 
     // Tools sub-tab UI state (search/filter)
     const [toolsSearchQuery, setToolsSearchQuery] = useState('');
@@ -709,13 +694,6 @@ const App = () => {
     // tab landed on a wall of cards; collapsing keeps the page scannable
     // and the user opts in when they actually want to browse.
     const [toolsLibraryExpanded, setToolsLibraryExpanded] = useState(false);
-
-    // Skills sub-tab UI state (search/filter)
-    const [skillsSearchQuery, setSkillsSearchQuery] = useState('');
-    const [skillsEnabledFilter, setSkillsEnabledFilter] = useState('all'); // all | enabled | disabled
-    // Skills Library: same collapsed-by-default behavior as Tools — both
-    // sub-tabs render long catalogs that smother the page on first visit.
-    const [skillsLibraryExpanded, setSkillsLibraryExpanded] = useState(false);
 
     // System reset state
     const [resetDialogOpen, setResetDialogOpen] = useState(false);
@@ -1049,7 +1027,6 @@ const App = () => {
         fetchHfCache();
         fetchAgents();
         fetchSkills();
-        fetchMdSkills();
         fetchTasks();
         // Backfill anything logged while this page was closed.
         hydrateLogHistory();
@@ -1310,108 +1287,6 @@ const App = () => {
             .then(res => res.json())
             .then(data => setSkills(data))
             .catch(error => console.error('Error fetching skills:', error));
-    };
-
-    const fetchMdSkills = () => {
-        fetch('/api/markdown-skills', { credentials: 'include' })
-            .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-            .then(data => setMdSkills(Array.isArray(data) ? data : []))
-            .catch(error => console.error('Error fetching markdown skills:', error));
-    };
-
-    const openMdSkillEditor = async (skill) => {
-        if (!skill) {
-            setEditingMdSkill(null);
-            setMdSkillFormData({ name: '', description: '', triggers: '', body: '' });
-            setMdSkillDialogOpen(true);
-            return;
-        }
-        try {
-            const res = await fetch(`/api/markdown-skills/${skill.id}`, { credentials: 'include' });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const full = await res.json();
-            setEditingMdSkill(full);
-            setMdSkillFormData({
-                name: full.name || '',
-                description: full.description || '',
-                triggers: full.triggers || '',
-                body: full.body || '',
-            });
-            setMdSkillDialogOpen(true);
-        } catch (e) {
-            showSnackbar(`Failed to load skill: ${e.message}`, 'error');
-        }
-    };
-
-    const handleSaveMdSkill = async () => {
-        const payload = {
-            name: mdSkillFormData.name,
-            description: mdSkillFormData.description,
-            triggers: mdSkillFormData.triggers,
-            body: mdSkillFormData.body,
-        };
-        try {
-            const isEdit = !!editingMdSkill;
-            const url = isEdit
-                ? `/api/markdown-skills/${editingMdSkill.id}`
-                : '/api/markdown-skills';
-            const res = await fetch(url, {
-                method: isEdit ? 'PUT' : 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || `HTTP ${res.status}`);
-            }
-            showSnackbar(isEdit ? 'Skill updated' : 'Skill created', 'success');
-            setMdSkillDialogOpen(false);
-            setEditingMdSkill(null);
-            fetchMdSkills();
-        } catch (e) {
-            showSnackbar(`Failed to save skill: ${e.message}`, 'error');
-        }
-    };
-
-    const handleDeleteMdSkill = async (skill) => {
-        if (!window.confirm(`Delete skill "${skill.name}"?`)) return;
-        try {
-            const res = await fetch(`/api/markdown-skills/${skill.id}`, {
-                method: 'DELETE',
-                credentials: 'include',
-            });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || `HTTP ${res.status}`);
-            }
-            showSnackbar('Skill deleted', 'success');
-            fetchMdSkills();
-        } catch (e) {
-            showSnackbar(`Failed to delete skill: ${e.message}`, 'error');
-        }
-    };
-
-    // Flip a markdown skill's enabled flag via PUT. Disabled skills
-    // vanish from the chat model's load_skill catalog, mirroring the
-    // Tools on/off toggle behavior.
-    const handleToggleMdSkill = async (skill, nextEnabled) => {
-        try {
-            const res = await fetch(`/api/markdown-skills/${skill.id}`, {
-                method: 'PUT',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: nextEnabled }),
-            });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || `HTTP ${res.status}`);
-            }
-            showSnackbar(nextEnabled ? 'Skill enabled' : 'Skill disabled', 'success');
-            fetchMdSkills();
-        } catch (e) {
-            showSnackbar(`Failed to update skill: ${e.message}`, 'error');
-        }
     };
 
     const fetchTasks = () => {
@@ -12501,8 +12376,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                 onRestart={handleAppRestart}
                             >
                                 {/* Integrated open-model-agents block stays
-                                    MUI for now (Tools/Skills sub-tabs are
-                                    heavy forms; deferred). Renders inside
+                                    MUI for now (the Tools library is a
+                                    heavy form; deferred). Renders inside
                                     AppsPanel via {children}. */}
                                 <Grid container spacing={3} sx={{ mt: 0 }}>
                                     {apps.filter(app => app.integrated && app.name === 'open-model-agents').map(app => (
@@ -12519,13 +12394,8 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         <Chip label="Integrated" size="small" color="success" />
                                                     </Box>
 
-                                                    <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
-                                                        <Tab label="Tools" />
-                                                        <Tab label="Skills" />
-                                                    </Tabs>
-
-                                                    {/* Tools Sub-Tab */}
-                                                    {agentSubTab === 0 && (() => {
+                                                    {/* Tools */}
+                                                    {(() => {
                                                         const toolTypes = Array.from(new Set(skills.map(s => s.type).filter(Boolean)));
                                                         const q = toolsSearchQuery.trim().toLowerCase();
                                                         const toolOrigin = (skill) => skill.origin || (skill.createdBy === 'model' ? 'model' : skill.userId ? 'user' : 'default');
@@ -12767,195 +12637,6 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                         </Box>
                                                         );
                                                     })()}
-
-                                                    {/* Skills Sub-Tab — markdown instructional files */}
-                                                    {agentSubTab === 1 && (() => {
-                                                        const sq = skillsSearchQuery.trim().toLowerCase();
-                                                        const filteredMdSkills = mdSkills.filter(skill => {
-                                                            const isEnabled = skill.enabled !== false;
-                                                            if (skillsEnabledFilter === 'enabled' && !isEnabled) return false;
-                                                            if (skillsEnabledFilter === 'disabled' && isEnabled) return false;
-                                                            if (sq) {
-                                                                const name = (skill.name || '').toLowerCase();
-                                                                const desc = (skill.description || '').toLowerCase();
-                                                                const triggers = (skill.triggers || '').toLowerCase();
-                                                                if (!name.includes(sq) && !desc.includes(sq) && !triggers.includes(sq)) return false;
-                                                            }
-                                                            return true;
-                                                        });
-                                                        return (
-                                                        <Box>
-                                                            <Box
-                                                                onClick={() => setSkillsLibraryExpanded(v => !v)}
-                                                                role="button"
-                                                                tabIndex={0}
-                                                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSkillsLibraryExpanded(v => !v); } }}
-                                                                sx={{
-                                                                    display: 'flex',
-                                                                    justifyContent: 'space-between',
-                                                                    mb: skillsLibraryExpanded ? 2 : 0,
-                                                                    alignItems: 'center',
-                                                                    gap: 2,
-                                                                    flexWrap: 'wrap',
-                                                                    cursor: 'pointer',
-                                                                    p: 1.25,
-                                                                    borderRadius: 1.5,
-                                                                    border: '1px solid var(--border-primary)',
-                                                                    bgcolor: 'var(--bg-tertiary)',
-                                                                    transition: 'background-color 0.15s, border-color 0.15s',
-                                                                    '&:hover': { bgcolor: 'var(--bg-hover)', borderColor: 'var(--border-hover)' },
-                                                                }}
-                                                            >
-                                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flex: 1, minWidth: 0 }}>
-                                                                    <ExpandMoreIcon
-                                                                        sx={{
-                                                                            fontSize: 20,
-                                                                            color: 'var(--text-tertiary)',
-                                                                            transform: skillsLibraryExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                                                                            transition: 'transform 0.18s ease',
-                                                                        }}
-                                                                    />
-                                                                    <Box sx={{ minWidth: 0 }}>
-                                                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                                                                            Skills Library
-                                                                        </Typography>
-                                                                        <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>
-                                                                            {mdSkills.length} skill{mdSkills.length === 1 ? '' : 's'}
-                                                                            {skillsLibraryExpanded ? ` · showing ${filteredMdSkills.length}` : ''}
-                                                                            {' · '}markdown guides the chat model loads on demand
-                                                                        </Typography>
-                                                                    </Box>
-                                                                </Box>
-                                                                <Button
-                                                                    variant="contained"
-                                                                    size="small"
-                                                                    onClick={(e) => { e.stopPropagation(); openMdSkillEditor(null); }}
-                                                                >
-                                                                    New Skill
-                                                                </Button>
-                                                            </Box>
-
-                                                            <Collapse in={skillsLibraryExpanded} timeout="auto" unmountOnExit>
-                                                            <Box sx={{ pt: 1 }}>
-                                                            {mdSkills.length === 0 ? (
-                                                                <Alert severity="info">
-                                                                    No skills yet. Click "New Skill" to write your first one — describe a procedure the model should follow when a task matches the triggers.
-                                                                </Alert>
-                                                            ) : (
-                                                                <>
-                                                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                                                                        <TextField
-                                                                            fullWidth
-                                                                            size="small"
-                                                                            placeholder="Search skills by name, description, or triggers"
-                                                                            value={skillsSearchQuery}
-                                                                            onChange={(e) => setSkillsSearchQuery(e.target.value)}
-                                                                            InputProps={{
-                                                                                startAdornment: (
-                                                                                    <InputAdornment position="start">
-                                                                                        <SearchIcon fontSize="small" />
-                                                                                    </InputAdornment>
-                                                                                ),
-                                                                                endAdornment: skillsSearchQuery ? (
-                                                                                    <InputAdornment position="end">
-                                                                                        <IconButton size="small" onClick={() => setSkillsSearchQuery('')}>
-                                                                                            <ClearIcon fontSize="small" />
-                                                                                        </IconButton>
-                                                                                    </InputAdornment>
-                                                                                ) : null
-                                                                            }}
-                                                                        />
-                                                                        <ToggleButtonGroup
-                                                                            value={skillsEnabledFilter}
-                                                                            exclusive
-                                                                            size="small"
-                                                                            onChange={(e, v) => { if (v !== null) setSkillsEnabledFilter(v); }}
-                                                                        >
-                                                                            <ToggleButton value="all">All</ToggleButton>
-                                                                            <ToggleButton value="enabled">Enabled</ToggleButton>
-                                                                            <ToggleButton value="disabled">Disabled</ToggleButton>
-                                                                        </ToggleButtonGroup>
-                                                                    </Box>
-
-                                                                    {filteredMdSkills.length === 0 ? (
-                                                                        <Alert severity="info">No skills match the current filters.</Alert>
-                                                                    ) : (
-                                                                        <Box sx={{ maxHeight: 600, overflow: 'auto', pr: 0.5 }}>
-                                                                            <Grid container spacing={1.5}>
-                                                                                {filteredMdSkills.map(skill => {
-                                                                                    const isEnabled = skill.enabled !== false;
-                                                                                    return (
-                                                                                    <Grid item xs={12} md={6} key={skill.id}>
-                                                                                        <Card variant="outlined" sx={{ opacity: isEnabled ? 1 : 0.62 }}>
-                                                                                            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-                                                                                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 0.5, gap: 1 }}>
-                                                                                                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                                                                                                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{skill.name}</Typography>
-                                                                                                        <Box sx={{ display: 'flex', gap: 0.5, mt: 0.25, flexWrap: 'wrap' }}>
-                                                                                                            {skill.owner == null && (
-                                                                                                                <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
-                                                                                                            )}
-                                                                                                            {!isEnabled && (
-                                                                                                                <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />
-                                                                                                            )}
-                                                                                                        </Box>
-                                                                                                    </Box>
-                                                                                                    <Switch
-                                                                                                        checked={isEnabled}
-                                                                                                        onChange={(e) => handleToggleMdSkill(skill, e.target.checked)}
-                                                                                                        size="small"
-                                                                                                        inputProps={{ 'aria-label': isEnabled ? 'Disable skill' : 'Enable skill' }}
-                                                                                                    />
-                                                                                                </Box>
-                                                                                                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5, fontSize: '0.8rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                                                                                                    {skill.description || 'No description'}
-                                                                                                </Typography>
-                                                                                                {skill.triggers && (
-                                                                                                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5, fontSize: '0.65rem' }}>
-                                                                                                        Triggers: {skill.triggers}
-                                                                                                    </Typography>
-                                                                                                )}
-                                                                                                <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontSize: '0.65rem' }}>
-                                                                                                    {skill.bodyPreview || '(empty body)'}
-                                                                                                </Typography>
-                                                                                            </CardContent>
-                                                                                            <CardActions sx={{ pt: 0, px: 1 }}>
-                                                                                                <Button
-                                                                                                    size="small"
-                                                                                                    onClick={() => openMdSkillEditor(skill)}
-                                                                                                    sx={{
-                                                                                                        color: 'var(--accent-primary)',
-                                                                                                        '&:hover': { bgcolor: 'var(--accent-muted)' },
-                                                                                                    }}
-                                                                                                >
-                                                                                                    Edit
-                                                                                                </Button>
-                                                                                                <Button
-                                                                                                    size="small"
-                                                                                                    onClick={() => handleDeleteMdSkill(skill)}
-                                                                                                    sx={{
-                                                                                                        color: 'var(--error, #f87171)',
-                                                                                                        '&:hover': { bgcolor: 'rgba(248,113,113,0.10)' },
-                                                                                                    }}
-                                                                                                >
-                                                                                                    Delete
-                                                                                                </Button>
-                                                                                            </CardActions>
-                                                                                        </Card>
-                                                                                    </Grid>
-                                                                                    );
-                                                                                })}
-                                                                            </Grid>
-                                                                        </Box>
-                                                                    )}
-                                                                </>
-                                                            )}
-                                                            </Box>
-                                                            </Collapse>
-                                                        </Box>
-                                                        );
-                                                    })()}
-
                                                 </CardContent>
                                             </Card>
                                         </Grid>
@@ -13040,66 +12721,6 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                     <Button onClick={() => { setAgentDialogOpen(false); setEditingAgent(null); }}>Cancel</Button>
                     <Button onClick={editingAgent ? handleUpdateAgent : handleCreateAgent} variant="contained">
                         {editingAgent ? 'Update' : 'Create'}
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            {/* Markdown Skill Dialog */}
-            <Dialog
-                open={mdSkillDialogOpen}
-                onClose={() => { setMdSkillDialogOpen(false); setEditingMdSkill(null); }}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle>{editingMdSkill ? 'Edit Skill' : 'New Skill'}</DialogTitle>
-                <DialogContent>
-                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 2 }}>
-                        Write a markdown procedure. The chat model will load this via its <code>load_skill</code> tool when a task matches the name, description, or triggers.
-                    </Typography>
-                    <TextField
-                        fullWidth
-                        label="Name"
-                        value={mdSkillFormData.name}
-                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, name: e.target.value })}
-                        sx={{ mt: 1, mb: 2 }}
-                        helperText={editingMdSkill ? `ID: ${editingMdSkill.id}` : 'ID will be derived from the name on save'}
-                        disabled={!!editingMdSkill}
-                    />
-                    <TextField
-                        fullWidth
-                        label="Description"
-                        value={mdSkillFormData.description}
-                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, description: e.target.value })}
-                        sx={{ mb: 2 }}
-                        helperText="One-line summary shown to the model when deciding whether to load this skill"
-                    />
-                    <TextField
-                        fullWidth
-                        label="Triggers"
-                        value={mdSkillFormData.triggers}
-                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, triggers: e.target.value })}
-                        sx={{ mb: 2 }}
-                        helperText="Comma-separated keywords that hint when this skill applies"
-                    />
-                    <TextField
-                        fullWidth
-                        label="Body (Markdown)"
-                        multiline
-                        rows={16}
-                        value={mdSkillFormData.body}
-                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, body: e.target.value })}
-                        sx={{ mb: 1, '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
-                        placeholder={'## Steps\n1. Call web_search with the repo URL\n2. Summarize stars, languages, recent commits\n3. Report findings to the user'}
-                    />
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => { setMdSkillDialogOpen(false); setEditingMdSkill(null); }}>Cancel</Button>
-                    <Button
-                        onClick={handleSaveMdSkill}
-                        variant="contained"
-                        disabled={!mdSkillFormData.name.trim()}
-                    >
-                        {editingMdSkill ? 'Save' : 'Create'}
                     </Button>
                 </DialogActions>
             </Dialog>
