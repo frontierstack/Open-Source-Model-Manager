@@ -291,6 +291,9 @@ def fetch_impersonate(url, timeout_ms=12000, extract_links=False, profile=None, 
 # ---------------------------------------------------------------------------
 # Layer 2: warm stealth browser workers (Scrapling StealthySession)
 # ---------------------------------------------------------------------------
+_msre_detached = re.compile(r'frame was detached|target (page, context or browser )?(has been )?closed|execution context was destroyed', re.I)
+
+
 class StealthWorker(threading.Thread):
     def __init__(self, idx, jobs):
         super().__init__(name=f'stealth-{idx}', daemon=True)
@@ -357,7 +360,19 @@ class StealthWorker(threading.Thread):
             self._close('recycle') if self.session is not None else None
             self._open(timeout_ms)
         try:
-            page = self.session.fetch(url, timeout=timeout_ms, network_idle=bool(job.get('networkIdle', False)))
+            try:
+                page = self.session.fetch(url, timeout=timeout_ms, network_idle=bool(job.get('networkIdle', False)))
+            except Exception as e1:
+                # Scrapling's Cloudflare solver clicks the Turnstile box and the
+                # page navigates as it passes, so the click raises "Frame was
+                # detached" on a SOLVED check. The session now holds the
+                # clearance cookie: read the page again in it (measured on
+                # gsmarena: fails, then 200 with the real page in 5.9 s).
+                if not _msre_detached.search(str(e1)):
+                    raise
+                log(f'stealth worker {self.idx}: challenge frame detached on {url[:120]} — re-reading in the same session')
+                page = self.session.fetch(url, timeout=timeout_ms, network_idle=True)
+                self.uses += 1
             self.uses += 1
         except Exception as e:
             # A dead browser must not poison the next request — recycle it.

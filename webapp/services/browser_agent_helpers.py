@@ -12,6 +12,7 @@
 #   open_url(url)         navigate, wait, close cookie banners, handle a simple captcha
 #   back() forward() reload() scroll_down() scroll_up() scroll_to(text)
 #   read_page() find_text(term) dismiss_popups() obstacle() solve_captcha()
+#   look() links() tables() next_page() search(query)
 # click_at_xy() is replaced by a version that moves the mouse there first and
 # records the click, so the chat can mark it on the step's screenshot.
 
@@ -241,6 +242,48 @@ def _ms_sig():
         return None
 
 
+# Text the page shows, minus the option lists of <select>s (a form's option
+# lists otherwise fill read_page before the results get a line).
+_MS_TEXT_JS = r'''(() => {
+  const opt = new Set();
+  document.querySelectorAll('select').forEach(s => { if (s.options.length > 4) Array.from(s.options).forEach(o => opt.add(o.text.trim())); });
+  const pick = () => {
+    const b = document.body; if (!b) return '';
+    const m = document.querySelector('main,[role=main]') || (document.querySelectorAll('article').length === 1 ? document.querySelector('article') : null);
+    return m && m.innerText.length > b.innerText.length * 0.4 ? m.innerText : b.innerText;
+  };
+  return pick().split('\n').map(x => x.replace(/\s+$/, '')).filter(x => !(opt.size && opt.has(x.trim()))).join('\n').replace(/\n{3,}/g, '\n\n');
+})()'''
+
+
+def _ms_text():
+    try:
+        return js(_MS_TEXT_JS) or ''  # noqa: F821
+    except Exception:
+        return ''
+
+
+def _ms_new_text(before_lines, limit=1500):
+    """Lines that appeared since before_lines (a set), in page order."""
+    if before_lines is None:
+        return ''
+    out, n = [], 0
+    for line in _ms_text().split('\n'):
+        t = line.strip()
+        if not t or t in before_lines:
+            continue
+        out.append(t)
+        n += len(t) + 1
+        if n > limit:
+            out.append('…')
+            break
+    return '\n'.join(out)
+
+
+def _ms_lines():
+    return set(x.strip() for x in _ms_text().split('\n') if x.strip())
+
+
 def _ms_wait_change(before, timeout=4.0):
     """Wait until the page changed after an action (URL, title or text), then
     for it to finish loading. Returns True when anything changed."""
@@ -276,7 +319,21 @@ def elements(query=None, limit=60):
 
 def _ms_locate(target, nth=0, field=False):
     t = target if isinstance(target, int) else str(target)
-    return _ms_js(f'window.__ms.locate({_msj.dumps(t)}, {_msj.dumps({"nth": nth, "field": field})})')
+    got = _ms_js(f'window.__ms.locate({_msj.dumps(t)}, {_msj.dumps({"nth": nth, "field": field})})')
+    if got or not isinstance(target, int):
+        return got
+    # The number came from an earlier elements()/look() and the page has since
+    # reloaded (a form post-back): find the same control again by its label.
+    old = next((e for e in _ms_els if e.get('i') == target), None)
+    if not old or not old.get('text'):
+        return None
+    is_field = old.get('tag') in ('input', 'textarea', 'select')
+    same = [e for e in _ms_els if e.get('text') == old['text'] and e.get('tag') == old.get('tag')]
+    k = same.index(old) if old in same else 0
+    got = _ms_js(f'window.__ms.locate({_msj.dumps(old["text"])}, {_msj.dumps({"nth": k, "field": is_field})})')
+    if got and old.get('tag') and got.get('tag') != old.get('tag'):
+        return None
+    return got
 
 
 def click(target, nth=0, wait=True):
@@ -297,11 +354,15 @@ def click(target, nth=0, wait=True):
     if el.get('disabled'):
         print(f'note: {el.get("text")!r} looks disabled')
     before = _ms_sig()
+    lines = _ms_lines()
     _mst.sleep(0.12)
     click_at_xy(el['x'] + _msr.uniform(-2, 2), el['y'] + _msr.uniform(-1.5, 1.5))
     changed = _ms_wait_change(before, 4.0) if wait else None
     info = page_info()  # noqa: F821
-    return {'clicked': el.get('text') or el.get('tag'), 'url': info.get('url'), 'title': info.get('title'), 'changed': changed}
+    out = {'clicked': el.get('text') or el.get('tag'), 'url': info.get('url'), 'title': info.get('title'), 'changed': changed}
+    if changed:
+        out['new_text'] = _ms_new_text(lines)
+    return out
 
 
 def fill(target, value, submit=False, nth=0):
@@ -317,11 +378,19 @@ def fill(target, value, submit=False, nth=0):
     if el.get('error'):
         raise ValueError(el['error'])
     if el['tag'] == 'select':
+        before = _ms_sig()
+        lines = _ms_lines()
         r = _ms_js(f'window.__ms.setSelect({_msj.dumps(str(value))})')
         if r.get('error'):
             raise ValueError(f'{r["error"]}; options: {r.get("options")}')
-        _mst.sleep(0.6)
-        return {'field': el.get('text'), 'chose': r['chosen']}
+        # Some forms post back on change (ASP.NET, PHP filters): wait for it so
+        # the next fill()/click() acts on the reloaded page.
+        changed = _ms_wait_change(before, 2.0)
+        out = {'field': el.get('text'), 'chose': r['chosen'], 'changed': changed}
+        if changed:
+            out['page_reloaded'] = True
+            out['new_text'] = _ms_new_text(lines, 600)
+        return out
     if el.get('type') in ('checkbox', 'radio') or el.get('role') in ('checkbox', 'switch', 'radio'):
         if bool(value) != bool(el.get('checked')):
             click_at_xy(el['x'], el['y'])
@@ -346,19 +415,20 @@ def fill(target, value, submit=False, nth=0):
     out = {'field': el.get('text'), 'value': got}
     if submit:
         before = _ms_sig()
+        lines = _ms_lines()
         press_key('Enter')  # noqa: F821
         out['changed'] = _ms_wait_change(before, 6.0)
         out['url'] = page_info().get('url')  # noqa: F821
+        if out['changed']:
+            out['new_text'] = _ms_new_text(lines)
     return out
 
 
-def read_page(max_chars=6000):
-    """The page's visible text (main content first), trimmed."""
-    t = js('''(() => { const m = document.querySelector('main,[role=main],article') ;
-      const b = document.body ? document.body.innerText : '';
-      const x = m && m.innerText.length > b.length * 0.4 ? m.innerText : b;
-      return x.replace(/\\n{3,}/g, '\\n\\n'); })()''') or ''  # noqa: F821
-    return t[: int(max_chars)] + (f'\n… [{len(t) - int(max_chars)} more chars; read_page(max_chars=...) or find_text()]' if len(t) > int(max_chars) else '')
+def read_page(max_chars=6000, start=0):
+    """The page's visible text (main content first; <select> option lists left
+    out), trimmed. start= skips that many characters (read the next part)."""
+    t = _ms_text()[int(start):]
+    return t[: int(max_chars)] + (f'\n… [{len(t) - int(max_chars)} more chars: read_page(start={int(start) + int(max_chars)}) or find_text(term)]' if len(t) > int(max_chars) else '')
 
 
 def find_text(term, context=1):
@@ -502,7 +572,7 @@ def _ms_consent_iframe():
 
 
 # ---- human checks ---------------------------------------------------------
-_MS_WALL_RE = _msre.compile(r'just a moment|checking (if the site connection is secure|your browser)|verify(ing)? you are (a )?human|are you a robot|i\'?m not a robot|press (&|and) hold|security check|attention required|unusual traffic|please verify|bot detection|human verification', _msre.I)
+_MS_WALL_RE = _msre.compile(r'just a moment|checking (if the site connection is secure|your browser)|verify(ing)? you are (a )?human|are you a robot|i\'?m not a robot|press (&|and) hold|security check|attention required|unusual traffic|please verify|bot detection|human verification|one (more )?quick check|before you continue|checking your connection|verifying your connection', _msre.I)
 _MS_KINDS = [
     ('turnstile', _msre.compile(r'challenges\.cloudflare\.com', _msre.I)),
     ('recaptcha', _msre.compile(r'(google\.com|recaptcha\.net)/recaptcha/(api2|enterprise)/anchor', _msre.I)),
@@ -641,7 +711,7 @@ def solve_captcha(timeout=40):
             tried += 1
             _mst.sleep(3)
         elif kind in ('turnstile', 'recaptcha', 'hcaptcha'):
-            if tried >= 3:
+            if tried >= 2:
                 return res(True, kind, False, f'clicked the {kind} checkbox {tried} times; it did not pass (the site may not trust this browser)')
             b = ob['box']
             if kind == 'recaptcha':
@@ -680,30 +750,180 @@ def solve_captcha(timeout=40):
 def open_url(url, handle_popups=True):
     """Go to a URL (in the current tab, or a new one when there is none), wait
     for it, close cookie banners and pass a simple human check. Returns
-    {url, title, popups, obstacle}."""
+    {url, title, popups, obstacle, text} where text is the start of the page
+    (call look() for the controls, read_page() for more text)."""
     try:
         tabs = list_tabs(include_chrome=False)  # noqa: F821
     except Exception:
         tabs = []
-    if tabs:
-        goto_url(url)  # noqa: F821
-    else:
-        new_tab(url)  # noqa: F821
-    _mst.sleep(0.5)
+    cur = {}
     try:
-        wait_for_load(timeout=20)  # noqa: F821
+        cur = page_info() if tabs else {}  # noqa: F821
     except Exception:
-        pass
-    _mst.sleep(0.6)
+        cur = {}
+    same = bool(cur.get('url')) and cur.get('url', '').rstrip('/') == str(url).rstrip('/')
+    if not same:
+        if tabs:
+            goto_url(url)  # noqa: F821
+        else:
+            new_tab(url)  # noqa: F821
+        _mst.sleep(0.5)
+        try:
+            wait_for_load(timeout=20)  # noqa: F821
+        except Exception:
+            pass
+        _mst.sleep(0.6)
     out = {'popups': [], 'obstacle': None}
     ob = obstacle()
     if ob:
-        out['obstacle'] = solve_captcha()
+        out['obstacle'] = solve_captcha(timeout=25)
     if handle_popups:
         out['popups'] = dismiss_popups()
     info = page_info()  # noqa: F821
     out.update({'url': info.get('url'), 'title': info.get('title')})
+    out['text'] = read_page(1500)
     return out
+
+
+goto = open_url
+
+
+def links(query=None, limit=40):
+    """Links on the page with ABSOLUTE urls, content links first:
+    [{i, text, href}]. query filters by text or url. open_url(link['href'])
+    goes there without hunting for the element."""
+    js(_MS_LIB)  # noqa: F821
+    got = js(f'''(() => {{
+      const q = {_msj.dumps((query or '').lower())};
+      const chrome = el => !!el.closest('nav,header,footer,aside,[role=navigation],[role=banner],[role=contentinfo]');
+      const seen = new Set(), main = [], rest = [];
+      for (const a of document.querySelectorAll('a[href]')) {{
+        const href = a.href; if (!/^https?:/.test(href) || seen.has(href)) continue;
+        const r = a.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue;
+        const text = (a.innerText || a.getAttribute('aria-label') || a.title || (a.querySelector('img[alt]') || {{}}).alt || '').replace(/\\s+/g, ' ').trim().slice(0, 100);
+        if (q && !(text.toLowerCase().includes(q) || href.toLowerCase().includes(q))) continue;
+        seen.add(href); (chrome(a) ? rest : main).push({{ text, href: href.slice(0, 300) }});
+      }}
+      return main.concat(rest);
+    }})()''') or []  # noqa: F821
+    return [dict(i=i, **x) for i, x in enumerate(got[: int(limit)])]
+
+
+def tables(max_rows=40):
+    """The page's data tables (and key/value lists) as rows of cell text:
+    [{caption, rows: [[...], ...]}]. Spec sheets, result grids, price lists."""
+    return js(f'''(() => {{
+      const out = [], cell = c => c.innerText.replace(/\\s+/g, ' ').trim().slice(0, 200);
+      for (const t of document.querySelectorAll('table')) {{
+        const rows = Array.from(t.rows).map(r => Array.from(r.cells).map(cell)).filter(r => r.some(Boolean));
+        if (rows.length < 2 || (t.closest('nav,header,footer'))) continue;
+        out.push({{ caption: (t.caption ? cell(t.caption) : (t.previousElementSibling ? cell(t.previousElementSibling).slice(0, 80) : '')), rows: rows.slice(0, {int(max_rows)}), totalRows: rows.length }});
+        if (out.length >= 8) break;
+      }}
+      for (const d of document.querySelectorAll('dl')) {{
+        const rows = []; let k = null;
+        for (const c of d.children) {{ if (c.tagName === 'DT') k = cell(c); else if (c.tagName === 'DD') rows.push([k || '', cell(c)]); }}
+        if (rows.length >= 2) out.push({{ caption: 'list', rows: rows.slice(0, {int(max_rows)}), totalRows: rows.length }});
+        if (out.length >= 10) break;
+      }}
+      return out;
+    }})()''') or []  # noqa: F821
+
+
+_MS_NEXT_JS = r'''(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+  const rel = document.querySelector('a[rel~=next],link[rel~=next]');
+  if (rel && rel.href) return { href: rel.href, text: 'rel=next' };
+  const re = /^(next( page)?|next ?[›»>→]|[›»→]|older( posts| entries)?|more results|load more|show more|weiter|suivant|siguiente|avanti|próxima)$/i;
+  const c = Array.from(document.querySelectorAll('a,button,[role=button],[role=link]')).filter(vis);
+  for (const el of c) {
+    const t = (el.innerText || el.getAttribute('aria-label') || el.title || '').replace(/\s+/g, ' ').trim();
+    if (t && t.length <= 30 && re.test(t) && !el.disabled && el.getAttribute('aria-disabled') !== 'true') {
+      if (el.tagName === 'A' && el.href && /^https?:/.test(el.href)) return { href: el.href, text: t };
+      const r = el.getBoundingClientRect(); return { text: t };
+    }
+  }
+  return null;
+})()'''
+
+
+def next_page():
+    """Go to the next page of a list / search results (rel=next, a "Next" /
+    "›" / "Load more" control). Returns {moved, url, title, new_text} or
+    {moved: False} when there is no next page."""
+    hit = js(_MS_NEXT_JS)  # noqa: F821
+    if not hit:
+        return {'moved': False, 'detail': 'no next-page link or button on this page'}
+    lines = _ms_lines()
+    if hit.get('href'):
+        before = _ms_sig()
+        goto_url(hit['href'])  # noqa: F821
+        _ms_wait_change(before, 8.0)
+        info = page_info()  # noqa: F821
+        return {'moved': True, 'via': hit['text'], 'url': info.get('url'), 'title': info.get('title'), 'new_text': _ms_new_text(lines)}
+    r = click(hit['text'])
+    r['moved'] = bool(r.get('changed'))
+    r['via'] = hit['text']
+    return r
+
+
+def search(query):
+    """Use the site's own search box: finds it (type=search, name q/s/query/
+    search, a "Search" placeholder or label), types query and submits.
+    Returns {field, value, changed, url, new_text}."""
+    js(_MS_LIB)  # noqa: F821
+    sel = js('''(() => {
+      const vis = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 4 && r.height > 4 && cs.visibility !== 'hidden' && cs.display !== 'none'; };
+      const c = Array.from(document.querySelectorAll('input[type=search],input[name=q],input[name=s],input[name=query],input[name=search],input[name*=search i],input[placeholder*=search i],input[aria-label*=search i],[role=searchbox],input[type=text]'));
+      const el = c.find(vis);
+      if (!el) return null;
+      if (!el.id) el.id = '__ms_search_' + Math.floor(Math.random() * 1e6);
+      return '#' + CSS.escape(el.id);
+    })()''')  # noqa: F821
+    if not sel:
+        raise LookupError('no search box on this page; look for a search link in links("search") or elements("search")')
+    return fill(sel, query, submit=True)
+
+
+def look(max_controls=25, text_chars=1200):
+    """One look at the page, as a person would take it in: URL, title, any
+    human check or pop-up, the headings, the start of the text, the numbered
+    controls (for click(i) / fill(i, ...)) and whether there is a next page.
+    Returns a printable string; print(look())."""
+    info = page_info()  # noqa: F821
+    parts = [f"URL: {info.get('url')}", f"Title: {info.get('title')}"]
+    ob = obstacle()
+    if ob:
+        parts.append(f"Human check on the page: {ob['kind']} (solve_captcha() handles a checkbox / wait page)")
+    try:
+        heads = js('''Array.from(document.querySelectorAll('h1,h2,h3')).filter(h => h.getBoundingClientRect().height > 2).map(h => h.tagName + ' ' + h.innerText.replace(/\\s+/g, ' ').trim().slice(0, 90)).filter(x => x.length > 3).slice(0, 14)''') or []  # noqa: F821
+    except Exception:
+        heads = []
+    if heads:
+        parts.append('Headings: ' + ' | '.join(heads))
+    parts.append('Text:\n' + read_page(int(text_chars)))
+    els = elements(limit=int(max_controls)) or []
+    rows = []
+    for e in els:
+        bits = [str(e['i']), e['tag'] + (f"[{e['type']}]" if e.get('type') else ''), repr(e.get('text') or '')]
+        if e.get('value'):
+            bits.append(f"value={e['value']!r}")
+        if e.get('options'):
+            bits.append(f"options={e['options'][:8]}")
+        if e.get('href'):
+            bits.append(f"-> {e['href'][:70]}")
+        for flag in ('checked', 'disabled', 'covered', 'offscreen'):
+            if e.get(flag):
+                bits.append(flag)
+        rows.append('  ' + ' '.join(bits))
+    parts.append(f'Controls ({len(els)} shown; elements(query) to filter):\n' + '\n'.join(rows))
+    try:
+        nx = js(_MS_NEXT_JS)  # noqa: F821
+    except Exception:
+        nx = None
+    if nx:
+        parts.append(f"Next page: yes ({nx.get('text')}) — next_page()")
+    return '\n'.join(parts)
 
 
 def _ms_step_report(auto_captcha=True):
@@ -729,9 +949,9 @@ def _ms_step_report(auto_captcha=True):
                 blocking = len(js('document.body ? document.body.innerText : ""') or '') < 1500  # noqa: F821
             except Exception:
                 blocking = False
-        if auto_captcha and blocking and seen.get(key, 0) < 2:
+        if auto_captcha and blocking and seen.get(key, 0) < 1:
             seen[key] = seen.get(key, 0) + 1
-            rep['captcha'] = solve_captcha(timeout=30)
+            rep['captcha'] = solve_captcha(timeout=20)
             rep['info'] = page_info()  # noqa: F821
             rep['clicks'] += list(_ms_clicks)
             del _ms_clicks[:]

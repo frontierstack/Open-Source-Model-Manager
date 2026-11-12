@@ -33129,12 +33129,14 @@ app.use((req, res) => {
                 ctx._agentTriedHosts.add(h);
                 const why = r.obstacle ? `${r.obstacle.kind}${r.obstacle.vendor ? ' (' + r.obstacle.vendor + ')' : ''}` : (r.error || 'blocked');
                 console.log(`[web] ${url} refused every automated read (${why}) — handing it to the browser agent`);
-                const ask = String(ctx.latestUserText || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+                // The user's own words only: the runtime's [SYSTEM: …] notes
+                // (memory, pre-flights) and a /no_think switch are not the ask.
+                const ask = leadHandoff.cleanAsk(String(ctx.latestUserText || '')).slice(0, 400);
                 const ag = await tool.execute({
-                    task: `Open ${url} and read it the way a person would. If a cookie or consent prompt appears, accept it. If a "checking your browser" / bot check page appears, wait about 10 seconds, then reload once. ` +
-                        `Then report the page's title and its main content as completely and faithfully as you can (headlines with their links, article text, listings or tables), and the final URL. ` +
+                    task: `Open ${url} with open_url() (it accepts cookie prompts and handles a simple bot check) and read it the way a person would. ` +
+                        `Report the page's title and its main content as completely and faithfully as you can (headlines with their links, article text, listings, tables() for spec or data tables), and the final URL. ` +
                         (ask ? `The user's request, for context on what matters on this page: "${ask}". ` : '') +
-                        'If the site still shows a block or bot check after that, stop and say exactly what it shows.',
+                        'If a bot check is still showing after open_url and one reload(), stop and say exactly what the page shows.',
                     maxSteps: parseInt(process.env.WEB_BLOCKED_AGENT_STEPS, 10) || 10,
                 }, (call && call.id) ? Object.assign(Object.create(ctx), { _toolCallId: call.id }) : ctx).catch(e => ({ success: false, error: e.message }));
                 const report = String((ag && ag.report) || '').trim();

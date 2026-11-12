@@ -594,8 +594,20 @@ function BrowserLightbox({ steps, allSteps, index, onIndex, onClose }) {
     );
 }
 
+// Collapse choice per run, so it survives the remount at commit and reconnects.
+const baCollapsed = new Map();
+
 export function BrowserAgentPanel({ state, running }) {
     const steps = Array.isArray(state.steps) ? state.steps : [];
+    const runKey = state.runId || state.startedAt || null;
+    // Open while it runs and just after; a finished run reopened later starts folded.
+    const [open, setOpenState] = useState(() => {
+        if (runKey != null && baCollapsed.has(runKey)) return !baCollapsed.get(runKey);
+        if (running) return true;
+        const endedAt = state.startedAt ? state.startedAt + (Number(state.seconds) || 0) * 1000 : 0;
+        return !!endedAt && Date.now() - endedAt < 3 * 60 * 1000;
+    });
+    const setOpen = (v) => { setOpenState(v); if (runKey != null) baCollapsed.set(runKey, !v); };
     const [picked, setPicked] = useState(null);      // step n the user chose; null = follow the newest
     const [listOpen, setListOpen] = useState(false);
     const [reportOpen, setReportOpen] = useState(false);
@@ -650,8 +662,11 @@ export function BrowserAgentPanel({ state, running }) {
     const longResult = result.length > 420;
 
     return (
-        <div className={`bagent is-${status}`}>
-            <div className="bagent-head">
+        <div className={`bagent is-${status}${open ? '' : ' is-collapsed'}`}>
+            <div className="bagent-head" role="button" tabIndex={0} aria-expanded={open}
+                title={open ? 'Collapse' : 'Expand'}
+                onClick={() => setOpen(!open)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open); } }}>
                 <span className="bagent-icon" aria-hidden="true"><Globe strokeWidth={2} /></span>
                 <div className="bagent-head-main">
                     <div className="bagent-title">Browser agent{state.model ? <span className="bagent-model" title={state.model}>{modelDisplayName(state.model)}</span> : null}</div>
@@ -664,10 +679,19 @@ export function BrowserAgentPanel({ state, running }) {
                     <span>{statusText}</span>
                     {fmtBaSecs(elapsed) && <span className="bagent-time">{fmtBaSecs(elapsed)}</span>}
                 </span>
+                <ChevronDown strokeWidth={2} className={`bagent-fold${open ? ' is-open' : ''}`} aria-hidden="true" />
             </div>
             {running && maxSteps > 0 && (
                 <div className="bagent-progress" aria-hidden="true"><i style={{ width: `${Math.min(100, (steps.length / maxSteps) * 100)}%` }} /></div>
             )}
+            {!open && shown && (
+                <div className="bagent-folded-line">
+                    <span className="bagent-n">{shown.n}</span>
+                    <span className="bagent-detail-action">{shown.action}</span>
+                    {shown.url && <span className="bagent-host">{hostOf(shown.url)}</span>}
+                </div>
+            )}
+            {open && (<>
 
             <div className="bagent-frame">
                 <div className="bagent-bar">
@@ -762,6 +786,7 @@ export function BrowserAgentPanel({ state, running }) {
                     )}
                 </div>
             )}
+            </>)}
 
             {lightbox != null && (
                 <BrowserLightbox steps={shotSteps} allSteps={steps} index={lightbox} onIndex={setLightbox} onClose={() => setLightbox(null)} />

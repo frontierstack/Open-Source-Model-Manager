@@ -6654,6 +6654,24 @@ body .msg-notes-text .markdown-content :is(p, li, td, th, blockquote, span:not(.
 @media (prefers-reduced-motion: reduce) {
   .bagent-shot img, .bagent-click.is-last::after, .bagent-live.is-on .bagent-live-dot, .bagent-progress i { animation: none; transition: none; }
 }
+
+/* Browser agent panel: the header folds the panel (2026-11-12). */
+.bagent-head { cursor: pointer; -webkit-user-select: none; -moz-user-select: none; user-select: none; }
+.bagent-head:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; border-radius: 12px; }
+.bagent-head:hover .bagent-fold { color: var(--text-primary); }
+.bagent-fold { flex: none; width: 16px; height: 16px; margin-top: 5px; color: var(--text-tertiary, var(--text-secondary)); transform: rotate(-90deg); transition: transform .18s ease, color .15s ease; }
+.bagent-fold.is-open { transform: rotate(0deg); }
+.bagent.is-collapsed .bagent-task { -webkit-line-clamp: 1; }
+.bagent.is-collapsed .bagent-progress { margin-bottom: 0; }
+.bagent-folded-line { --fs: 12px; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 12px 10px 48px; color: var(--text-secondary); }
+.bagent-folded-line .bagent-detail-action { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bagent-folded-line .bagent-host { flex: none; }
+.bagent.is-collapsed .bagent-progress + .bagent-folded-line { padding-top: 8px; }
+@media (max-width: 640px) {
+  .bagent-folded-line { padding-left: 10px; }
+  .bagent-fold { margin-top: 3px; }
+}
+@media (prefers-reduced-motion: reduce) { .bagent-fold { transition: none; } }
 .hover\:underline:hover{
   text-decoration-line: underline;
 }

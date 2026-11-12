@@ -55,6 +55,9 @@ _HELPERS = [
     (r'\bclick\(\s*[\'"]([^\'"]{0,60})', 'Clicked "{0}"'),
     (r'\bclick\(\s*(\d+)', 'Clicked element {0}'),
     (r'\bsolve_captcha\(', 'Handled a human check'),
+    (r'\bgoto\(\s*[\'"]([^\'"]+)', 'Opened {0}'),
+    (r'\bsearch\(\s*[\'"]([^\'"]{0,60})', 'Searched the site for "{0}"'),
+    (r'\bnext_page\(', 'Went to the next page'),
     (r'\bdismiss_popups\(', 'Closed pop-ups'),
     (r'\bback\(\)', 'Went back'),
     (r'\bforward\(\)', 'Went forward'),
@@ -82,6 +85,9 @@ _HELPERS = [
     (r'\bfinish\(|\bdone\(', 'Finished'),
 ]
 _GENERIC = [
+    (r'\blook\(', 'Looked at the page'),
+    (r'\btables\(', 'Read the tables'),
+    (r'\blinks\(', 'Listed the links'),
     (r'\belements\(', 'Listed the page controls'),
     (r'\bfind_text\(\s*[\'"]([^\'"]{0,50})', 'Searched the page for "{0}"'),
     (r'\bread_page\(', 'Read the page'),
@@ -163,6 +169,28 @@ except NameError:
 '''
 
 
+def stealth_args(chrome):
+    """Launch flags that stop the browser announcing itself as automated.
+    Headless Chrome says "HeadlessChrome" in its user agent and sets the
+    AutomationControlled blink feature; Cloudflare Turnstile and similar checks
+    refuse it on that alone (measured: gsmarena's Turnstile passed invisibly with
+    these two changes, and never passed without them, however often clicked)."""
+    import subprocess
+    major = None
+    if os.environ.get('BU_STEALTH') == '0':
+        return []
+    try:
+        v = subprocess.run([chrome, '--version'], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r'(\d+)\.\d+\.\d+', v)
+        major = m.group(1) if m else None
+    except Exception:
+        major = None
+    out = ['--disable-blink-features=AutomationControlled', '--lang=en-US,en']
+    if major:
+        out.append(f'--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36')
+    return out
+
+
 def find_chrome():
     import glob
     for pat in ('/root/.cache/ms-playwright/chromium-*/chrome-linux*/chrome',
@@ -176,24 +204,25 @@ def find_chrome():
 BASE_RULES = (
     'You are driving a real browser for a user. Always open and look at the page with python() before you answer; '
     'never answer from memory. Report only what the page actually showed, with the URL.\n'
-    'EASY HELPERS (pre-loaded, synchronous; prefer them over raw cdp/js):\n'
-    '- open_url(url) -> {url,title,popups,obstacle}: navigates, waits, closes cookie banners, passes a simple human check.\n'
-    '- elements(query=None) -> numbered visible controls [{i,tag,text,x,y,value?,options?,checked?,href?,covered?,offscreen?}]. '
-    'Print it to see what you can click or fill.\n'
-    '- click(target): target = a number from elements(), the visible text ("Search", "Next"), or a CSS selector ("#go"). '
-    'Real mouse movement + click, waits for the page to react; returns {clicked,url,title,changed}.\n'
-    '- fill(target, value, submit=False): text field by label/placeholder/name (clears and types), <select> by option text, '
-    'checkbox by True/False. submit=True presses Enter.\n'
-    '- read_page(max_chars=6000), find_text(term), scroll_down(), scroll_up(), scroll_to(text), back(), forward(), reload().\n'
-    '- dismiss_popups(): close cookie/consent banners and nag dialogs.\n'
-    '- obstacle() / solve_captcha(): a "Just a moment" page, a Turnstile / reCAPTCHA / hCaptcha "I am human" checkbox or a '
-    'press-and-hold button is handled like a person would; it returns {found,kind,solved,detail}. If it says a picture '
-    'puzzle needs a person, or it did not pass, stop and tell the user the site asks for a CAPTCHA. Never try to solve '
-    'image puzzles yourself.\n'
-    'Do several steps in ONE cell (e.g. open_url, fill, click, then print(read_page()[:3000])). After each action check the '
-    'result (changed/url/title) before going on. If a click did nothing, call elements() and pick the right control. '
-    'After choosing an option that reloads part of the page, read the page again before the next step. Submit forms with '
-    'their real submit button or fill(..., submit=True). Login walls you have no credentials for: stop and say so.'
+    'EASY HELPERS (pre-loaded, synchronous; use them, not raw cdp()/js() or CSS selectors you guessed):\n'
+    '- open_url(url) -> {url,title,popups,obstacle,text}: navigates, waits, accepts cookie banners, passes a simple human check; text = start of the page.\n'
+    '- look() -> one printable view: URL, title, headings, start of the text, numbered controls, next page. print(look()) whenever you are unsure what is on screen.\n'
+    '- click(target) / fill(target, value, submit=False): target = a number from look()/elements(), the visible text ("Search", "Next") '
+    'or a label/placeholder. fill handles text boxes, <select> (by option text) and checkboxes (True/False). '
+    'Both return {changed, url, title, new_text}: new_text is the text that APPEARED after the action (search results, an opened panel) - read it instead of re-reading the page.\n'
+    '- search(query): uses the site\'s own search box. next_page(): goes to the next page of results.\n'
+    '- links(query=None) -> [{text, href}] absolute URLs; open_url(href) is faster than clicking a link you can see.\n'
+    '- tables() -> rows of every data/spec table. read_page(max_chars=6000, start=0), find_text(term) for longer text.\n'
+    '- elements(query=None), scroll_down(), scroll_to(text), back(), reload(), dismiss_popups().\n'
+    '- solve_captcha(): a "Just a moment" page, a Turnstile / reCAPTCHA / hCaptcha checkbox or press-and-hold is handled like a person; '
+    'open_url() already tries it once. If it reports solved=False, try reload() once and look() again; if still blocked, stop and say exactly what '
+    'the page shows. Never try to solve picture puzzles.\n'
+    'WORK IN FEW STEPS: do several actions in ONE cell and print what you need, e.g.\n'
+    '  r = open_url("https://site/x"); print(r["title"]); print(look())\n'
+    '  print(fill("Author", "Albert Einstein")); print(fill("Tag", "change")); print(click("Search")["new_text"])\n'
+    'Check each result (changed/new_text) before going on; if a click did nothing, print(look()) and pick the right control by number. '
+    'As soon as you have what the task asks for, finish with the answer - do not re-verify what you already printed. '
+    'Login walls you have no credentials for: stop and say so.'
 )
 
 
@@ -288,11 +317,23 @@ async def main():
 
     bu_service.Session = ReportingSession  # Agent._run builds its Session through this name
 
+    chrome = job.get('chromePath') or find_chrome()
+    extra_args = stealth_args(chrome) if chrome else []
+    if extra_args:
+        from browser_use.browser import local as bu_local
+        orig_args = bu_local.chrome_args
+
+        def chrome_args(*a, **kw):
+            args = orig_args(*a, **kw)
+            return [*args[:-1], *extra_args, args[-1]]
+
+        bu_local.chrome_args = chrome_args
+
     llm = ChatOpenAI(job['model'], base_url=job['baseUrl'], api_key=job.get('apiKey') or 'none',
                      temperature=job.get('temperature'))
     browser = Browser(
         'chromium', headless=True,
-        executable_path=job.get('chromePath') or find_chrome(),
+        executable_path=chrome,
         block_ip_addresses=not job.get('allowInternal'),
     )
     agent = Agent(
