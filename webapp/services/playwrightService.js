@@ -77,15 +77,46 @@ if (sslBypassEnabled) {
     console.log('[Playwright] SSL bypass enabled for corporate proxy environment');
 }
 
-// Use playwright-extra with stealth plugin for enhanced bot detection bypass
+// Browser fingerprint modes (2026-11-12). Two setups, because no single one
+// passes every bot check (measured, 2-3 runs each):
+//  * 'legacy': playwright-extra stealth plugin + a Windows-Chrome persona and
+//    init script on the headless shell. Passes Zillow and Reddit; fails a
+//    Cloudflare Turnstile (gsmarena) every time.
+//  * 'native': plain Playwright on the FULL Chromium binary (new headless), an
+//    honest Linux user agent of the real version, no spoofing. Passes the
+//    gsmarena Turnstile 5/5 in ~7.7 s; Zillow 403s it and Reddit asks it to
+//    prove it is human (the headless shell, the stealth plugin and a Windows UA
+//    on this Linux host each failed the Turnstile on their own).
+// PLAYWRIGHT_STEALTH_MODE=auto (default) starts with legacy, retries a page
+// that came back as a bot check once with native, and remembers per host which
+// one got through. 'legacy' or 'native' pins one.
+const STEALTH_MODE = (() => { const m = String(process.env.PLAYWRIGHT_STEALTH_MODE || 'auto').toLowerCase(); return m === 'legacy' || m === 'native' ? m : 'auto'; })();
+const vanillaChromium = require('playwright').chromium;
 const { chromium: playwrightChromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
-// Apply stealth plugin with all evasions enabled
 playwrightChromium.use(StealthPlugin());
+const chromium = playwrightChromium; // legacy launcher (kept under its old name)
+console.log(`[Playwright] browser fingerprint mode: ${STEALTH_MODE}`);
 
-// Export stealth-enabled chromium
-const chromium = playwrightChromium;
+// host -> { mode, until }: the setup that last got through a bot check there.
+const HOST_PERSONA_TTL_MS = 6 * 3600 * 1000;
+const hostPersona = new Map();
+function hostOfUrl(url) { try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch (_) { return ''; } }
+function personaFor(url) {
+    if (STEALTH_MODE !== 'auto') return STEALTH_MODE;
+    const h = hostOfUrl(url);
+    const m = h && hostPersona.get(h);
+    if (m && m.until > Date.now()) return m.mode;
+    if (m) hostPersona.delete(h);
+    return 'legacy';
+}
+function notePersona(url, mode) {
+    const h = hostOfUrl(url);
+    if (!h || STEALTH_MODE !== 'auto') return;
+    if (mode === 'legacy') { hostPersona.delete(h); return; }
+    hostPersona.set(h, { mode, until: Date.now() + HOST_PERSONA_TTL_MS });
+    if (hostPersona.size > 500) hostPersona.delete(hostPersona.keys().next().value);
+}
 
 // Headed-browser support was removed when getBrowser() was pinned to headless
 // (see the comment there): `USE_HEADED_MODE` was assigned at require time and
@@ -235,6 +266,9 @@ let poolCleanupInterval = null;
 const STEALTH_CHROME_MAJOR = parseInt(process.env.STEALTH_CHROME_MAJOR, 10) || 131;
 let detectedChromeMajor = null;
 function stealthChromeMajor() { return detectedChromeMajor || String(STEALTH_CHROME_MAJOR); }
+function linuxChromeUA(major) {
+    return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
 function windowsChromeUA(major) {
     return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
@@ -271,13 +305,31 @@ function randomDelay(min = 50, max = 200) {
 /**
  * Generate stealth browser context options
  */
-function getStealthContextOptions() {
+function getStealthContextOptions(mode = 'legacy') {
     const viewport = randomChoice(VIEWPORTS);
     // Build the UA from the REAL browser major (detected at launch) so the HTTP-header
     // UA, navigator.userAgent (stealth-plugin-corrected to the real version), the
     // Sec-Ch-Ua client-hint, and userAgentData all report the SAME Windows-Chrome
     // version — no header-vs-JS mismatch.
     const chromeMajor = stealthChromeMajor();
+    if (mode === 'native') {
+        // The real browser, minus the "HeadlessChrome" token. Chrome derives
+        // the client hints itself; only Accept-Language is added (headers set
+        // here go on EVERY request, so document-only ones would be a tell).
+        const vp = randomChoice(VIEWPORTS);
+        return {
+            userAgent: linuxChromeUA(chromeMajor),
+            viewport: vp,
+            locale: 'en-US',
+            // No timezone/screen override: a timezone that disagrees with where
+            // the IP is located is a classic bot-check signal.
+            hasTouch: false,
+            isMobile: false,
+            javaScriptEnabled: true,
+            extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+            ignoreHTTPSErrors: true,
+        };
+    }
     const userAgent = windowsChromeUA(chromeMajor);
     const options = {
         userAgent: userAgent,
@@ -320,7 +372,8 @@ function getStealthContextOptions() {
 /**
  * Apply stealth patches to page - Enhanced for VirusTotal/FOFA bypass
  */
-async function applyStealthPatches(page) {
+async function applyStealthPatches(page, mode = 'legacy') {
+    if (mode === 'native') return; // spoofed properties are themselves what checks look for
     await page.addInitScript(() => {
         // Override webdriver detection - comprehensive
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -544,15 +597,23 @@ async function applyStealthPatches(page) {
 /**
  * Get or create a browser from the pool
  */
-async function getBrowser(lease = null) {
+async function getBrowser(lease = null, mode = 'legacy') {
     // Try to get an available browser from pool. `browser` is null while an entry
     // is still launching (see the slot reservation below), so guard the isConnected
     // call — a reserved slot is never handed out.
-    const availableBrowser = browserPool.find(b => !b.inUse && b.browser && b.browser.isConnected());
+    const availableBrowser = browserPool.find(b => !b.inUse && b.browser && b.browser.isConnected() && (b.mode || 'legacy') === mode);
     if (availableBrowser) {
         availableBrowser.inUse = true;
         availableBrowser.lastUsed = Date.now();
         return availableBrowser;
+    }
+    // Pool full of idle browsers of the other mode: retire one to make room.
+    if (browserPool.length >= MAX_POOL_SIZE) {
+        const idle = browserPool.find(b => !b.inUse && b.browser && (b.mode || 'legacy') !== mode);
+        if (idle) {
+            browserPool.splice(browserPool.indexOf(idle), 1);
+            idle.browser.close().catch(() => {});
+        }
     }
 
     // Create new browser if pool not full
@@ -565,6 +626,7 @@ async function getBrowser(lease = null) {
         // crawl paths issue exactly that burst.
         const poolEntry = {
             browser: null,
+            mode,
             inUse: true,
             lastUsed: Date.now(),
             createdAt: Date.now(),
@@ -578,7 +640,7 @@ async function getBrowser(lease = null) {
         // chat's playwright_fetch path was completely broken. Stealth/anti-
         // detection lives in scrapling_fetch (patchright + curl_cffi);
         // playwright_fetch is the simple JS-render path and headless is fine.
-        const browser = await chromium.launch({
+        const browser = await launchChromium(mode, {
             headless: true,
             args: [
                 '--disable-blink-features=AutomationControlled',
@@ -645,7 +707,25 @@ async function getBrowser(lease = null) {
     // every pool slot held by a hung page this used to poll forever.
     if (lease && lease.expired) throw new Error(lease.reason || 'browser pool wait exceeded the hard deadline');
     await new Promise(resolve => setTimeout(resolve, 100));
-    return getBrowser(lease);
+    return getBrowser(lease, mode);
+}
+
+// Native mode runs the full Chromium binary in new-headless mode (the separate
+// headless shell is fingerprinted by bot checks); falls back to the default
+// binary if the full one is missing from the image.
+async function launchChromium(mode, opts) {
+    if (mode !== 'native') return chromium.launch(opts);
+    // These flags are fingerprints of their own (a browser with web security
+    // and site isolation off is not one a person runs).
+    const DROP = new Set(['--disable-web-security', '--disable-site-isolation-trials', '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-features=CrossSiteDocumentBlockingIfIsolating', '--disable-plugins-discovery', '--use-mock-keychain']);
+    const args = (opts.args || []).filter(a => !DROP.has(a));
+    try {
+        return await vanillaChromium.launch({ ...opts, args, channel: 'chromium' });
+    } catch (e) {
+        console.warn(`[Playwright] full Chromium failed to launch (${String(e.message).split('\n')[0].slice(0, 160)}); using the headless shell`);
+        return vanillaChromium.launch({ ...opts, args });
+    }
 }
 
 /**
@@ -1197,13 +1277,20 @@ async function extractContentInner(page, { includeLinks, maxLength, adArgs, link
 // (instead of throwing on the challenge status immediately) recovers a large class
 // of pages the browser was giving up on. Interactive challenges that need a real
 // click never clear here and fall through to a hard failure (cascade / host-block).
-const CF_CHALLENGE_RE = /just a moment|checking your browser|verify(?:ing)? you are (?:human|a human)|attention required|cf-browser-verification|cf-challenge|challenge-platform|__cf_chl|enable javascript and cookies|ddos protection by cloudflare|please (?:wait|stand by) while|needs to review the security of your connection|www\.cloudflare\.com\/(?:5xx|learning)/i;
+const CF_CHALLENGE_RE = /just a moment|checking your browser|verify(?:ing)? you are (?:human|a human)|attention required|cf-browser-verification|cf-challenge|challenge-platform|__cf_chl|enable javascript and cookies|ddos protection by cloudflare|please (?:wait|stand by) while|needs to review the security of your connection|www\.cloudflare\.com\/(?:5xx|learning)|turnstile check|one (?:more )?quick check before you continue|verifying your connection/i;
 const CF_CHALLENGE_WAIT_MS = parseInt(process.env.CF_CHALLENGE_WAIT_MS, 10) || 12000;
 
 async function pageLooksLikeChallenge(page) {
     try {
-        const sig = await page.evaluate(() => (document.title + '\n' + (document.body ? document.body.innerText : '')).slice(0, 4000));
-        return CF_CHALLENGE_RE.test(sig);
+        const [sig, widget] = await page.evaluate(() => {
+            const text = document.body ? document.body.innerText : '';
+            // A site's own wall page around an embedded Turnstile (status 200,
+            // no cf-mitigated header, wording of its own): a short page holding
+            // the widget is the check, not content.
+            const w = text.length < 1500 && !!document.querySelector('.cf-turnstile,[data-sitekey][class*="turnstile"],iframe[src*="challenges.cloudflare.com"],script[src*="challenges.cloudflare.com/turnstile"]');
+            return [(document.title + '\n' + text).slice(0, 4000), w];
+        });
+        return widget || CF_CHALLENGE_RE.test(sig);
     } catch (_) { return false; }   // eval race during a challenge redirect — treat as "still working"
 }
 
@@ -1359,7 +1446,41 @@ async function dismissOverlays(page, { maxRounds = 2 } = {}) {
  * @param {string} options.waitForSelector - Wait for specific selector before extracting (default: null)
  * @returns {Object} { success, content, title, url, screenshot?, error? }
  */
+// A result that is a bot check rather than the page: an HTTP refusal, or a
+// short page whose title/text is a challenge or "prove you're human" wall.
+const PERSONA_WALL_RE = /prove your humanity|are you a (?:robot|human)|verify you are (?:a )?human|press (?:&|and) hold|access denied|request blocked|unusual traffic|bot detection/i;
+function looksBotWalled(r) {
+    if (!r) return true;
+    if (r.success === false) return /\bHTTP (?:401|403|429|503)\b|bot|challenge|captcha/i.test(String(r.error || ''));
+    const content = String(r.content || '');
+    if (content.length > 1500) return false;
+    const sig = `${r.title || ''}\n${content.slice(0, 1500)}`;
+    return CF_CHALLENGE_RE.test(sig) || PERSONA_WALL_RE.test(sig);
+}
+
+/**
+ * Read a page in a real browser. In 'auto' fingerprint mode a page that comes
+ * back as a bot check is read once more with the other browser setup, and
+ * the one that got through is remembered for the host (see STEALTH_MODE).
+ */
 async function fetchUrlContent(url, options = {}) {
+    if (STEALTH_MODE !== 'auto' || options._persona) return fetchUrlContentAs(url, options);
+    const first = personaFor(url);
+    const r = await fetchUrlContentAs(url, { ...options, _persona: first });
+    if (!looksBotWalled(r)) return { ...r, persona: first };
+    const other = first === 'legacy' ? 'native' : 'legacy';
+    const why = r.success === false ? r.error : (r.title || 'bot check');
+    console.log(`[Playwright] ${url.slice(0, 120)}: ${String(why).slice(0, 80)} with the ${first} browser — retrying with the ${other} one`);
+    const r2 = await fetchUrlContentAs(url, { ...options, _persona: other });
+    if (!looksBotWalled(r2)) {
+        notePersona(url, other);
+        console.log(`[Playwright] ${hostOfUrl(url)}: the ${other} browser got through; using it for this host`);
+        return { ...r2, persona: other, personaRetried: true };
+    }
+    return r;
+}
+
+async function fetchUrlContentAs(url, options = {}) {
     const {
         timeout = 15000,
         waitForJS = true,
@@ -1383,10 +1504,10 @@ async function fetchUrlContent(url, options = {}) {
     const dismissed = [];   // overlays clicked away (consent / age gate) — reported to the caller
 
     try {
-        poolEntry = await getBrowser(lease);
+        poolEntry = await getBrowser(lease, options._persona || personaFor(url));
 
         // Create stealth context
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
         lease.context = context;
 
         // Capture JSON API responses from XHR/fetch calls (SPAs load data this
@@ -1402,7 +1523,7 @@ async function fetchUrlContent(url, options = {}) {
         page = await context.newPage();
 
         // Apply stealth patches
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         // Random pre-navigation delay
         await page.waitForTimeout(randomDelay(30, 100));
@@ -2343,12 +2464,12 @@ async function interactAndFetch(url, actions = [], options = {}) {
         } else {
             if (sess) closeInteractSession(sessionKey);
             if (!url) throw new Error('no url given and no page is open from an earlier interact call this turn');
-            poolEntry = await getBrowser(lease);
-            context = await poolEntry.browser.newContext(getStealthContextOptions());
+            poolEntry = await getBrowser(lease, personaFor(url));
+            context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
             lease.context = context;
             await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
             page = await context.newPage();
-            await applyStealthPatches(page);
+            await applyStealthPatches(page, poolEntry.mode);
 
             await page.goto(url, { timeout, waitUntil: 'load' });
 
@@ -2741,15 +2862,15 @@ async function downloadFile(url, options = {}) {
     const lease = armDeadline('downloadFile', url, hardDeadlineFor(timeout, 45000));
 
     try {
-        poolEntry = await getBrowser(lease);
+        poolEntry = await getBrowser(lease, personaFor(url));
         context = await poolEntry.browser.newContext({
-            ...getStealthContextOptions(),
+            ...getStealthContextOptions(poolEntry.mode),
             acceptDownloads: true,
         });
         lease.context = context;
         await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         // Listen BEFORE goto — the download event fires while goto is throwing.
         const downloadPromise = page.waitForEvent('download', { timeout }).catch(() => null);
@@ -3096,12 +3217,12 @@ async function crawlPages(url, options = {}) {
     const lease = armDeadline('crawlPages', url, hardDeadlineFor(timeout, cappedMaxPages * 25000));
 
     try {
-        poolEntry = await getBrowser(lease);
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        poolEntry = await getBrowser(lease, personaFor(url));
+        context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
         lease.context = context;
         await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         await page.goto(url, { timeout, waitUntil: 'load' });
         if (await pageLooksLikeChallenge(page)) await waitForChallengeToClear(page, CF_CHALLENGE_WAIT_MS);
@@ -3277,12 +3398,12 @@ async function sniffMediaStreams(url, options = {}) {
     };
 
     try {
-        poolEntry = await getBrowser(lease);
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        poolEntry = await getBrowser(lease, personaFor(url));
+        context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
         lease.context = context;
         await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         // Passive listeners — observe only; never block, never read bodies.
         page.on('request', (req) => { try { record(req.url(), ''); } catch (_) {} });
@@ -3485,12 +3606,12 @@ async function extractPageImages(url, options = {}) {
     const ASSET = /sprite|favicon|\/icons?\/|[-_]icon[-_.]|\/logos?\/|[-_]logo[-_.]|avatar|placeholder|spinner|loading|1x1|blank\.|pixel\.|spacer|data:image/i;
 
     try {
-        poolEntry = await getBrowser(lease);
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        poolEntry = await getBrowser(lease, personaFor(url));
+        context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
         lease.context = context;
         await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         const resp = await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
         const httpStatus = resp ? resp.status() : null;
@@ -3724,12 +3845,12 @@ async function screenshotPageImages(url, options = {}) {
     const lease = armDeadline('screenshotPageImages', url, hardDeadlineFor(timeout, settleMs + maxShots * 4000));
 
     try {
-        poolEntry = await getBrowser(lease);
-        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        poolEntry = await getBrowser(lease, personaFor(url));
+        context = await poolEntry.browser.newContext(getStealthContextOptions(poolEntry.mode));
         lease.context = context;
         await installRequestPolicy(context);   // ads/trackers blocked, everything else untouched
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
 
         await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
@@ -4113,8 +4234,8 @@ async function capturePage(url, options = {}) {
     let poolEntry = null, context = null, page = null;
     const lease = armDeadline('capturePage', url, hardDeadlineFor(timeout, 20000));
     try {
-        poolEntry = await getBrowser(lease);
-        const base = getStealthContextOptions();
+        poolEntry = await getBrowser(lease, personaFor(url));
+        const base = getStealthContextOptions(poolEntry.mode);
         const mobile = device === 'mobile';
         const viewport = mobile ? { width: 390, height: 844 } : { width: 1366, height: 860 };
         context = await poolEntry.browser.newContext({
@@ -4127,7 +4248,7 @@ async function capturePage(url, options = {}) {
         const stats = { adsBlocked: 0 };
         await installRequestPolicy(context, { stats });
         page = await context.newPage();
-        await applyStealthPatches(page);
+        await applyStealthPatches(page, poolEntry.mode);
         await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
         try { await page.waitForLoadState('networkidle', { timeout: 7000 }); } catch (_) {}
 
