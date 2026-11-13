@@ -105,6 +105,24 @@ function isAdUrl(url) {
     return AD_PATH_RE.test(pathname);
 }
 
+// The same list as Chrome URL patterns (Network.setBlockedURLs, '*' wildcard),
+// for pages that must not be intercepted: request interception changes how the
+// browser behaves (Playwright turns the HTTP cache off) and some bot checks
+// notice. Host list + the common ad path shapes; the host-label regex
+// (AD_HOST_RE) has no pattern form and only applies on the intercepting path.
+let PATTERNS = null;
+function blockedUrlPatterns() {
+    if (!ENABLED) return [];
+    if (PATTERNS) return PATTERNS;
+    const out = [];
+    for (const d of domains()) out.push(`*://${d}/*`, `*://*.${d}/*`);
+    for (const seg of ['ads', 'adserver', 'adsystem', 'pagead', 'pagead2', 'prebid', 'adsbygoogle', 'openrtb', 'native-ads', 'adunit', 'adslot']) {
+        out.push(`*/${seg}/*`, `*/${seg}.js*`);
+    }
+    PATTERNS = out;
+    return PATTERNS;
+}
+
 // A class/id TOKEN that declares an ad slot. Whole-token match only.
 const AD_TOKEN_RE = /^(ad|ads|advert|adverts|advertisement|advertisements|advertising|advertorial|adsbygoogle|adslot|ad-slot|ad_slot|adunit|ad-unit|ad_unit|ad-container|ad_container|adcontainer|ad-wrapper|ad_wrapper|adwrapper|ad-banner|ad_banner|adbanner|banner-ad|banner_ad|bannerad|ad-box|adbox|ad-block|adblock-notice|ad-placeholder|ad-placement|ad_placement|adplacement|ad-label|sponsored|sponsored-content|sponsored-post|sponsoredcontent|sponsored_content|sponsorship|promoted|promoted-content|taboola|trc_related_container|outbrain|OUTBRAIN|ob-widget|mgid|revcontent|zergnet|dfp|dfp-ad|gpt-ad|google-ad|google_ads|googleads|adsense|adsense-ad|ad-leaderboard|ad-skyscraper|ad-sidebar|ad-rail|ad-rectangle|mrec|leaderboard-ad|skyscraper-ad|interstitial-ad|sticky-ad|ad-sticky|ad-footer|ad-header|ad-top|ad-bottom|ad-inline|inline-ad|ad-native|native-ad|ad-video|video-ad|ad-overlay|adOverlay)$/i;
 const AD_ID_PREFIX_RE = /^(div-gpt-ad|google_ads_|google_ad_|gpt-|ad-|ads-|ad_|adunit|adslot|taboola-|outbrain_|ob_|mgid-|dfp-|sponsored-|criteo-)/i;
@@ -209,6 +227,7 @@ function stripAdMarkup(html) {
 module.exports = {
     ENABLED,
     isAdUrl,
+    blockedUrlPatterns,
     isAdElementDescriptor,
     stripAdMarkup,
     AD_TOKEN_RE,

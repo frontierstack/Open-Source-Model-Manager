@@ -30,8 +30,27 @@ const PROTECTION_HOST_RE = /(awswaf|aws-waf|datadome|perimeterx|px-cloud|px-cdn|
  * main thread at 100% (the class the hard deadline exists for) never load.
  * Returns a stats object the caller can report (`adsBlocked`).
  */
+// Resource types approximated by file extension, for pages that are not
+// intercepted (native mode): Chrome's own URL blocking cannot see a type.
+const TYPE_EXT_PATTERNS = {
+    image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'ico', 'svg'],
+    media: ['mp4', 'webm', 'm4a', 'mp3', 'ogg', 'mov', 'm4s', 'ts'],
+    font: ['woff', 'woff2', 'ttf', 'otf', 'eot'],
+};
+
 async function installRequestPolicy(context, { blockTypes = [], captureJson = null, stats = null } = {}) {
     const st = stats || { adsBlocked: 0, typesBlocked: 0 };
+    // Native-mode browsers are never intercepted: Playwright's request routing
+    // turns the HTTP cache off and re-issues requests, and Reddit's challenge
+    // noticed (routing alone turned a pass into "Prove your humanity"). Each
+    // page applies this policy through its DevTools session instead
+    // (applyNativePage): Chrome blocks the ad list itself, JSON is read from
+    // responses as they arrive.
+    const entry = browserPool.find(b => b.browser && b.browser === context.browser());
+    if (entry && entry.mode === 'native') {
+        context.__msPolicy = { st, blockTypes, captureJson };
+        return st;
+    }
     const blockSet = new Set(blockTypes);
     await context.route('**/*', async (route) => {
         const req = route.request();
@@ -78,18 +97,26 @@ if (sslBypassEnabled) {
 }
 
 // Browser fingerprint modes (2026-11-12). Two setups, because no single one
-// passes every bot check (measured, 2-3 runs each):
-//  * 'legacy': playwright-extra stealth plugin + a Windows-Chrome persona and
-//    init script on the headless shell. Passes Zillow and Reddit; fails a
-//    Cloudflare Turnstile (gsmarena) every time.
-//  * 'native': plain Playwright on the FULL Chromium binary (new headless), an
-//    honest Linux user agent of the real version, no spoofing. Passes the
-//    gsmarena Turnstile 5/5 in ~7.7 s; Zillow 403s it and Reddit asks it to
-//    prove it is human (the headless shell, the stealth plugin and a Windows UA
-//    on this Linux host each failed the Turnstile on their own).
-// PLAYWRIGHT_STEALTH_MODE=auto (default) starts with legacy, retries a page
-// that came back as a bot check once with native, and remembers per host which
-// one got through. 'legacy' or 'native' pins one.
+// passes every bot check (measured, 2-3 runs each, 20-site matrix):
+//  * 'native': plain Playwright on the FULL Chromium binary (new
+//    headless), the real browser's Linux user agent and client hints with the
+//    "Google Chrome" brand (DevTools override, so headers and JS agree), no
+//    spoofing script, and NO request interception (Chrome blocks the ad list
+//    itself). Passes gsmarena's Cloudflare Turnstile and Reddit's check; reads
+//    every other matrix site like legacy did. Zillow (PerimeterX) 403s it.
+//  * 'legacy' (tried first): playwright-extra stealth plugin + Windows-Chrome
+//    persona + init script on the headless shell, with interception. Passes
+//    Zillow; fails the gsmarena Turnstile every time.
+// Legacy goes first because the order matters at PerimeterX: one native 403 at
+// Zillow flagged the server's IP, and the legacy retry right after was refused
+// too (legacy alone read it again after a 10-minute cool-off). Starting with
+// legacy burns nothing: gsmarena answers it with a 403 and native then passes.
+// What broke native on the way: the headless shell (fails whatever the UA), the
+// stealth plugin, a Windows UA on this Linux host, a random US timezone, a
+// "Chromium"-only brand list (Reddit), and Playwright request routing (Reddit).
+// PLAYWRIGHT_STEALTH_MODE=auto (default) reads with legacy, retries a page that
+// came back as a bot check once with native, and remembers per host which one
+// got through. 'legacy' or 'native' pins one.
 const STEALTH_MODE = (() => { const m = String(process.env.PLAYWRIGHT_STEALTH_MODE || 'auto').toLowerCase(); return m === 'legacy' || m === 'native' ? m : 'auto'; })();
 const vanillaChromium = require('playwright').chromium;
 const { chromium: playwrightChromium } = require('playwright-extra');
@@ -372,8 +399,77 @@ function getStealthContextOptions(mode = 'legacy') {
 /**
  * Apply stealth patches to page - Enhanced for VirusTotal/FOFA bypass
  */
+// Native browser identity: the real browser's user agent and client hints,
+// with the "Google Chrome" brand a real Chrome reports (this Chromium build
+// reports only "Chromium" + a GREASE brand). Set through a DevTools override
+// so the Sec-CH-UA headers and navigator.userAgentData agree: Reddit refused
+// the header alone ("Prove your humanity") and let the full override through.
+async function applyNativeIdentity(page, { identity = true } = {}) {
+    try {
+        const browser = page.context().browser();
+        const full = browser ? browser.version() : `${stealthChromeMajor()}.0.0.0`;
+        const major = String(full).split('.')[0];
+        const cdp = await page.context().newCDPSession(page);
+        page.__msIdentity = cdp; // detaching the session would drop the override
+        await applyNativePolicy(page, cdp);
+        if (!identity) return;
+        await cdp.send('Network.setUserAgentOverride', {
+            userAgent: linuxChromeUA(major),
+            acceptLanguage: 'en-US,en;q=0.9',
+            platform: 'Linux x86_64',
+            userAgentMetadata: {
+                brands: [{ brand: 'Chromium', version: major }, { brand: 'Google Chrome', version: major }, { brand: 'Not:A-Brand', version: '99' }],
+                fullVersionList: [{ brand: 'Chromium', version: full }, { brand: 'Google Chrome', version: full }, { brand: 'Not:A-Brand', version: '99.0.0.0' }],
+                fullVersion: full,
+                platform: 'Linux',
+                platformVersion: String(require('os').release() || '6.8.0').split('-')[0],
+                architecture: 'x86',
+                bitness: '64',
+                model: '',
+                mobile: false,
+                wow64: false,
+            },
+        });
+    } catch (e) {
+        console.warn('[Playwright] native identity override failed:', e.message);
+    }
+}
+
+// The context's request policy (installRequestPolicy) applied to one page
+// without interception.
+async function applyNativePolicy(page, cdp) {
+    const pol = page.context().__msPolicy;
+    if (!pol) return;
+    const urls = [...adBlock.blockedUrlPatterns()];
+    for (const t of pol.blockTypes || []) for (const ext of (TYPE_EXT_PATTERNS[t] || [])) urls.push(`*.${ext}`, `*.${ext}?*`);
+    if (urls.length) {
+        await cdp.send('Network.enable');
+        await cdp.send('Network.setBlockedURLs', { urls });
+    }
+    page.on('requestfailed', (r) => {
+        if ((r.failure() || {}).errorText !== 'inspector') return; // Chrome's own block reason
+        if (adBlock.isAdUrl(r.url())) pol.st.adsBlocked++; else pol.st.typesBlocked++;
+    });
+    if (pol.captureJson) {
+        page.on('response', async (response) => {
+            try {
+                const req = response.request();
+                const type = req.resourceType();
+                if (type !== 'xhr' && type !== 'fetch') return;
+                const url = response.url();
+                if (PROTECTION_HOST_RE.test(url) || isNonContentUrl(url)) return;
+                if (!String(response.headers()['content-type'] || '').includes('application/json')) return;
+                const body = await response.text();
+                if (body.length <= 100 || body.length >= 500000) return;
+                const json = JSON.parse(body);
+                if (!isPlumbingPayload(json)) pol.captureJson.push({ url, data: json, size: body.length });
+            } catch (_) { /* body gone (redirect / navigation) or not JSON */ }
+        });
+    }
+}
+
 async function applyStealthPatches(page, mode = 'legacy') {
-    if (mode === 'native') return; // spoofed properties are themselves what checks look for
+    if (mode === 'native') { await applyNativeIdentity(page); return; } // no spoofing script: spoofed properties are what checks look for
     await page.addInitScript(() => {
         // Override webdriver detection - comprehensive
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -4062,7 +4158,7 @@ async function renderLocalPage(opts = {}) {
     const requests = { total: 0, ok: 0 };
     const started = Date.now();
     try {
-        poolEntry = await getBrowser(lease);
+        poolEntry = await getBrowser(lease, 'legacy'); // a local file: no bot checks, keep the setup preview_html was built on
         context = await poolEntry.browser.newContext({
             viewport: { width: Math.max(320, Math.min(2560, viewport.width | 0 || 1280)), height: Math.max(240, Math.min(2000, viewport.height | 0 || 800)) },
             ignoreHTTPSErrors: true,
@@ -4248,7 +4344,8 @@ async function capturePage(url, options = {}) {
         const stats = { adsBlocked: 0 };
         await installRequestPolicy(context, { stats });
         page = await context.newPage();
-        await applyStealthPatches(page, poolEntry.mode);
+        if (mobile && poolEntry.mode === 'native') await applyNativeIdentity(page, { identity: false }); // a mobile shot keeps its iPhone identity
+        else await applyStealthPatches(page, poolEntry.mode);
         await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
         try { await page.waitForLoadState('networkidle', { timeout: 7000 }); } catch (_) {}
 
