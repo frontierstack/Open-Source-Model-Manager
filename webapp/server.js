@@ -12750,7 +12750,61 @@ async function repoInventory(dir) {
     return { files, byExt, top: shown || '(empty)' };
 }
 
+// parse_html takes an HTML STRING, but models call it with the page's url
+// (live: {url, selector:"body", attribute:"text"} → "html parameter is
+// required"). When no html is given but a url is, fetch the raw markup here
+// (in Node, behind the same SSRF guard as every web tool) and hand it over.
+async function fetchHtmlForParse(url) {
+    const blocked = urlBlockReason(url);
+    if (blocked) return { error: blocked };
+    const tried = [];
+    try {
+        const r = await axios.get(url, {
+            timeout: 15000, maxContentLength: 20 * 1024 * 1024, responseType: 'text', transformResponse: x => x,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' },
+            validateStatus: st => st < 400,
+        });
+        const body = typeof r.data === 'string' ? r.data : '';
+        const cls = pageObstacles.classifyObstacle({ content: body.slice(0, 20000), rawHtml: body, status: r.status, headers: r.headers });
+        // A JS-rendered page (Square Online, Wix, React shells) sends a spinner
+        // and no text; parsing it would return an empty body. Those go to the
+        // rendered-page layer below.
+        const textLen = extractTextFromHtml(body, 20000).length;
+        const shell = htmlShellSignal(body, textLen).isShell || (textLen < 200 && /<script/i.test(body));
+        if (body.length > 200 && !shell && !(cls && cls.escalate)) return { html: body, via: 'http' };
+        tried.push(shell ? 'http:js-shell' : (cls && cls.kind ? `http:${cls.kind}` : 'http:thin'));
+        if (shell) {
+            try {
+                const r = await playwrightService.fetchUrlContent(url, { timeout: 25000, waitForJS: true, maxLength: 2000, structured: true });
+                if (r && r.success && r.html) return { html: r.html, via: 'browser' };
+                tried.push(`browser:${(r && r.error) || 'no html'}`);
+            } catch (e) { tried.push(`browser:${e.message}`); }
+        }
+    } catch (e) { tried.push(`http:${e.response ? `HTTP ${e.response.status}` : (e.code || e.message)}`); }
+    try {
+        const r = await scraplingService.fetchImpersonated(url, { timeout: 15000, rawBody: true });
+        if (r && r.rawBody && r.rawBody.length > 200) return { html: r.rawBody, via: 'impersonate' };
+        tried.push(`impersonate:${(r && (r.error || r.httpStatus)) || 'no body'}`);
+    } catch (e) { tried.push(`impersonate:${e.message}`); }
+    try {
+        const r = await playwrightService.fetchUrlContent(url, { timeout: 25000, waitForJS: true, maxLength: 2000, structured: true });
+        if (r && r.success && r.html) return { html: r.html, via: 'browser' };
+        tried.push(`browser:${(r && r.error) || 'no html'}`);
+    } catch (e) { tried.push(`browser:${e.message}`); }
+    return { error: `Could not fetch ${url} (${tried.join(' → ')})` };
+}
+
 async function executePythonSkill(skill, params, ctx = null) {
+    if (skill && skill.name === 'parse_html' && params && typeof params === 'object') {
+        const hasHtml = ['html', 'htmlString', 'content'].some(k => typeof params[k] === 'string' && params[k].trim());
+        const url = typeof params.url === 'string' ? params.url.trim() : '';
+        if (!hasHtml && /^https?:\/\//i.test(url)) {
+            const got = await fetchHtmlForParse(url);
+            if (got.error) return { success: false, error: got.error, hint: 'Read the page with the web tool instead.' };
+            params = { ...params, html: got.html, _fetchedVia: got.via };
+            console.log(`[executePythonSkill] parse_html fetched ${url} via ${got.via} (${got.html.length} chars)`);
+        }
+    }
     const sandbox = require('./services/sandboxRunner');
     const timeLimit = skillTimeout.resolve(skill, params, { delegated: !!(ctx && ctx.delegateDepth > 0) });
     params = timeLimit.params;
