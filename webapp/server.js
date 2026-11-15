@@ -7745,6 +7745,12 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
         // boundary — the framed code cannot reach the parent app, its cookies,
         // or its storage regardless of this permissive CSP. So relax it here so
         // generated pages actually run.
+        // An SVG opened on its own runs its scripts on this origin; a
+        // model-written or analysed SVG can be hostile (cookie stealers), so
+        // it gets no scripts, no network and a sandbox. <img> use is unaffected.
+        if (ext === 'svg') {
+            res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox");
+        }
         if (ext === 'html') {
             res.setHeader(
                 'Content-Security-Policy',

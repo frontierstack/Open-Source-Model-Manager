@@ -1,4 +1,18 @@
 import React from 'react';
+import ImageLightbox from './ImageLightbox';
+
+function MarkdownImage({ src, alt }) {
+    const [open, setOpen] = React.useState(false);
+    return (
+        <>
+            <a href={src} className="inline-block my-2" style={{ cursor: 'zoom-in' }}
+               onClick={(e) => { e.preventDefault(); setOpen(true); }}>
+                <img src={src} alt={alt || ''} loading="lazy" className="md-img max-w-full h-auto" />
+            </a>
+            {open && <ImageLightbox src={src} alt={alt} onClose={() => setOpen(false)} />}
+        </>
+    );
+}
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -100,16 +114,7 @@ const sharedMarkdownComponents = {
         // The page is HTTPS — an http:// image is blocked as mixed content.
         // Upgrade to https (most hosts serve the same path over both).
         const safeSrc = /^http:\/\//i.test(src) ? src.replace(/^http:\/\//i, 'https://') : src;
-        return (
-            <a href={safeSrc} target="_blank" rel="noopener noreferrer" className="inline-block my-2">
-                <img
-                    src={safeSrc}
-                    alt={alt || ''}
-                    loading="lazy"
-                    className="md-img max-w-full h-auto"
-                />
-            </a>
-        );
+        return <MarkdownImage src={safeSrc} alt={alt} />;
     },
     ul({ children }) {
         return <ul className="list-disc">{children}</ul>;

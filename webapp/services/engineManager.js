@@ -204,7 +204,10 @@ function create(deps) {
     }
 
     async function createStrataInstance(opts = {}) {
-        const name = opts.name || 'Qwen3.8-Flash-Next';
+        const sizeKey = String(opts.size || 'q2_0').toLowerCase();
+        const size = router.FLASH_NEXT_SIZES[sizeKey];
+        if (!size) { const e = new Error(`Unknown size: ${opts.size}`); e.statusCode = 400; throw e; }
+        const name = opts.name || size.name || 'Qwen3.8-Flash-Next';
         if (!isValidModelName(name)) { const e = new Error('Invalid model name'); e.statusCode = 400; throw e; }
         await assertNameFree(name);
         const hw = await hardwareProfile();
@@ -218,9 +221,6 @@ function create(deps) {
         }
         const detected = await getGpuCount();
         const gpuDevices = normalizeGpuDevices(opts.gpuDevices, detected);
-        const sizeKey = String(opts.size || 'q2_0').toLowerCase();
-        const size = router.FLASH_NEXT_SIZES[sizeKey];
-        if (!size) { const e = new Error(`Unknown size: ${opts.size}`); e.statusCode = 400; throw e; }
         const context = Number(opts.context) || STRATA_INTERNAL_DEFAULTS.context;
         const parallel = Math.max(1, Math.min(Number(opts.parallel) || STRATA_INTERNAL_DEFAULTS.parallel, 8));
         const kv = opts.kv || STRATA_INTERNAL_DEFAULTS.kv;
@@ -253,6 +253,7 @@ function create(deps) {
         const env = [
             `FAMILY=${family}`, `MODEL=${model}`, `CONTEXT=${context}`, `PARALLEL=${parallel}`, `KV=${kv}`, 'VISION=off',
             `API_KEY=${apiKey}`, `PORT=${port}`, 'STRATA_BIND=0.0.0.0', `STRATA_PORT=${port}`, `TUNE=${tune}`,
+            ...(size.preset ? [`PRESET=${size.preset}`] : []),
             ...(opts.retune === true ? ['RETUNE=1'] : []),
             ...(settings.length ? [`STRATA_SET=${settings.join(' ')}`] : []),
             ...gpuDevicesEnv(gpuDevices),

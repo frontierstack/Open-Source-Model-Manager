@@ -44,6 +44,8 @@ const FLASH_NEXT_SIZES = {
     iq2_xs: { label: 'IQ2_XS', totalGiB: 39.2, expertsGiB: 35.5, downloadGiB: 76 },
     iq3_xxs: { label: 'IQ3_XXS', totalGiB: 47, expertsGiB: 43, downloadGiB: 84 },
     iq3_s: { label: 'IQ3_S', totalGiB: 54.8, expertsGiB: 50, downloadGiB: 92 },
+    // Unsloth Dynamic v3.1 (unsloth/Qwen3.8-Flash-Next-GGUF); its own Strata preset.
+    ud_q2_0: { label: 'UD-Q2_0', totalGiB: 41.7, expertsGiB: 37.4, downloadGiB: 70.5, family: 'unsloth', preset: 'docker-ud-q2_0', name: 'Qwen3.8-Flash-Next-UD-Q2_0' },
     coder: { label: 'Coder IQ1_M', totalGiB: 27, expertsGiB: 23, downloadGiB: 60, family: 'coder' },
 };
 

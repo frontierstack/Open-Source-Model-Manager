@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ImageLightbox from './ImageLightbox';
 import { Download, FileText, FileSpreadsheet, Image as ImageIcon, FileArchive, FileCode } from 'lucide-react';
 
 const EXT_ICON = {
@@ -65,28 +66,40 @@ export function isImageArtifact(a) {
 // fails to load falls back to the card only.
 function ArtifactImage({ a }) {
     const [failed, setFailed] = useState(false);
+    const [empty, setEmpty] = useState(false);
+    const [open, setOpen] = useState(false);
     if (failed) return null;
+    if (empty) {
+        return (
+            <div className="artifact-image-empty" title={a.name}>
+                {a.name}: no visible picture (the file draws nothing)
+            </div>
+        );
+    }
     return (
-        <a
-            href={a.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`Open ${a.name} full size`}
-            className="artifact-image"
-            style={{ display: 'inline-block', maxWidth: '100%', lineHeight: 0 }}
-        >
-            <img
-                src={a.url}
-                alt={a.name}
-                loading="lazy"
-                onError={() => setFailed(true)}
-                style={{
-                    maxWidth: '100%', maxHeight: 420, height: 'auto', width: 'auto',
-                    borderRadius: 10, border: '1px solid var(--rule-2)',
-                    background: 'color-mix(in oklab, var(--ink) 4%, transparent)',
-                }}
-            />
-        </a>
+        <>
+            <a
+                href={a.url}
+                title={`Open ${a.name} full size`}
+                className="artifact-image"
+                style={{ display: 'inline-block', maxWidth: '100%', lineHeight: 0, cursor: 'zoom-in' }}
+                onClick={(e) => { e.preventDefault(); setOpen(true); }}
+            >
+                <img
+                    src={a.url}
+                    alt={a.name}
+                    loading="lazy"
+                    onError={() => setFailed(true)}
+                    onLoad={(e) => { if (!e.currentTarget.naturalWidth || !e.currentTarget.naturalHeight) setEmpty(true); }}
+                    style={{
+                        maxWidth: '100%', maxHeight: 420, height: 'auto', width: 'auto',
+                        borderRadius: 10, border: '1px solid var(--rule-2)',
+                        background: 'color-mix(in oklab, var(--ink) 4%, transparent)',
+                    }}
+                />
+            </a>
+            {open && <ImageLightbox src={a.url} alt={a.name} onClose={() => setOpen(false)} />}
+        </>
     );
 }
 
