@@ -256,7 +256,9 @@ cmd_upgrade() {
     local -a pargs=()
     mapfile -t pargs < <(proxy_build_args)
     local t0=$(date +%s)
-    if ! docker build "${pargs[@]}" --build-arg "LLAMACPP_REF=$TARGET" --build-arg "BUILD_JOBS=$(nproc)" \
+    if [ "$(image_version "$IMAGE_REPO:next")" = "$TARGET" ] && [ "$(image_id "$IMAGE_REPO:next")" != "$(image_id "$IMAGE_REPO:latest")" ] && [ "${UPGRADE_REBUILD:-0}" != 1 ]; then
+        log "Reusing the $TARGET build from an earlier run (UPGRADE_REBUILD=1 compiles it again)"
+    elif ! docker build "${pargs[@]}" --build-arg "LLAMACPP_REF=$TARGET" --build-arg "BUILD_JOBS=$(nproc)" \
             -t "$IMAGE_REPO:next" "$PROJECT_DIR/llamacpp" >> "$LOG_FILE" 2>&1; then
         fail "Build of $TARGET failed (see upgrade.log)"; return 1
     fi
