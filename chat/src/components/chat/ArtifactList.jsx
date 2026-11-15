@@ -64,6 +64,23 @@ export function isImageArtifact(a) {
 // open a new tab to see what they had asked for. The server serves images
 // with an inline disposition, so the same URL works for <img>. A picture that
 // fails to load falls back to the card only.
+// True when a loaded picture has no size or every pixel is transparent (an
+// SVG holding only a <script> renders as an empty default-size box).
+function drawsNothing(img) {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return true;
+    if (!/\.svg(\?|$)/i.test(img.currentSrc || img.src)) return false;
+    try {
+        const c = document.createElement('canvas');
+        c.width = Math.min(w, 256); c.height = Math.min(h, 256);
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0, c.width, c.height);
+        const d = g.getImageData(0, 0, c.width, c.height).data;
+        for (let i = 3; i < d.length; i += 4) if (d[i] !== 0) return false;
+        return true;
+    } catch (_) { return false; }
+}
+
 function ArtifactImage({ a }) {
     const [failed, setFailed] = useState(false);
     const [empty, setEmpty] = useState(false);
@@ -90,7 +107,7 @@ function ArtifactImage({ a }) {
                     alt={a.name}
                     loading="lazy"
                     onError={() => setFailed(true)}
-                    onLoad={(e) => { if (!e.currentTarget.naturalWidth || !e.currentTarget.naturalHeight) setEmpty(true); }}
+                    onLoad={(e) => { if (drawsNothing(e.currentTarget)) setEmpty(true); }}
                     style={{
                         maxWidth: '100%', maxHeight: 420, height: 'auto', width: 'auto',
                         borderRadius: 10, border: '1px solid var(--rule-2)',
