@@ -1580,6 +1580,9 @@ function estimateTokenCount(content) {
 // chunking sooner on number-heavy content. See CLAUDE.md for the rationale.
 const CHAT_STREAM_CHARS_PER_TOKEN = 3;
 const CHAT_STREAM_SAFETY_MARGIN = 1.1;
+// An earlier user message bigger than this share of the input budget is
+// indexed as a document on a turn that overflows (see the chat stream).
+const EARLIER_MESSAGE_INDEX_SHARE = Number(process.env.EARLIER_MESSAGE_INDEX_SHARE) || 0.25;
 // The string estimator only ever reads `.length`, so callers that already know
 // the length (or would have to concatenate multi-megabyte strings just to
 // measure them) can go straight to the arithmetic. Byte-for-byte the same
@@ -21018,6 +21021,57 @@ const chatStreamHandlerInner = async (req, res) => {
             }
         } catch (e) {
             console.warn(`[Chat Stream] /tokenize refinement failed: ${e.message} — using estimate ${totalInputTokens}`);
+        }
+
+        // An EARLIER message too big for the window (a 1 MB paste on turn 1)
+        // is re-sent on every follow-up. The agentic/map-reduce paths below
+        // only look at the LAST user message, so without this a follow-up
+        // to a big-upload turn failed with "Not enough context window" (or,
+        // with context shift on, silently lost the upload). Index such a
+        // message once and replace its body with a handle — keyed on a hash
+        // of its text so every later turn sends the same bytes (prefix cache)
+        // and reuses the same document.
+        if (totalInputTokens > availableContextForInput && CHUNKING_CONFIG.enabled && CHUNKING_CONFIG.enableAgentic &&
+            effectiveChunkingStrategy !== 'none' && effectiveChunkingStrategy !== 'truncate') {
+            try {
+                const documentIndex = require('./services/documentIndex');
+                const lastUserIdx = chatMessages.map(m => m.role).lastIndexOf('user');
+                const bigShare = Math.floor(availableContextForInput * EARLIER_MESSAGE_INDEX_SHARE);
+                let existing = null;
+                let indexedCount = 0;
+                for (let i = 0; i < chatMessages.length; i++) {
+                    const m = chatMessages[i];
+                    if (i === lastUserIdx || m.role !== 'user') continue;
+                    const isArr = Array.isArray(m.content);
+                    const partIdx = isArr ? m.content.findIndex(p => p.type === 'text') : -1;
+                    const text = typeof m.content === 'string' ? m.content : (partIdx >= 0 ? (m.content[partIdx].text || '') : '');
+                    if (!text || scaledEstimateFromLength(text.length) < bigShare) continue;
+                    const contentHash = crypto.createHash('sha1').update(text).digest('hex');
+                    if (!existing) existing = await documentIndex.listIndexes(req.userId || userId);
+                    let doc = existing.find(d => d.contentHash === contentHash);
+                    if (!doc) {
+                        const saved = await documentIndex.saveAndIndex(req.userId || userId, {
+                            text, filename: `earlier-message-${contentHash.slice(0, 8)}.txt`,
+                            conversationId: streamingConversationId || null, extraMeta: { contentHash },
+                        });
+                        doc = { id: saved.id, totalChunks: saved.totalChunks, contentHash };
+                        existing.push(doc);
+                    }
+                    const head = text.slice(0, 600).replace(/\s+$/, '');
+                    const handle = `[SYSTEM: This earlier message was ${text.length.toLocaleString()} chars — too large to resend in full, so it is indexed for retrieval as documentId="${doc.id}" (${doc.totalChunks} chunks). ` +
+                        `Read it with query_document(documentId="${doc.id}", query="...") or read_document_chunk(documentId="${doc.id}", chunkIndex=N). Its opening:]\n${head}\n[…rest in documentId="${doc.id}"]`;
+                    if (isArr) m.content[partIdx].text = handle; else m.content = handle;
+                    indexedCount++;
+                }
+                if (indexedCount) {
+                    totalInputTokens = 0;
+                    for (const msg of chatMessages) totalInputTokens += scaledEstimate(msg.content);
+                    console.log(`[Chat Stream] Indexed ${indexedCount} oversized earlier message(s) as documents. New totalInputTokens=${totalInputTokens}`);
+                    try { logUserActivity(req.userId || userId, `Large earlier message indexed for retrieval (${indexedCount}) — input now ~${totalInputTokens.toLocaleString()} of ${contextSize.toLocaleString()} tokens`); } catch (_) {}
+                }
+            } catch (e) {
+                console.warn(`[Chat Stream] Earlier-message indexing failed: ${e.message}`);
+            }
         }
 
         if (totalInputTokens > availableContextForInput) {

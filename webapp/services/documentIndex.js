@@ -193,6 +193,7 @@ async function saveAndIndex(userId, {
     conversationId = null,
     chunkChars = DEFAULT_CHUNK_CHARS,
     overlapChars = DEFAULT_OVERLAP_CHARS,
+    extraMeta = null,
 } = {}) {
     if (typeof text !== 'string' || text.length === 0) {
         throw new Error('saveAndIndex: text is required');
@@ -208,6 +209,7 @@ async function saveAndIndex(userId, {
             conversationId,
             charCount: text.length,
             indexedAt: Date.now(),
+            ...(extraMeta || {}),
         },
     });
     const chunks = buildChunks(text, chunkChars, overlapChars);
@@ -277,12 +279,14 @@ async function listIndexes(userId) {
             const idx = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'index.json'), 'utf8'));
             let filename = '';
             let conversationId = null;
+            let contentHash = null;
             try {
                 const meta = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'meta.json'), 'utf8'));
                 filename = meta?.filename || '';
                 conversationId = meta?.conversationId || null;
+                contentHash = meta?.contentHash || meta?.meta?.contentHash || null;
             } catch (_) { /* meta optional */ }
-            out.push({ id: ent.name, filename, conversationId, totalChunks: idx.totalChunks || 0, createdAt: idx.createdAt || 0 });
+            out.push({ id: ent.name, filename, conversationId, contentHash, totalChunks: idx.totalChunks || 0, createdAt: idx.createdAt || 0 });
         } catch (_) { /* not an indexed document — skip */ }
     }
     out.sort((a, b) => b.createdAt - a.createdAt);

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     Typography, Box, Chip, Select, MenuItem, Button, Alert, Tooltip,
-    Dialog, DialogTitle, DialogContent, DialogActions, LinearProgress,
+    Dialog, DialogTitle, DialogContent, DialogActions, LinearProgress, FormControlLabel, Switch,
 } from '@mui/material';
 import { Cpu } from 'lucide-react';
 import ModelsSection from './ModelsSection';
@@ -176,6 +176,8 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
     const [plan, setPlan] = useState(null);
     const [size, setSize] = useState('q2_0');
     const [context, setContext] = useState(262144);
+    const [contextShift, setContextShift] = useState(true);
+    const [compressMemory, setCompressMemory] = useState(false);
     const [busy, setBusy] = useState(false);
 
     const refresh = useCallback(() => {
@@ -206,7 +208,7 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
         setBusy(true);
         fetch('/api/engines/strata/load', {
             method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, context }),
+            body: JSON.stringify({ size, context, contextShift, compressMemory }),
         }).then(r => r.json().then((j) => {
             if (!r.ok) throw new Error(j.error || 'Failed to start Strata');
             showSnackbar?.('Strata is starting. Progress appears in Logs.', 'success');
@@ -236,6 +238,12 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
                         <Select size="small" value={context} onChange={e => setContext(e.target.value)}>
                             {CONTEXTS.map(([v, l]) => <MenuItem key={v} value={v}>{l} context</MenuItem>)}
                         </Select>
+                        <Tooltip title="When a conversation outgrows the context, drop its oldest messages (and index an oversized earlier upload) instead of failing the request.">
+                            <FormControlLabel control={<Switch size="small" checked={contextShift} onChange={e => setContextShift(e.target.checked)} />} label="Context shifting" sx={{ mr: 0 }} />
+                        </Tooltip>
+                        <Tooltip title="Compress older messages (AIMem) once the conversation fills most of the context.">
+                            <FormControlLabel control={<Switch size="small" checked={compressMemory} onChange={e => setCompressMemory(e.target.checked)} />} label="Compress memory" sx={{ mr: 0 }} />
+                        </Tooltip>
                         <Button variant="contained" size="small" disabled={blocked || busy || !isAdmin} onClick={load} sx={{ textTransform: 'none' }}>
                             {loaded ? 'Loaded' : 'Load'}
                         </Button>

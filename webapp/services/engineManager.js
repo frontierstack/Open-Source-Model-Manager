@@ -251,7 +251,7 @@ function create(deps) {
             if (!settings.some(x => x.startsWith(`${k}=`))) settings.push(`${k}=${v}`);
         }
         const env = [
-            `FAMILY=${family}`, `MODEL=${model}`, `CONTEXT=${context}`, `PARALLEL=${parallel}`, `KV=${kv}`, 'VISION=off',
+            `FAMILY=${family}`, `MODEL=${model}`, `CONTEXT=${context}`, `PARALLEL=${parallel}`, `KV=${kv}`, 'VISION=off', `MODELSERVER_CTX_SHIFT=${opts.contextShift !== false}`, `MODELSERVER_COMPRESS_MEMORY=${opts.compressMemory === true}`,
             `API_KEY=${apiKey}`, `PORT=${port}`, 'STRATA_BIND=0.0.0.0', `STRATA_PORT=${port}`, `TUNE=${tune}`,
             ...(size.preset ? [`PRESET=${size.preset}`] : []),
             ...(opts.retune === true ? ['RETUNE=1'] : []),
@@ -285,7 +285,7 @@ function create(deps) {
             },
         });
         await container.start();
-        const config = { contextSize: context, parallelSlots: parallel, gpuDevices, strataSize: size.label, strataFamily: family, kv, tune, engineSettings: settings, compressMemory: false };
+        const config = { contextSize: context, parallelSlots: parallel, gpuDevices, strataSize: size.label, strataFamily: family, kv, tune, engineSettings: settings, contextShift: opts.contextShift !== false, compressMemory: opts.compressMemory === true };
         setKey(instanceNetAlias(containerName), port, apiKey);
         await registerInstance(name, container, { containerName, port, config, backend: 'strata' });
         broadcast({ type: 'log', message: `[Strata] starting ${name} (${size.label}, ${context} context) on port ${port}. The first start downloads about ${size.downloadGiB} GB and prepares the model, which can take a long time.` });
@@ -335,7 +335,7 @@ function create(deps) {
         await removeStaleContainerByName(containerName);
         const container = await docker.createContainer({
             Image: VLLM_IMAGE, name: containerName, Cmd: args,
-            Env: [`VLLM_PORT=${port}`, `VLLM_MODEL=${repoId}`, `VLLM_MAX_LEN=${maxModelLen}`, `HF_TOKEN=${process.env.HUGGING_FACE_HUB_TOKEN || ''}`, ...gpuDevicesEnv(gpuDevices)],
+            Env: [`VLLM_PORT=${port}`, `VLLM_MODEL=${repoId}`, `VLLM_MAX_LEN=${maxModelLen}`, `MODELSERVER_CTX_SHIFT=${opts.contextShift !== false}`, `MODELSERVER_COMPRESS_MEMORY=${opts.compressMemory === true}`, `HF_TOKEN=${process.env.HUGGING_FACE_HUB_TOKEN || ''}`, ...gpuDevicesEnv(gpuDevices)],
             ExposedPorts: { [`${port}/tcp`]: {} },
             NetworkingConfig: instanceNetworkingConfig(containerName),
             HostConfig: {
@@ -349,7 +349,7 @@ function create(deps) {
             },
         });
         await container.start();
-        const config = { contextSize: maxModelLen, maxModelLen, parallelSlots: 4, gpuDevices, hfRepoId: repoId, toolCallParser: toolParser, reasoningParser, compressMemory: false };
+        const config = { contextSize: maxModelLen, maxModelLen, parallelSlots: 4, gpuDevices, hfRepoId: repoId, toolCallParser: toolParser, reasoningParser, contextShift: opts.contextShift !== false, compressMemory: opts.compressMemory === true };
         await registerInstance(repoId, container, { containerName, port, config, backend: 'vllm' });
         broadcast({ type: 'log', message: `[vLLM] starting ${repoId} on port ${port}` });
         return { containerId: container.id, port, containerName, name: repoId };
@@ -369,11 +369,11 @@ function create(deps) {
             const port = parseInt(get('STRATA_PORT') || get('PORT') || '8080', 10);
             const key = get('API_KEY');
             if (key) setKey(instanceNetAlias(containerName), port, key);
-            return { port, config: { contextSize: parseInt(get('CONTEXT'), 10) || 65536, parallelSlots: parseInt(get('PARALLEL'), 10) || 1, gpuDevices, strataSize: get('MODEL'), strataFamily: get('FAMILY'), kv: get('KV'), tune: get('TUNE'), engineSettings: (get('STRATA_SET') || '').split(' ').filter(Boolean) } };
+            return { port, config: { contextSize: parseInt(get('CONTEXT'), 10) || 65536, parallelSlots: parseInt(get('PARALLEL'), 10) || 1, gpuDevices, strataSize: get('MODEL'), strataFamily: get('FAMILY'), kv: get('KV'), tune: get('TUNE'), engineSettings: (get('STRATA_SET') || '').split(' ').filter(Boolean), contextShift: get('MODELSERVER_CTX_SHIFT') !== 'false', compressMemory: get('MODELSERVER_COMPRESS_MEMORY') === 'true' } };
         }
         const port = parseInt(get('VLLM_PORT') || '8000', 10);
         const len = parseInt(get('VLLM_MAX_LEN'), 10) || 16384;
-        return { port, config: { contextSize: len, maxModelLen: len, parallelSlots: 4, gpuDevices, hfRepoId: get('VLLM_MODEL') } };
+        return { port, config: { contextSize: len, maxModelLen: len, parallelSlots: 4, gpuDevices, hfRepoId: get('VLLM_MODEL'), contextShift: get('MODELSERVER_CTX_SHIFT') !== 'false', compressMemory: get('MODELSERVER_COMPRESS_MEMORY') === 'true' } };
     }
 
     function publicInstance(name, info) {
