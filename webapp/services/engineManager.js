@@ -244,6 +244,12 @@ function create(deps) {
             }
             settings.push(`${k}=${v}`);
         }
+        // Strata keeps every --set in its saved preset and merges new ones on
+        // top, so a value set once (kv-resident from an A/B test) would stick
+        // on every later start. State the engine default unless asked.
+        for (const [k, v] of [['kv-resident', '0'], ['host-core', 'first']]) {
+            if (!settings.some(x => x.startsWith(`${k}=`))) settings.push(`${k}=${v}`);
+        }
         const env = [
             `FAMILY=${family}`, `MODEL=${model}`, `CONTEXT=${context}`, `PARALLEL=${parallel}`, `KV=${kv}`, 'VISION=off',
             `API_KEY=${apiKey}`, `PORT=${port}`, 'STRATA_BIND=0.0.0.0', `STRATA_PORT=${port}`, `TUNE=${tune}`,
