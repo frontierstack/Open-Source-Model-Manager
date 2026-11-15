@@ -19,6 +19,7 @@ const STRATA_PUBLISHED_IMAGE = `ghcr.io/niko1221/strata:${STRATA_VERSION}-cuda13
 const VLLM_IMAGE = `vllm/vllm-openai:${VLLM_VERSION}`;
 const HF_VOLUME = 'modelserver_hf_cache';
 const STRATA_INTERNAL_DEFAULTS = { context: 262144, parallel: 1, kv: 'q4_0' };
+const STRATA_KV_MODES = ['q4_0', 'int8', 'k8v4', 'fp16'];   // Strata's KV_MODES (strata_cli/launch/settings.py)
 
 const UPSTREAM = {
     llamacpp: 'ggml-org/llama.cpp', sglang: 'sgl-project/sglang', vllm: 'vllm-project/vllm', strata: 'Niko1221/Strata',
@@ -224,6 +225,7 @@ function create(deps) {
         const context = Number(opts.context) || STRATA_INTERNAL_DEFAULTS.context;
         const parallel = Math.max(1, Math.min(Number(opts.parallel) || STRATA_INTERNAL_DEFAULTS.parallel, 8));
         const kv = opts.kv || STRATA_INTERNAL_DEFAULTS.kv;
+        if (!STRATA_KV_MODES.includes(kv)) { const e = new Error(`kv must be one of ${STRATA_KV_MODES.join(', ')}`); e.statusCode = 400; throw e; }
         const family = size.family || 'qwen';
         const model = size.family === 'coder' ? 'IQ1_M' : size.label;
         const port = allocatePort();

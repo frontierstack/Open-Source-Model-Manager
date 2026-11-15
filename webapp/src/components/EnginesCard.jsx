@@ -25,6 +25,16 @@ export function EngineHint({ modelName, hfRepoId, format }) {
 }
 
 // Token counts use K = 1024, as Strata does (its own list has 200K = 204800).
+// Strata's conversation-memory formats, smallest first. Measured here at 256K:
+// q4_0 fastest (97% of experts on the GPUs); int8 ~5% slower, better quality.
+const KV_TYPES = [
+    ['q4_0', 'q4_0 KV (smallest, fastest)'],
+    ['int8', 'int8 KV (better quality)'],
+    ['k8v4', 'k8v4 KV (8-bit keys, 4-bit values)'],
+    ['fp16', 'fp16 KV (full precision, largest)'],
+];
+const PARALLEL = [1, 2, 3, 4, 6, 8];
+
 const CONTEXTS = [32, 64, 100, 128, 150, 180, 200, 256].map(k => [k * 1024, `${k}K`]);
 
 function fmtAgo(sec) {
@@ -176,6 +186,8 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
     const [plan, setPlan] = useState(null);
     const [size, setSize] = useState('q2_0');
     const [context, setContext] = useState(262144);
+    const [kv, setKv] = useState('q4_0');
+    const [parallel, setParallel] = useState(1);
     const [contextShift, setContextShift] = useState(true);
     const [compressMemory, setCompressMemory] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -208,7 +220,7 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
         setBusy(true);
         fetch('/api/engines/strata/load', {
             method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, context, contextShift, compressMemory }),
+            body: JSON.stringify({ size, context, kv, parallel, contextShift, compressMemory }),
         }).then(r => r.json().then((j) => {
             if (!r.ok) throw new Error(j.error || 'Failed to start Strata');
             showSnackbar?.('Strata is starting. Progress appears in Logs.', 'success');
@@ -238,6 +250,16 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
                         <Select size="small" value={context} onChange={e => setContext(e.target.value)}>
                             {CONTEXTS.map(([v, l]) => <MenuItem key={v} value={v}>{l} context</MenuItem>)}
                         </Select>
+                        <Tooltip title="How the conversation memory (KV cache) is stored. Smaller formats leave more GPU memory for the model, which is faster.">
+                            <Select size="small" value={kv} onChange={e => setKv(e.target.value)}>
+                                {KV_TYPES.map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
+                            </Select>
+                        </Tooltip>
+                        <Tooltip title="Requests served at the same time (1 to 8). Each extra one reserves GPU memory for its own conversation memory, leaving less room for the model, so a single request runs fastest.">
+                            <Select size="small" value={parallel} onChange={e => setParallel(e.target.value)}>
+                                {PARALLEL.map(n => <MenuItem key={n} value={n}>{n === 1 ? '1 request at a time' : `${n} requests at once`}</MenuItem>)}
+                            </Select>
+                        </Tooltip>
                         <Tooltip title="When a conversation outgrows the context, drop its oldest messages (and index an oversized earlier upload) instead of failing the request.">
                             <FormControlLabel control={<Switch size="small" checked={contextShift} onChange={e => setContextShift(e.target.checked)} />} label="Context shifting" sx={{ mr: 0 }} />
                         </Tooltip>
