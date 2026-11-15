@@ -24,7 +24,8 @@ export function EngineHint({ modelName, hfRepoId, format }) {
     return <Alert severity="info" sx={{ py: 0 }}>Best engine here: <b>{rec.label}</b>. {rec.reasons[0]}</Alert>;
 }
 
-const CONTEXTS = [[32768, '32K'], [65536, '64K'], [131072, '128K'], [262144, '256K']];
+// Token counts use K = 1024, as Strata does (its own list has 200K = 204800).
+const CONTEXTS = [32, 64, 100, 128, 150, 180, 200, 256].map(k => [k * 1024, `${k}K`]);
 
 function fmtAgo(sec) {
     if (!sec) return '';
