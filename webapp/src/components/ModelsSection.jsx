@@ -23,6 +23,19 @@ export default function ModelsSection({ id, icon: Icon, title, summary, count, a
             return next;
         });
     };
+    // Animate open/close: the body stays mounted once it has been opened
+    // and its height eases between 0 and auto via a grid-row transition.
+    const [mounted, setMounted] = useState(open);
+    const [shown, setShown] = useState(open);
+    React.useEffect(() => {
+        if (open) {
+            setMounted(true);
+            const raf = requestAnimationFrame(() => requestAnimationFrame(() => setShown(true)));
+            return () => cancelAnimationFrame(raf);
+        }
+        setShown(false);
+        return undefined;
+    }, [open]);
     React.useEffect(() => {
         // A jump link from the page header opens the section it points at.
         const onOpen = (e) => { if (e.detail === id) setOpen(true); };
@@ -74,7 +87,13 @@ export default function ModelsSection({ id, icon: Icon, title, summary, count, a
                     <ChevronDown size={16} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
                 </button>
             </div>
-            {open && <div className="px-5 pb-5 pt-1">{children}</div>}
+            {mounted && (
+                <div className={`mm-collapse ${shown ? 'is-open' : ''}`} aria-hidden={!open}>
+                    <div className="mm-collapse-inner">
+                        <div className="px-5 pb-5 pt-1">{children}</div>
+                    </div>
+                </div>
+            )}
         </section>
     );
 }

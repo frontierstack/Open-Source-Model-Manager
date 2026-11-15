@@ -1,13 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import {
-    Card, CardContent, Typography, Box, Select, MenuItem, ToggleButtonGroup, ToggleButton,
-    Switch, Chip, Alert, Collapse, Button,
-} from '@mui/material';
+import { Select, MenuItem, Switch, Alert, Collapse } from '@mui/material';
 import { Users } from 'lucide-react';
 import ModelsSection from './ModelsSection';
 import StrongModelIcon from '@mui/icons-material/WorkspacePremium';
 import BoltIcon from '@mui/icons-material/Bolt';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
 // Server-wide model roles for a two-model setup — set here by an admin, shown
 // read-only to everyone else. PRIMARY is the everyday model: it answers most
@@ -23,7 +19,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 function describeMode(mode, primaryName, secondaryName) {
     const p = primaryName || 'the primary';
     const sec = secondaryName || 'the secondary';
-    if (mode === 'off') return `${p} answers every turn on its own. ${sec} is never brought in.`;
+    if (mode === 'off') return `${p} answers every turn on its own. ${sec.charAt(0).toUpperCase()}${sec.slice(1)} is never brought in.`;
     if (mode === 'always') return `Every turn with real work goes to ${sec}. Easy turns — a greeting, a summary or rewrite of the last answer, arithmetic, a small code snippet — stay on ${p}. Questions that need knowledge, translation and creative writing still go to ${sec}.`;
     return `Short factual questions stay on ${p}. ${sec} takes over only when the ask is substantial — building something, analysing a file, a multi-step request.`;
 }
@@ -73,26 +69,7 @@ const DEFAULTS = {
 const PLACEHOLDER_PRIMARY = 'the model picked in the chat';
 const ROLES_CARD_OPEN_KEY = 'modelRolesCardOpen';
 
-const tileSx = (active) => ({
-    flex: 1,
-    minWidth: 0,
-    p: 2,
-    borderRadius: 2,
-    border: '1px solid',
-    borderColor: active ? 'var(--accent-primary)' : 'var(--border-primary, rgba(255,255,255,0.12))',
-    bgcolor: 'var(--bg-tertiary, rgba(255,255,255,0.03))',
-});
-
-const selectSx = {
-    mt: 1,
-    width: '100%',
-    '& .MuiSelect-select': { py: 1, fontSize: '0.9rem' },
-};
-
-const toggleSx = {
-    flexWrap: 'wrap',
-    '& .MuiToggleButton-root': { textTransform: 'none', px: 1.5, fontSize: '0.8rem', lineHeight: 1.3 },
-};
+const SELECT_SX = { width: '100%', fontSize: '0.85rem', '& .MuiSelect-select': { py: 1 } };
 
 // ---------------------------------------------------------------- helpers ---
 
@@ -213,114 +190,113 @@ function Highlighted({ text, names }) {
     return <>{parts.map((p, i) => <React.Fragment key={i}>{p}</React.Fragment>)}</>;
 }
 
-function RoleTile({ icon, title, blurb, value, placeholder, options, running, disabled, onChange, accent }) {
+function RoleTile({ icon, title, blurb, value, placeholder, options, running, disabled, onChange, active }) {
     const isRunning = (name) => running.some((m) => m.name === name);
     const slotsOf = (name) => (running.find((m) => m.name === name) || {}).slots;
     const meta = (name) => {
         const bits = [];
-        const s = speedOf(running, name);
-        if (s) bits.push(fmtSpeed(s));
+        const sp = speedOf(running, name);
+        if (sp) bits.push(fmtSpeed(sp));
         const slots = slotsOf(name);
         if (slots) bits.push(`${slots} slot${slots > 1 ? 's' : ''}`);
         if (!isRunning(name)) bits.push('not running');
         return bits.join(' · ');
     };
     return (
-        <Box sx={tileSx(!!value && accent)}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                {icon}
-                <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.2 }}>{title}</Typography>
-            </Box>
-            <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5, minHeight: { xs: 0, md: 40 } }}>{blurb}</Typography>
-            <Select
-                size="small"
-                value={value || ''}
-                onChange={(e) => onChange(e.target.value)}
-                displayEmpty
-                disabled={disabled}
-                sx={selectSx}
-                renderValue={(v) => (v
-                    ? (
-                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {v}
-                            {meta(v) ? <span style={{ opacity: 0.6 }}> · {meta(v)}</span> : null}
-                        </span>
-                    )
-                    : <span style={{ opacity: 0.6 }}>{placeholder}</span>)}
-            >
-                <MenuItem value=""><em>{placeholder}</em></MenuItem>
-                {options.map((n) => (
-                    <MenuItem key={n} value={n}>
-                        {n}
-                        {meta(n) ? <span style={{ opacity: 0.6, marginLeft: 8, fontSize: '0.8em' }}>· {meta(n)}</span> : null}
-                    </MenuItem>
-                ))}
-            </Select>
-        </Box>
+        <div className={`mm-panel mm-role ${active ? 'is-active' : ''}`}>
+            <div className="flex items-start gap-3">
+                <span className="mm-role-icon">{icon}</span>
+                <div className="min-w-0">
+                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</div>
+                    <div className="mt-0.5 text-xs leading-snug" style={{ color: 'var(--text-tertiary)' }}>{blurb}</div>
+                </div>
+            </div>
+            <div className="mt-3">
+                <Select
+                    size="small"
+                    value={value || ''}
+                    onChange={(e) => onChange(e.target.value)}
+                    displayEmpty
+                    disabled={disabled}
+                    sx={SELECT_SX}
+                    renderValue={(v) => (v
+                        ? (
+                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {v}
+                                {meta(v) ? <span style={{ opacity: 0.55 }}> · {meta(v)}</span> : null}
+                            </span>
+                        )
+                        : <span style={{ opacity: 0.55 }}>{placeholder}</span>)}
+                >
+                    <MenuItem value=""><em>{placeholder}</em></MenuItem>
+                    {options.map((n) => (
+                        <MenuItem key={n} value={n}>
+                            {n}
+                            {meta(n) ? <span style={{ opacity: 0.55, marginLeft: 8, fontSize: '0.8em' }}>· {meta(n)}</span> : null}
+                        </MenuItem>
+                    ))}
+                </Select>
+            </div>
+        </div>
     );
 }
 
-function OptionRow({ title, help, control, dim }) {
+// A compact segmented control (replaces MUI ToggleButtonGroup here).
+function Segmented({ value, options, onChange, disabled }) {
     return (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, py: 1.25, opacity: dim ? 0.5 : 1, flexWrap: 'wrap' }}>
-            <Box sx={{ minWidth: 0, flex: '1 1 240px' }}>
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>{title}</Typography>
-                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>{help}</Typography>
-            </Box>
-            <Box sx={{ flexShrink: 0 }}>{control}</Box>
-        </Box>
+        <div className="mm-seg" role="radiogroup">
+            {options.map(([v, label]) => (
+                <button
+                    key={v}
+                    type="button"
+                    role="radio"
+                    aria-checked={value === v}
+                    className={value === v ? 'is-on' : ''}
+                    disabled={disabled}
+                    onClick={() => onChange(v)}
+                >
+                    {label}
+                </button>
+            ))}
+        </div>
     );
 }
 
-// The centrepiece: the plan for the next turn, rendered from the selections.
+function OptionRow({ title, help, control, dim, stack }) {
+    return (
+        <div className={`mm-option ${stack ? 'is-stacked' : ''}`} style={{ opacity: dim ? 0.5 : 1 }}>
+            <div className="min-w-0 flex-1">
+                <div className="text-[0.85rem] font-medium" style={{ color: 'var(--text-primary)' }}>{title}</div>
+                <div className="mt-0.5 text-xs leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>{help}</div>
+            </div>
+            <div className="flex-shrink-0">{control}</div>
+        </div>
+    );
+}
+
+// The plan for the next turn, rendered from the selections.
 function TurnPlanPanel({ plan }) {
     const names = [plan.primary, plan.secondary];
     return (
-        <Box
-            sx={{
-                mt: 2,
-                p: { xs: 1.5, md: 2 },
-                borderRadius: 2,
-                border: '1px solid var(--accent-primary, rgba(255,255,255,0.2))',
-                borderLeft: '3px solid var(--accent-primary)',
-                bgcolor: 'var(--bg-tertiary, rgba(255,255,255,0.04))',
-            }}
-        >
-            <Typography variant="overline" sx={{ color: 'var(--accent-primary)', letterSpacing: 0.6, display: 'block', mb: 0.5 }}>
-                What happens on a turn
-            </Typography>
-
+        <div className="mm-panel mm-plan">
+            <div className="mm-eyebrow">What happens on a turn</div>
             {plan.solo ? (
                 <>
-                    <Typography variant="body2">
-                        <Highlighted text={plan.line} names={names} />
-                    </Typography>
-                    {plan.reason && (
-                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.75 }}>
-                            {plan.reason}
-                        </Typography>
-                    )}
+                    <p className="m-0 text-sm" style={{ color: 'var(--text-secondary)' }}><Highlighted text={plan.line} names={names} /></p>
+                    {plan.reason && <p className="m-0 mt-1.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>{plan.reason}</p>}
                 </>
             ) : (
                 <>
-                    <Box component="ol" sx={{ m: 0, pl: 2.5, lineHeight: 1.7 }}>
-                        {plan.steps.map((s, i) => (
-                            <Typography component="li" variant="body2" key={i} sx={{ mb: 0.25, wordBreak: 'break-word' }}>
-                                <Highlighted text={s} names={names} />
-                            </Typography>
+                    <ol className="mm-steps">
+                        {plan.steps.map((st, i) => (
+                            <li key={i}><span className="mm-step-n">{i + 1}</span><span><Highlighted text={st} names={names} /></span></li>
                         ))}
-                    </Box>
-                    {plan.caveat && (
-                        <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.75 }}>
-                            <Highlighted text={plan.caveat} names={names} />
-                        </Typography>
-                    )}
-                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1 }}>
-                        <Highlighted text={plan.when} names={names} />
-                    </Typography>
+                    </ol>
+                    {plan.caveat && <p className="m-0 mt-2 text-xs" style={{ color: '#f59e0b' }}><Highlighted text={plan.caveat} names={names} /></p>}
+                    <p className="m-0 mt-3 text-xs" style={{ color: 'var(--text-tertiary)' }}><Highlighted text={plan.when} names={names} /></p>
                 </>
             )}
-        </Box>
+        </div>
     );
 }
 
@@ -406,162 +382,149 @@ export default function ModelRolesCard({ instances = [], isAdmin = false }) {
             defaultOpen={bodyOpen}
             actions={(
                 <>
-                    {savedAt > 0 && Date.now() - savedAt < 4000 && <Chip size="small" label="Saved" color="success" sx={{ fontSize: '0.7rem' }} />}
-                    <Button size="small" onClick={() => setShowHelp((v) => !v)} sx={{ textTransform: 'none', minWidth: 0, fontSize: '0.75rem' }}>
-                        How it works
-                    </Button>
+                    {savedAt > 0 && Date.now() - savedAt < 4000 && <span className="mm-badge mm-badge--ok">Saved</span>}
+                    <button type="button" className="mm-link" onClick={() => setShowHelp((v) => !v)}>
+                        {showHelp ? 'Hide help' : 'How it works'}
+                    </button>
                 </>
             )}
         >
-                <Box>
-                <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5, mb: 2 }}>
-                    Your everyday model answers most turns on its own, so a quick question stays quick. When the ask is substantial it hands
-                    over to a second model, which writes the answer while the everyday model runs background jobs for it on its own GPU.
-                    Needs two different models loaded — which one you put where is up to you.
-                </Typography>
+            <div className="flex flex-col gap-4">
+                <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
+                    Your everyday model answers most turns on its own. On substantial work it hands over to a second model, which writes
+                    the answer while the everyday model runs background jobs for it. Needs two different models loaded.
+                </p>
 
-                <Collapse in={showHelp}>
-                    <Box sx={{ mb: 2, p: 1.5, borderRadius: 2, bgcolor: 'var(--bg-tertiary, rgba(255,255,255,0.03))', border: '1px solid var(--border-primary, rgba(255,255,255,0.1))' }}>
-                        <Typography variant="body2" sx={{ color: 'text.secondary' }} component="div">
-                            <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
-                                <li><strong>Primary</strong> is your everyday model. It answers most turns on its own, which is what keeps a quick question quick.</li>
-                                <li><strong>Secondary</strong> stays out of the way until the ask is substantial, then takes the lead and writes the answer itself. Put the model you trust more with hard work here.</li>
-                                <li><strong>First pass:</strong> before the secondary starts, the primary spends a few seconds restating the task, gathering anything cheap, and handing over a short brief.</li>
-                                <li><strong>Legwork:</strong> while the secondary writes, it hands background jobs back to the primary — lookups, file reads, a script to run and report back. They run on the primary&apos;s own GPU at the same time, so the secondary never waits. This is where the time is won.</li>
-                                <li><strong>Review:</strong> on a turn the primary answered alone, the secondary can add a note under the answer, or hand back a corrected version in its place.</li>
-                                <li><strong>Worker reports:</strong> when a turn fans work out to parallel worker agents, the secondary can review each report before the answer builds on it.</li>
-                                <li>Only the secondary&apos;s turns cost its full speed, so if one model is much slower than the other it usually belongs there — the tok/s beside each name tells you which is which. Putting the slower model first sends every quick question through it.</li>
-                                <li>With a single model, even with several parallel slots, none of this applies: a model does not hand over to itself.</li>
-                                <li>{isAdmin ? 'Changes save immediately for everyone; each user can override them in the chat Settings.' : 'Only an administrator can change these; you can override them for yourself in the chat Settings.'}</li>
-                            </ul>
-                        </Typography>
-                    </Box>
+                <Collapse in={showHelp} unmountOnExit>
+                    <div className="mm-panel">
+                        <ul className="mm-help">
+                            <li><strong>Primary</strong> is your everyday model. It answers most turns on its own, which keeps a quick question quick.</li>
+                            <li><strong>Secondary</strong> stays out of the way until the ask is substantial, then takes the lead and writes the answer. Put the model you trust more with hard work here.</li>
+                            <li><strong>First pass:</strong> before the secondary starts, the primary spends a few seconds restating the task and handing over a short brief.</li>
+                            <li><strong>Legwork:</strong> while the secondary writes, it hands background jobs back to the primary (lookups, file reads, a script to run). They run on the primary&apos;s own GPU at the same time, so the secondary never waits.</li>
+                            <li><strong>Review:</strong> on a turn the primary answered alone, the secondary can add a note under the answer or hand back a corrected version.</li>
+                            <li><strong>Worker reports:</strong> when a turn fans work out to parallel worker agents, the secondary can review each report first.</li>
+                            <li>Only the secondary&apos;s turns cost its full speed, so the slower model usually belongs there. The tok/s beside each name tells you which is which.</li>
+                            <li>With a single model, even with several parallel slots, none of this applies: a model does not hand over to itself.</li>
+                            <li>{isAdmin ? 'Changes save immediately for everyone; each user can override them in the chat Settings.' : 'Only an administrator can change these; you can override them for yourself in the chat Settings.'}</li>
+                        </ul>
+                    </div>
                 </Collapse>
 
-                {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
+                {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
                 {!loading && running.length === 0 && (
-                    <Alert severity="info" sx={{ mb: 2 }}>No model is running yet. Load a model — two, to use a secondary — then assign the roles here.</Alert>
+                    <Alert severity="info">No model is running yet. Load a model (two, to use a secondary), then assign the roles here.</Alert>
                 )}
                 {!loading && running.length === 1 && (
-                    <Alert severity="info" sx={{ mb: 2 }}>
-                        Only <strong>{running[0].name}</strong> is running. The secondary needs a second model loaded on its own slot, otherwise
-                        the primary answers everything on its own.
+                    <Alert severity="info">
+                        Only <strong>{running[0].name}</strong> is running. The secondary needs a second model loaded, otherwise the primary
+                        answers everything on its own.
                     </Alert>
                 )}
 
-                {/* Role pickers */}
-                <Box sx={{ display: 'flex', gap: 2, alignItems: 'stretch', flexDirection: { xs: 'column', md: 'row' } }}>
+                <div className="mm-roles">
                     <RoleTile
-                        icon={<BoltIcon fontSize="small" sx={{ color: 'var(--accent-primary)' }} />}
-                        title="Primary — answers most turns"
-                        blurb="Your everyday model. It answers on its own, so quick questions start and finish here."
+                        icon={<BoltIcon sx={{ fontSize: 16 }} />}
+                        title="Primary"
+                        blurb="Your everyday model. Quick questions start and finish here."
                         value={roles.primary}
                         placeholder="Use the model picked in the chat"
                         options={sortNames(names, running, 'fastest')}
                         running={running}
                         disabled={disabled}
-                        accent
+                        active={!!roles.primary}
                         onChange={(v) => save({ primary: v })}
                     />
                     <RoleTile
-                        icon={<StrongModelIcon fontSize="small" sx={{ color: secondaryActive ? 'var(--accent-primary)' : 'text.secondary' }} />}
-                        title="Secondary — takes over the hard ones"
-                        blurb="Steps in when the ask is substantial and writes the answer itself, with the primary fetching things for it."
+                        icon={<StrongModelIcon sx={{ fontSize: 16 }} />}
+                        title="Secondary"
+                        blurb="Takes over substantial work and writes the answer, with the primary fetching things for it."
                         value={roles.secondary}
-                        placeholder="None — the primary answers everything"
+                        placeholder="None, the primary answers everything"
                         options={sortNames(names, running, 'slowest')}
                         running={running}
                         disabled={disabled}
-                        accent={secondaryActive}
+                        active={secondaryActive}
                         onChange={(v) => save({ secondary: v })}
                     />
-                </Box>
+                </div>
 
                 {same && (
-                    <Alert severity="warning" sx={{ mt: 2 }}>
-                        Primary and secondary are the same model, so the secondary is ignored — a model does not hand over to itself. Load a
+                    <Alert severity="warning">
+                        Primary and secondary are the same model, so the secondary is ignored: a model does not hand over to itself. Load a
                         second, stronger model and select it as the secondary.
                     </Alert>
                 )}
                 {speedBackwards && (
-                    <Alert severity="info" sx={{ mt: 2 }}>
+                    <Alert severity="info">
                         Worth a check: your secondary is the <strong>faster</strong> of the two ({fmtSpeed(secondarySpeed)} vs {fmtSpeed(primarySpeed)}).
-                        Every quick question goes through the primary, so the slower model usually belongs in the secondary slot. Leave it as
-                        it is if the secondary really is the one you want on the hard work.
+                        Every quick question goes through the primary, so the slower model usually belongs in the secondary slot.
                     </Alert>
                 )}
 
-                {/* The centrepiece: what will actually happen */}
                 <TurnPlanPanel plan={plan} />
 
-                {/* When the secondary takes over */}
-                <Box sx={{ mt: 2, pt: 1, borderTop: '1px solid var(--border-primary, rgba(255,255,255,0.1))' }}>
-                    <OptionRow
-                        title="When the secondary takes over"
-                        help={describeMode(mode, roles.primary, roles.secondary)}
-                        dim={!roles.secondary || same}
-                        control={(
-                            <ToggleButtonGroup
-                                size="small"
-                                exclusive
-                                value={mode}
-                                onChange={(e, v) => { if (v) save({ mode: v }); }}
-                                disabled={disabled}
-                                sx={toggleSx}
-                            >
-                                <ToggleButton value="off">Off</ToggleButton>
-                                <ToggleButton value="auto">Only on substantial work</ToggleButton>
-                                <ToggleButton value="always">All but easy turns</ToggleButton>
-                            </ToggleButtonGroup>
-                        )}
-                    />
-                </Box>
+                <div>
+                    <div className="mm-eyebrow mb-2">Hand-over</div>
+                    <div className="mm-option-list">
+                        <OptionRow
+                            title="When the secondary takes over"
+                            help={describeMode(mode, roles.primary, roles.secondary)}
+                            dim={!roles.secondary || same}
+                            stack
+                            control={(
+                                <Segmented
+                                    value={mode}
+                                    disabled={disabled}
+                                    onChange={(v) => save({ mode: v })}
+                                    options={[['off', 'Off'], ['auto', 'Substantial work'], ['always', 'All but easy turns']]}
+                                />
+                            )}
+                        />
+                    </div>
+                </div>
 
-                {/* How the two split the work */}
-                <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid var(--border-primary, rgba(255,255,255,0.1))' }}>
-                    <Typography variant="overline" sx={{ color: 'text.secondary', letterSpacing: 0.6 }}>
+                <div>
+                    <div className="mm-eyebrow mb-2">
                         How the two split the work
-                        {!roles.secondary ? ' — select a secondary to enable' : same ? ' — needs a different model' : mode === 'off' ? ' — switched off above' : ''}
-                    </Typography>
-                    <OptionRow
-                        title="First pass, before the secondary starts"
-                        help={describeFirstPass(roles.firstPass !== false, roles.primary, roles.secondary)}
-                        dim={jobsDisabled}
-                        control={<Switch size="small" checked={roles.firstPass !== false} disabled={jobsDisabled} onChange={(e) => save({ firstPass: e.target.checked })} />}
-                    />
-                    <OptionRow
-                        title="Legwork, while the secondary writes"
-                        help={describeLegwork(roles.legwork !== false, roles.primary, roles.secondary)}
-                        dim={jobsDisabled}
-                        control={<Switch size="small" checked={roles.legwork !== false} disabled={jobsDisabled} onChange={(e) => save({ legwork: e.target.checked })} />}
-                    />
-                    <OptionRow
-                        title="What the secondary does with answers the primary wrote alone"
-                        help={describeReview(roles.review || 'off', roles.primary, roles.secondary)}
-                        dim={jobsDisabled}
-                        control={(
-                            <ToggleButtonGroup
-                                size="small"
-                                exclusive
-                                value={roles.review || 'off'}
-                                onChange={(e, v) => { if (v) save({ review: v }); }}
-                                disabled={jobsDisabled}
-                                sx={toggleSx}
-                            >
-                                <ToggleButton value="off">Off</ToggleButton>
-                                <ToggleButton value="note">Add a note</ToggleButton>
-                                <ToggleButton value="edit">Polish silently</ToggleButton>
-                            </ToggleButtonGroup>
-                        )}
-                    />
-                    <OptionRow
-                        title="Check worker reports"
-                        help={describeCheckWorkers(roles.checkWorkers === true, roles.primary, roles.secondary)}
-                        dim={jobsDisabled}
-                        control={<Switch size="small" checked={roles.checkWorkers === true} disabled={jobsDisabled} onChange={(e) => save({ checkWorkers: e.target.checked })} />}
-                    />
-                </Box>
-                </Box>
+                        {!roles.secondary ? ' · select a secondary to enable' : same ? ' · needs a different model' : mode === 'off' ? ' · switched off above' : ''}
+                    </div>
+                    <div className="mm-option-list">
+                        <OptionRow
+                            title="First pass"
+                            help={describeFirstPass(roles.firstPass !== false, roles.primary, roles.secondary)}
+                            dim={jobsDisabled}
+                            control={<Switch size="small" checked={roles.firstPass !== false} disabled={jobsDisabled} onChange={(e) => save({ firstPass: e.target.checked })} />}
+                        />
+                        <OptionRow
+                            title="Legwork"
+                            help={describeLegwork(roles.legwork !== false, roles.primary, roles.secondary)}
+                            dim={jobsDisabled}
+                            control={<Switch size="small" checked={roles.legwork !== false} disabled={jobsDisabled} onChange={(e) => save({ legwork: e.target.checked })} />}
+                        />
+                        <OptionRow
+                            title="Review answers the primary wrote alone"
+                            help={describeReview(roles.review || 'off', roles.primary, roles.secondary)}
+                            dim={jobsDisabled}
+                            stack
+                            control={(
+                                <Segmented
+                                    value={roles.review || 'off'}
+                                    disabled={jobsDisabled}
+                                    onChange={(v) => save({ review: v })}
+                                    options={[['off', 'Off'], ['note', 'Add a note'], ['edit', 'Polish silently']]}
+                                />
+                            )}
+                        />
+                        <OptionRow
+                            title="Check worker reports"
+                            help={describeCheckWorkers(roles.checkWorkers === true, roles.primary, roles.secondary)}
+                            dim={jobsDisabled}
+                            control={<Switch size="small" checked={roles.checkWorkers === true} disabled={jobsDisabled} onChange={(e) => save({ checkWorkers: e.target.checked })} />}
+                        />
+                    </div>
+                </div>
+            </div>
         </ModelsSection>
     );
 }
