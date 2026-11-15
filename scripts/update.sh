@@ -162,6 +162,7 @@ PARALLEL=true
 STOP_INSTANCES=false
 DISCARD_LOCAL=false
 DEEP_CLEAN=false
+ENGINE_UPGRADE=true
 GIT_REF=""
 REPO_URL="${MODELSERVER_REPO:-}"
 declare -a FORCE_COMPONENTS=()
@@ -192,6 +193,9 @@ usage() {
     --skip-tests         Do not run the post-update checks
     --no-cleanup         Leave dangling images / stale cache / orphan files
     --deep-clean         Also prune ALL unused build cache (next full rebuild is slower)
+    --no-engine-upgrade  Do not move llama.cpp to a newer upstream release
+                         (by default a new release is built, tested against the
+                         current build and installed only if it passes)
     --dry-run            Show the plan (fetch + checksum), change nothing
     -h, --help           This help
 
@@ -217,6 +221,7 @@ while [[ $# -gt 0 ]]; do
         --skip-tests)     DO_TEST=false; shift ;;
         --no-cleanup)     DO_CLEANUP=false; shift ;;
         --deep-clean)     DEEP_CLEAN=true; shift ;;
+        --no-engine-upgrade) ENGINE_UPGRADE=false; shift ;;
         --dry-run)        DRY_RUN=true; shift ;;
         -h|--help)        usage; exit 0 ;;
         *)
@@ -748,6 +753,13 @@ if [ "$ANY_BUILD" = false ] && [ "$COMPOSE_CHANGED" = false ] && [ "${REDEPLOY_S
     log_success "Nothing to rebuild"
 fi
 
+if [ -x "$PROJECT_DIR/scripts/engine-upgrade.sh" ]; then
+    up_msg=$("$PROJECT_DIR/scripts/engine-upgrade.sh" check 2>/dev/null) && {
+        if [ "$ENGINE_UPGRADE" = true ]; then log_step "$up_msg It will be built, tested against the current build and installed if it passes."
+        else log_skip "$up_msg Not upgrading (--no-engine-upgrade)."; fi
+    }
+fi
+
 if [ "$DRY_RUN" = true ]; then
     echo ""
     echo -e "  ${DIM}Dry run complete — re-run without --dry-run to apply.${NC}"
@@ -802,7 +814,14 @@ build_component() {
                 -t "${COMP_IMAGE[$comp]}" "$PROJECT_DIR/sandbox-runtime" > "$log" 2>&1 || rc=$?
             ;;
         llamacpp|sglang)
-            docker compose --profile build-only build "${BUILD_ARGS[@]}" "${NO_CACHE_ARGS[@]}" "$comp" > "$log" 2>&1 || rc=$?
+            # A llama.cpp release installed by scripts/engine-upgrade.sh (newer
+            # than the Dockerfile pin) stays the version a rebuild produces.
+            local -a ref_args=()
+            if [ "$comp" = llamacpp ] && [ -x "$PROJECT_DIR/scripts/engine-upgrade.sh" ]; then
+                local eref; eref=$("$PROJECT_DIR/scripts/engine-upgrade.sh" effective-ref 2>/dev/null)
+                [ -n "$eref" ] && ref_args=(--build-arg "LLAMACPP_REF=$eref")
+            fi
+            docker compose --profile build-only build "${BUILD_ARGS[@]}" "${ref_args[@]}" "${NO_CACHE_ARGS[@]}" "$comp" > "$log" 2>&1 || rc=$?
             ;;
         *)
             docker compose build "${BUILD_ARGS[@]}" "${NO_CACHE_ARGS[@]}" "$comp" > "$log" 2>&1 || rc=$?
@@ -1235,6 +1254,30 @@ fi
 # versions pinned in webapp/services/engineVersions.json.
 if [ "$DRY_RUN" != true ] && [ "$DO_BUILD" = true ] && [ -x "$PROJECT_DIR/scripts/engines.sh" ]; then
     "$PROJECT_DIR/scripts/engines.sh" refresh || log_warning "Optional engine refresh failed; run sudo ./engines.sh status"
+fi
+
+# A newer llama.cpp release: build it, test it against the current build on a
+# small model, and install it only if it passes (scripts/engine-upgrade.sh).
+# The working image is untouched until then; running models move over when
+# the webapp finds them idle.
+UPGRADE_SH="$PROJECT_DIR/scripts/engine-upgrade.sh"
+if [ -x "$UPGRADE_SH" ] && [ "$DO_BUILD" = true ]; then
+    section "Engine upgrade"
+    check_msg=$("$UPGRADE_SH" check 2>/dev/null); check_rc=$?
+    if [ $check_rc -ne 0 ]; then
+        log_skip "${check_msg:-llama.cpp: no upgrade information}"
+    elif [ "$ENGINE_UPGRADE" != true ]; then
+        log_skip "$check_msg Skipped (--no-engine-upgrade)."
+    else
+        start_spinner "$check_msg Building and testing (20-90 min, log: models/.modelserver/engine-upgrade/upgrade.log)"
+        if "$UPGRADE_SH" upgrade --if-newer > /dev/null 2>&1; then
+            stop_spinner
+            log_success "$("$UPGRADE_SH" last-step)"
+        else
+            stop_spinner
+            log_warning "llama.cpp upgrade not installed: $("$UPGRADE_SH" last-step). The current build is unchanged."
+        fi
+    fi
 fi
 
 section "Summary"

@@ -268,6 +268,11 @@ build_image() {
     [ -n "$PIP_TRUSTED_HOST" ]             && build_args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
     [ -n "$PIP_CERT" ]                     && build_args+=(--build-arg "PIP_CERT=$PIP_CERT")
 
+    if [ "$component" = "llamacpp" ] && [ -x "$SCRIPT_DIR/engine-upgrade.sh" ]; then
+        local eref; eref=$("$SCRIPT_DIR/engine-upgrade.sh" effective-ref 2>/dev/null)
+        [ -n "$eref" ] && build_args+=(--build-arg "LLAMACPP_REF=$eref")
+    fi
+
     local -a no_cache_args=()
     [ "$NO_CACHE" = true ] && no_cache_args=(--no-cache)
 

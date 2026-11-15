@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     Typography, Box, Chip, Select, MenuItem, Button, Alert, Tooltip,
+    Dialog, DialogTitle, DialogContent, DialogActions, LinearProgress,
 } from '@mui/material';
 import { Cpu } from 'lucide-react';
 import ModelsSection from './ModelsSection';
@@ -25,7 +26,122 @@ export function EngineHint({ modelName, hfRepoId, format }) {
 
 const CONTEXTS = [[32768, '32K'], [65536, '64K'], [131072, '128K'], [262144, '256K']];
 
-function EngineRow({ engine, isAdmin, onInstall }) {
+function fmtAgo(sec) {
+    if (!sec) return '';
+    const m = Math.max(0, Math.round((Date.now() / 1000 - sec) / 60));
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
+// Upgrade state for llama.cpp: the button, live progress and the last result.
+function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
+    const [info, setInfo] = useState(null);
+    const [confirm, setConfirm] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [showLog, setShowLog] = useState(false);
+    const load = useCallback(() => {
+        fetch('/api/engines/llamacpp/upgrade', { credentials: 'include' })
+            .then(r => (r.ok ? r.json() : null)).then(setInfo).catch(() => {});
+    }, []);
+    const st = info?.status;
+    const running = st?.state === 'running' || info?.helperRunning;
+    useEffect(() => {
+        load();
+        const t = setInterval(load, running || info?.pendingReloads?.length ? 5000 : 30000);
+        return () => clearInterval(t);
+    }, [load, running, info?.pendingReloads?.length]);
+    const prevState = React.useRef(null);
+    useEffect(() => {
+        if (prevState.current === 'running' && st && st.state !== 'running') onChanged?.();
+        prevState.current = st?.state || null;
+    }, [st?.state, onChanged]);
+
+    const post = (url, body) => {
+        setBusy(true);
+        fetch(url, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {}),
+        }).then(r => r.json().then((j) => {
+            showSnackbar?.(j.message || j.error, r.ok ? 'info' : 'error');
+            load();
+        })).catch(e => showSnackbar?.(e.message, 'error')).finally(() => { setBusy(false); setConfirm(false); });
+    };
+
+    const canUpgrade = isAdmin && engine.updateAvailable && !running;
+    const showResult = st && !running && (st.state === 'failed' || st.state === 'interrupted'
+        || (st.state === 'succeeded' && Date.now() / 1000 - (st.promotedAt || 0) < 7 * 86400));
+    return (
+        <Box sx={{ flexBasis: '100%', pl: 0, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            {(canUpgrade || (isAdmin && info?.rollbackAvailable && !running)) && (
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    {canUpgrade && (
+                        <Button size="small" variant="contained" disabled={busy} onClick={() => setConfirm(true)} sx={{ textTransform: 'none' }}>
+                            Upgrade to {engine.latest}
+                        </Button>
+                    )}
+                    {isAdmin && info?.rollbackAvailable && !running && (
+                        <Tooltip title={`Go back to the build that was installed before ${st?.target || 'the last upgrade'}`}>
+                            <Button size="small" disabled={busy} onClick={() => post('/api/engines/llamacpp/rollback')} sx={{ textTransform: 'none' }}>
+                                Roll back
+                            </Button>
+                        </Tooltip>
+                    )}
+                </Box>
+            )}
+            {running && (
+                <Box>
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                        {st?.step || 'Starting'} · started {fmtAgo(st?.startedAt)}. The current build keeps serving until the new one passes.
+                    </Typography>
+                    <LinearProgress sx={{ mt: 0.5, height: 3, borderRadius: 2 }} />
+                </Box>
+            )}
+            {showResult && (
+                <Alert severity={st.state === 'succeeded' ? 'success' : 'warning'} sx={{ py: 0 }}>
+                    {st.state === 'succeeded' && (st.rolledBack
+                        ? `Rolled back to ${st.target} ${fmtAgo(st.promotedAt)}.`
+                        : `Upgraded ${st.from} → ${st.target} ${fmtAgo(st.promotedAt)}.${st.test?.verdict ? ` Test: ${st.test.verdict.replace(/^OK /, '')}.` : ''}`)}
+                    {st.state === 'failed' && `Upgrade to ${st.target} was not installed: ${st.error || st.step}. ${st.from} is still in use.`}
+                    {st.state === 'interrupted' && `The upgrade to ${st.target} stopped without finishing. ${st.from} is still in use.`}
+                    {info?.pendingReloads?.length > 0 && ` Moving ${info.pendingReloads.join(', ')} when idle.`}
+                </Alert>
+            )}
+            {isAdmin && info?.log?.length > 0 && (running || st?.state === 'failed') && (
+                <Box>
+                    <Button size="small" onClick={() => setShowLog(v => !v)} sx={{ textTransform: 'none', p: 0, minWidth: 0 }}>
+                        {showLog ? 'Hide log' : 'Show log'}
+                    </Button>
+                    {showLog && (
+                        <Box component="pre" sx={{ m: 0, mt: 0.5, p: 1, maxHeight: 220, overflow: 'auto', fontSize: '0.72rem', bgcolor: 'var(--bg-tertiary)', borderRadius: 1, whiteSpace: 'pre-wrap' }}>
+                            {info.log.join('\n')}
+                        </Box>
+                    )}
+                </Box>
+            )}
+            <Dialog open={confirm} onClose={() => setConfirm(false)} maxWidth="xs" fullWidth>
+                <DialogTitle>Upgrade llama.cpp to {engine.latest}?</DialogTitle>
+                <DialogContent>
+                    <Typography variant="body2" sx={{ mb: 1 }}>
+                        The new release is compiled on this server (20 to 90 minutes), then tested against {engine.version} on a small model: it must answer, make tool calls if the current build can, and decode at least 85% as fast.
+                    </Typography>
+                    <Typography variant="body2">
+                        Only then is it installed. {engine.version} keeps serving the whole time and stays available for rollback. Loaded models move to the new build by themselves when nothing is using them.
+                    </Typography>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfirm(false)} sx={{ textTransform: 'none' }}>Cancel</Button>
+                    <Button variant="contained" disabled={busy} onClick={() => post('/api/engines/llamacpp/upgrade', { version: engine.latest })} sx={{ textTransform: 'none' }}>
+                        Upgrade
+                    </Button>
+                </DialogActions>
+            </Dialog>
+        </Box>
+    );
+}
+
+function EngineRow({ engine, isAdmin, onInstall, showSnackbar, onChanged }) {
     const status = engine.running.length
         ? `Running ${engine.running.length}`
         : engine.installed ? 'Installed' : 'Not installed';
@@ -39,11 +155,14 @@ function EngineRow({ engine, isAdmin, onInstall }) {
             <Chip size="small" label={status} color={engine.running.length ? 'success' : 'default'} variant={engine.installed ? 'filled' : 'outlined'} />
             {engine.version && <Chip size="small" variant="outlined" label={engine.version} />}
             {engine.updateAvailable && (
-                <Tooltip title="Pick this up with ./update.sh">
+                <Tooltip title={engine.id === 'llamacpp' ? 'Upgrade here, or with sudo ./update.sh' : 'Pick this up with ./update.sh'}>
                     <Chip size="small" color="warning" variant="outlined" label={`${engine.latest} available`} />
                 </Tooltip>
             )}
             {canPull && <Button size="small" onClick={() => onInstall(engine.id)} sx={{ textTransform: 'none' }}>Install</Button>}
+            {engine.id === 'llamacpp' && engine.installed && (
+                <LlamaUpgrade engine={engine} isAdmin={isAdmin} showSnackbar={showSnackbar} onChanged={onChanged} />
+            )}
         </Box>
     );
 }
@@ -103,7 +222,7 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
             defaultOpen={false}
         >
             <Box>
-                {data.engines.map(e => <EngineRow key={e.id} engine={e} isAdmin={isAdmin} onInstall={install} />)}
+                {data.engines.map(e => <EngineRow key={e.id} engine={e} isAdmin={isAdmin} onInstall={install} showSnackbar={showSnackbar} onChanged={refresh} />)}
 
                 <Box sx={{ borderTop: '1px solid var(--border-primary)', pt: 1.5, mt: 0.5 }}>
                     <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', mb: 1 }}>Qwen3.8-Flash-Next with Strata</Typography>

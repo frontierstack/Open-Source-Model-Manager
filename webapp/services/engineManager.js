@@ -230,9 +230,25 @@ function create(deps) {
         const containerName = `strata-${name}`;
         const apiKey = crypto.randomBytes(24).toString('hex');
         const roles = strataGpuRoles(hw.gpus, gpuDevices);
+        if (!['int8', 'q4_0', 'k8v4', 'fp16'].includes(kv)) { const e = new Error(`Unknown KV format: ${kv}`); e.statusCode = 400; throw e; }
+        // Strata's own tuner measures settings on this machine and keeps only
+        // the ones whose answers are byte-identical to the standard setup; the
+        // result is saved in the preset, so it runs once (retune: again).
+        const tune = ['quick', 'thorough'].includes(opts.tune) ? opts.tune : 'skip';
+        // Advanced engine settings (`strata launch --set KEY=VALUE`), e.g.
+        // { "kv-resident": 65536 }.
+        const settings = [];
+        for (const [k, v] of Object.entries(opts.engineSettings || {})) {
+            if (!/^([a-z][a-z0-9-]{1,40}|STRATA_[A-Z0-9_]{1,40})$/.test(k) || !/^[\w.:,-]{1,40}$/.test(String(v))) {
+                const e = new Error(`Invalid engine setting: ${k}`); e.statusCode = 400; throw e;
+            }
+            settings.push(`${k}=${v}`);
+        }
         const env = [
             `FAMILY=${family}`, `MODEL=${model}`, `CONTEXT=${context}`, `PARALLEL=${parallel}`, `KV=${kv}`, 'VISION=off',
-            `API_KEY=${apiKey}`, `PORT=${port}`, 'STRATA_BIND=0.0.0.0', `STRATA_PORT=${port}`, 'TUNE=skip',
+            `API_KEY=${apiKey}`, `PORT=${port}`, 'STRATA_BIND=0.0.0.0', `STRATA_PORT=${port}`, `TUNE=${tune}`,
+            ...(opts.retune === true ? ['RETUNE=1'] : []),
+            ...(settings.length ? [`STRATA_SET=${settings.join(' ')}`] : []),
             ...gpuDevicesEnv(gpuDevices),
         ];
         if (roles) env.push(`GPU_ROLES=${roles}`);
@@ -262,7 +278,7 @@ function create(deps) {
             },
         });
         await container.start();
-        const config = { contextSize: context, parallelSlots: parallel, gpuDevices, strataSize: size.label, strataFamily: family, kv, compressMemory: false };
+        const config = { contextSize: context, parallelSlots: parallel, gpuDevices, strataSize: size.label, strataFamily: family, kv, tune, engineSettings: settings, compressMemory: false };
         setKey(instanceNetAlias(containerName), port, apiKey);
         await registerInstance(name, container, { containerName, port, config, backend: 'strata' });
         broadcast({ type: 'log', message: `[Strata] starting ${name} (${size.label}, ${context} context) on port ${port}. The first start downloads about ${size.downloadGiB} GB and prepares the model, which can take a long time.` });
@@ -346,7 +362,7 @@ function create(deps) {
             const port = parseInt(get('STRATA_PORT') || get('PORT') || '8080', 10);
             const key = get('API_KEY');
             if (key) setKey(instanceNetAlias(containerName), port, key);
-            return { port, config: { contextSize: parseInt(get('CONTEXT'), 10) || 65536, parallelSlots: parseInt(get('PARALLEL'), 10) || 1, gpuDevices, strataSize: get('MODEL'), strataFamily: get('FAMILY'), kv: get('KV') } };
+            return { port, config: { contextSize: parseInt(get('CONTEXT'), 10) || 65536, parallelSlots: parseInt(get('PARALLEL'), 10) || 1, gpuDevices, strataSize: get('MODEL'), strataFamily: get('FAMILY'), kv: get('KV'), tune: get('TUNE'), engineSettings: (get('STRATA_SET') || '').split(' ').filter(Boolean) } };
         }
         const port = parseInt(get('VLLM_PORT') || '8000', 10);
         const len = parseInt(get('VLLM_MAX_LEN'), 10) || 16384;

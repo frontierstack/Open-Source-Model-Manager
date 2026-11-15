@@ -5602,6 +5602,14 @@ engineManager = engineManagerModule.create({
     getModelsVolumeBind,
 });
 engineManager.registerRoutes(app, { requireAuth, checkPermission, callerIsAdmin });
+// llama.cpp upgrades from the console (build, test against the current build,
+// install, move idle instances over). See services/engineUpgrade.js.
+const engineUpgrade = require('./services/engineUpgrade').create({
+    docker, modelInstances, broadcast, streamContainerLogs, monitorContainerHealth,
+    isBusy: (name) => (modelBusy.get(name) || 0) > 0,
+    hostModelsPath: () => detectHostModelsPath(),
+});
+engineUpgrade.registerRoutes(app, { requireAuth, callerIsAdmin });
 
 app.post('/api/models/load-hf', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'models')) {

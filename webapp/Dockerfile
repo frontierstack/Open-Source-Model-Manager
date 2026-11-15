@@ -168,6 +168,12 @@ RUN python3 -m venv --without-pip /opt/browser-use \
     && pip3 --python /opt/browser-use/bin/python install --no-cache-dir browser-use==1.0.1 \
     && /opt/browser-use/bin/python -c "import browser_use, importlib.metadata as m; print('[browser-use]', m.version('browser-use'))"
 
+# Docker CLI + buildx: the console's engine upgrade runs
+# scripts/engine-upgrade.sh in a helper container started from this image
+# (the project directory and the Docker socket are mounted into it).
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:29-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+
 COPY . .
 RUN npm run build
 
