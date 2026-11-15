@@ -28,12 +28,14 @@ export function EngineHint({ modelName, hfRepoId, format }) {
 // Strata's conversation-memory formats, smallest first. Measured here at 256K:
 // q4_0 fastest (97% of experts on the GPUs); int8 ~5% slower, better quality.
 const KV_TYPES = [
-    ['q4_0', 'q4_0 KV (smallest, fastest)'],
-    ['int8', 'int8 KV (better quality)'],
-    ['k8v4', 'k8v4 KV (8-bit keys, 4-bit values)'],
-    ['fp16', 'fp16 KV (full precision, largest)'],
+    ['q4_0', 'q4_0 · smallest, fastest'],
+    ['int8', 'int8 · better quality'],
+    ['k8v4', 'k8v4 · 8-bit keys, 4-bit values'],
+    ['fp16', 'fp16 · full precision'],
 ];
 const PARALLEL = [1, 2, 3, 4, 6, 8];
+const SMALL_BTN = { textTransform: 'none', fontSize: '0.75rem', lineHeight: 1.2, py: 0.5, px: 1.5, minHeight: 0, minWidth: 0, borderRadius: '8px' };
+const SELECT_SX = { width: '100%', fontSize: '0.85rem' };
 
 const CONTEXTS = [32, 64, 100, 128, 150, 180, 200, 256].map(k => [k * 1024, `${k}K`]);
 
@@ -88,13 +90,13 @@ function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
             {(canUpgrade || (isAdmin && info?.rollbackAvailable && !running)) && (
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                     {canUpgrade && (
-                        <Button size="small" variant="contained" disabled={busy} onClick={() => setConfirm(true)} sx={{ textTransform: 'none' }}>
+                        <Button size="small" variant="contained" disabled={busy} onClick={() => setConfirm(true)} sx={SMALL_BTN}>
                             Upgrade to {engine.latest}
                         </Button>
                     )}
                     {isAdmin && info?.rollbackAvailable && !running && (
                         <Tooltip title={`Go back to the build that was installed before ${st?.target || 'the last upgrade'}`}>
-                            <Button size="small" disabled={busy} onClick={() => post('/api/engines/llamacpp/rollback')} sx={{ textTransform: 'none' }}>
+                            <Button size="small" variant="outlined" disabled={busy} onClick={() => post('/api/engines/llamacpp/rollback')} sx={SMALL_BTN}>
                                 Roll back
                             </Button>
                         </Tooltip>
@@ -152,29 +154,58 @@ function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
     );
 }
 
+function StatusBadge({ tone = 'neutral', children }) {
+    return <span className={`mm-badge mm-badge--${tone}`}>{children}</span>;
+}
+
 function EngineRow({ engine, isAdmin, onInstall, showSnackbar, onChanged }) {
-    const status = engine.running.length
-        ? `Running ${engine.running.length}`
-        : engine.installed ? 'Installed' : 'Not installed';
+    const running = engine.running.length;
     const canPull = isAdmin && !engine.installed && engine.id === 'vllm';
     return (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, flexWrap: 'wrap', borderTop: '1px solid var(--border-primary)' }}>
-            <Box sx={{ flex: '1 1 260px', minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 600, fontSize: '0.875rem' }}>{engine.label}</Typography>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>{engine.summary}</Typography>
-            </Box>
-            <Chip size="small" label={status} color={engine.running.length ? 'success' : 'default'} variant={engine.installed ? 'filled' : 'outlined'} />
-            {engine.version && <Chip size="small" variant="outlined" label={engine.version} />}
-            {engine.updateAvailable && (
-                <Tooltip title={engine.id === 'llamacpp' ? 'Upgrade here, or with sudo ./update.sh' : 'Pick this up with ./update.sh'}>
-                    <Chip size="small" color="warning" variant="outlined" label={`${engine.latest} available`} />
-                </Tooltip>
-            )}
-            {canPull && <Button size="small" onClick={() => onInstall(engine.id)} sx={{ textTransform: 'none' }}>Install</Button>}
+        <div className="mm-engine">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div className="min-w-0 flex-[1_1_280px]">
+                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{engine.label}</div>
+                    <div className="mt-0.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>{engine.summary}</div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                    {running
+                        ? <StatusBadge tone="ok">Running · {running}</StatusBadge>
+                        : engine.installed ? <StatusBadge>Installed</StatusBadge> : <StatusBadge tone="muted">Not installed</StatusBadge>}
+                    {engine.version && <StatusBadge tone="muted">{engine.version}</StatusBadge>}
+                    {engine.updateAvailable && (
+                        <Tooltip title={engine.id === 'llamacpp' ? 'Upgrade here, or with sudo ./update.sh' : 'Pick this up with ./update.sh'}>
+                            <span><StatusBadge tone="warn">{engine.latest} available</StatusBadge></span>
+                        </Tooltip>
+                    )}
+                    {canPull && <Button size="small" variant="outlined" onClick={() => onInstall(engine.id)} sx={{ ...SMALL_BTN, ml: 0.5 }}>Install</Button>}
+                </div>
+            </div>
             {engine.id === 'llamacpp' && engine.installed && (
-                <LlamaUpgrade engine={engine} isAdmin={isAdmin} showSnackbar={showSnackbar} onChanged={onChanged} />
+                <div className="mt-2"><LlamaUpgrade engine={engine} isAdmin={isAdmin} showSnackbar={showSnackbar} onChanged={onChanged} /></div>
             )}
-        </Box>
+        </div>
+    );
+}
+
+function Field({ label, children }) {
+    return (
+        <label className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-[0.7rem] font-medium" style={{ color: 'var(--text-tertiary)' }}>{label}</span>
+            {children}
+        </label>
+    );
+}
+
+function ToggleCard({ title, description, checked, onChange, disabled }) {
+    return (
+        <label className={`mm-toggle ${checked ? 'is-on' : ''}`} style={{ opacity: disabled ? 0.6 : 1 }}>
+            <span className="min-w-0 flex-1">
+                <span className="block text-[0.82rem] font-medium" style={{ color: 'var(--text-primary)' }}>{title}</span>
+                <span className="mt-0.5 block text-[0.72rem] leading-snug" style={{ color: 'var(--text-tertiary)' }}>{description}</span>
+            </span>
+            <Switch size="small" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+        </label>
     );
 }
 
@@ -203,6 +234,24 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
             body: JSON.stringify({ modelName: 'Qwen3.8-Flash-Next', format: 'gguf', size }),
         }).then(r => (r.ok ? r.json() : null)).then(setPlan).catch(() => {});
     }, [size, data?.engines?.find(e => e.id === 'strata')?.running?.length]);
+
+    // While the model is loaded, the form shows what it was loaded with.
+    const loadedNow = !!data?.engines?.find(e => e.id === 'strata')?.running?.includes('Qwen3.8-Flash-Next');
+    useEffect(() => {
+        if (!loadedNow) return;
+        fetch('/api/engines/instances', { credentials: 'include' })
+            .then(r => (r.ok ? r.json() : null)).then((list) => {
+                const cfg = (list || []).find(i => i.name === 'Qwen3.8-Flash-Next')?.config;
+                if (!cfg) return;
+                const sizeKey = Object.entries(data.flashNextSizes || {}).find(([, v]) => v.label === cfg.strataSize)?.[0];
+                if (sizeKey) setSize(sizeKey);
+                if (cfg.contextSize) setContext(cfg.contextSize);
+                if (cfg.kv) setKv(cfg.kv);
+                if (cfg.parallelSlots) setParallel(cfg.parallelSlots);
+                setContextShift(cfg.contextShift !== false);
+                setCompressMemory(cfg.compressMemory === true);
+            }).catch(() => {});
+    }, [loadedNow]); // eslint-disable-line react-hooks/exhaustive-deps
 
     if (!data) return null;
     const strata = plan?.plan?.ranked?.find(r => r.engine === 'strata');
@@ -233,47 +282,71 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
             id="engines"
             icon={Cpu}
             title="Inference engines"
-            summary="Each model is routed to the engine that suits its format and this machine. Speeds measured here take priority."
+            summary="The engines that run your models. Each model goes to the one that suits its format and this machine."
             defaultOpen={false}
         >
-            <Box>
-                {data.engines.map(e => <EngineRow key={e.id} engine={e} isAdmin={isAdmin} onInstall={install} showSnackbar={showSnackbar} onChanged={refresh} />)}
+            <div className="flex flex-col gap-4">
+                <div className="mm-engine-list">
+                    {data.engines.map(e => <EngineRow key={e.id} engine={e} isAdmin={isAdmin} onInstall={install} showSnackbar={showSnackbar} onChanged={refresh} />)}
+                </div>
 
-                <Box sx={{ borderTop: '1px solid var(--border-primary)', pt: 1.5, mt: 0.5 }}>
-                    <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', mb: 1 }}>Qwen3.8-Flash-Next with Strata</Typography>
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <Select size="small" value={size} onChange={e => setSize(e.target.value)} sx={{ minWidth: 150 }}>
-                            {Object.entries(data.flashNextSizes).map(([k, v]) => (
-                                <MenuItem key={k} value={k}>{v.label} ({v.downloadGiB} GB)</MenuItem>
-                            ))}
-                        </Select>
-                        <Select size="small" value={context} onChange={e => setContext(e.target.value)}>
-                            {CONTEXTS.map(([v, l]) => <MenuItem key={v} value={v}>{l} context</MenuItem>)}
-                        </Select>
-                        <Tooltip title="How the conversation memory (KV cache) is stored. Smaller formats leave more GPU memory for the model, which is faster.">
-                            <Select size="small" value={kv} onChange={e => setKv(e.target.value)}>
+                <div className="mm-panel">
+                    <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                            <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Load Qwen3.8-Flash-Next with Strata</div>
+                            <div className="mt-0.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                                {loaded ? 'Loaded now. Stop it under Running to load it again with other settings.' : 'Choose the settings, then load. Loading takes about 2–3 minutes.'}
+                            </div>
+                        </div>
+                        {loaded && <StatusBadge tone="ok">Loaded</StatusBadge>}
+                    </div>
+                    <div className="mm-fields">
+                        <Field label="Model file">
+                            <Select size="small" value={size} onChange={e => setSize(e.target.value)} disabled={loaded} sx={SELECT_SX}>
+                                {Object.entries(data.flashNextSizes).map(([k, v]) => (
+                                    <MenuItem key={k} value={k}>{v.label} · {v.downloadGiB} GB</MenuItem>
+                                ))}
+                            </Select>
+                        </Field>
+                        <Field label="Context">
+                            <Select size="small" value={context} onChange={e => setContext(e.target.value)} disabled={loaded} sx={SELECT_SX}>
+                                {(CONTEXTS.some(([v]) => v === context) ? CONTEXTS : [...CONTEXTS, [context, `${Math.round(context / 1024)}K`]]).map(([v, l]) => <MenuItem key={v} value={v}>{l} tokens</MenuItem>)}
+                            </Select>
+                        </Field>
+                        <Field label="KV cache">
+                            <Select size="small" value={kv} onChange={e => setKv(e.target.value)} disabled={loaded} sx={SELECT_SX}>
                                 {KV_TYPES.map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
                             </Select>
-                        </Tooltip>
-                        <Tooltip title="Requests served at the same time (1 to 8). Each extra one reserves GPU memory for its own conversation memory, leaving less room for the model, so a single request runs fastest.">
-                            <Select size="small" value={parallel} onChange={e => setParallel(e.target.value)}>
-                                {PARALLEL.map(n => <MenuItem key={n} value={n}>{n === 1 ? '1 request at a time' : `${n} requests at once`}</MenuItem>)}
+                        </Field>
+                        <Field label="Requests at once">
+                            <Select size="small" value={parallel} onChange={e => setParallel(e.target.value)} disabled={loaded} sx={SELECT_SX}>
+                                {PARALLEL.map(n => <MenuItem key={n} value={n}>{n === 1 ? '1 (fastest)' : n}</MenuItem>)}
                             </Select>
-                        </Tooltip>
-                        <Tooltip title="When a conversation outgrows the context, drop its oldest messages (and index an oversized earlier upload) instead of failing the request.">
-                            <FormControlLabel control={<Switch size="small" checked={contextShift} onChange={e => setContextShift(e.target.checked)} />} label="Context shifting" sx={{ mr: 0 }} />
-                        </Tooltip>
-                        <Tooltip title="Compress older messages (AIMem) once the conversation fills most of the context.">
-                            <FormControlLabel control={<Switch size="small" checked={compressMemory} onChange={e => setCompressMemory(e.target.checked)} />} label="Compress memory" sx={{ mr: 0 }} />
-                        </Tooltip>
-                        <Button variant="contained" size="small" disabled={blocked || busy || !isAdmin} onClick={load} sx={{ textTransform: 'none' }}>
-                            {loaded ? 'Loaded' : 'Load'}
-                        </Button>
-                    </Box>
-                    {!loaded && strata && !strata.viable && <Alert severity="error" sx={{ mt: 1 }}>{strata.reasons[strata.reasons.length - 1]}</Alert>}
-                    {!loaded && strata?.warnings?.map(w => <Alert key={w} severity="warning" sx={{ mt: 1 }}>{w}</Alert>)}
-                </Box>
-            </Box>
+                        </Field>
+                    </div>
+                    <div className="mm-toggles mt-3">
+                        <ToggleCard
+                            title="Context shifting"
+                            description="When a chat outgrows the context, drop the oldest messages instead of failing."
+                            checked={contextShift} onChange={setContextShift} disabled={loaded}
+                        />
+                        <ToggleCard
+                            title="Compress memory"
+                            description="Compress older messages once a chat fills most of the context."
+                            checked={compressMemory} onChange={setCompressMemory} disabled={loaded}
+                        />
+                    </div>
+                    {!loaded && strata && !strata.viable && <Alert severity="error" sx={{ mt: 2 }}>{strata.reasons[strata.reasons.length - 1]}</Alert>}
+                    {!loaded && strata?.warnings?.map(w => <Alert key={w} severity="warning" sx={{ mt: 2 }}>{w}</Alert>)}
+                    {!loaded && (
+                        <div className="mt-4 flex justify-end">
+                            <Button variant="contained" size="small" disabled={blocked || busy || !isAdmin} onClick={load} sx={{ textTransform: 'none', px: 2.5 }}>
+                                {busy ? 'Starting…' : 'Load model'}
+                            </Button>
+                        </div>
+                    )}
+                </div>
+            </div>
         </ModelsSection>
     );
 }

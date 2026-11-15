@@ -1,52 +1,78 @@
 import React from 'react';
 import { HardDrive as StorageIcon } from 'lucide-react';
 
-// Phase 6: Tailwind chrome for the My Models tab.
-//
-// Owns only the page-header tile so the tab's outer surface matches
-// LogsPanel / UsersPanel / AppsPanel. The three inner sections —
-// Running Instances, Cached sglang HF Models, Available Models — render
-// inside via {children}; their cards are still MUI for now and
-// inherit theme colors via the Phase 3 component overrides. A full
-// rebuild of the running-instance cards (~260 lines: status/port/
-// backend pills, KV-cache slots, log streams, control surface) is a
-// dedicated future port — this commit just unifies the page chrome.
-//
-// Props:
-//   instancesLoaded   number — used in the subtitle
-//   children          the existing tab content (Grid + 3 sections)
+// Page header for the My Models tab: title, three figures (loaded, downloaded,
+// on disk) and jump links to each section below. Sections open when jumped to
+// (see ModelsSection's `models-section-open` listener).
 
-export default function MyModelsPanel({ instancesLoaded = 0, children }) {
+const LINKS = [
+    ['running', 'Running'],
+    ['available', 'Library'],
+    ['hf-cache', 'HF cache'],
+    ['engines', 'Engines'],
+    ['roles', 'Model roles'],
+];
+
+function Stat({ label, value }) {
+    return (
+        <div className="min-w-0 rounded-xl px-3 py-2.5 sm:min-w-[96px] sm:px-3.5" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-primary)' }}>
+            <div className="text-[0.68rem] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{label}</div>
+            <div className="mt-0.5 text-lg font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{value}</div>
+        </div>
+    );
+}
+
+function jump(id) {
+    window.dispatchEvent(new CustomEvent('models-section-open', { detail: id }));
+    // Let the section render open before scrolling to it.
+    setTimeout(() => {
+        document.getElementById(`models-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 30);
+}
+
+export default function MyModelsPanel({ instancesLoaded = 0, modelsCount = 0, diskBytes = 0, hasHfCache = false, children }) {
+    const disk = diskBytes > 0 ? `${(diskBytes / 1024 ** 3).toFixed(diskBytes > 100 * 1024 ** 3 ? 0 : 1)} GB` : '—';
+    const links = LINKS.filter(([id]) => (id === 'running' ? instancesLoaded > 0 : id === 'hf-cache' ? hasHfCache : true));
     return (
         <div className="flex flex-col gap-4">
-            {/* Page header — same vocabulary as Logs/Users/Apps:
-                9x9 accent-tinted icon tile + title/subtitle stack. */}
             <div
-                className="flex items-center gap-3 rounded-xl border px-4 py-3"
-                style={{
-                    backgroundColor: 'var(--surface-primary)',
-                    borderColor: 'var(--border-primary)',
-                }}
+                className="rounded-2xl border px-5 py-4"
+                style={{ backgroundColor: 'var(--surface-primary)', borderColor: 'var(--border-primary)' }}
             >
-                <span
-                    className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
-                >
-                    <StorageIcon size={20} strokeWidth={1.75} />
-                </span>
-                <div className="min-w-0">
-                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        My Models
+                <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <span
+                            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl"
+                            style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
+                        >
+                            <StorageIcon size={20} strokeWidth={1.75} />
+                        </span>
+                        <div className="min-w-0">
+                            <div className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>My Models</div>
+                            <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                                Loaded models, your local library and the engines that run them
+                            </div>
+                        </div>
                     </div>
-                    <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
-                        {instancesLoaded > 0
-                            ? `${instancesLoaded} model${instancesLoaded > 1 ? 's' : ''} currently loaded · manage instances, cache, and downloads`
-                            : 'Manage loaded instances, the sglang HF cache, and your local model library'}
+                    <div className="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto">
+                        <Stat label="Loaded" value={instancesLoaded} />
+                        <Stat label="Downloaded" value={modelsCount} />
+                        <Stat label="On disk" value={disk} />
                     </div>
                 </div>
+                <nav className="mt-4 flex flex-wrap gap-1.5" aria-label="My Models sections">
+                    {links.map(([id, label]) => (
+                        <button
+                            key={id}
+                            type="button"
+                            onClick={() => jump(id)}
+                            className="mm-jump rounded-full px-3 py-1 text-xs font-medium"
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </nav>
             </div>
-
-            {/* Tab body (still MUI inside, themed via Phase 3 overrides) */}
             {children}
         </div>
     );

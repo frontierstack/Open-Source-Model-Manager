@@ -8938,7 +8938,12 @@ console.log(chip);`
 
                         {/* My Models Tab */}
                         {visibleTabOrder[activeTab] === 1 && (
-                            <MyModelsPanel instancesLoaded={liveInstances.length}>
+                            <MyModelsPanel
+                                instancesLoaded={liveInstances.length}
+                                modelsCount={models.filter(m => !m.externalInstance).length}
+                                diskBytes={models.filter(m => !m.externalInstance).reduce((n, m) => n + (Number(m.fileSize) || 0), 0)}
+                                hasHfCache={hfCacheEntries.length > 0}
+                            >
                             <Grid container spacing={1.5}>
                                 {/* Running Instances — Phase 7 Tailwind port */}
                                 {liveInstances.length > 0 && (
@@ -9213,8 +9218,9 @@ console.log(chip);`
                                     <ModelsSection
                                         id="available"
                                         icon={LucideHardDrive}
-                                        title="Available models"
-                                        summary={models.filter(m => !m.externalInstance).length > 0 ? `${models.filter(m => !m.externalInstance).length} model${models.filter(m => !m.externalInstance).length > 1 ? 's' : ''} downloaded` : 'No models downloaded yet'}
+                                        title="Library"
+                                        count={models.filter(m => !m.externalInstance).length}
+                                        summary={models.filter(m => !m.externalInstance).length > 0 ? 'Models downloaded to this server' : 'No models downloaded yet'}
                                     >
                                             {models.filter(m => !m.externalInstance).length === 0 ? (
                                                 <Box sx={{ textAlign: 'center', py: 6 }}>
@@ -9236,7 +9242,10 @@ console.log(chip);`
                                                         // A crashed container stays in modelInstances (status stopped/oom_killed)
                                                         // so the UI can show it died — it must still be loadable from here.
                                                         const isCrashed = model.instanceStatus === 'stopped' || model.instanceStatus === 'oom_killed';
-                                                        const isRunning = !isCrashed && (model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp');
+                                                        // Strata serves a model under its own name (folder
+                                                        // Qwen3.8-Flash-Next-Q2_0 runs as Qwen3.8-Flash-Next).
+                                                        const engineInstance = liveInstances.find(i => (i.backend === 'strata' || i.backend === 'vllm') && model.name.startsWith(i.name));
+                                                        const isRunning = !isCrashed && (model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp' || !!engineInstance);
                                                         const isLoading = model.status.includes('Starting') || model.status.includes('Loading');
                                                         // Interrupted / truncated download: never let it look healthy.
                                                         const ds = model.downloadState || {};
@@ -9347,7 +9356,7 @@ console.log(chip);`
                                                                                 </Tooltip>
                                                                             ) : (
                                                                                 <Chip
-                                                                                    label={model.status}
+                                                                                    label={engineInstance && !isCrashed ? `Running in ${engineInstance.backend === 'strata' ? 'Strata' : 'vLLM'}` : model.status}
                                                                                     size="small"
                                                                                     color={
                                                                                         isRunning ? 'success' :

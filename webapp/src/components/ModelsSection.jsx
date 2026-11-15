@@ -9,7 +9,9 @@ function readStored() {
 
 // One collapsible card on the My Models page. Every section shares this header
 // so the page reads as one structured list; each remembers its open state.
-export default function ModelsSection({ id, icon: Icon, title, summary, actions, defaultOpen = true, children }) {
+// `count` shows a small badge next to the title; the section is reachable from
+// the page header's jump links via the element id `models-section-<id>`.
+export default function ModelsSection({ id, icon: Icon, title, summary, count, actions, defaultOpen = true, children }) {
     const [open, setOpen] = useState(() => {
         const stored = readStored();
         return typeof stored[id] === 'boolean' ? stored[id] : defaultOpen;
@@ -21,9 +23,19 @@ export default function ModelsSection({ id, icon: Icon, title, summary, actions,
             return next;
         });
     };
+    React.useEffect(() => {
+        // A jump link from the page header opens the section it points at.
+        const onOpen = (e) => { if (e.detail === id) setOpen(true); };
+        window.addEventListener('models-section-open', onOpen);
+        return () => window.removeEventListener('models-section-open', onOpen);
+    }, [id]);
     return (
-        <section className="rounded-xl border" style={{ backgroundColor: 'var(--surface-primary)', borderColor: 'var(--border-primary)' }}>
-            <div className="flex items-center gap-3 px-4 py-2.5">
+        <section
+            id={`models-section-${id}`}
+            className="mm-section rounded-2xl border"
+            style={{ backgroundColor: 'var(--surface-primary)', borderColor: 'var(--border-primary)', scrollMarginTop: 16 }}
+        >
+            <div className="flex items-center gap-3 px-5 py-4">
                 <button
                     type="button"
                     onClick={toggle}
@@ -32,13 +44,23 @@ export default function ModelsSection({ id, icon: Icon, title, summary, actions,
                     style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', color: 'inherit' }}
                 >
                     {Icon && (
-                        <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}>
-                            <Icon size={15} strokeWidth={1.75} />
+                        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}>
+                            <Icon size={16} strokeWidth={1.75} />
                         </span>
                     )}
                     <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</span>
-                        {summary && <span className="block truncate text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>{summary}</span>}
+                        <span className="flex items-center gap-2">
+                            <span className="text-[0.95rem] font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</span>
+                            {count != null && (
+                                <span
+                                    className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[0.68rem] font-semibold"
+                                    style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                                >
+                                    {count}
+                                </span>
+                            )}
+                        </span>
+                        {summary && <span className="mt-0.5 block truncate text-xs" style={{ color: 'var(--text-tertiary)' }}>{summary}</span>}
                     </span>
                 </button>
                 {actions && <div className="flex flex-shrink-0 items-center gap-1">{actions}</div>}
@@ -46,13 +68,13 @@ export default function ModelsSection({ id, icon: Icon, title, summary, actions,
                     type="button"
                     onClick={toggle}
                     aria-label={open ? `Collapse ${title}` : `Expand ${title}`}
-                    className="flex-shrink-0"
-                    style={{ background: 'none', border: 0, padding: 2, cursor: 'pointer', color: 'var(--text-tertiary)' }}
+                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md"
+                    style={{ background: 'none', border: 0, cursor: 'pointer', color: 'var(--text-tertiary)' }}
                 >
                     <ChevronDown size={16} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
                 </button>
             </div>
-            {open && <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-primary)' }}>{children}</div>}
+            {open && <div className="px-5 pb-5 pt-1">{children}</div>}
         </section>
     );
 }
