@@ -9410,72 +9410,61 @@ console.log(chip);`
                                         <ModelsSection
                                             id="hf-cache"
                                             icon={DownloadCloud}
-                                            title="Cached Hugging Face models"
-                                            summary={`${hfCacheEntries.length} repo${hfCacheEntries.length > 1 ? 's' : ''} · ${formatBytes(hfCacheTotalBytes)} total — reloads use this cache (no re-download)`}
+                                            title="Hugging Face cache"
+                                            count={hfCacheEntries.length}
+                                            summary={`${formatBytes(hfCacheTotalBytes)} on disk · loading one again reuses these files instead of downloading`}
                                             defaultOpen={false}
                                             actions={
-                                                        <Tooltip title="Refresh cache list">
-                                                            <IconButton size="small" onClick={fetchHfCache} disabled={hfCacheLoading}>
-                                                                <RefreshIcon />
-                                                            </IconButton>
-                                                        </Tooltip>}
+                                                <Tooltip title="Refresh the list">
+                                                    <span>
+                                                        <button type="button" className="mm-icon-btn" onClick={fetchHfCache} disabled={hfCacheLoading} aria-label="Refresh the list">
+                                                            <RefreshIcon sx={{ fontSize: 16 }} />
+                                                        </button>
+                                                    </span>
+                                                </Tooltip>}
                                         >
-                                                <Grid container spacing={2}>
-                                                    {hfCacheEntries.map(entry => (
-                                                        <Grid item xs={12} sm={6} md={4} key={entry.dirName}>
-                                                            <Card variant="outlined" sx={{
-                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'var(--bg-hover)',
-                                                                borderColor: entry.loaded ? 'success.dark' : 'var(--border-focus)'
-                                                            }}>
-                                                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                                                    {/* Header row mirrors GGUF Available Models card:
-                                                                        name + Load/Delete IconButtons on the right. */}
-                                                                    <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.75 }}>
-                                                                        <Typography sx={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', mr: 1 }}>
-                                                                            {entry.repoId}
-                                                                        </Typography>
-                                                                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                                                                            {!entry.loaded && (
-                                                                                <Tooltip title="Load Model">
-                                                                                    <IconButton
-                                                                                        size="small"
-                                                                                        onClick={() => handleReloadHfCache(entry)}
-                                                                                        sx={{ color: 'primary.main' }}
-                                                                                    >
-                                                                                        <PlayArrowIcon fontSize="small" />
-                                                                                    </IconButton>
-                                                                                </Tooltip>
-                                                                            )}
-                                                                            <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
-                                                                                <span>
-                                                                                    <IconButton
-                                                                                        size="small"
-                                                                                        disabled={entry.loaded}
-                                                                                        onClick={() => handleDeleteHfCache(entry)}
-                                                                                        sx={{ color: 'error.main' }}
-                                                                                    >
-                                                                                        <DeleteIcon fontSize="small" />
-                                                                                    </IconButton>
-                                                                                </span>
-                                                                            </Tooltip>
-                                                                        </Box>
-                                                                    </Box>
-                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                                        <Chip label={formatBytes(entry.sizeBytes)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
-                                                                        {entry.loaded && (
-                                                                            <Chip label="Loaded" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem' }} />
-                                                                        )}
-                                                                        {entry.lastModified > 0 && (
-                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', ml: 'auto' }}>
-                                                                                {new Date(entry.lastModified).toLocaleDateString()}
-                                                                            </Typography>
-                                                                        )}
-                                                                    </Box>
-                                                                </CardContent>
-                                                            </Card>
-                                                        </Grid>
-                                                    ))}
-                                                </Grid>
+                                            <div className="mm-option-list">
+                                                {hfCacheEntries.map(entry => {
+                                                    const [owner, ...rest] = String(entry.repoId || '').split('/');
+                                                    const repoName = rest.join('/') || owner;
+                                                    return (
+                                                        <div key={entry.dirName} className="mm-cache-row">
+                                                            <span className="mm-role-icon"><DownloadCloud size={14} strokeWidth={1.75} /></span>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="truncate text-sm font-semibold" style={{ color: 'var(--text-primary)' }} title={entry.repoId}>{repoName}</div>
+                                                                <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                                                                    {rest.length > 0 && <span>{owner}</span>}
+                                                                    {rest.length > 0 && <span>·</span>}
+                                                                    <span className="tabular-nums">{formatBytes(entry.sizeBytes)}</span>
+                                                                    {entry.lastModified > 0 && <><span>·</span><span>{new Date(entry.lastModified).toLocaleDateString()}</span></>}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex flex-shrink-0 items-center gap-1.5">
+                                                                {entry.loaded
+                                                                    ? <span className="mm-badge mm-badge--ok">Loaded</span>
+                                                                    : (
+                                                                        <button type="button" className="mm-btn" onClick={() => handleReloadHfCache(entry)}>
+                                                                            <PlayArrowIcon sx={{ fontSize: 15 }} /> Load
+                                                                        </button>
+                                                                    )}
+                                                                <Tooltip title={entry.loaded ? 'Stop the model first' : 'Delete from the cache (frees disk; the next load downloads it again)'}>
+                                                                    <span>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="mm-icon-btn mm-icon-btn--danger"
+                                                                            disabled={entry.loaded}
+                                                                            onClick={() => handleDeleteHfCache(entry)}
+                                                                            aria-label={`Delete ${entry.repoId} from the cache`}
+                                                                        >
+                                                                            <DeleteIcon sx={{ fontSize: 16 }} />
+                                                                        </button>
+                                                                    </span>
+                                                                </Tooltip>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </ModelsSection>
                                     </Grid>
                                 )}
