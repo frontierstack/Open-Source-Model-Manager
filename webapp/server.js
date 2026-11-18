@@ -1521,7 +1521,7 @@ function buildChatRuntimePrelude({ delegate = true } = {}) {
         `BEFORE YOU SEND the final answer, check it against the user's request: every part answered, the exact number of items asked for, the requested format, length, language and tone, nothing they excluded, sources if they asked for them, files delivered with make_downloadable. Fix what is missing. If part of the request could not be done, say which part and why in one line — never present a guess as a finding.`,
         `NARRATION: every tool takes an optional \`purpose\` argument — always fill it with one short line (≤ 20 words) on what the call is for; it is shown to the user as live progress. You may also write one short line before a tool call; it must be followed by the actual call in the same response. Narration goes before tool calls only, never into the final answer.`,
         `AUTOMATIONS: this server has a built-in automation engine (schedules, webhooks, Telegram/Slack triggers; fetch pages, RSS and APIs, run a model, de-duplicate, build a PDF/CSV, deliver to Telegram/Slack). For anything RECURRING ("every morning", "notify me when…", "monitor this page") use \`build_automation\` — never suggest a cron job, a script or a GitHub Action instead.`,
-        ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free: with one free slot the workers run one after another, so do small parts (2–3 calls) yourself. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
+        ...(delegate ? [`PARALLEL WORKERS (\`delegate\`): when a request splits into 2 or more INDEPENDENT parts that each need real tool work (several searches, pages or files) — researching several topics or products, auditing several sites, files or repos, gathering several kinds of evidence — call delegate ONCE with every part, each a self-contained brief (goal, where to look, what to return), then answer from the reports without redoing their work. You do not need the user to ask for agents. Its description says how many models and slots are free; do small parts (2–3 calls) yourself. If it returns no_parallel_capacity, do every part yourself one after another and do not call it again. Never delegate what you can answer directly or steps that depend on each other's results.`] : []),
     ].join('\n');
     _preludeCache.set(key, text);
     if (_preludeCache.size > 8) _preludeCache.delete(_preludeCache.keys().next().value);
@@ -20140,6 +20140,41 @@ function planWorkerModels(count, preferred, exclude) {
     });
 }
 
+// How many worker agents can REALLY generate at once for a delegate call.
+// chatCapacity() counts the parent turn as busy on its own model, but the
+// parent is blocked inside the delegate tool and generates nothing while the
+// workers run — so its slot is a lane too. Everything else holding a slot
+// (other turns, sidecars, background jobs) is subtracted. Models too small to
+// host a worker turn, and the checker (kept out of the fan-out), give no lanes.
+// lanes <= 1 means the workers would run ONE AFTER ANOTHER on one slot: each
+// re-pays the prelude + catalog prefill, so it is slower than the parent doing
+// the parts itself, and N full worker turns back to back is what used to hold
+// the answer for up to DELEGATE_TIMEOUT_MS with nothing to show.
+function delegateCapacity({ parentBusyKey = null, exclude = null } = {}) {
+    const skip = new Set(Array.isArray(exclude) ? exclude : (exclude ? [exclude] : []));
+    const models = [];
+    let smallCtx = 0;
+    for (const m of chatCapacity().models) {
+        if (skip.has(m.name)) continue;
+        const c = modelContextFor(m.name);
+        if (c !== null && c < WORKER_MIN_CONTEXT) { smallCtx += 1; continue; }
+        const busyOthers = Math.max(0, (m.busy || 0) - (m.name === parentBusyKey ? 1 : 0));
+        const free = Math.max(0, (m.slots || 1) - busyOthers);
+        models.push({ name: m.name, slots: m.slots || 1, free });
+    }
+    const lanes = models.reduce((a, m) => a + m.free, 0);
+    return { lanes, models, modelsFree: models.filter(m => m.free > 0).length, smallCtx };
+}
+function delegateParentBusyKey(ctx) {
+    const req = ctx && ctx._req;
+    return (req && req._busy && req._busy.key) || (ctx && ctx.model) || null;
+}
+// The user explicitly asked for parallel agents / delegation in this message.
+const USER_ASKS_DELEGATION_RE = /\b(?:sub-?agents?|worker agents?|(?:use|with|spin up|launch|start|run|spawn)\s+(?:\w+\s+){0,2}(?:agents?|workers?)|delegat(?:e|ion)|in parallel|parallel agents?|at the same time|simultaneously)\b/i;
+function userAskedForDelegation(text) {
+    return USER_ASKS_DELEGATION_RE.test(String(text || '').slice(0, 4000));
+}
+
 function resolveBusyKey(model) {
     if (model && modelInstances.has(model)) return model;
     if (model) return null;   // unknown model → the handler 400s; count nothing
@@ -20813,7 +20848,16 @@ const chatStreamHandlerInner = async (req, res) => {
         try {
             // `delegate` is offered only to a top-level turn with no two-model
             // partner (the tool's own build() rules); the prelude mirrors that.
-            const delegateOffered = !req.delegate && !assistantModelForTurn && checkPermission(req.apiKeyData, 'query');
+            const delegateOffered = !req.delegate && !assistantModelForTurn && checkPermission(req.apiKeyData, 'query')
+                && (() => {
+                    // Only teach delegation when workers can actually run side by
+                    // side (or the user asked for agents) — the tool's build()
+                    // applies the same rule, so prompt and catalog agree.
+                    try {
+                        const cap = delegateCapacity({ parentBusyKey: req._busy && req._busy.key });
+                        return cap.lanes >= 2 || (cap.lanes >= 1 && userAskedForDelegation(latestUserAskFromBody(req.body && req.body.messages, req.body && req.body.message)));
+                    } catch (_) { return true; }
+                })();
             const basePrelude = buildChatRuntimePrelude({ delegate: delegateOffered });
             let prelude = effortDirectives.systemHint
                 ? `${basePrelude}\n${effortDirectives.systemHint}`
@@ -29095,6 +29139,18 @@ const ASSISTANT_JOB_MAX_JOBS = Math.max(0, parseInt(process.env.ASSISTANT_JOB_MA
 const DELEGATE_MAX_DEPTH = Math.max(0, parseInt(process.env.DELEGATE_MAX_DEPTH || '1', 10) || 1);
 const DELEGATE_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DELEGATE_TIMEOUT_MS || String(20 * 60 * 1000), 10) || 20 * 60 * 1000);
 const DELEGATE_ANSWER_CHARS = Math.max(2000, parseInt(process.env.DELEGATE_ANSWER_CHARS || '12000', 10) || 12000);
+// Round cap for one worker turn (0 = the global tool-loop cap). A worker that
+// has not converged in this many rounds is asked for its report.
+const DELEGATE_WORKER_MAX_ROUNDS = Math.max(0, parseInt(process.env.DELEGATE_WORKER_MAX_ROUNDS || '12', 10) || 0);
+// Wall-clock budget for a whole delegate call. Workers that have not STARTED
+// by then are skipped (the parent does those parts itself); running ones are
+// bounded by their own time limit, which starts when they start.
+const DELEGATE_TOTAL_MS = Math.max(60000, parseInt(process.env.DELEGATE_TOTAL_MS || String(15 * 60 * 1000), 10) || 15 * 60 * 1000);
+// When only one lane exists and the user explicitly asked for agents, the
+// workers run one after another with this combined budget and a tighter
+// round cap, so the answer is never held for N full worker turns.
+const DELEGATE_SERIAL_BUDGET_MS = Math.max(60000, parseInt(process.env.DELEGATE_SERIAL_BUDGET_MS || String(6 * 60 * 1000), 10) || 6 * 60 * 1000);
+const DELEGATE_SERIAL_MAX_ROUNDS = Math.max(2, parseInt(process.env.DELEGATE_SERIAL_MAX_ROUNDS || '6', 10) || 6);
 // Checker (secondary model) review of worker reports: how many revision rounds
 // the primary gets when the checker flags issues, and the review call's cap.
 const DELEGATE_FIX_ROUNDS = Math.max(0, parseInt(process.env.DELEGATE_FIX_ROUNDS || '1', 10) || 0);
@@ -37605,6 +37661,17 @@ app.use((req, res) => {
             // which does not block and is round-capped. Offered both, a lead
             // once called delegate and sat blocked 348 s on one uncapped worker.
             if (ctx && ctx.assistantModel) return null;
+            // Already refused this turn for lack of capacity: do not offer a
+            // tool that will only say no again.
+            if (ctx && ctx._delegateUnavailable) return null;
+            let cap = null;
+            try {
+                cap = delegateCapacity({ parentBusyKey: delegateParentBusyKey(ctx), exclude: (ctx && ctx.checkWorkers && ctx.checkerModel) || null });
+            } catch (_) { cap = null; }
+            const asked = userAskedForDelegation(ctx && ctx.latestUserText);
+            // One model, one slot (or nothing usable): there is nothing to
+            // delegate TO. Hide the tool unless the user asked for agents.
+            if (cap && cap.lanes < 2 && !(asked && cap.lanes >= 1)) return null;
             return {
                 type: 'function',
                 function: {
@@ -37612,27 +37679,10 @@ app.use((req, res) => {
                     description:
                         `Run 2–${DELEGATE_MAX_PARALLEL} INDEPENDENT sub-tasks IN PARALLEL with worker agents that each have their own tools (web, files, sandbox) — use for research on several topics/sites/files, comparisons, or any request with separable parts that each need real work (several searches, pages or files). ` +
                         (() => {
-                            try {
-                                // Workers fan out across every loaded model with a
-                                // free slot, so the honest number is how many
-                                // SEPARATE models can take one — two workers on two
-                                // models run at full speed; two on one model's two
-                                // slots share a card and are slower than doing it
-                                // yourself.
-                                const preferred = ctx.workerModel || ctx.model;
-                                const usable = chatCapacity().models
-                                    .filter(m => m.free > 0)
-                                    .filter(m => { const c = modelContextFor(m.name); return c === null || c >= WORKER_MIN_CONTEXT; });
-                                const models = usable.length;
-                                const free = usable.reduce((a, m) => a + m.free, 0)
-                                    || (chatCapacity().models.find(m => m.name === preferred) || { free: 0 }).free;
-                                if (models >= 2) {
-                                    return `${models} separate models are loaded and free, so up to ${Math.min(models, DELEGATE_MAX_PARALLEL)} workers run at FULL speed side by side — this is when delegating actually wins. `;
-                                }
-                                return free <= 1
-                                    ? `NOTE: only one model with ${free <= 0 ? 'no' : 'one'} free slot right now, so workers run ONE AT A TIME — delegate only when the sub-tasks are large; a task of 2–3 tool calls is faster done yourself. `
-                                    : `One model with ${free} free slots — workers share its throughput, so they finish little sooner than doing the work yourself unless each sub-task is large. `;
-                            } catch (_) { return ''; }
+                            if (!cap) return '';
+                            if (cap.modelsFree >= 2) return `${cap.modelsFree} separate models are free, so up to ${Math.min(cap.lanes, DELEGATE_MAX_PARALLEL)} workers run side by side at full speed — this is when delegating wins. `;
+                            if (cap.lanes >= 2) return `One model with ${cap.lanes} free slots — up to ${Math.min(cap.lanes, DELEGATE_MAX_PARALLEL)} workers run at once but share its throughput, so delegate only sub-tasks that each need several tool calls. `;
+                            return 'NOTE: only ONE free slot — workers run one after another with a short budget each, slower than doing the parts yourself. Use only because the user asked for agents, with at most 2–3 short tasks. ';
                         })() +
                         'Each worker gets one self-contained task and returns a compact report; you then answer from the reports without re-verifying them. Workers share this conversation\'s /workspace. ' +
                         'Do not use for steps that depend on each other. Write each task as a complete brief: what to find or do, where to look (URLs/paths if known), and exactly what to return (ask for a data table when you will chart it).',
@@ -37725,11 +37775,12 @@ app.use((req, res) => {
                     };
                 });
                 const running = agents.filter(a => a.phase === 'running' || a.phase === 'starting');
+                const queued = agents.filter(a => a.phase === 'queued').length;
                 const spread = [...new Set(agents.map(a => a.model).filter(Boolean))];
                 const on = spread.length > 1 ? ` on ${spread.length} models` : '';
                 const summary = running.length
-                    ? `${running.length}/${agents.length} agents working${on} · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
-                    : `${agents.length} agents finished`;
+                    ? `${running.length}/${agents.length} agents working${on}${queued ? ` (${queued} queued)` : ''} · ` + running.map(a => a.current ? `${a.name}: ${a.current}` : `${a.name}: thinking`).join(' · ')
+                    : queued ? `${queued} agent(s) waiting for a free slot` : `${agents.length} agents finished`;
                 ctx.emitEvent({ type: 'delegate_progress', tool_call_id: callId, agents, summary: summary.slice(0, 400), elapsedMs: Date.now() - started });
             };
             const workerModel = ctx.workerModel || ctx.model;
@@ -37748,10 +37799,35 @@ app.use((req, res) => {
             // report gets checked; that is worth more than the last few
             // percent of placement speed. If the exclusion leaves nothing
             // usable the assigner falls back to the preferred worker model.
+            // ── capacity: is there anything to delegate TO? ──────────────
+            const cap = delegateCapacity({ parentBusyKey: delegateParentBusyKey(ctx), exclude: checker || null });
+            const asked = userAskedForDelegation(ctx.latestUserText);
+            if (cap.lanes < 1 || (cap.lanes < 2 && !asked)) {
+                ctx._delegateUnavailable = true;
+                const why = cap.lanes < 1
+                    ? (cap.models.length ? 'every loaded model is busy with other work' : (cap.smallCtx ? `the loaded model's context per slot is below the ${WORKER_MIN_CONTEXT} tokens a worker needs` : 'no model is loaded that can host a worker'))
+                    : 'only one model slot is free, so workers would run one after another — slower than doing the parts yourself';
+                logUserActivity(ctx.userId, `Delegate: not run — ${why} (${tasks.length} task(s) requested)`);
+                return {
+                    success: false,
+                    error: 'no_parallel_capacity',
+                    message: `Delegation is unavailable right now: ${why}. Do these parts YOURSELF, one after another, with your own tools — keep each one short — then answer. Do not call delegate again this turn.`,
+                    tasks: tasks.map(t => ({ name: t.name, task: t.task.slice(0, 300) })),
+                    capacity: { lanes: cap.lanes, models: cap.models },
+                };
+            }
+            const serial = cap.lanes < 2;
+            const lanes = Math.max(1, Math.min(cap.lanes, tasks.length));
+            const perWorkerMs = serial
+                ? Math.min(DELEGATE_TIMEOUT_MS, Math.max(90000, Math.floor(DELEGATE_SERIAL_BUDGET_MS / tasks.length)))
+                : Math.min(DELEGATE_TIMEOUT_MS, DELEGATE_TOTAL_MS);
+            const workerRounds = serial ? DELEGATE_SERIAL_MAX_ROUNDS : (DELEGATE_WORKER_MAX_ROUNDS || null);
+            const deadlineAt = started + (serial ? DELEGATE_SERIAL_BUDGET_MS + 30000 : DELEGATE_TOTAL_MS);
             const workerModels = planWorkerModels(tasks.length, workerModel, checker || undefined);
             const fanout = [...new Set(workerModels)];
             tasks.forEach((t, i) => { const st = state.get(t.name); if (st) st.model = workerModels[i] || workerModel; });
-            logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} parallel worker agent(s) across ${fanout.length} model(s) [${workerModels.join(', ')}]${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
+            tasks.forEach((t, i) => { if (i >= lanes) { const st = state.get(t.name); st.phase = 'queued'; st.current = 'waiting for a free slot'; } });
+            logUserActivity(ctx.userId, `Delegate: launching ${tasks.length} worker agent(s), ${lanes} at a time${serial ? ' (one free slot — sequential, short budgets)' : ''}, across ${fanout.length} model(s) [${workerModels.join(', ')}]${checker ? ` (checked by ${checker})` : ''} — ${labels.map(l => `"${l}"`).join(', ')}`);
             emit();
             // Checker pass on one worker report. Returns the parsed review
             // (verdict 'unknown' on any failure — never blocks the worker).
@@ -37782,10 +37858,23 @@ app.use((req, res) => {
                     return { verdict: 'unknown', summary: '', issues: [], confidence: null, raw: e && e.message ? e.message : String(e) };
                 }
             };
-            const results = await Promise.all(tasks.map(async (t, taskIndex) => {
+            const runTask = async (t, taskIndex) => {
                 const st = state.get(t.name);
                 const taskModel = workerModels[taskIndex] || workerModel;
-                st.phase = 'running';
+                if (ctx.abortSignal && ctx.abortSignal.aborted) {
+                    st.phase = 'cancelled'; st.current = 'turn cancelled'; emit();
+                    return { name: t.name, status: 'cancelled', model: taskModel, answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: 0 };
+                }
+                // Never START a worker the call's budget cannot cover: the
+                // parent is waiting, and a late start is what used to hold the
+                // answer for the whole worker time limit.
+                const remaining = deadlineAt - Date.now();
+                if (remaining < 45000) {
+                    st.phase = 'skipped'; st.current = 'not started — time budget spent'; emit();
+                    return { name: t.name, status: 'skipped', model: taskModel, error: 'not started: the delegate time budget was spent on the other workers', answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: 0 };
+                }
+                const workerMs = Math.min(perWorkerMs, remaining);
+                st.phase = 'running'; st.current = ''; emit();
                 const taskText = context ? `Background from the parent agent:\n${context}\n\nYOUR TASK:\n${t.task}` : t.task;
                 try {
                     const runOnce = (text) => runDelegatedTurn({
@@ -37799,6 +37888,11 @@ app.use((req, res) => {
                         workspaceBucket: ctx.workspaceBucket,
                         depth: ctx.delegateDepth || 0,
                         signal: ctx.abortSignal,
+                        // Bounded: a time limit that starts when THIS worker
+                        // starts (with a soft deadline that asks for the
+                        // report before it) and a round cap.
+                        timeoutMs: workerMs,
+                        maxRounds: workerRounds,
                         // Worker agents obey the user's tool bans like the parent.
                         userInstructions: (ctx._handoffGoal && ctx._handoffGoal.instructions) || null,
                         onEvent: (ev) => {
@@ -37873,8 +37967,21 @@ app.use((req, res) => {
                     st.phase = 'failed'; st.current = e.message; emit();
                     return { name: t.name, status: 'failed', model: taskModel, error: e.message || String(e), answer: '', toolCalls: 0, tools: [], filesWritten: [], seconds: Math.round((Date.now() - started) / 100) / 10 };
                 }
+            };
+            // A pool sized to the real lanes: queued workers wait HERE, not at
+            // the backend, so their timers only start when they get a slot.
+            const results = new Array(tasks.length);
+            let nextIdx = 0;
+            await Promise.all(Array.from({ length: lanes }, async () => {
+                while (nextIdx < tasks.length) {
+                    const idx = nextIdx++;
+                    results[idx] = await runTask(tasks[idx], idx);
+                }
             }));
+            // A timed-out worker that wrote something still counts as a report.
+            for (const r of results) if (r && r.status === 'timeout' && r.answer) { r.status = 'ok'; r.partial = true; }
             const okCount = results.filter(r => r.status === 'ok').length;
+            const skipped = results.filter(r => r.status === 'skipped').map(r => r.name);
             const totalCalls = results.reduce((a, r) => a + (r.toolCalls || 0), 0);
             const wall = Math.round((Date.now() - started) / 100) / 10;
             logUserActivity(ctx.userId, `Delegate: ${okCount}/${results.length} worker(s) finished — ${totalCalls} tool calls, ${wall}s wall (${results.map(r => `${r.name} ${r.seconds}s on ${r.model || workerModel}${r.review ? ` ✓${r.review.verdict}` : (r.reviewSkipped ? ' (unchecked)' : '')}`).join(', ')})`);
@@ -37890,6 +37997,9 @@ app.use((req, res) => {
                 wallSeconds: wall,
                 workerModel,
                 workerModels,
+                ranAtOnce: lanes,
+                ...(serial ? { sequential: true } : {}),
+                ...(skipped.length ? { notStarted: skipped } : {}),
                 ...(fanout.length > 1 ? { ranInParallelOn: fanout } : {}),
                 ...(checker ? {
                     checkedBy: checker,
@@ -37901,7 +38011,8 @@ app.use((req, res) => {
                 results,
                 note: (okCount === results.length
                     ? 'All workers finished. Answer the user NOW from these reports — synthesize into ONE answer citing the sources/paths they list; do NOT re-search or re-verify what a worker already established unless two reports conflict. If the user asked for a chart, build it from the data in the reports with render_chart. To deliver a file a worker wrote, call make_downloadable on its /workspace path.'
-                    : 'Some workers did not finish (see status/error). Use what came back; redo a failed sub-task yourself only if it is essential.')
+                    : 'Some workers did not finish (see status/error). Use what came back; redo a failed or not-started sub-task yourself only if it is essential, and keep it short. Do not call delegate again for it.')
+                    + (results.some(r => r.partial) ? ' Reports marked partial stopped at their time limit — say what they did not cover.' : '')
                     + (flagged.length ? ` The checker model still has OPEN issues on: ${flagged.map(r => `"${r.name}"`).join(', ')} (see results[].review) — treat those points as unverified and say so, or verify them yourself.` : '')
                     + (unchecked.length ? ` These reports were NOT checked (they ran on the checker model itself): ${unchecked.map(n => `"${n}"`).join(', ')} — treat their claims as unverified.` : ''),
             };
