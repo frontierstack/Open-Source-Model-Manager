@@ -29789,7 +29789,12 @@ async function runSidecarTurn(job, parentReq) {
 }
 
 app.get('/api/chat/capacity', requireAuth, (req, res) => {
-    res.json({ ...chatCapacity(), sidecars: Array.from(sidecarTurns.values()).filter(j => j.status === 'running').length });
+    // `delegateLanes`: how many worker agents could generate at once right now
+    // (free slots on models big enough to host one). The omp extension reads
+    // it before letting omp's own `task` tool spawn subagents.
+    let delegateLanes = null;
+    try { delegateLanes = delegateCapacity({}).lanes; } catch (_) { /* optional */ }
+    res.json({ ...chatCapacity(), delegateLanes, sidecars: Array.from(sidecarTurns.values()).filter(j => j.status === 'running').length });
 });
 
 app.post('/api/conversations/:id/turns', requireAuth, async (req, res) => {

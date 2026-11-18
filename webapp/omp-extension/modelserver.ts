@@ -604,6 +604,8 @@ export default async function (ompApi: ExtensionAPI) {
         }
     });
 
+    registerSubagentCapacityGuard(pi, authedFetch);
+
     // ---- live sandbox state (the anti-compaction machinery) -----------------
     // Everything the agent learns about the sandbox arrives as tool OUTPUT, and
     // tool output is what compaction throws away first (results are truncated to
@@ -2561,6 +2563,48 @@ export function createLoopGuard(opts: { noteAt?: number; blockAt?: number; slowN
             return notes.length ? `\n\n${LOOP_GUARD_MARK} ${notes.join(" ")}` : "";
         },
     };
+}
+
+// omp's own `task` tool spawns subagents that all generate on the model
+// server. With one model slot they can only queue behind each other (and
+// behind this agent), so a fan-out is slower than doing the parts directly and
+// can hold the run for minutes — measured: 3 background scouts on a one-slot
+// model, one failed, 252 s and no answer. Block `task` while the server has
+// fewer than 2 free slots; the reason tells the model to do the work itself.
+// Fails OPEN (server unreachable / old server without delegateLanes).
+// MODELSERVER_TASK_GUARD=0 disables.
+function registerSubagentCapacityGuard(pi: ExtensionAPI, authedFetch: (path: string, init?: RequestInit) => Promise<Response>): void {
+    if (process.env.MODELSERVER_TASK_GUARD === "0") return;
+    const minLanes = Math.max(2, Number(process.env.MODELSERVER_TASK_MIN_SLOTS) || 2);
+    let cache: { at: number; lanes: number | null } | null = null;
+    const lanesNow = async (): Promise<number | null> => {
+        if (cache && Date.now() - cache.at < 5000) return cache.lanes;
+        try {
+            const ac = new AbortController();
+            const t = setTimeout(() => ac.abort(), 3000);
+            const r = await authedFetch("/api/chat/capacity", { signal: ac.signal } as RequestInit).finally(() => clearTimeout(t));
+            if (!r.ok) return null;
+            const j: any = await r.json();
+            const lanes = typeof j?.delegateLanes === "number" ? j.delegateLanes : null;
+            cache = { at: Date.now(), lanes };
+            return lanes;
+        } catch { return null; }
+    };
+    pi.on("tool_call", async (event: any) => {
+        try {
+            if (event.toolName !== "task") return;
+            const lanes = await lanesNow();
+            if (lanes === null || lanes >= minLanes) return;
+            return {
+                block: true,
+                reason:
+                    `[modelserver] Subagents are not available right now: the model server has ${lanes <= 0 ? "no free model slot" : "only one free model slot"}, ` +
+                    `so subagents could only run one after another on the same model as you — slower than doing the work yourself, and they can stall this run. ` +
+                    `Do every part YOURSELF with your own tools (independent lookups can go in one turn as parallel tool calls). ` +
+                    `Do not call task again this run, and do not tell the user that agents or subagents did any of the work — say you did it yourself.`,
+            };
+        } catch { return; }
+    });
 }
 
 function registerLoopGuard(pi: ExtensionAPI): void {
