@@ -1065,9 +1065,23 @@ def look(max_controls=25, text_chars=1200):
     except Exception:
         it = {}
     if (it.get('count') or 0) >= 3:
-        ex = '; '.join(((x.get('title') or '')[:50] + (f" ({x['price']})" if x.get('price') else '')) for x in it['items'][:3])
-        parts.append(f"Repeated items: {it['count']} on this page, e.g. {ex} — items() returns them all with links and prices")
+        parts.append(f"Items on this page: {it['count']} (items() returns all of them with title, href, price, text; "
+                     "use it, do not write CSS selectors):\n" + _ms_items_lines(it['items'], 10))
     return '\n'.join(parts)
+
+
+def _ms_items_lines(rows, n):
+    out = []
+    for x in rows[:n]:
+        bits = [f"  {x.get('i', 0) + 1}. {(x.get('title') or '')[:90]}"]
+        if x.get('price'):
+            bits.append(x['price'])
+        if x.get('href'):
+            bits.append(x['href'][:110])
+        out.append(' — '.join(bits))
+    if len(rows) > n:
+        out.append(f'  … {len(rows) - n} more: items()')
+    return '\n'.join(out)
 
 
 def _ms_step_report(auto_captcha=True):
@@ -1104,3 +1118,56 @@ def _ms_step_report(auto_captcha=True):
             rep['clicks'] += list(_ms_clicks)
             del _ms_clicks[:]
     return rep
+
+
+
+# ---- steer hand-written selector queries to items() ------------------------
+# When the model's OWN js() query (not a helper's) uses querySelector and finds
+# nothing or throws, on a page where items() sees a list, the cell output says
+# so and carries the items, so a wrong guess still delivers the data.
+import sys as _mssys
+
+try:
+    _ms_raw_js
+except NameError:
+    _ms_raw_js = js  # noqa: F821  (browser-harness helper)
+
+_MS_HELPER_FILE = 'browser_agent_helpers.py'
+
+
+def _ms_items_hint():
+    try:
+        got = _ms_raw_js(_MS_ITEMS_JS) or {}
+    except Exception:
+        return ''
+    rows = got.get('items') or []
+    if len(rows) < 3:
+        return ''
+    return (f"[items() found {len(rows)} items on this page — use items() instead of writing selectors]\n"
+            + _ms_items_lines(rows, 12))
+
+
+def _ms_empty(v):
+    return v is None or v == '' or v == 0 or v == '0' or (isinstance(v, (list, dict)) and not v)
+
+
+def js(expression, target_id=None):
+    try:
+        caller = _mssys._getframe(1).f_code.co_filename
+    except Exception:
+        caller = ''
+    expr = str(expression)
+    if caller == _MS_HELPER_FILE or 'querySelector' not in expr or target_id is not None:
+        return _ms_raw_js(expression, target_id)
+    try:
+        r = _ms_raw_js(expression, target_id)
+    except Exception as e:
+        hint = _ms_items_hint()
+        if hint:
+            raise RuntimeError(f"{e}\n{hint}") from None
+        raise
+    if _ms_empty(r):
+        hint = _ms_items_hint()
+        if hint:
+            print(f"[your selector matched nothing]\n{hint}")
+    return r
