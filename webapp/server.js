@@ -32595,7 +32595,9 @@ app.use((req, res) => {
             deps: {
                 archive: (u) => raceTimeout(fetchArchivedCopy(u, maxLength), 15000),
                 search: (query) => raceTimeout(tools.toolRegistry.get('web_search').execute({ query, limit: 8 }), 15000),
-                readPage: (u) => (urlBlockReason(u) ? Promise.resolve(null) : raceTimeout(fetchUrlContent(u, { timeout: 8000, maxLength: 2500, waitForJS: true }), 10000)),
+                // Test switch: with this file present the fallback skips its fast
+                // reads of other sites, so the browser-agent step can be exercised.
+                readPage: (u) => (urlBlockReason(u) || fsSync.existsSync('/tmp/blocked-fallback-no-fast-reads') ? Promise.resolve(null) : raceTimeout(fetchUrlContent(u, { timeout: 8000, maxLength: 2500, waitForJS: true }), 10000)),
                 isBlockedHost: (u) => !!hostBlockReason(u),
             },
         });
