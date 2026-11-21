@@ -12,7 +12,7 @@
 #   open_url(url)         navigate, wait, close cookie banners, handle a simple captcha
 #   back() forward() reload() scroll_down() scroll_up() scroll_to(text)
 #   read_page() find_text(term) dismiss_popups() obstacle() solve_captcha()
-#   look() links() tables() next_page() search(query)
+#   look() links() tables() items() next_page() search(query)
 # click_at_xy() is replaced by a version that moves the mouse there first and
 # records the click, so the chat can mark it on the step's screenshot.
 
@@ -962,6 +962,66 @@ def search(query):
     return fill(sel, query, submit=True)
 
 
+_MS_ITEMS_JS = r"""(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 10; };
+  const txt = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+  const sig = el => el.tagName + '.' + Array.from(el.classList).filter(c => !/^(active|selected|odd|even|first|last|hover)$/i.test(c)).slice(0, 2).join('.');
+  const chrome = el => !!el.closest('nav,header,footer,[role=navigation],[role=banner],[role=contentinfo],aside');
+  let best = null;
+  for (const parent of document.body.querySelectorAll('*')) {
+    const kids = parent.children;
+    if (kids.length < 3) continue;
+    const groups = new Map();
+    for (const k of kids) { const s = sig(k); if (!groups.has(s)) groups.set(s, []); groups.get(s).push(k); }
+    for (const [s, els] of groups) {
+      if (els.length < 3) continue;
+      const shown = els.filter(vis);
+      if (shown.length < 3) continue;
+      const lens = shown.map(e => txt(e).length);
+      const avg = lens.reduce((a, b) => a + b, 0) / lens.length;
+      if (avg < 12) continue;
+      const rich = shown.filter(e => e.querySelector('img,h1,h2,h3,h4,h5,h6,[class*=price],[class*=title]')).length / shown.length;
+      const linked = shown.filter(e => e.querySelector('a[href]') || e.matches('a[href]')).length / shown.length;
+      let score = shown.length * Math.min(avg, 300) * (1 + rich) * (0.5 + linked);
+      if (chrome(parent)) score *= 0.15;
+      if (!best || score > best.score) best = { score, els: shown, sig: s };
+    }
+  }
+  if (!best) return { count: 0, items: [] };
+  const money = /(?:[$£€¥₹]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|CAD|AUD))/;
+  const items = best.els.map((e, i) => {
+    const links = e.matches('a[href]') ? [e] : Array.from(e.querySelectorAll('a[href]')).filter(x => !/^(javascript:|#)/i.test(x.getAttribute('href') || ''));
+    const h = e.querySelector('h1,h2,h3,h4,h5,h6');
+    const hl = h ? Array.from(h.querySelectorAll('a[href]')) : [];
+    const ha = hl.length ? hl[hl.length - 1] : null;   // "owner / repo": the last link is the specific one
+    // The item's main link: the one in its heading, else the one with the most text.
+    // (A table row is named by its first column.)
+    const row = e.tagName === 'TR';
+    const a = ha || (row ? links.find(x => txt(x).length >= 2) : links.slice().sort((x, y) => txt(y).length - txt(x).length)[0]) || null;
+    const img = e.querySelector('img[alt]');
+    const at = a ? (a.getAttribute('title') || txt(a)) : '';
+    const title = ((ha && ha.getAttribute('title')) || (h && txt(h)) || ((row ? at.length >= 2 : at.length >= 12 && at.length >= 0.3 * txt(e).length) ? at : '') || (img && img.alt.length >= 4 ? img.alt : '') || txt(e)).slice(0, 160);
+    const t = txt(e);
+    const m = t.match(money);
+    return { i, title, href: a ? a.href : null, price: m ? m[0] : null, text: t.slice(0, 220) };
+  });
+  return { count: items.length, kind: best.sig.toLowerCase(), items };
+})()"""
+
+
+def items(query=None, limit=60):
+    """The page's repeated items (search results, product cards, listings,
+    feed entries) found automatically, no CSS selector needed:
+    {count, kind, items: [{i, title, href, price, text}]}. query filters by
+    title/text. Use this instead of guessing selectors for a list page."""
+    got = js(_MS_ITEMS_JS) or {}  # noqa: F821
+    out = got.get('items') or []
+    if query:
+        q = str(query).lower()
+        out = [x for x in out if q in (x.get('title') or '').lower() or q in (x.get('text') or '').lower()]
+    return {'count': got.get('count', 0), 'kind': got.get('kind'), 'items': out[: int(limit)]}
+
+
 def look(max_controls=25, text_chars=1200):
     """One look at the page, as a person would take it in: URL, title, any
     human check or pop-up, the headings, the start of the text, the numbered
@@ -1000,6 +1060,13 @@ def look(max_controls=25, text_chars=1200):
         nx = None
     if nx:
         parts.append(f"Next page: yes ({nx.get('text')}) — next_page()")
+    try:
+        it = js(_MS_ITEMS_JS) or {}  # noqa: F821
+    except Exception:
+        it = {}
+    if (it.get('count') or 0) >= 3:
+        ex = '; '.join(((x.get('title') or '')[:50] + (f" ({x['price']})" if x.get('price') else '')) for x in it['items'][:3])
+        parts.append(f"Repeated items: {it['count']} on this page, e.g. {ex} — items() returns them all with links and prices")
     return '\n'.join(parts)
 
 

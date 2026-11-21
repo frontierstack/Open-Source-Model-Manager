@@ -300,6 +300,8 @@ BASE_RULES = (
     'Both return {changed, url, title, new_text}: new_text is the text that APPEARED after the action (search results, an opened panel) - read it instead of re-reading the page.\n'
     '- search(query): uses the site\'s own search box. next_page(): goes to the next page of results.\n'
     '- links(query=None) -> [{text, href}] absolute URLs; open_url(href) is faster than clicking a link you can see.\n'
+    '- items(query=None) -> {count, items:[{title, href, price, text}]}: the page\'s repeated items (results, products, listings, '
+    'feed entries) found automatically. On any list page use items() - never guess CSS selectors.\n'
     '- tables() -> rows of every data/spec table. read_page(max_chars=6000, start=0), find_text(term) for longer text.\n'
     '- elements(query=None), scroll_down(), scroll_to(text), back(), reload(), dismiss_popups().\n'
     '- solve_captcha(): a "Just a moment" page, a Turnstile / reCAPTCHA / hCaptcha checkbox or press-and-hold is handled like a person; '
@@ -310,6 +312,7 @@ BASE_RULES = (
     '  print(fill("Author", "Albert Einstein")); print(fill("Tag", "change")); print(click("Search")["new_text"])\n'
     'Check each result (changed/new_text) before going on; if a click did nothing, print(look()) and pick the right control by number. '
     'As soon as you have what the task asks for, finish with the answer - do not re-verify what you already printed. '
+    'The final answer is short and plain: exactly what the task asked for plus the URL, no JSON dumps or restated steps. '
     'Login walls you have no credentials for: stop and say so.\n'
     'BLOCKED PAGES: if open_url() returns blocked=True (or obstacle kind "blocked"), the site refused this browser; '
     'no reload, wait or click changes that. Do not retry that site: open another site that has the same information, '
@@ -395,6 +398,7 @@ async def main():
 
     async def report_step(repl, code, r):
         state['n'] += 1
+        t_rep = time.time()
         info, shot, rep = {}, None, {}
         try:
             s = await repl.call('exec', SHOT_CODE % ('True' if auto_captcha else 'False', max_dim), 75)
@@ -434,6 +438,7 @@ async def main():
             'captcha': rep.get('captcha'),
             'blocked': rep.get('blocked'),
             'shot': shot,
+            'reportMs': int((time.time() - t_rep) * 1000),
             't': round(time.time(), 2),
         })
 
