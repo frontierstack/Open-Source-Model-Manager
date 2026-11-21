@@ -695,6 +695,11 @@ def _ms_denied(t=None):
             return None
     status = _ms_doc_status()
     short = len(t) < 1500
+    if short and status in (401, 403, 429, 503) and not _MS_DENY_RE.search(t) and len(_msre.sub(r'\s+', '', t)) < 120:
+        # An (almost) empty error page is usually a JS challenge still running
+        # (it reloads itself once its script has checked the browser); only
+        # explicit deny wording counts as a block straight away.
+        return {'kind': 'pending', 'status': status}
     if short and (_MS_DENY_RE.search(t) or status in (401, 403, 429, 451)):
         if status in (429,) or _msre.search(r'too many requests|rate limit', t, _msre.I):
             why = 'rate-limited'
@@ -740,7 +745,9 @@ def solve_captcha(timeout=40):
     tried = 0
     end = t0 + float(timeout)
     while _mst.time() < end:
-        if kind == 'interstitial':
+        if kind == 'blocked':
+            return res(True, kind, False, _ms_block_advice(ob))
+        if kind in ('interstitial', 'pending'):
             # Cloudflare's JS often clears this alone; a Turnstile box may appear.
             _mst.sleep(1.5)
         elif kind in ('recaptcha-images', 'hcaptcha-images', 'arkose', 'geetest', 'datadome'):
@@ -832,6 +839,14 @@ def open_url(url, handle_popups=True):
         return out
     if ob:
         out['obstacle'] = solve_captcha(timeout=15)
+        after = obstacle()
+        if after and after['kind'] == 'blocked':
+            info = page_info()  # noqa: F821
+            out.update({'url': info.get('url'), 'title': info.get('title'), 'blocked': True,
+                        'obstacle': {'found': True, 'kind': 'blocked', 'solved': False, 'detail': _ms_block_advice(after)},
+                        'text': after.get('text', '')})
+            _ms_blocked_hosts.add(_ms_host(info.get('url') or url))
+            return out
     if handle_popups:
         out['popups'] = dismiss_popups()
     info = page_info()  # noqa: F821
@@ -1009,7 +1024,7 @@ def _ms_step_report(auto_captcha=True):
         rep['obstacle'] = ob['kind']
         seen = globals().setdefault('_ms_captcha_tries', {})
         key = (info.get('url') or '')[:200]
-        blocking = ob['kind'] in ('interstitial', 'turnstile', 'press-hold')
+        blocking = ob['kind'] in ('interstitial', 'pending', 'turnstile', 'press-hold')
         if not blocking and ob['kind'] in ('recaptcha', 'hcaptcha'):
             try:   # a check that IS the page (Google's "unusual traffic" page), not one inside a form
                 blocking = len(js('document.body ? document.body.innerText : ""') or '') < 1500  # noqa: F821

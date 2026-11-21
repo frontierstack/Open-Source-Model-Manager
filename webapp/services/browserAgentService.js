@@ -156,6 +156,12 @@ async function removeStrayContainers() {
 
 // Cookie-consent rules shared with the Playwright layer (pageObstacles), so the
 // agent's dismiss_popups() clicks the same buttons the web tool does.
+function browserTimeZone() {
+    const tz = process.env.BROWSER_AGENT_TZ || process.env.TZ
+        || (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) { return ''; } })();
+    return /^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+){0,2}$/.test(String(tz || '')) ? tz : 'UTC';
+}
+
 let _helperConfig = null;
 function helperConfig() {
     if (_helperConfig) return _helperConfig;
@@ -222,6 +228,10 @@ async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowI
                 `BU_JOB=${Buffer.from(JSON.stringify(job)).toString('base64')}`,
                 `BU_RUNNER=${(await fsp.readFile(RUNNER)).toString('base64')}`,
                 `BU_HELPERS=${(await fsp.readFile(HELPERS).catch(() => Buffer.alloc(0))).toString('base64')}`,
+                // The browser's clock zone must match where its traffic comes
+                // from: a UTC browser on a US home IP is a bot signal (Realtor's
+                // Kasada check refused UTC and passed America/Chicago, all else equal).
+                `TZ=${browserTimeZone()}`,
                 'HOME=/tmp/home', 'XDG_RUNTIME_DIR=/tmp/run', 'XDG_CONFIG_HOME=/tmp/home/.config', 'XDG_CACHE_HOME=/tmp/home/.cache',
                 'ANONYMIZED_TELEMETRY=false', 'BH_TELEMETRY=0', 'PYTHONDONTWRITEBYTECODE=1', 'PYTHONUNBUFFERED=1',
                 `HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`, `http_proxy=${proxyUrl}`, `https_proxy=${proxyUrl}`,

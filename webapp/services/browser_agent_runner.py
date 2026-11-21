@@ -169,6 +169,52 @@ except NameError:
 '''
 
 
+# CDP's Runtime.enable makes the page observable to anti-bot scripts (the
+# classic leak: console/Error serialisation fires only while a client has the
+# Runtime domain on). Measured: Realtor's Kasada check answered 429 "This is
+# taking longer than usual" with Runtime enabled and served the page with every
+# other domain (Page, DOM, Network, the Fetch guard) on. Nothing in
+# browser-use/browser-harness consumes Runtime EVENTS (Runtime.evaluate and
+# isolated worlds work without the domain enabled), so the enable is skipped in
+# every process that talks CDP: this one, and through sitecustomize on
+# PYTHONPATH the browser-harness daemon and the REPL workers it starts.
+NO_RUNTIME_ENABLE = r'''
+def _ms_patch_cdp():
+    try:
+        from cdp_use.client import CDPClient
+    except Exception:
+        return
+    if getattr(CDPClient.send_raw, "_ms_patched", False):
+        return
+    orig = CDPClient.send_raw
+
+    async def send_raw(self, method, *a, **kw):
+        if method == "Runtime.enable":
+            return {}
+        return await orig(self, method, *a, **kw)
+
+    send_raw._ms_patched = True
+    CDPClient.send_raw = send_raw
+
+
+_ms_patch_cdp()
+'''
+
+
+def install_cdp_quiet():
+    if os.environ.get('BU_RUNTIME_ENABLE') == '1':
+        return
+    d = '/tmp/ms-site'
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'sitecustomize.py'), 'w') as f:
+            f.write(NO_RUNTIME_ENABLE)
+        os.environ['PYTHONPATH'] = d + (os.pathsep + os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')
+        exec(compile(NO_RUNTIME_ENABLE, 'ms-sitecustomize', 'exec'), {})
+    except Exception as e:
+        print(f'[browser-agent] could not install the CDP patch: {e}', file=sys.stderr)
+
+
 def start_display():
     """A real (virtual) screen so Chrome runs as an ordinary HEADED browser.
     Headless Chrome is told apart from a normal one by more than its user agent
@@ -373,6 +419,7 @@ async def main():
 
     bu_service.Session = ReportingSession  # Agent._run builds its Session through this name
 
+    install_cdp_quiet()
     display = start_display()
     headed = display is not None
     chrome = job.get('chromePath') or find_chrome()
