@@ -33355,10 +33355,60 @@ app.use((req, res) => {
                 const viaAgent = await tryBrowserAgent(url, r);
                 if (viaAgent && viaAgent.result) return viaAgent.result;
                 if (viaAgent && viaAgent.failed) {
-                    const after = await withArchiveInner(url, { ...r, tried: `${r.tried || r.error || 'blocked'} → ${viaAgent.note}` });
-                    return { ...after, ...viaAgent.extra };
+                    let after = await withArchiveInner(url, { ...r, tried: `${r.tried || r.error || 'blocked'} → ${viaAgent.note}` });
+                    after = await readAlternativeWithAgent(url, after);
+                    return { ...viaAgent.extra, ...after };
                 }
-                return withArchiveInner(url, r);
+                return readAlternativeWithAgent(url, await withArchiveInner(url, r));
+            };
+            // The page itself cannot be opened from here (an edge deny on every
+            // route), but the search fallback found the same subject on other
+            // sites. When none of those could be read by the fast layers either
+            // (they are often bot-walled too), the browser agent reads the best
+            // one, so the answer rests on a real page rather than excerpts.
+            const readAlternativeWithAgent = async (url, rec) => {
+                if (!rec || rec.source !== 'search-index' || !Array.isArray(rec.alternatives)) return rec;
+                if (rec.alternatives.some(x => x.read)) return rec;
+                if (process.env.WEB_BLOCKED_BROWSER_AGENT === '0' || !ctx || (ctx.delegateDepth || 0) > 0 || !browserAgentSvc || !browserAgentSvc.available()) return rec;
+                const tool = tools.toolRegistry.get('browser_agent');
+                if (!tool) return rec;
+                let blockedHost = '';
+                try { blockedHost = new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return rec; }
+                ctx._agentTriedHosts = ctx._agentTriedHosts || new Set();
+                const pick = rec.alternatives.map(x => x.url).filter(u => {
+                    try {
+                        const h = new URL(u).hostname.toLowerCase();
+                        return !h.endsWith(blockedHost) && !ctx._agentTriedHosts.has(h) && !urlBlockReason(u);
+                    } catch (_) { return false; }
+                }).slice(0, 2);
+                if (!pick.length) return rec;
+                const ask = leadHandoff.cleanAsk(String(ctx.latestUserText || '')).slice(0, 300);
+                for (const alt of pick) {
+                    const h = new URL(alt).hostname.toLowerCase();
+                    ctx._agentTriedHosts.add(h);
+                    console.log(`[web] ${url} cannot be opened; the browser agent reads the same subject on ${h}`);
+                    const ag = await tool.execute({
+                        task: `Open ${alt} with open_url() and report what the page shows, as completely and faithfully as you can (facts, figures, tables() for data tables, headings), and the final URL. ` +
+                            `It is about the same subject as ${url}, which refused access. ` +
+                            (ask ? `The user's request, for context: "${ask}". ` : '') +
+                            'If the page is blocked, stop and say so.',
+                        maxSteps: parseInt(process.env.WEB_BLOCKED_AGENT_STEPS, 10) || 10,
+                    }, Object.assign(Object.create(ctx), { _browserAgentStopOnBlock: true }, (call && call.id) ? { _toolCallId: call.id } : {})).catch(e => ({ success: false, error: e.message }));
+                    const report = String((ag && ag.report) || '').trim();
+                    const failed = !report || report.length < 200 || (ag && ag.success === false)
+                        || /^\W*blocked\b|\b(bot check|captcha|access (is )?denied|verify you are (a )?human|press (&|and) hold)\b/i.test(report.slice(0, 400));
+                    const extra = { ...(ag && ag.browserAgent ? { browserAgent: ag.browserAgent } : {}), ...(ag && ag._artifacts ? { _artifacts: ag._artifacts } : {}) };
+                    if (failed) { rec = { ...rec, ...extra, tried: `${rec.tried || ''} → browser-agent(${h}):blocked` }; continue; }
+                    noteSeen(alt); noteRead(alt);
+                    return {
+                        ...rec, ...extra,
+                        content: smartTruncate(`${rec.content}\n\nRead in a real browser from ${ag.finalUrl || alt}:\n${report}`, Math.max(a.maxLength || 15000, 15000)),
+                        alternatives: rec.alternatives.map(x => x.url === alt ? { ...x, read: true, via: 'browser-agent' } : x),
+                        tried: `${rec.tried || ''} → browser-agent(${h}):ok`,
+                        note: `${rec.note || ''} The section "Read in a real browser from ${ag.finalUrl || alt}" is that other site's page, opened by the browser agent: attribute those facts to it, not to ${blockedHost}.`.trim(),
+                    };
+                }
+                return rec;
             };
             const withArchiveInner = async (url, r) => {
                 if (r.success === false && blockedPageRecovery) {

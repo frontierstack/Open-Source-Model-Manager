@@ -54,8 +54,12 @@ function identityFromUrl(url) {
         const words = splitWords(seg);
         // A lone very short segment is a routing prefix (/p/, /dp/), not a subject.
         if (words.length === 1 && words[0].length <= 3) continue;
+        // A short number inside a slug of words is part of the subject (a house
+        // number, a model, a year), not an id: "3235-chowen-ave-n-robbinsdale-mn".
+        const wordy = words.filter(w => /^\p{L}{2,}$/u.test(w)).length >= 2;
         for (const w of words) {
-            if (w.length < 2 || LAYOUT_WORDS.has(w) || isOpaqueToken(w) || w === brand) continue;
+            const keepNumber = wordy && /^\d{1,6}$/.test(w);
+            if (!keepNumber && (w.length < 2 || LAYOUT_WORDS.has(w) || isOpaqueToken(w) || w === brand)) continue;
             if (!pathTokens.includes(w)) pathTokens.push(w);
         }
     }
