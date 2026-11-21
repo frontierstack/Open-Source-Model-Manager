@@ -317,6 +317,34 @@ BASE_RULES = (
 )
 
 
+READ_CODE = """
+import json as __ms_rj
+__ms_r = open_url(%s)
+__ms_out = {'url': __ms_r.get('url'), 'title': __ms_r.get('title'), 'blocked': bool(__ms_r.get('blocked')),
+            'obstacle': __ms_r.get('obstacle'), 'text': ''}
+__ms_ob = __ms_r.get('obstacle') or {}
+if not __ms_out['blocked'] and __ms_ob.get('found') and not __ms_ob.get('solved'):
+    __ms_out['unsolved'] = True
+if not __ms_out['blocked'] and not __ms_out.get('unsolved'):
+    try:
+        scroll_down(2)
+        wait(0.8)
+        scroll_up(3)
+    except Exception:
+        pass
+    __ms_out['text'] = read_page(%d)
+    try:
+        __ms_out['tables'] = tables(40)
+    except Exception:
+        __ms_out['tables'] = []
+else:
+    __ms_out['text'] = __ms_r.get('text') or ''
+with open('/tmp/ms-read.json', 'w') as __ms_f:
+    __ms_f.write(__ms_rj.dumps(__ms_out, default=str))
+print('__MS_READ_DONE__')
+"""
+
+
 def to_jpeg(path, max_dim):
     try:
         from PIL import Image
@@ -365,55 +393,58 @@ async def main():
 
     Repl.call = call
 
+    async def report_step(repl, code, r):
+        state['n'] += 1
+        info, shot, rep = {}, None, {}
+        try:
+            s = await repl.call('exec', SHOT_CODE % ('True' if auto_captcha else 'False', max_dim), 75)
+            m = re.search(r'__MS_SHOT__(\{.*\})', s.get('output') or '')
+            if m:
+                got = json.loads(m.group(1))
+                info = got.get('info') or {}
+                rep = got
+                if got.get('path'):
+                    shot = to_jpeg(got['path'], max_dim)
+        except Exception as e:
+            print(f'[browser-agent] screenshot failed: {e}', file=sys.stderr)
+        err = (r or {}).get('error') or ''
+        blk = rep.get('blocked') if isinstance(rep, dict) else None
+        if blk:
+            h = blk.get('host') or ''
+            state['blocks'][h] = state['blocks'].get(h, 0) + 1
+            state['lastBlock'] = blk
+            # The page refused the browser twice: no step can change that,
+            # so end the run now instead of letting the model retry.
+            if state['blocks'][h] >= (1 if job.get('stopOnBlock') else 2) and state.get('task') and not state.get('stopped'):
+                state['stopped'] = 'blocked'
+                state['task'].cancel()
+        emit({
+            'type': 'step', 'n': state['n'],
+            'action': describe(code),
+            'code': clip(code, 1500),
+            'output': clip((r or {}).get('output') or '', 600),
+            'error': clip(err.strip().splitlines()[-1] if err.strip() else '', 300),
+            'url': clip(info.get('url') or '', 500) if isinstance(info, dict) else '',
+            'title': clip(info.get('title') or '', 200) if isinstance(info, dict) else '',
+            'dialog': bool(isinstance(info, dict) and info.get('dialog')),
+            'note': intent(code),
+            'clicks': [c for c in (rep.get('clicks') or []) if isinstance(c, list) and len(c) == 2][-6:],
+            'viewport': [info.get('w'), info.get('h')] if isinstance(info, dict) and info.get('w') else None,
+            'obstacle': rep.get('obstacle'),
+            'captcha': rep.get('captcha'),
+            'blocked': rep.get('blocked'),
+            'shot': shot,
+            't': round(time.time(), 2),
+        })
+
+
     class ReportingSession(bu_loop.Session):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             session = self
 
             async def after_tool(name, args, r):
-                state['n'] += 1
-                code = (args or {}).get('code', '') or ''
-                info, shot, rep = {}, None, {}
-                try:
-                    s = await session.repl.call('exec', SHOT_CODE % ('True' if auto_captcha else 'False', max_dim), 75)
-                    m = re.search(r'__MS_SHOT__(\{.*\})', s.get('output') or '')
-                    if m:
-                        got = json.loads(m.group(1))
-                        info = got.get('info') or {}
-                        rep = got
-                        if got.get('path'):
-                            shot = to_jpeg(got['path'], max_dim)
-                except Exception as e:
-                    print(f'[browser-agent] screenshot failed: {e}', file=sys.stderr)
-                err = (r or {}).get('error') or ''
-                blk = rep.get('blocked') if isinstance(rep, dict) else None
-                if blk:
-                    h = blk.get('host') or ''
-                    state['blocks'][h] = state['blocks'].get(h, 0) + 1
-                    state['lastBlock'] = blk
-                    # The page refused the browser twice: no step can change that,
-                    # so end the run now instead of letting the model retry.
-                    if state['blocks'][h] >= (1 if job.get('stopOnBlock') else 2) and state.get('task') and not state.get('stopped'):
-                        state['stopped'] = 'blocked'
-                        state['task'].cancel()
-                emit({
-                    'type': 'step', 'n': state['n'],
-                    'action': describe(code),
-                    'code': clip(code, 1500),
-                    'output': clip((r or {}).get('output') or '', 600),
-                    'error': clip(err.strip().splitlines()[-1] if err.strip() else '', 300),
-                    'url': clip(info.get('url') or '', 500) if isinstance(info, dict) else '',
-                    'title': clip(info.get('title') or '', 200) if isinstance(info, dict) else '',
-                    'dialog': bool(isinstance(info, dict) and info.get('dialog')),
-                    'note': intent(code),
-                    'clicks': [c for c in (rep.get('clicks') or []) if isinstance(c, list) and len(c) == 2][-6:],
-                    'viewport': [info.get('w'), info.get('h')] if isinstance(info, dict) and info.get('w') else None,
-                    'obstacle': rep.get('obstacle'),
-                    'captcha': rep.get('captcha'),
-                    'blocked': rep.get('blocked'),
-                    'shot': shot,
-                    't': round(time.time(), 2),
-                })
+                await report_step(session.repl, (args or {}).get('code', '') or '', r)
 
             self.after_tool = after_tool
 
@@ -441,6 +472,77 @@ async def main():
         executable_path=chrome,
         block_ip_addresses=not job.get('allowInternal'),
     )
+    if job.get('readUrl'):
+        # READ MODE: the job is only "open this page and report it", so no model
+        # turn adds anything. The same headed browser and helpers do it in one
+        # scripted cell: open (cookie prompts, simple checks), load lazy content,
+        # read text and tables. Measured on the model-driven path: 9 steps /
+        # 101 s for one page read.
+        from pathlib import Path
+        from browser_use.repl.session import Repl as _Repl
+        t0 = time.time()
+        emit({'type': 'start', 'task': clip(job['task'], 600), 'model': 'read mode (no model)', 'maxSteps': 1,
+              'headed': headed, 'mode': 'read'})
+        ws = Path('/tmp/bu-workspace')
+        for sub in ('', '.browser-use', 'downloads'):
+            (ws / sub).mkdir(parents=True, exist_ok=True)
+        repl = None
+        try:
+            env = await browser.start()
+            repl = _Repl(ws, env, after_cell=browser.after_cell if browser.domains else None)
+            code = READ_CODE % (json.dumps(job['readUrl']), int(job.get('readChars') or 14000))
+            r = await repl.call('exec', code, float(job.get('timeoutS') or 120))
+            out = (r or {}).get('output') or ''
+            got = {}
+            try:
+                with open('/tmp/ms-read.json') as f:   # the REPL worker runs in this container
+                    got = json.load(f)
+            except Exception:
+                got = {}
+            await report_step(repl, 'r = open_url(%s)\nprint(read_page())' % json.dumps(job['readUrl']), r)
+            if not got:
+                emit({'type': 'done', 'status': 'error', 'success': False, 'result': '', 'steps': state['n'],
+                      'cells': state['n'], 'durationS': round(time.time() - t0, 1),
+                      'error': clip(((r or {}).get('error') or out or 'read failed').strip().splitlines()[-1], 600)})
+                return
+            if got.get('blocked') or got.get('unsolved'):
+                ob = got.get('obstacle') or {}
+                emit({'type': 'done', 'status': 'blocked', 'success': False,
+                      'result': f"BLOCKED: {got.get('url') or job['readUrl']} — {ob.get('detail') or 'the page did not let this browser through'}. "
+                                f"Page said: {clip(got.get('text') or '', 300)}",
+                      'steps': state['n'], 'cells': state['n'], 'durationS': round(time.time() - t0, 1), 'error': None, 'usage': {}})
+                return
+            parts = [f"Title: {got.get('title') or ''}", f"Final URL: {got.get('url') or job['readUrl']}", '', got.get('text') or '']
+            for t in (got.get('tables') or [])[:12]:
+                rows = [r_ for r_ in (t.get('rows') or []) if r_][:40]
+                if not rows:
+                    continue
+                parts.append('')
+                parts.append(f"Table{': ' + t['caption'] if t.get('caption') else ''}")
+                parts.extend(' | '.join(str(c) for c in row) for row in rows)
+            emit({'type': 'done', 'status': 'completed', 'success': True, 'result': clip('\n'.join(parts), 24000),
+                  'steps': state['n'], 'cells': state['n'], 'durationS': round(time.time() - t0, 1), 'error': None, 'usage': {}})
+        except Exception as e:
+            traceback.print_exc()
+            emit({'type': 'done', 'status': 'error', 'success': False, 'result': '', 'steps': state['n'], 'cells': state['n'],
+                  'durationS': round(time.time() - t0, 1), 'error': clip(f'{type(e).__name__}: {e}', 1000)})
+        finally:
+            try:
+                if repl is not None:
+                    await repl.close()
+            except Exception:
+                pass
+            try:
+                await browser.stop()
+            except Exception:
+                pass
+            if display is not None:
+                try:
+                    display.kill()
+                except Exception:
+                    pass
+        return
+
     agent = Agent(
         job['task'], llm=llm, browser=browser,
         use_vision=bool(job.get('vision')),

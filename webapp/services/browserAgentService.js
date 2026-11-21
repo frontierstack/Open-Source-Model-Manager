@@ -183,7 +183,7 @@ function helperConfig() {
  * file name (the base64 image is written to disk, not passed on).
  * Resolves { ok, runId, done, steps, error, stderrTail }.
  */
-async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowInternal = false, signal, onEvent, extraSystem, stopOnBlock = false }) {
+async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowInternal = false, signal, onEvent, extraSystem, stopOnBlock = false, readUrl = null }) {
     if (!available()) return { ok: false, error: 'browser-use is not installed in this image (rebuild the webapp image)' };
     if (running >= MAX_CONCURRENT) return { ok: false, error: `${running} browser agents are already running; wait for one to finish` };
     running++;
@@ -213,6 +213,8 @@ async function run({ task, target, userId, maxSteps = 20, timeoutS = 300, allowI
             autoCaptcha: process.env.BROWSER_AGENT_AUTO_CAPTCHA !== '0',
             helperConfig: helperConfig(),
             stopOnBlock: !!stopOnBlock,
+            // Read mode: open one page and report it with no model turns.
+            readUrl: readUrl || undefined,
         };
         container = await docker.createContainer({
             name: `bagent-${runId}`,
