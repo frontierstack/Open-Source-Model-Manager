@@ -33328,7 +33328,7 @@ app.use((req, res) => {
                         (ask ? `The user's request, for context on what matters on this page: "${ask}". ` : '') +
                         'If a bot check is still showing after open_url and one reload(), stop and say exactly what the page shows.',
                     maxSteps: parseInt(process.env.WEB_BLOCKED_AGENT_STEPS, 10) || 10,
-                }, (call && call.id) ? Object.assign(Object.create(ctx), { _toolCallId: call.id }) : ctx).catch(e => ({ success: false, error: e.message }));
+                }, Object.assign(Object.create(ctx), { _browserAgentStopOnBlock: true }, (call && call.id) ? { _toolCallId: call.id } : {})).catch(e => ({ success: false, error: e.message }));
                 const report = String((ag && ag.report) || '').trim();
                 const stillBlocked = !report || report.length < 200 || (ag && ag.success === false)
                     || /\b(bot check|captcha|access (is )?denied|blocked|verify you are (a )?human|press (&|and) hold)\b/i.test(report.slice(0, 400));
@@ -34789,6 +34789,7 @@ app.use((req, res) => {
             publish(true);
             const result = await browserAgentSvc.run({
                 task, maxSteps, timeoutS,
+                stopOnBlock: !!(ctx && ctx._browserAgentStopOnBlock),
                 target: { host, port, model: modelId },
                 userId: ctx?.userId ?? null,
                 allowInternal: allowInternalNetwork(),

@@ -169,7 +169,44 @@ except NameError:
 '''
 
 
-def stealth_args(chrome):
+def start_display():
+    """A real (virtual) screen so Chrome runs as an ordinary HEADED browser.
+    Headless Chrome is told apart from a normal one by more than its user agent
+    (rendering, window/screen metrics, missing GPU/plugins, timing); measured on
+    this host, Lowe's (Akamai) and Redfin served the headed browser and refused
+    the headless one with identical flags. BU_HEADED=0 keeps headless."""
+    import shutil
+    import subprocess
+    if os.environ.get('BU_HEADED') == '0' or not shutil.which('Xvfb'):
+        return None
+    if os.environ.get('DISPLAY'):
+        return None
+    for n in range(90, 100):
+        if os.path.exists(f'/tmp/.X{n}-lock'):
+            continue
+        os.makedirs('/tmp/.X11-unix', exist_ok=True)
+        try:
+            p = subprocess.Popen(['Xvfb', f':{n}', '-screen', '0', '1920x1080x24', '-nolisten', 'tcp', '-ac'],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print(f'[browser-agent] Xvfb failed to start: {e}', file=sys.stderr)
+            return None
+        for _ in range(40):
+            if os.path.exists(f'/tmp/.X11-unix/X{n}'):
+                os.environ['DISPLAY'] = f':{n}'
+                return p
+            if p.poll() is not None:
+                break
+            time.sleep(0.05)
+        try:
+            p.kill()
+        except Exception:
+            pass
+    print('[browser-agent] no virtual display; running headless', file=sys.stderr)
+    return None
+
+
+def stealth_args(chrome, headed=False):
     """Launch flags that stop the browser announcing itself as automated.
     Headless Chrome says "HeadlessChrome" in its user agent and sets the
     AutomationControlled blink feature; Cloudflare Turnstile and similar checks
@@ -186,6 +223,11 @@ def stealth_args(chrome):
     except Exception:
         major = None
     out = ['--disable-blink-features=AutomationControlled', '--lang=en-US,en']
+    if headed:
+        # A headed Chrome already reports its real user agent; overriding it
+        # would only add a mismatch (client hints, platform) a site can see.
+        return out + ['--window-size=1440,900', '--window-position=0,0',
+                     '--use-angle=swiftshader', '--enable-unsafe-swiftshader']  # WebGL: having none is a tell
     if major:
         out.append(f'--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36')
     return out
@@ -222,7 +264,10 @@ BASE_RULES = (
     '  print(fill("Author", "Albert Einstein")); print(fill("Tag", "change")); print(click("Search")["new_text"])\n'
     'Check each result (changed/new_text) before going on; if a click did nothing, print(look()) and pick the right control by number. '
     'As soon as you have what the task asks for, finish with the answer - do not re-verify what you already printed. '
-    'Login walls you have no credentials for: stop and say so.'
+    'Login walls you have no credentials for: stop and say so.\n'
+    'BLOCKED PAGES: if open_url() returns blocked=True (or obstacle kind "blocked"), the site refused this browser; '
+    'no reload, wait or click changes that. Do not retry that site: open another site that has the same information, '
+    'or finish at once and say the site blocked access.'
 )
 
 
@@ -247,7 +292,7 @@ async def main():
 
     max_dim = int(job.get('shotMaxDim') or 960)
     auto_captcha = job.get('autoCaptcha', True) is not False
-    state = {'n': 0}
+    state = {'n': 0, 'blocks': {}}
 
     # Helpers into the REPL before the model's first cell (and after a restart).
     from browser_use.repl.session import Repl
@@ -295,6 +340,16 @@ async def main():
                 except Exception as e:
                     print(f'[browser-agent] screenshot failed: {e}', file=sys.stderr)
                 err = (r or {}).get('error') or ''
+                blk = rep.get('blocked') if isinstance(rep, dict) else None
+                if blk:
+                    h = blk.get('host') or ''
+                    state['blocks'][h] = state['blocks'].get(h, 0) + 1
+                    state['lastBlock'] = blk
+                    # The page refused the browser twice: no step can change that,
+                    # so end the run now instead of letting the model retry.
+                    if state['blocks'][h] >= (1 if job.get('stopOnBlock') else 2) and state.get('task') and not state.get('stopped'):
+                        state['stopped'] = 'blocked'
+                        state['task'].cancel()
                 emit({
                     'type': 'step', 'n': state['n'],
                     'action': describe(code),
@@ -309,6 +364,7 @@ async def main():
                     'viewport': [info.get('w'), info.get('h')] if isinstance(info, dict) and info.get('w') else None,
                     'obstacle': rep.get('obstacle'),
                     'captcha': rep.get('captcha'),
+                    'blocked': rep.get('blocked'),
                     'shot': shot,
                     't': round(time.time(), 2),
                 })
@@ -317,8 +373,10 @@ async def main():
 
     bu_service.Session = ReportingSession  # Agent._run builds its Session through this name
 
+    display = start_display()
+    headed = display is not None
     chrome = job.get('chromePath') or find_chrome()
-    extra_args = stealth_args(chrome) if chrome else []
+    extra_args = stealth_args(chrome, headed) if chrome else []
     if extra_args:
         from browser_use.browser import local as bu_local
         orig_args = bu_local.chrome_args
@@ -332,7 +390,7 @@ async def main():
     llm = ChatOpenAI(job['model'], base_url=job['baseUrl'], api_key=job.get('apiKey') or 'none',
                      temperature=job.get('temperature'))
     browser = Browser(
-        'chromium', headless=True,
+        'chromium', headless=not headed,
         executable_path=chrome,
         block_ip_addresses=not job.get('allowInternal'),
     )
@@ -344,9 +402,23 @@ async def main():
         workspace='/tmp/bu-workspace',
     )
     t0 = time.time()
-    emit({'type': 'start', 'task': clip(job['task'], 600), 'model': job['model'], 'maxSteps': job.get('maxSteps')})
+    emit({'type': 'start', 'task': clip(job['task'], 600), 'model': job['model'], 'maxSteps': job.get('maxSteps'),
+          'headed': headed})
     try:
-        r = await agent.run(max_steps=int(job.get('maxSteps') or 20), timeout=float(job.get('timeoutS') or 300))
+        state['task'] = asyncio.ensure_future(agent.run(max_steps=int(job.get('maxSteps') or 20), timeout=float(job.get('timeoutS') or 300)))
+        try:
+            r = await state['task']
+        except asyncio.CancelledError:
+            if state.get('stopped') != 'blocked':
+                raise
+            b = state.get('lastBlock') or {}
+            st = f" (HTTP {b['status']})" if b.get('status') else ''
+            emit({'type': 'done', 'status': 'blocked', 'success': False,
+                  'result': f"BLOCKED: {b.get('host') or 'the site'} refused this browser{st}: {b.get('why') or 'access denied'}. "
+                            f"Page said: {b.get('text') or ''}",
+                  'blocked': b, 'steps': state['n'], 'cells': state['n'], 'durationS': round(time.time() - t0, 1),
+                  'error': None, 'usage': {}})
+            return
         partial = getattr(r, 'partial', None)
         emit({
             'type': 'done', 'status': r.status, 'success': r.success,
@@ -365,6 +437,11 @@ async def main():
             await agent.close()
         except Exception:
             pass
+        if display is not None:
+            try:
+                display.kill()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

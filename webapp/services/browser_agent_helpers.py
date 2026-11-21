@@ -663,6 +663,45 @@ def obstacle():
         return {'kind': 'press-hold', 'box': hold}
     if _MS_WALL_RE.search(t) and len(t) < 2500:
         return {'kind': 'interstitial', 'text': t[:160]}
+    deny = _ms_denied(t)
+    if deny:
+        return deny
+    return None
+
+
+# A site that REFUSED this browser outright (an edge/WAF deny page, an IP or
+# rate block). Nothing on such a page can be clicked or waited out, so it is
+# reported at once (hard=True) instead of being treated as a human check.
+_MS_DENY_RE = _msre.compile(
+    r"access denied|you don'?t have permission to access|errors\.edgesuite\.net|reference #\d+\.[0-9a-f]+|"
+    r"request (was )?blocked|you have been blocked|sorry, you have been blocked|error 10(0[56]|20)|"
+    r"access to this page has been denied|automated (bot )?(activity|access|requests?)|"
+    r"too many requests|rate limit(ed)?|your ip (address )?(has been|is) (blocked|banned)|403 forbidden|not authori[sz]ed to (access|view)",
+    _msre.I)
+
+
+def _ms_doc_status():
+    try:
+        return int(js('(() => { const n = performance.getEntriesByType("navigation")[0]; return n && n.responseStatus || 0; })()') or 0)  # noqa: F821
+    except Exception:
+        return 0
+
+
+def _ms_denied(t=None):
+    if t is None:
+        try:
+            t = js('(document.title + "\\n" + (document.body ? document.body.innerText : "")).slice(0, 3000)') or ''  # noqa: F821
+        except Exception:
+            return None
+    status = _ms_doc_status()
+    short = len(t) < 1500
+    if short and (_MS_DENY_RE.search(t) or status in (401, 403, 429, 451)):
+        if status in (429,) or _msre.search(r'too many requests|rate limit', t, _msre.I):
+            why = 'rate-limited'
+        else:
+            why = 'access denied'
+        return {'kind': 'blocked', 'hard': True, 'status': status or None, 'why': why,
+                'text': _msre.sub(r'\s+', ' ', t)[:200]}
     return None
 
 
@@ -696,6 +735,8 @@ def solve_captcha(timeout=40):
     if not ob:
         return res(False, None, True, 'no captcha or human check on this page')
     kind = ob['kind']
+    if kind == 'blocked':
+        return res(True, kind, False, _ms_block_advice(ob))
     tried = 0
     end = t0 + float(timeout)
     while _mst.time() < end:
@@ -747,6 +788,13 @@ def solve_captcha(timeout=40):
     return res(True, kind, False, f'still showing after {timeout}s')
 
 
+def _ms_block_advice(ob):
+    st = f" (HTTP {ob['status']})" if ob.get('status') else ''
+    return (f"the site refused this browser: {ob.get('why', 'access denied')}{st}. This is a block, not a puzzle: "
+            "reloading, waiting or clicking will not change it. Do not retry this site; use another site for the "
+            "same information, or finish and tell the user the site blocked access.")
+
+
 def open_url(url, handle_popups=True):
     """Go to a URL (in the current tab, or a new one when there is none), wait
     for it, close cookie banners and pass a simple human check. Returns
@@ -775,8 +823,15 @@ def open_url(url, handle_popups=True):
         _mst.sleep(0.6)
     out = {'popups': [], 'obstacle': None}
     ob = obstacle()
+    if ob and ob['kind'] == 'blocked':
+        info = page_info()  # noqa: F821
+        out.update({'url': info.get('url'), 'title': info.get('title'), 'blocked': True,
+                    'obstacle': {'found': True, 'kind': 'blocked', 'solved': False, 'detail': _ms_block_advice(ob)},
+                    'text': ob.get('text', '')})
+        _ms_blocked_hosts.add(_ms_host(info.get('url') or url))
+        return out
     if ob:
-        out['obstacle'] = solve_captcha(timeout=25)
+        out['obstacle'] = solve_captcha(timeout=15)
     if handle_popups:
         out['popups'] = dismiss_popups()
     info = page_info()  # noqa: F821
@@ -786,6 +841,13 @@ def open_url(url, handle_popups=True):
 
 
 goto = open_url
+
+_ms_blocked_hosts = globals().get('_ms_blocked_hosts') or set()
+
+
+def _ms_host(u):
+    m = _msre.match(r'^[a-z]+://([^/:?#]+)', str(u or ''), _msre.I)
+    return (m.group(1).lower() if m else '').removeprefix('www.')
 
 
 def links(query=None, limit=40):
@@ -939,6 +1001,10 @@ def _ms_step_report(auto_captcha=True):
         ob = obstacle()
     except Exception:
         ob = None
+    if ob and ob['kind'] == 'blocked':
+        rep['obstacle'] = 'blocked'
+        rep['blocked'] = {'host': _ms_host(info.get('url')), 'status': ob.get('status'), 'why': ob.get('why'), 'text': ob.get('text')}
+        return rep
     if ob:
         rep['obstacle'] = ob['kind']
         seen = globals().setdefault('_ms_captcha_tries', {})
