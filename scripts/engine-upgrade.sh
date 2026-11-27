@@ -105,7 +105,8 @@ proxy_build_args() {
     [ -n "${HTTPS_PROXY:-}" ]       && a+=(--build-arg "HTTPS_PROXY=$HTTPS_PROXY")
     [ -n "${NO_PROXY:-}" ]          && a+=(--build-arg "NO_PROXY=$NO_PROXY")
     [ -n "${GIT_SSL_NO_VERIFY:-}" ] && a+=(--build-arg "GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY")
-    printf '%s\n' "${a[@]}"
+    (( ${#a[@]} )) && printf '%s\n' "${a[@]}"
+    return 0
 }
 
 # ---- test harness -----------------------------------------------------------
