@@ -16608,6 +16608,16 @@ function timingFromChips(toolCalls) {
     for (const [a, b] of spans) { if (a > end) { wall += b - a; end = b; } else if (b > end) { wall += b - end; end = b; } }
     return { tm: spans.length ? wall / 1000 : null, tu: coreMemory.summarizeToolUse(chips) };
 }
+// One-time per archive: link each task to its most similar earlier one (the
+// Stats "repeat tasks" view). Needs the embedding engine, so it runs late.
+async function backfillEpisodeRepeatLinks() {
+    const dirs = await fs.readdir(episodeIndex.ROOT).catch(() => []);
+    for (const d of dirs) {
+        try { await episodeIndex.backfillRepeatLinks(d); }
+        catch (e) { console.warn(`[Memory] repeat-task links for ${d} failed: ${e.message}`); }
+    }
+}
+
 async function backfillCoreMemoryTiming() {
     const dirs = await fs.readdir(CONVERSATIONS_DIR).catch(() => []);
     const cache = new Map();
@@ -16819,6 +16829,22 @@ async function runSelfCorrection(userId) {
 // the recorder can say whether the playbook was followed and whether the run
 // beat the remembered best. `taskKey`/`provisional` come from the /v1 bridge
 // (a Pi task is re-recorded while it runs; snapshots update ONE episode).
+// The serving settings that change speed and behaviour without changing the
+// model name (engine, context, KV type, GPUs, speculative decoding). Stats
+// treat a change here like a model switch: the Nov 15 Strata change
+// (q4_0 @ 256K → int8 @ 200K) made every model step ~14% slower.
+function servingSignature(model) {
+    try {
+        const inst = model && (modelInstances.get(model) || [...modelInstances.values()].find(i => i && i.modelName === model));
+        if (!inst || !inst.config) return null;
+        const c = inst.config;
+        const parts = [inst.backend || '', c.contextSize || '', c.kv || c.cacheTypeK || c.kvCacheDtype || '',
+            Array.isArray(c.gpuDevices) ? c.gpuDevices.join('+') : 'all', c.parallelSlots || c.maxRunningRequests || '',
+            c.strataSize || c.quant || '', c.splitMode || '', c.specType || ''];
+        return crypto.createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 8);
+    } catch (_) { return null; }
+}
+
 async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, quality = null, taskKey = null, recalled = null, provisional = false, hostAgent = false, model = null }) {
     try {
         if (!userId || userId === 'default') return;
@@ -16846,7 +16872,7 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const res = await coreMemory.recordEpisode(userId, {
             episode, theme, convId: conversationId || null, recalled, taskKey, provisional,
             meta: {
-                model, source: hostAgent ? 'agent' : 'chat',
+                model, serving: servingSignature(model), source: hostAgent ? 'agent' : 'chat',
                 answerChars: quality && Number.isFinite(quality.answerChars) ? quality.answerChars : null,
                 // Where the time went: waiting on tools (wall clock) vs the
                 // model, and how each tool was used (calls, failed, ms).
@@ -16905,13 +16931,12 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
             if (th && (th !== 'host' || hostAgent)) { cls = { theme: th }; themeSource = 'conversation'; }
         } catch (_) { /* no conversation theme */ }
     }
-    let themeRec = null;
-    try { themeRec = cls ? await coreMemory.peekBestApproach(userId, cls.theme) : null; } catch (_) { themeRec = null; }
     let similar = [];
     try {
+        // The theme block no longer carries a "proven approach", so nothing is
+        // skipped here: similar past tasks are the only source of approaches.
         similar = await episodeIndex.recallSimilar(userId, {
             query, theme: cls ? cls.theme : null, excludeConvId: currentConvId, hostAgent,
-            skipApproach: themeRec ? episodeIndex.redactSecrets(themeRec).slice(0, 320) : '',
         });
     } catch (e) { console.warn('[Memory] similar-task recall failed:', e.message); similar = []; }
     // Still none: what the most similar past tasks were filed under, else a
@@ -16937,11 +16962,13 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         console.log(`[Memory] Similar past tasks: ${sim.used.map(m => `${m.score.toFixed(2)} "${m.task.slice(0, 50)}"`).join(' | ')} conv=${currentConvId || '-'}`);
     }
     const simTools = [...new Set(sim.used.flatMap(m => m.tools || []))];
+    // What "followed" is measured against: the tools of the similar tasks shown.
+    const simSteps = simTools.map(tool => ({ tool }));
     if (!(rec && rec.block)) {
         const tokens = coreMemory.estimateTokens(sim.text);
         return {
             block: sim.text, count: sim.used.length, theme: null, label: 'Similar past tasks', id: null,
-            runs: sim.used.length, bestCalls: null, steps: [], tools: simTools, tokens,
+            runs: sim.used.length, bestCalls: null, steps: simSteps, tools: simTools, tokens,
             similar: sim.used.map(m => ({ task: m.task, score: m.score, theme: m.theme })),
             previews: [`${sim.used.length} similar past task${sim.used.length === 1 ? '' : 's'}`],
         };
@@ -16957,8 +16984,8 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         id: rec.id,
         runs: rec.runs,
         bestCalls: rec.bestCalls,
-        steps: rec.steps,
-        tools: [...new Set([...(rec.tools || []), ...simTools])],
+        steps: simSteps,
+        tools: simTools,
         tokens,
         similar: sim.used.map(m => ({ task: m.task, score: m.score, theme: m.theme })),
         previews: [`${rec.label} core memory (${rec.runs} task${rec.runs === 1 ? '' : 's'})`]
@@ -17633,7 +17660,7 @@ async function injectPersonaForV1(req, instance) {
 // recordTurnActivity (synthesized success chips from the tool_calls). Imperfect
 // success-mapping is fine: best-recipe protection keeps the leanest version and
 // the model can refine via record_learning.
-async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = null) {
+async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = null, model = null) {
     if (!userId || userId === 'default' || !Array.isArray(messages)) return;
     const convKey = 'pi-' + (apiKeyData?.id || 'key');
     const lockKey = `${userId}:${convKey}`;
@@ -17712,6 +17739,9 @@ async function recordV1TurnActivity(userId, apiKeyData, messages, recalled = nul
             // complete, measured playbook.
             provisional: true,
             hostAgent: true,
+            // Which model served it, so a model switch is not read as memory
+            // getting better or worse (the stats compare like for like).
+            model,
         });
         await coreMemory.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
@@ -31798,7 +31828,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         `omp memory: recalled the ${injected.label} core memory (${injected.runs} task${injected.runs === 1 ? '' : 's'}, ${injected.tokens} tok)`);
                 }
             } catch (e) { console.warn('[omp/Memory] injection skipped:', e.message); }
-            recordV1TurnActivity(piMemId, req.apiKeyData, v1Snapshot, req._v1RecalledCore || null).catch(() => {});
+            recordV1TurnActivity(piMemId, req.apiKeyData, v1Snapshot, req._v1RecalledCore || null, firstInstance && firstInstance.modelName || null).catch(() => {});
         }
 
         // ── /v1 context guard (all API callers) ─────────────────────────────
@@ -38111,6 +38141,7 @@ server.listen(PORT, async () => {
     // after the embedding engine is up; idempotent via the shard's themeVersion.
     { const t = setTimeout(() => { repairCoreMemoryThemes().catch(e => console.warn('[Memory] theme repair failed:', e.message)); }, 20000); if (t.unref) t.unref(); }
     { const t = setTimeout(() => { backfillCoreMemoryTiming().catch(e => console.warn('[Memory] timing backfill failed:', e.message)); }, 35000); if (t.unref) t.unref(); }
+    { const t = setTimeout(() => { backfillEpisodeRepeatLinks().catch(e => console.warn('[Memory] repeat-task links failed:', e.message)); }, 60000); if (t.unref) t.unref(); }
     if (SELF_CORRECT_ENABLED) {
         const sweep = async () => { for (const uid of await coreMemory.listAllUsers().catch(() => [])) await runSelfCorrection(uid).catch(e => console.warn('[SelfCorrect] sweep failed:', e.message)); };
         const t1 = setTimeout(() => sweep().catch(() => {}), 150000); if (t1.unref) t1.unref();

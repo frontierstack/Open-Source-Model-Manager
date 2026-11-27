@@ -328,7 +328,13 @@ async function readShard(userId) {
         if (!parsed || typeof parsed !== 'object') return emptyShard(userId);
         if (!Array.isArray(parsed.memories)) parsed.memories = [];
         if (!parsed.cursors || typeof parsed.cursors !== 'object') parsed.cursors = {};
-        for (const rec of parsed.memories) scrubPairTools(rec);
+        for (const rec of parsed.memories) {
+            scrubPairTools(rec);
+            // Retry-only lessons and transient site errors (2026-11-27) are
+            // never shown to the model; drop them from stored memories too.
+            if (Array.isArray(rec.lessons)) rec.lessons = rec.lessons.filter(isUsefulLesson);
+            if (Array.isArray(rec.avoid)) rec.avoid = rec.avoid.filter(isUsefulAvoid);
+        }
         return parsed;
     } catch (e) {
         if (e.code !== 'ENOENT') log(`read failed for ${userIdSafe(userId)}: ${e.message} — starting empty`);
@@ -432,6 +438,22 @@ async function listAllUsers() {
 // ---------------------------------------------------------------------------
 // Episodes → core memory (deterministic part)
 // ---------------------------------------------------------------------------
+
+// What is worth handing the model (2026-11-27 review of the live shard):
+// "<tool> failed once (TypeError:) — a corrected retry worked" only records a
+// retry the model makes anyway, and filled half of every lesson list; a site's
+// 404 / refused connection / timeout is a property of that page, not of the
+// approach, so "Avoid: web: http-404" told the model nothing it could act on.
+const RETRY_ONLY_LESSON_RE = /\bfailed once\b.*\bcorrected retry worked\b/i;
+const TRANSIENT_AVOID_RE = /:\s*(?:http-?\d{3}|e(?:connrefused|connreset|timedout|notfound|ai_again|hostunreach)|timeout|timed out|aborted|socket hang up|rate.?limit\w*|too many requests)\b/i;
+function isUsefulLesson(l) {
+    if (!l || !l.text) return false;
+    if ((l.source || 'auto') === 'auto' && RETRY_ONLY_LESSON_RE.test(l.text)) return false;
+    return true;
+}
+function isUsefulAvoid(a) {
+    return !!(a && a.text) && !TRANSIENT_AVOID_RE.test(a.text);
+}
 
 function addUnique(arr, text, cap, extra = {}) {
     const t = clean(text, LESSON_MAX_CHARS);
@@ -593,7 +615,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         // Improvement vs the remembered best BEFORE this run — the panel's proof.
         const improvedVsBest = (recalled && Number.isFinite(recalled.bestCalls)) ? recalled.bestCalls - calls : null;
 
-        for (const l of (episode.lessons || [])) addUnique(rec.lessons, l, MAX_LESSONS, { source: 'auto' });
+        for (const l of (episode.lessons || [])) if (isUsefulLesson({ text: l, source: 'auto' })) addUnique(rec.lessons, l, MAX_LESSONS, { source: 'auto' });
         // The avoid-list holds observed ERROR CLASSES ("web: http-404"), which
         // recur across tasks and can be counted. A raw error message carrying a
         // path or a URL, or a host-specific detour, is an anecdote of one task —
@@ -601,7 +623,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         for (const p of (episode.pitfalls || [])) {
             const text = String(p || '');
             if (text.length > 90 || /[\/]|https?:|\.[a-z]{2,4}\b/i.test(text.replace(/^[^:]+:/, ''))) continue;
-            addUnique(rec.avoid, text, MAX_AVOID, { count: 1 });
+            if (isUsefulAvoid({ text })) addUnique(rec.avoid, text, MAX_AVOID, { count: 1 });
         }
 
         // Adherence: the memory was handed to this turn — did the model follow it?
@@ -612,9 +634,14 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
         if (got) {
             recalled = got;
             s.recalled += 1;
-            const adh = experienceMemory.pathAdherence(recalled.steps || [], episode.approach || []);
-            followed = !!adh.followed;
-            if (followed) s.followed += 1;
+            // Measured only against concrete steps the turn was handed (similar
+            // past tasks). Without them "followed" meant "used the same tools as
+            // the theme's leanest-ever task" — 96% for research, i.e. nothing.
+            if (Array.isArray(recalled.steps) && recalled.steps.length) {
+                const adh = experienceMemory.pathAdherence(recalled.steps, episode.approach || []);
+                followed = !!adh.followed;
+                if (followed) s.followed += 1;
+            }
         }
         try {
             memoryStats.logRun(shard, {
@@ -623,7 +650,7 @@ async function recordEpisode(userId, { episode, theme, convId = null, recalled =
                 tools: [...new Set(experienceMemory.approachTools(episode.approach || []))].slice(0, 8),
                 r: !!recalled, rt: !!got, fo: followed, rl: !!(got && got.late),
                 pv: rec.playbookVersion || 0,
-                m: meta && meta.model, ac: meta && meta.answerChars, src: meta && meta.source,
+                m: meta && meta.model, ms: meta && meta.serving, ac: meta && meta.answerChars, src: meta && meta.source,
                 tm: meta && Number.isFinite(meta.toolMs) ? meta.toolMs / 1000 : null,
                 tu: meta && meta.toolUse,
                 cv: provisional || taskKey ? null : convId,
@@ -788,9 +815,11 @@ function refinementInput(rec) {
     lines.push(`STATS: ${s.runs} tasks (${s.converged} converged, ${s.failedRuns} not), best ${s.bestCalls ?? '?'} calls, avg ${s.runs ? (s.totalCalls / s.runs).toFixed(1) : '?'} calls, recalled ${s.recalled}× followed ${s.followed}×`);
     lines.push(`CURRENT PLAYBOOK (v${rec.playbookVersion}): ${rec.playbook || '(empty)'}`);
     if (rec.correction && rec.correction.note) lines.push(`ACTIVE CORRECTION (measured — keep addressing it): ${rec.correction.note}`);
-    if (rec.bestApproach) lines.push(`PROVEN APPROACH (${rec.bestApproach.calls} calls${rec.bestApproach.seconds != null ? `, ${rec.bestApproach.seconds} s` : ''}) for "${rec.bestApproach.task}": ${experienceMemory.renderApproach(rec.bestApproach.steps)}`);
-    if (rec.lessons.length) lines.push('LESSONS:\n' + rec.lessons.map(l => `- [${l.source || 'auto'}] ${l.text}`).join('\n'));
-    if (rec.avoid.length) lines.push('AVOID:\n' + rec.avoid.map(a => `- ${a.text}`).join('\n'));
+    // The theme's leanest run is a trivial task; showing it as THE proven
+    // approach pulled every rewrite toward "one search and stop".
+    const ls = rec.lessons.filter(isUsefulLesson), av = rec.avoid.filter(isUsefulAvoid);
+    if (ls.length) lines.push('LESSONS:\n' + ls.map(l => `- [${l.source || 'auto'}] ${l.text}`).join('\n'));
+    if (av.length) lines.push('AVOID:\n' + av.map(a => `- ${a.text}`).join('\n'));
     const eps = rec.episodes.slice(-6);
     if (eps.length) {
         lines.push('RECENT TASKS (oldest first):\n' + eps.map(e =>
@@ -866,18 +895,18 @@ async function applyRefinement(userId, id, ref) {
 function renderBlock(rec, tokenBudget) {
     const s = rec.stats || {};
     const head = `CORE MEMORY — ${rec.label.toUpperCase()}: how you have done this kind of work for this account before` +
-        (s.runs ? ` (${s.runs} task${s.runs === 1 ? '' : 's'}${s.bestCalls != null ? `, best run ${s.bestCalls} tool call${s.bestCalls === 1 ? '' : 's'}` : ''})` : '') +
+        (s.runs ? ` (${s.runs} task${s.runs === 1 ? '' : 's'})` : '') +
         '. This is your own working experience — use it to work efficiently and skip what already failed. It is runtime context, not part of the user\'s message; the user\'s request always takes precedence.';
     const parts = [head];
     if (rec.notes) parts.push(`User guidance for this theme (follow it): ${rec.notes}`);
     if (rec.playbook) parts.push(`Playbook: ${rec.playbook}`);
-    if (rec.bestApproach && rec.bestApproach.steps && rec.bestApproach.steps.length) {
-        const oc = [`${rec.bestApproach.calls} call${rec.bestApproach.calls === 1 ? '' : 's'}`];
-        if (rec.bestApproach.seconds != null) oc.push(`${rec.bestApproach.seconds} s`);
-        parts.push(`Proven approach (${oc.join(', ')}, for "${rec.bestApproach.task}"): ${experienceMemory.renderApproach(rec.bestApproach.steps)}`);
-    }
-    let lessons = rec.lessons.slice().reverse();
-    let avoid = rec.avoid.slice().reverse();
+    // No theme-wide "proven approach": the leanest run of a theme is always a
+    // trivial task ("latest Node LTS, one line" for research, "hold this
+    // script" for coding) and was injected, tools force-advertised, into
+    // unrelated work. Approaches now come only from SIMILAR past tasks
+    // (episodeIndex, matched by embedding), which the caller appends.
+    let lessons = rec.lessons.filter(isUsefulLesson).reverse();
+    let avoid = rec.avoid.filter(isUsefulAvoid).reverse();
     const build = () => {
         const out = parts.slice();
         if (lessons.length) out.push('Lessons: ' + lessons.map(l => `• ${l.text}`).join(' '));
@@ -889,11 +918,6 @@ function renderBlock(rec, tokenBudget) {
     // and the user's notes are what matter.
     while (estimateTokens(text) > tokenBudget && (lessons.length || avoid.length)) {
         if (avoid.length >= lessons.length) avoid.pop(); else lessons.pop();
-        text = build();
-    }
-    if (estimateTokens(text) > tokenBudget && rec.bestApproach) {
-        const i = parts.findIndex(p => p.startsWith('Proven approach'));
-        if (i >= 0) parts.splice(i, 1);
         text = build();
     }
     return text;
@@ -913,7 +937,7 @@ async function recall(userId, { userText = '', attachmentKinds = new Set(), tool
     const shard = await readShard(userId);
     const rec = findByTheme(shard, cls.theme);
     if (!rec || rec.enabled === false) return null;
-    const hasContent = (rec.stats && rec.stats.runs > 0) || rec.notes || rec.lessons.length || rec.playbook;
+    const hasContent = rec.notes || rec.playbook || rec.lessons.some(isUsefulLesson);
     if (!hasContent) return null;
     const block = renderBlock(rec, Math.max(200, tokenBudget));
     return {
@@ -924,8 +948,8 @@ async function recall(userId, { userText = '', attachmentKinds = new Set(), tool
         tokens: estimateTokens(block),
         runs: rec.stats.runs,
         bestCalls: rec.stats.bestCalls,
-        steps: rec.bestApproach ? rec.bestApproach.steps : [],
-        tools: rec.bestApproach ? experienceMemory.approachTools(rec.bestApproach.steps) : [],
+        steps: [],
+        tools: [],
         playbookVersion: rec.playbookVersion,
     };
 }
@@ -1109,6 +1133,12 @@ async function stats(userId, archived = null, { since = null, bucket = 'week' } 
         shard = await mutate(userId, (sh) => { memoryStats.seedFromHistory(sh, archived); return sh; });
     }
     const out = memoryStats.computeStats(shard, allThemes(), { since, bucket });
+    try {
+        const label = new Map(allThemes().map(t => [t.key, t.label]));
+        const rows = (shard.statsLog || []).filter(r => r && r.t && !r.prov);
+        const arc = (archived || []).filter(e => !since || String(e.at) >= since);
+        out.repeatTasks = memoryStats.repeatTasks(arc, rows, label, require('./episodeIndex').REPEAT_MIN_SIM);
+    } catch (e) { log(`repeat-task stats failed: ${e.message}`); }
     // Self-correction always works on the whole history, whatever the view's range.
     return { ...out, selfCorrect: selfCorrect.publicState(shard, memoryStats.correctionFindings(shard, allThemes())) };
 }
@@ -1202,6 +1232,7 @@ module.exports = {
     peekBestApproach,
     THEMES, GENERAL_THEME, themeInfo, allThemes, classifyTheme, deriveAttachmentKinds,
     list, get, getByTheme, listAllUsers,
+    isUsefulLesson, isUsefulAvoid,
     recordEpisode, summarizeToolUse, recalledFor, backfillTiming, markCorrection, addLesson, setNotes, setEnabled, remove, clearAll,
     getCursor, setCursor,
     REFINE_PROMPT, refinementInput, parseRefinement, applyRefinement,

@@ -48,6 +48,7 @@ function logRun(shard, row) {
     // correction in the NEXT message can be pinned on this task).
     if (Number.isFinite(row.pv)) r.pv = row.pv;
     if (row.m) r.m = String(row.m).slice(0, 80);
+    if (row.ms) r.ms = String(row.ms).slice(0, 16);
     if (Number.isFinite(row.ac)) r.ac = row.ac;
     if (row.src) r.src = row.src;
     if (row.cv) { r.cv = String(row.cv).slice(0, 64); r.cor = false; }
@@ -244,14 +245,16 @@ function computeStats(shard, themes, { since = null, bucket = 'week' } = {}) {
             spark: rs.slice(-30).map(r => r.c),
             sparkSeconds: rs.slice(-30).map(r => r.s).filter(x => x != null),
             seriesSeconds: rollingSeries(rs.map(r => r.s).filter(x => x != null), 30),
+            // Trends on the theme's current model only (a model switch is not a trend).
             callsTrend: (() => {
-                if (rs.length < FIND_MIN) return null;
-                const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
-                return compareGroups(rs.slice(0, w), rs.slice(-w), METRICS[1]);
+                const v = sameModelTail(rs);
+                if (v.length < FIND_MIN) return null;
+                const w = Math.min(60, Math.max(5, Math.floor(v.length / 3)));
+                return compareGroups(v.slice(0, w), v.slice(-w), METRICS[1]);
             })(),
             weekly: weeklySeries(rs, bucket),
             secondsTrend: (() => {
-                const v = rs.filter(r => r.s != null);
+                const v = sameModelTail(rs).filter(r => r.s != null);
                 if (v.length < FIND_MIN) return null;
                 const w = Math.min(60, Math.max(5, Math.floor(v.length / 3)));
                 return compareGroups(v.slice(0, w), v.slice(-w), METRICS[0]);
@@ -364,6 +367,39 @@ function evidence(p, nA, nB) {
 
 const isHostRow = (r) => r.src === 'agent' || r.th === 'host';
 
+// Like for like across MODELS too (2026-11-27). The Nov 9 switch from the
+// 27B/4B pair to Qwen3.8-Flash-Next roughly doubled tool calls per task
+// (research 3 → 7, coding 4 → 13), and every comparison pooled the two: Stats
+// read the switch as five themes getting worse and self-correction spent 14
+// playbook rewrites (2 helped) on a change no playbook can undo. Rows without
+// a model (chat before Nov 7, omp before Nov 27) form their own group.
+const modelKey = (r) => (r && r.m) || (r && isHostRow(r) ? '?agent' : '?');
+// Serving settings (`ms`, recorded from 2026-11-27) split a model's rows only
+// when BOTH rows carry one and they differ; older rows have none.
+const sameServing = (a, b) => !a || !b || !a.ms || !b.ms || a.ms === b.ms;
+const sameRun = (a, b) => modelKey(a) === modelKey(b) && sameServing(a, b);
+/** The rows on the same model as the newest one. */
+function sameModelTail(rs) {
+    if (!rs.length) return rs;
+    const cur = rs[rs.length - 1];
+    return rs.filter(r => sameRun(r, cur));
+}
+/** Model switches in time order: a new model counts once it serves 3 tasks in a row. */
+function modelChanges(rows) {
+    const out = [];
+    let cur = null, cand = null, run = 0, candAt = null;
+    for (const r of rows) {
+        if (!r.m) continue;
+        if (r.m === cur) { cand = null; run = 0; continue; }
+        if (r.m === cand) run++; else { cand = r.m; run = 1; candAt = r.t; }
+        if (run >= 3) {
+            if (cur) out.push({ t: candAt, from: cur, to: cand });
+            cur = cand; cand = null; run = 0;
+        }
+    }
+    return out;
+}
+
 // Outcome measures. `kind: 'value'` compares medians (Mann–Whitney), `'rate'`
 // compares shares (z-test). All are lower-is-better.
 // Time is split (rows carry `tm`, seconds spent waiting on tools, from
@@ -375,7 +411,11 @@ const hasTm = (r) => Number.isFinite(r.tm) && Number.isFinite(r.s);
 const modelSecs = (r) => (hasTm(r) ? Math.max(0, r.s - Math.min(r.tm, r.s)) : null);
 const METRICS = [
     { key: 'seconds', label: 'Response time', kind: 'value', get: r => r.s, unit: 'seconds', correct: 'fallback' },
-    { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls', correct: true },
+    // Not a correction trigger (2026-11-27): calls per task mostly tracks how
+    // big the asks are (research went from a week of 1-call lookups to 40-call
+    // deal hunts on the same model) and drove 7 of 14 no-effect rewrites. The
+    // size-neutral version is repeatTasks (calls vs a similar earlier task).
+    { key: 'calls', label: 'Tool calls per task', kind: 'value', get: r => r.c, unit: 'calls', correct: false },
     { key: 'failedShare', label: 'Failed tool calls', kind: 'value', get: r => (r.c + r.f) ? r.f / (r.c + r.f) : 0, unit: 'share', correct: true },
     { key: 'rough', label: 'Tasks with repeated failures', kind: 'rate', get: r => (r.rough ? 1 : 0), correct: true },
     { key: 'corrected', label: 'Answers corrected by you', kind: 'rate', get: r => (typeof r.cor === 'boolean' ? (r.cor ? 1 : 0) : null), correct: true },
@@ -416,14 +456,16 @@ function direction(c) {
 const FIND_MIN = parseInt(process.env.CORE_MEMORY_FIND_MIN, 10) || 10;
 function findingsFor(rows, scope, label, { window = 'overall', min = FIND_MIN, metrics = METRICS } = {}) {
     const out = [];
+    const onModel = sameModelTail(rows);
+    const model = onModel.length ? (onModel[onModel.length - 1].m || null) : null;
     for (const m of metrics) {
-        const rs = rows.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+        const rs = onModel.filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
         const split = window === 'recent' ? recentSplit(rs) : overallSplit(rs, min);
         if (!split) continue;
         const { early, recent } = split;
         const c = compareGroups(early, recent, m);
         if (!c) continue;
-        const f = { scope, scopeLabel: label, metric: m.key, metricLabel: m.label, ...c, window,
+        const f = { scope, scopeLabel: label, metric: m.key, metricLabel: m.label, ...c, window, model,
             since: early[0].t, until: recent[recent.length - 1].t, recentSince: recent[0].t,
             direction: direction(c) };
         if (f.direction !== 'flat') f.drivers = explainChange(early, recent, m);
@@ -539,12 +581,14 @@ const STRAT_MIN = 6;
 const STRAT_SHRINK = 5;
 function stratifiedFindings(rows, scope, label) {
     const out = [];
-    const themes = [...new Set(rows.map(r => r.th))];
+    // Strata = theme × model: each is compared only with itself.
+    const strata = [...new Set(rows.map(r => `${r.th}\u0000${modelKey(r)}`))];
     for (const m of METRICS) {
         let wsum = 0, acc = 0, zsum = 0, w2 = 0, nFrom = 0, nTo = 0;
         const parts = [];
-        for (const th of themes) {
-            const rs = rows.filter(r => r.th === th).filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
+        for (const key of strata) {
+            const [th, mk] = key.split('\u0000');
+            const rs = rows.filter(r => r.th === th && modelKey(r) === mk).filter(r => { const v = m.get(r); return v != null && Number.isFinite(v); });
             if (rs.length < STRAT_MIN) continue;
             const w = Math.min(60, Math.max(3, Math.floor(rs.length / 3)));
             const c = compareGroups(rs.slice(0, w), rs.slice(-w), m);
@@ -563,7 +607,7 @@ function stratifiedFindings(rows, scope, label) {
                 zsum += z * wt; w2 += wt * wt;
             }
             nFrom += c.nFrom; nTo += c.nTo;
-            parts.push({ theme: th, change: c.change, nFrom: c.nFrom, nTo: c.nTo });
+            parts.push({ theme: th, model: mk.startsWith('?') ? null : mk, change: c.change, nFrom: c.nFrom, nTo: c.nTo });
         }
         if (!wsum || parts.length === 0) continue;
         const z = w2 ? zsum / Math.sqrt(w2) : 0;
@@ -640,9 +684,11 @@ function memoryImpact(rows) {
         if (!c) continue;
         // Theme-matched.
         let wsum = 0, acc = 0, themesUsed = 0;
-        const themes = [...new Set(known.map(r => r.th))];
-        for (const th of themes) {
-            const a = cold.filter(r => r.th === th), b = withM.filter(r => r.th === th);
+        // Matched on theme AND model: memory was recalled more on the newer model.
+        const groups = [...new Set(known.map(r => `${r.th}\u0000${modelKey(r)}`))];
+        for (const g of groups) {
+            const inG = (r) => `${r.th}\u0000${modelKey(r)}` === g;
+            const a = cold.filter(inG), b = withM.filter(inG);
             const tc = compareGroups(a, b, m);
             if (!tc || tc.change == null || Math.min(tc.nFrom, tc.nTo) < 2) continue;
             const wgt = Math.min(tc.nFrom, tc.nTo);
@@ -668,7 +714,8 @@ function memoryImpact(rows) {
 const CURVE_BUCKETS = [[1, 5], [6, 15], [16, 30], [31, 60], [61, Infinity]];
 function learningCurve(rows) {
     const byTheme = new Map();
-    for (const r of rows) { if (!byTheme.has(r.th)) byTheme.set(r.th, []); byTheme.get(r.th).push(r); }
+    // Counted per theme AND model: a new model starts its own curve.
+    for (const r of rows) { const k = `${r.th}\u0000${modelKey(r)}`; if (!byTheme.has(k)) byTheme.set(k, []); byTheme.get(k).push(r); }
     const out = CURVE_BUCKETS.map(([lo, hi]) => ({ label: hi === Infinity ? `${lo}+` : `${lo}–${hi}`, lo, hi, seconds: [], calls: [], themes: new Set() }));
     for (const [th, rs] of byTheme) {
         if (rs.length < 8) continue;
@@ -679,7 +726,7 @@ function learningCurve(rows) {
             if (!b) return;
             if (ms && r.s != null) b.seconds.push(r.s / ms);
             if (mc) b.calls.push(r.c / mc);
-            b.themes.add(th);
+            b.themes.add(th.split('\u0000')[0]);
         });
     }
     return out.map(b => ({
@@ -697,8 +744,11 @@ function updateImpact(rows, events, label) {
     for (const e of events) {
         if (!e || !e.t || (e.kind !== 'best' && e.kind !== 'refine')) continue;
         const rs = rows.filter(r => r.th === e.th);
-        const before = rs.filter(r => r.t < e.t).slice(-UPDATE_K);
-        const after = rs.filter(r => r.t > e.t).slice(0, UPDATE_K);
+        // Same model on both sides, or a model switch reads as the update's effect.
+        const first = rs.find(r => r.t > e.t);
+        if (!first) continue;
+        const before = rs.filter(r => r.t < e.t && sameRun(r, first)).slice(-UPDATE_K);
+        const after = rs.filter(r => r.t > e.t && sameRun(r, first)).slice(0, UPDATE_K);
         if (before.length < 3 || after.length < 3) continue;
         // Rewrites often land between the same two tasks (v21..v24 with no
         // task in between): one row per distinct before/after split.
@@ -772,7 +822,11 @@ function headlineFor(rows, m) {
         const calls = rs.reduce((a, r) => a + (r.c || 0) + (r.f || 0), 0);
         out.value = calls ? round(rs.reduce((a, r) => a + (r.f || 0), 0) / calls, 4) : 0;
     }
-    if (rs.length >= FIND_MIN) {
+    // The change badge compares tasks on the current model only.
+    const cm = sameModelTail(rs);
+    if (cm.length >= FIND_MIN) {
+        const rsAll = rs;
+        { const rs = cm;
         const w = Math.min(60, Math.max(5, Math.floor(rs.length / 3)));
         const c = compareGroups(rs.slice(0, w), rs.slice(-w), m);
         if (c && m.key === 'failedShare') {
@@ -782,7 +836,10 @@ function headlineFor(rows, m) {
             c.from = round(rate(rs.slice(0, w)), 4); c.to = round(rate(rs.slice(-w)), 4); c.change = round(c.to - c.from, 3);
         }
         if (c) Object.assign(out, c, { direction: direction(c), window: w,
-            since: rs[0].t, recentSince: rs[rs.length - w].t });
+            since: rs[0].t, recentSince: rs[rs.length - w].t, model: rs[rs.length - 1].m || null, pooledTasks: rsAll.length,
+            // The line shows the tasks the comparison used.
+            n: rs.length, series: rollingSeries(rs.map(m.get)) });
+        }
     }
     return out;
 }
@@ -827,6 +884,57 @@ function correctionFindings(shard, themes = []) {
         .sort((a, b) => (rank[a.evidence] - rank[b.evidence]) || (Math.abs(b.change || 0) - Math.abs(a.change || 0)));
 }
 
+/**
+ * Repeat tasks: each archived task against the most similar EARLIER one
+ * (episodeIndex `prev`, cosine ≥ EPISODE_REPEAT_MIN_SIM, default 0.7). The size-neutral learning measure —
+ * the same kind of ask, done again — and judged on the same model only (the
+ * model comes from the task's stats row; rows and archive share timestamps).
+ */
+function repeatTasks(archived, rows, label = new Map(), minSimilarity = 0.7) {
+    const byTheme = new Map();
+    for (const r of rows) { if (!byTheme.has(r.th)) byTheme.set(r.th, []); byTheme.get(r.th).push(r); }
+    const rowAt = (th, at) => {
+        const t = Date.parse(at);
+        let best = null, bd = 10000;
+        for (const r of (byTheme.get(th) || [])) { const d = Math.abs(Date.parse(r.t) - t); if (d < bd) { bd = d; best = r; } }
+        return best;
+    };
+    const pairs = [];
+    for (const e of (archived || [])) {
+        if (!e || !e.prev || !Number.isFinite(e.calls) || !Number.isFinite(e.prev.calls)) continue;
+        const cur = rowAt(e.theme, e.at), was = rowAt(e.prev.theme || e.theme, e.prev.at);
+        if (cur && was && !sameRun(cur, was)) continue;
+        const ratio = (e.calls + 1) / (e.prev.calls + 1);
+        pairs.push({ at: e.at, th: e.theme, task: String(e.task || '').slice(0, 140), prevTask: e.prev.task || '', score: e.prev.score,
+            calls: e.calls, prevCalls: e.prev.calls, seconds: e.seconds ?? null, prevSeconds: e.prev.seconds ?? null,
+            ratio: round(ratio, 3), rt: cur ? cur.rt : null, model: cur && cur.m ? cur.m : null });
+    }
+    pairs.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const summ = (ps) => {
+        if (!ps.length) return null;
+        const lr = ps.map(p => Math.log(p.ratio));
+        return { tasks: ps.length, medianRatio: round(Math.exp(median(lr)), 3),
+            leaner: ps.filter(p => p.calls < p.prevCalls).length, same: ps.filter(p => p.calls === p.prevCalls).length,
+            heavier: ps.filter(p => p.calls > p.prevCalls).length };
+    };
+    const ratioMetric = { key: 'ratio', kind: 'value', get: r => Math.log(r.ratio) };
+    let trend = null;
+    if (pairs.length >= 10) {
+        const w = Math.floor(pairs.length / 2);
+        const a = pairs.slice(0, w), b = pairs.slice(-w);
+        const p = mannWhitneyP(a.map(ratioMetric.get), b.map(ratioMetric.get));
+        const fa = Math.exp(median(a.map(ratioMetric.get))), fb = Math.exp(median(b.map(ratioMetric.get)));
+        trend = { early: round(fa, 3), recent: round(fb, 3), n: w, p: p == null ? null : round(p, 4), evidence: evidence(p, w, w),
+            direction: fb < fa * (1 - MEANINGFUL.relative) ? 'better' : fb > fa * (1 + MEANINGFUL.relative) ? 'worse' : 'flat' };
+    }
+    const withM = pairs.filter(p => p.rt === true), cold = pairs.filter(p => p.rt === false);
+    const themes = [...new Set(pairs.map(p => p.th))].map(th => ({ theme: th, label: label.get(th) || th, ...summ(pairs.filter(p => p.th === th)) }))
+        .sort((a, b) => b.tasks - a.tasks);
+    return { minSimilarity, ...(summ(pairs) || { tasks: 0 }), trend,
+        withMemory: summ(withM), withoutMemory: summ(cold), themes,
+        recent: pairs.slice(-12).reverse() };
+}
+
 /** Everything beyond the basic counters; merged into computeStats' result. */
 function analyze(rows, byTheme, events, label) {
     // Overall findings use chat and agent rows separately (they differ by an
@@ -863,6 +971,7 @@ function analyze(rows, byTheme, events, label) {
             return [t.theme, { tasks: rs.length, withMemory: rs.filter(r => r.rt === true).length, late: rs.filter(r => r.rl).length, timed: rs.filter(hasTm).length }];
         })),
         timing: { timedTasks: rows.filter(hasTm).length, tasks: rows.length },
+        modelChanges: modelChanges(rows.filter(r => !isHostRow(r))),
         headline: Object.fromEntries(METRICS.slice(0, 3).map(m => [m.key, headlineFor(chatRows, m)])),
         responseTime: responseTime(rows),
         impact: memoryImpact(rows),
@@ -874,4 +983,4 @@ function analyze(rows, byTheme, events, label) {
     };
 }
 
-module.exports = { METRICS, compareGroups, correctionFindings, explainChange, toolUsage, findingsFor, CORRECTION_MIN, FIND_MIN, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };
+module.exports = { repeatTasks, modelKey, sameRun, sameModelTail, modelChanges, METRICS, compareGroups, correctionFindings, explainChange, toolUsage, findingsFor, CORRECTION_MIN, FIND_MIN, direction, TREND_MIN, logRun, markCorrection, analyze, mannWhitneyP, twoPropP, logEvent, seedFromHistory, computeStats, weekStart, earlyVsRecent, withVsWithout, LOG_MAX };

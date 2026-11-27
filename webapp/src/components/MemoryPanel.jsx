@@ -290,8 +290,8 @@ export default function MemoryPanel() {
                         <div className="text-base font-semibold tracking-tight">Core memory</div>
                         <div className="text-xs leading-relaxed" style={{ color: 'var(--text-tertiary)', maxWidth: '68ch' }}>
                             One living memory per kind of work. Every task the model finishes flows into its theme
-                            — research, coding, data analysis, documents… — and refines that memory: its playbook, the approach that
-                            worked best, lessons and pitfalls. The next task of the same kind starts from it.
+                            — research, coding, data analysis, documents… — and refines that memory: its playbook, lessons and
+                            pitfalls. The next task of the same kind starts from it, together with the most similar past tasks and how they were done.
                             {isAdmin && ' Admin: other accounts’ core memories are listed below yours.'}
                         </div>
                     </div>
@@ -487,7 +487,7 @@ export default function MemoryPanel() {
                                 title="Playbook"
                                 hint={rec?.playbook
                                     ? `Version ${rec.playbookVersion}, rewritten by the model ${relativeTime(rec.playbookUpdatedAt)} from ${stats?.runs || 0} task${(stats?.runs || 0) === 1 ? '' : 's'}. It changes as more tasks land.`
-                                    : (rec ? 'The model writes this after its first task of this kind; until then the proven approach and lessons below are what it recalls.' : 'Nothing yet — the playbook appears after the first task of this kind.')}
+                                    : (rec ? 'The model writes this after its second task of this kind; until then the lessons below and similar past tasks are what it recalls.' : 'Nothing yet — the playbook appears after the first task of this kind.')}
                                 right={rec?.playbookHistory?.length ? (
                                     <button type="button" onClick={() => setShowHistory((v) => !v)} className="inline-flex items-center gap-1 text-[0.7rem]" style={{ color: 'var(--accent-primary)' }}>
                                         <HistoryIcon size={12} /> {showHistory ? 'Hide' : 'Show'} {rec.playbookHistory.length} earlier version{rec.playbookHistory.length === 1 ? '' : 's'}
@@ -508,14 +508,14 @@ export default function MemoryPanel() {
                             </Section>
 
                             {rec?.bestApproach?.steps?.length ? (
-                                <Section title="Proven approach" hint={`The leanest run that converged: ${rec.bestApproach.calls} call${rec.bestApproach.calls === 1 ? '' : 's'}${rec.bestApproach.seconds != null ? `, ${fmtSeconds(rec.bestApproach.seconds)}` : ''} — “${rec.bestApproach.task}”`}>
+                                <Section title="Leanest run" hint={`For reference, not recalled: ${rec.bestApproach.calls} call${rec.bestApproach.calls === 1 ? '' : 's'}${rec.bestApproach.seconds != null ? `, ${fmtSeconds(rec.bestApproach.seconds)}` : ''} — “${rec.bestApproach.task}”. The leanest task of a theme is usually a trivial one, so the model is given the approaches of SIMILAR past tasks instead.`}>
                                     <div className="rounded-md border px-3 py-2 font-mono text-[0.74rem] leading-relaxed" style={{ borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
                                         {renderSteps(rec.bestApproach.steps)}
                                     </div>
                                 </Section>
                             ) : null}
 
-                            <Section title="Lessons" hint="What to do next time. Observed lessons come from failed→fixed steps; the model and you can add your own.">
+                            <Section title="Lessons" hint="What to do next time. Observed lessons come from a failed step that a DIFFERENT tool then fixed (a plain retry that worked is not kept); the model and you can add your own.">
                                 {rec?.lessons?.length ? (
                                     <ul className="space-y-1">
                                         {rec.lessons.slice().reverse().map((l, i) => (
@@ -542,7 +542,7 @@ export default function MemoryPanel() {
                             </Section>
 
                             {rec?.avoid?.length ? (
-                                <Section title="Avoid" hint="Already tried, did not work.">
+                                <Section title="Avoid" hint="Approaches already tried that did not work. A page's own errors (404, refused, timeout) are not kept — they say nothing about the approach.">
                                     <ul className="space-y-1">
                                         {rec.avoid.slice().reverse().map((a, i) => (
                                             <li key={`${a.at}-${i}`} className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>• {a.text}{a.count > 1 ? <span className="ml-1 text-[0.66rem]" style={{ color: 'var(--text-tertiary)' }}>×{a.count}</span> : null}</li>

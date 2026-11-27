@@ -200,6 +200,46 @@ async function ensureBackfilled(userId, arc) {
     return true;
 }
 
+// Repeat tasks (2026-11-27): the most similar EARLIER task, so Stats can show
+// whether doing the same kind of thing again takes fewer calls — what memory
+// is for. "Calls per task" alone mostly measured how big the asks were
+// (research: a week of 1-call lookups, then 40-call deal hunts).
+// 0.7: at 0.6 "next Diablo 4 season?" matched "clean up the Diablo files" and
+// "how about these (image)" matched "extract text (image)".
+const REPEAT_MIN_SIM = parseFloat(process.env.EPISODE_REPEAT_MIN_SIM) || 0.7;
+async function linkPrevious(userId, arc, rec) {
+    rec.prevChecked = REPEAT_MIN_SIM;   // re-linked when the threshold changes
+    delete rec.prev;
+    const res = await eng().call('/search', { indexDir: userDir(userId), query: rec.task, k: 12 });
+    for (const hit of (res.results || [])) {
+        if (hit.score < REPEAT_MIN_SIM) break;
+        const o = arc.episodes[hit.docId];
+        if (!o || o.id === rec.id || !(String(o.at) < String(rec.at))) continue;
+        // Same conversation = a follow-up, not a repeat of the kind of task.
+        if (rec.convId && o.convId === rec.convId) continue;
+        if (!Number.isFinite(o.calls)) continue;
+        rec.prev = { id: o.id, score: Math.round(hit.score * 1000) / 1000, calls: o.calls, seconds: o.seconds ?? null, at: o.at, theme: o.theme, task: o.task.slice(0, 160) };
+        break;
+    }
+    return rec;
+}
+
+/** One-time: link every archived task to its most similar earlier one. */
+async function backfillRepeatLinks(userId) {
+    return serial(userId, async () => {
+        const arc = await readArchive(userId);
+        const todo = Object.values(arc.episodes).filter(r => r.prevChecked !== REPEAT_MIN_SIM)
+            .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+        if (!todo.length) return 0;
+        for (const r of todo) {
+            try { await linkPrevious(userId, arc, r); } catch (e) { log(`repeat link failed: ${e.message}`); break; }
+        }
+        await writeArchive(userId, arc);
+        log(`linked ${todo.length} task(s) to similar earlier ones for ${userIdSafe(userId)} (${todo.filter(r => r.prev).length} repeats)`);
+        return todo.length;
+    });
+}
+
 /** Archive one finished (or, for the /v1 bridge, in-progress) task. */
 async function archiveEpisode(userId, { episode, theme, convId = null, taskKey = null, approachText = '', tools = null }) {
     if (!userId) return null;
@@ -207,7 +247,10 @@ async function archiveEpisode(userId, { episode, theme, convId = null, taskKey =
     return serial(userId, async () => {
         const arc = await readArchive(userId);
         const seeded = await ensureBackfilled(userId, arc);
-        if (rec) await upsertLocked(userId, arc, [rec]);
+        if (rec) {
+            try { await linkPrevious(userId, arc, rec); } catch (_) { /* stats only */ }
+            await upsertLocked(userId, arc, [rec]);
+        }
         if (rec || seeded) await writeArchive(userId, arc);
         return rec ? { id: rec.id, count: Object.keys(arc.episodes).length } : null;
     });
@@ -363,7 +406,7 @@ async function retheme(userId, themeOf) {
 }
 
 module.exports = {
-    retheme,
+    retheme, backfillRepeatLinks, REPEAT_MIN_SIM,
     archiveEpisode, recallSimilar, renderSimilar, removeTheme, clearAll, count, listEpisodes,
     // pure, exported for tests
     cleanTask, redactSecrets, stripRuntimeTags, toRecord, toolsFromApproachText,

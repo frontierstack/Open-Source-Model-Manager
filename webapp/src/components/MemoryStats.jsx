@@ -137,11 +137,19 @@ function Change({ value, kind = 'relative', metric = null, evidence = null, inve
 
 // One sentence a person can read: what the recent tasks look like against the
 // earlier ones, and whether it is likely real.
+// "Qwen3.8-27B-TURBO-Fable-…-MTP" → "Qwen3.8-27B": family + size.
+function shortModel(name) {
+    const s = String(name || '');
+    const m = s.match(/^(.*?\d+(?:\.\d+)?B(?:-A\d+B)?)/i);
+    if (m) return m[1];
+    return s.length > 28 ? `${s.slice(0, 26)}…` : s;
+}
+
 function verdictSentence(h) {
     if (!h) return 'no tasks yet';
     if (h.from == null) return `${h.n} task${h.n === 1 ? '' : 's'} so far — needs 10 to compare earlier with recent`;
     const d = describeChange(h.change, h.changeKind, h.metric);
-    const span = `first ${h.window} vs latest ${h.window} tasks`;
+    const span = `first ${h.window} vs latest ${h.window} tasks${h.model ? ` on ${shortModel(h.model)}` : ''}`;
     if (d.flat) return `About the same — ${span}.`;
     const head = d.good ? 'Better' : 'Worse';
     if (h.evidence === 'weak') return `${head}, but could be chance — ${span}.`;
@@ -1299,6 +1307,90 @@ function SelfCorrection({ data, now }) {
     );
 }
 
+
+// Doing the same kind of task again: each task against the most similar
+// earlier one (same model). Calls per task alone mostly says how big the asks
+// were; this is the size-neutral "is it learning" measure.
+function ratioText(r) {
+    if (r == null) return '—';
+    if (Math.abs(r - 1) < 0.05) return 'the same calls';
+    return r < 1 ? `${Math.round((1 - r) * 100)}% fewer calls` : `${Math.round((r - 1) * 100)}% more calls`;
+}
+function RepeatTasksCard({ R, labelOf }) {
+    const [open, setOpen] = React.useState(false);
+    if (!R) return null;
+    const hint = `Each task is matched with the most similar earlier task (similarity ${R.minSimilarity || 0.7}+, same model, not a follow-up in the same chat) and their tool calls compared. Bigger or smaller asks cancel out, so this is the fairest view of whether doing a kind of task again gets leaner. Ratios use calls + 1, so 0 → 1 call is not "infinitely worse".`;
+    if (!R.tasks) {
+        return <Card title="Doing the same kind of task again" hint={hint}><Empty>No repeat tasks yet — they appear once a task closely matches an earlier one.</Empty></Card>;
+    }
+    const tone = (r) => (r == null || Math.abs(r - 1) < 0.08 ? 'var(--text-secondary)' : r < 1 ? GOOD : BAD);
+    const T = R.trend;
+    return (
+        <Card title="Doing the same kind of task again" hint={hint}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-md border px-3 py-2" style={{ borderColor: RULE }}>
+                    <div className="text-xs" style={{ color: MUTED }}>Typical repeat ({R.tasks} task{R.tasks === 1 ? '' : 's'})</div>
+                    <div className="mt-0.5 text-lg font-semibold tabular-nums" style={{ color: tone(R.medianRatio) }}>{ratioText(R.medianRatio)}</div>
+                    <div className="text-xs" style={{ color: MUTED }}><b>{R.leaner}</b> leaner · <b>{R.same}</b> same · <b>{R.heavier}</b> heavier than the earlier task</div>
+                </div>
+                <div className="rounded-md border px-3 py-2" style={{ borderColor: RULE }}>
+                    <div className="text-xs" style={{ color: MUTED }}>Is it getting better?</div>
+                    {T ? (
+                        <>
+                            <div className="mt-0.5 text-sm tabular-nums">
+                                earlier repeats {T.early}× → recent {T.recent}× <Evidence level={T.evidence} p={T.p} nFrom={T.n} nTo={T.n} />
+                            </div>
+                            <div className="text-xs" style={{ color: T.direction === 'flat' || T.evidence === 'weak' ? MUTED : T.direction === 'better' ? GOOD : BAD }}>
+                                {T.direction === 'flat' ? 'about the same' : T.direction === 'better' ? 'repeats are getting leaner' : 'repeats are getting heavier'}{T.evidence === 'weak' ? ' — could be chance' : ''}
+                            </div>
+                        </>
+                    ) : <div className="mt-0.5 text-xs" style={{ color: MUTED }}>needs 10+ repeat tasks</div>}
+                </div>
+                <div className="rounded-md border px-3 py-2" style={{ borderColor: RULE }}>
+                    <div className="text-xs" style={{ color: MUTED }}>With memory vs without</div>
+                    <div className="mt-0.5 text-sm tabular-nums">
+                        <span style={{ color: tone(R.withMemory && R.withMemory.medianRatio) }}>{R.withMemory ? `${R.withMemory.medianRatio}×` : '—'}</span>
+                        <span style={{ color: MUTED }}> with ({R.withMemory ? R.withMemory.tasks : 0})</span>
+                        {' · '}
+                        <span style={{ color: tone(R.withoutMemory && R.withoutMemory.medianRatio) }}>{R.withoutMemory ? `${R.withoutMemory.medianRatio}×` : '—'}</span>
+                        <span style={{ color: MUTED }}> without ({R.withoutMemory ? R.withoutMemory.tasks : 0})</span>
+                    </div>
+                    <div className="text-xs" style={{ color: MUTED }}>calls vs the earlier task, lower is better</div>
+                </div>
+            </div>
+            {R.themes && R.themes.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5 text-xs">
+                    {R.themes.map((t) => (
+                        <span key={t.theme} className="rounded-full border px-2 py-0.5 tabular-nums" style={{ borderColor: RULE }}>
+                            {t.label || labelOf(t.theme)} <b style={{ color: tone(t.medianRatio) }}>{t.medianRatio}×</b> <span style={{ color: MUTED }}>({t.tasks})</span>
+                        </span>
+                    ))}
+                </div>
+            )}
+            {R.recent && R.recent.length > 0 && (
+                <div className="mt-3">
+                    <button type="button" className="text-xs hover:underline" style={{ color: ACCENT }} onClick={() => setOpen((v) => !v)}>
+                        {open ? 'Hide' : 'Show'} recent repeats
+                    </button>
+                    {open && (
+                        <div className="mt-2 space-y-1.5">
+                            {R.recent.map((p, i) => (
+                                <div key={i} className="rounded-md border px-2.5 py-1.5 text-xs" style={{ borderColor: RULE }}>
+                                    <div className="flex items-baseline justify-between gap-3">
+                                        <span className="min-w-0 truncate" title={p.task}>{p.task}</span>
+                                        <span className="shrink-0 tabular-nums" style={{ color: tone(p.ratio) }}>{p.prevCalls} → {p.calls} calls</span>
+                                    </div>
+                                    <div className="truncate" style={{ color: MUTED }} title={p.prevTask}>like: {p.prevTask} · {shortDate(p.at)}{p.rt ? ' · had memory' : ''}</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </Card>
+    );
+}
+
 function Counter({ value }) {
     const v = useTween(value, 700);
     return <>{v == null ? '—' : Math.round(v)}</>;
@@ -1487,9 +1579,11 @@ export default function MemoryStats({ userId = null }) {
                 <Tile label={range === 'all' ? 'Tasks learned from' : 'Tasks in range'} value={L.tasks || 0} num={L.tasks || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false}
                     sub={`across ${themes.length} theme${themes.length === 1 ? '' : 's'}${data.since ? ` since ${shortDate(data.since)}` : ''}`} />
                 <Tile label="Memory recalled" value={pct(L.recallRate)} num={L.recallRate} format={(v) => pct(v)} lowerIsBetter={false} sub={`${L.recalled || 0} tasks started from a theme memory`} />
-                <Tile label="Playbook followed" value={pct(L.followRate)} num={L.followRate} format={(v) => pct(v)} lowerIsBetter={false} sub={`${L.followed || 0} of ${L.recalled || 0} recalled tasks used the proven approach`} />
+                <Tile label="Playbook followed" value={pct(L.followRate)} num={L.followRate} format={(v) => pct(v)} lowerIsBetter={false} sub={`${L.followed || 0} of ${L.recalled || 0} recalled tasks used the approach of a similar past task`} />
                 <Tile label={range === 'all' ? 'Memory updates' : 'Memory updates in range'} value={L.refinements || 0} num={L.refinements || 0} format={(v) => String(Math.round(v))} lowerIsBetter={false} sub={`${L.proven || 0} proven approaches · ${L.lessons || 0} lessons · ${L.avoid || 0} pitfalls`} />
             </div>
+
+            <RepeatTasksCard R={data.repeatTasks} labelOf={labelOf} />
 
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                 <ActivityFeed items={feedItems} labelOf={labelOf} now={now} live={live} />
@@ -1507,6 +1601,14 @@ export default function MemoryStats({ userId = null }) {
                     </label>
                 )}
             >
+                {(data.modelChanges || []).length > 0 && (
+                    <div className="mb-3 rounded-md border px-3 py-2 text-xs" style={{ borderColor: RULE, color: 'var(--text-secondary)' }}>
+                        {(() => {
+                            const mc = data.modelChanges[data.modelChanges.length - 1];
+                            return <>The model changed on {shortDate(mc.t)} ({shortModel(mc.from)} → {shortModel(mc.to)}). Trends and corrections compare tasks on the same model only, so a model switch is not read as memory getting better or worse.</>;
+                        })()}
+                    </div>
+                )}
                 <div className="mb-3 text-sm" style={{ color: 'var(--text-secondary)' }}>
                     {(() => {
                         const lw = (F.lately || []).filter((f) => f.direction === 'worse' && f.evidence !== 'weak').length;
@@ -1569,7 +1671,7 @@ export default function MemoryStats({ userId = null }) {
                     )}
                 </Card>
                 <Card title="Following the playbook"
-                    hint="Of the tasks given the memory: those that used the proven approach against those that went their own way.">
+                    hint="Of the tasks given similar past tasks with their memory: those that used the same tools against those that went their own way. Measured from 27 Nov 2026 against similar tasks; before that against the theme's single leanest task, which made almost every task count as followed.">
                     {followReady
                         ? <ImpactRows rows={I.follow} fromLabel="Not followed" toLabel="Followed" />
                         : <Empty>Needs {MIN_COMPARE}+ recalled tasks of each kind ({I ? `${I.followedTasks} followed, ${I.notFollowedTasks} not` : 'none yet'}).</Empty>}
@@ -1578,7 +1680,7 @@ export default function MemoryStats({ userId = null }) {
 
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                 <Card title="Learning curve"
-                    hint="How a theme's 1st–5th, 6th–15th… task compares with that theme's typical task (1×). Bars falling below the line as the count grows mean the theme got better with experience."
+                    hint="How a theme's 1st–5th, 6th–15th… task compares with that theme's typical task (1×), counted per model (a new model starts its own count). Bars falling below the line as the count grows mean the theme got better with experience — but later tasks can also simply be bigger asks; the repeat-task card above controls for that."
                     right={<Segmented options={[['relSeconds', 'Time'], ['relCalls', 'Calls']]} value={curveField} onChange={setCurveField} />}>
                     <CurveChart data={data.learningCurve || []} field={curveField} />
                 </Card>
@@ -1643,7 +1745,7 @@ export default function MemoryStats({ userId = null }) {
             </Card>
 
             {/* Per theme */}
-            <Card title="By theme" hint="Trends compare a theme's earliest and latest third of tasks in the range (median). Green or red only when the difference is probably real; grey with a ? could be chance. The line is the rolling median of the same tasks. Follow rate = recalled tasks that used the proven approach.">
+            <Card title="By theme" hint="Trends compare a theme's earliest and latest third of tasks in the range (median). Green or red only when the difference is probably real; grey with a ? could be chance. The line is the rolling median of the same tasks. Trends use the theme's current model only. Follow rate = recalled tasks that used the approach of a similar past task.">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm" style={{ minWidth: 900 }}>
                         <thead>

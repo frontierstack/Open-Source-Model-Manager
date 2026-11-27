@@ -46,6 +46,8 @@ const BASE_K = 8;
 // active the theme gets no new correction and no ordinary refinement.
 const EVAL_MAX_TASKS = parseInt(process.env.SELF_CORRECT_EVAL_MAX_TASKS, 10) || 20;   // theme tasks since the fix
 const EVAL_MAX_MS = (parseFloat(process.env.SELF_CORRECT_EVAL_MAX_DAYS) || 21) * 86400000;
+const NO_EFFECT_STREAK = parseInt(process.env.SELF_CORRECT_NO_EFFECT_STREAK, 10) || 2;
+const NO_EFFECT_PAUSE_MS = (parseFloat(process.env.SELF_CORRECT_NO_EFFECT_PAUSE_DAYS) || 7) * 86400000;
 const COOLDOWN_MS = (parseFloat(process.env.SELF_CORRECT_COOLDOWN_H) || 1) * 3600 * 1000;
 const MAX_ATTEMPTS = parseInt(process.env.SELF_CORRECT_MAX_ATTEMPTS, 10) || 4;   // per theme in ATTEMPT_WINDOW
 const ATTEMPT_WINDOW_MS = 24 * 3600 * 1000;
@@ -233,6 +235,15 @@ function plan(shard, findings, { now = Date.now() } = {}) {
             const m = Math.max(1, Math.ceil((COOLDOWN_MS - (now - Date.parse(last.t))) / 60000));
             fs.forEach(f => note(f, 'wait', `last attempt ${STATUS_WORD[last.status] || last.status}; next try in ~${m} min`)); continue;
         }
+        // Rewrites that keep changing nothing mean the cause is not the
+        // playbook (a new model, harder tasks). Research went v51 → v54 on four
+        // no-effect rewrites in a row; stop and let the stats speak for a week.
+        let flat = 0;
+        for (let i = mine.length - 1; i >= 0 && mine[i].status === 'no_effect'; i--) flat++;
+        if (flat >= NO_EFFECT_STREAK && last && now - Date.parse(last.judgedAt || last.t) < NO_EFFECT_PAUSE_MS) {
+            fs.forEach(f => note(f, 'skip', `the last ${flat} rewrites changed nothing — likely not a playbook problem (a new model or harder tasks); paused for ${Math.round(NO_EFFECT_PAUSE_MS / 86400000)} days`));
+            continue;
+        }
         const attempts = mine.filter(a => now - Date.parse(a.t) < ATTEMPT_WINDOW_MS).length;
         if (attempts >= MAX_ATTEMPTS) { fs.forEach(f => note(f, 'skip', `${attempts} attempts on this theme in 24 h — paused so the playbook is not churned`)); continue; }
         const eligible = [];
@@ -313,14 +324,26 @@ function recordAction(shard, d, { now = Date.now(), fromVersion, toVersion, prev
 // the 12 tasks behind the first five verdicts qualified, and none of the 6
 // behind the three rollbacks.
 function measuredRows(shard, a) {
-    return themeRows(shard, a.th).filter(r => r.t > a.t && r.rt
+    const same = actionModelFilter(shard, a);
+    return themeRows(shard, a.th).filter(r => r.t > a.t && r.rt && same(r)
         && (!Number.isFinite(r.pv) || !Number.isFinite(a.toVersion) || r.pv >= a.toVersion));
+}
+// The model the theme ran on when the action was taken; tasks on another
+// model cannot judge it (a model switch alone doubled calls per task).
+function actionModelFilter(shard, a) {
+    const prior = themeRows(shard, a.th).filter(r => r.t < a.t);
+    const ref = prior.length ? prior[prior.length - 1] : null;
+    return (r) => !ref || memoryStats.sameRun(r, ref);
 }
 
 // Per-measure readings for an action over the tasks that used it.
 function readings(shard, a, k = EVAL_K, pMax = P_FINAL) {
+    // Judged on the model the fix was made for: tasks after a model switch say
+    // nothing about the playbook (the switch alone doubled calls per task).
+    const prior = themeRows(shard, a.th).filter(r => r.t < a.t);
+    const same = actionModelFilter(shard, a);
     const after = measuredRows(shard, a);
-    const before = memoryRows(themeRows(shard, a.th).filter(r => r.t < a.t)).slice(-BASE_K);
+    const before = memoryRows(prior.filter(same)).slice(-BASE_K);
     return actionMetrics(a).map(x => {
         const m = metricByKey.get(x.metric);
         if (!m) return { ...x, n: 0, value: null, change: null };
