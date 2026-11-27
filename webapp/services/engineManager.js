@@ -13,10 +13,31 @@ const os = require('os');
 const axios = require('axios');
 const router = require('./engineRouter');
 
-const { strata: STRATA_VERSION, vllm: VLLM_VERSION } = require('./engineVersions.json');
+// Versions: the checkout's pins (engineVersions.json), unless an upgrade from
+// the console / scripts/engine-upgrade.sh promoted a newer one (recorded in
+// versions.json next to the upgrade status; read on every call so a promotion
+// takes effect without a restart). Same rule in scripts/engines.sh.
+const ENGINE_PINS = require('./engineVersions.json');
+const VERSIONS_OVERRIDE_FILE = '/models/.modelserver/engine-upgrade/versions.json';
+function versionGt(a, b) {
+    const pa = String(a || '').replace(/^v/, '').split(/[.-]/).map(x => parseInt(x, 10) || 0);
+    const pb = String(b || '').replace(/^v/, '').split(/[.-]/).map(x => parseInt(x, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
+    return false;
+}
+let overrideCache = { at: 0, data: {} };
+function engineVersion(id) {
+    if (Date.now() - overrideCache.at > 3000) {
+        let data = {};
+        try { data = JSON.parse(require('fs').readFileSync(VERSIONS_OVERRIDE_FILE, 'utf8')) || {}; } catch (_) { /* none */ }
+        overrideCache = { at: Date.now(), data };
+    }
+    const pin = ENGINE_PINS[id], over = overrideCache.data[id];
+    return over && versionGt(over, pin) ? over : pin;
+}
+const strataPublishedImage = () => `ghcr.io/niko1221/strata:${String(engineVersion('strata')).replace(/^v/, '')}-cuda13`;
+const vllmImage = () => `vllm/vllm-openai:${engineVersion('vllm')}`;
 const STRATA_SSE_IMAGE = 'modelserver-strata:latest';
-const STRATA_PUBLISHED_IMAGE = `ghcr.io/niko1221/strata:${STRATA_VERSION}-cuda13`;
-const VLLM_IMAGE = `vllm/vllm-openai:${VLLM_VERSION}`;
 const HF_VOLUME = 'modelserver_hf_cache';
 const STRATA_INTERNAL_DEFAULTS = { context: 262144, parallel: 1, kv: 'q4_0' };
 const STRATA_KV_MODES = ['q4_0', 'int8', 'k8v4', 'fp16'];   // Strata's KV_MODES (strata_cli/launch/settings.py)
@@ -106,14 +127,17 @@ function create(deps) {
     }
     async function strataImage(hw) {
         const profile = hw || await hardwareProfile();
-        if (!profile.cpu.avx2) return STRATA_SSE_IMAGE;
-        return STRATA_PUBLISHED_IMAGE;
+        if (!profile.cpu.avx2) {
+            const tagged = `modelserver-strata:${String(engineVersion('strata')).replace(/^v/, '')}`;
+            return (await imageInfo(tagged)).present ? tagged : STRATA_SSE_IMAGE;
+        }
+        return strataPublishedImage();
     }
     async function installedEngines() {
         const hw = await hardwareProfile();
         const refs = {
             llamacpp: 'modelserver-llamacpp:latest', sglang: 'modelserver-sglang:latest',
-            vllm: VLLM_IMAGE, strata: await strataImage(hw),
+            vllm: vllmImage(), strata: await strataImage(hw),
         };
         const out = {};
         await Promise.all(Object.entries(refs).map(async ([id, ref]) => { out[id] = { ref, ...(await imageInfo(ref)) }; }));
@@ -314,6 +338,7 @@ function create(deps) {
         const { repoId } = opts;
         if (!isValidHfRepoId(repoId)) { const e = new Error('Invalid HuggingFace repo id (expected "owner/name")'); e.statusCode = 400; throw e; }
         await assertNameFree(repoId);
+        const VLLM_IMAGE = vllmImage();
         const info = await imageInfo(VLLM_IMAGE);
         if (!info.present) { const e = new Error(`vLLM is not installed. Install it from the Engines card (docker pull ${VLLM_IMAGE}).`); e.statusCode = 409; throw e; }
         const detected = await getGpuCount();
@@ -383,6 +408,17 @@ function create(deps) {
         return { name, containerId, containerName, netHost, port, internalPort, status, config, backend };
     }
 
+    async function stopInstance(name) {
+        const inst = modelInstances.get(name);
+        if (!inst) return;
+        const c = docker.getContainer(inst.containerId);
+        await c.stop({ t: 120 }).catch(() => {});
+        await c.remove({ force: true, v: false }).catch(() => {});
+        modelInstances.delete(name);
+        if (modelInstances.size === 0) stopSystemMonitoring();
+        broadcast({ type: 'status', modelName: name, status: 'stopped' });
+    }
+
     // ---- Routes -------------------------------------------------------------
     function registerRoutes(app, { requireAuth, checkPermission, callerIsAdmin }) {
         const needs = (perm) => (req, res, next) => (
@@ -394,7 +430,7 @@ function create(deps) {
                 const [hardware, images, tags] = await Promise.all([hardwareProfile(), installedEngines(), upstreamVersions()]);
                 const running = {};
                 for (const [name, inst] of modelInstances.entries()) (running[inst.backend] = running[inst.backend] || []).push(name);
-                const pinned = { llamacpp: images.llamacpp.labels?.['modelserver.engine.version'], sglang: images.sglang.labels?.['modelserver.engine.version'], vllm: VLLM_VERSION, strata: STRATA_VERSION };
+                const pinned = { llamacpp: images.llamacpp.labels?.['modelserver.engine.version'], sglang: images.sglang.labels?.['modelserver.engine.version'], vllm: engineVersion('vllm'), strata: engineVersion('strata') };
                 const engines = router.ENGINE_IDS.map((id) => {
                     const version = pinned[id] || null;
                     const latest = tags[id] || null;
@@ -430,12 +466,7 @@ function create(deps) {
             if (!inst) return res.status(404).json({ error: 'Instance not found' });
             if (inst.backend !== 'strata' && inst.backend !== 'vllm') return res.status(400).json({ error: 'Use the route for this engine' });
             try {
-                const c = docker.getContainer(inst.containerId);
-                await c.stop({ t: 120 }).catch(() => {});
-                await c.remove({ force: true, v: false }).catch(() => {});
-                modelInstances.delete(name);
-                if (modelInstances.size === 0) stopSystemMonitoring();
-                broadcast({ type: 'status', modelName: name, status: 'stopped' });
+                await stopInstance(name);
                 res.json({ message: `Stopped ${name}` });
             } catch (error) { res.status(500).json({ error: error.message }); }
         });
@@ -459,7 +490,7 @@ function create(deps) {
         app.post('/api/engines/:id/install', requireAuth, async (req, res) => {
             if (!callerIsAdmin(req)) return res.status(403).json({ error: 'Admin only' });
             const hw = await hardwareProfile();
-            const ref = req.params.id === 'vllm' ? VLLM_IMAGE : (req.params.id === 'strata' && hw.cpu.avx2 ? STRATA_PUBLISHED_IMAGE : null);
+            const ref = req.params.id === 'vllm' ? vllmImage() : (req.params.id === 'strata' && hw.cpu.avx2 ? strataPublishedImage() : null);
             if (!ref) return res.status(400).json({ error: 'This engine is installed by the build scripts on this server.' });
             res.status(202).json({ message: `Pulling ${ref}` });
             docker.pull(ref, (err, stream) => {
@@ -471,7 +502,7 @@ function create(deps) {
         });
     }
 
-    return { hardwareProfile, planFor, noteSpeed, classifyContainer, adoptConfig, registerRoutes, createStrataInstance, createVllmInstance, publicInstance };
+    return { stopInstance, engineVersion, hardwareProfile, planFor, noteSpeed, classifyContainer, adoptConfig, registerRoutes, createStrataInstance, createVllmInstance, publicInstance };
 }
 
 module.exports = { create };

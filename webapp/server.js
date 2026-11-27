@@ -5605,12 +5605,14 @@ engineManager = engineManagerModule.create({
     getModelsVolumeBind,
 });
 engineManager.registerRoutes(app, { requireAuth, checkPermission, callerIsAdmin });
-// llama.cpp upgrades from the console (build, test against the current build,
-// install, move idle instances over). See services/engineUpgrade.js.
+// Engine upgrades from the console (llama.cpp, SGLang, Strata, vLLM: get the new
+// version, test it against the current one, install, keep a rollback point).
+// See services/engineUpgrade.js.
 const engineUpgrade = require('./services/engineUpgrade').create({
     docker, modelInstances, broadcast, streamContainerLogs, monitorContainerHealth,
     isBusy: (name) => (modelBusy.get(name) || 0) > 0,
     hostModelsPath: () => detectHostModelsPath(),
+    engineManager,
 });
 engineUpgrade.registerRoutes(app, { requireAuth, callerIsAdmin });
 

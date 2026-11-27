@@ -4495,3 +4495,18 @@ html:not(.theme-light):not(.theme-research) > body:not(.theme-light):not(.theme-
 .mm-icon-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-hover); }
 .mm-icon-btn--danger:hover:not(:disabled) { color: #ef4444; background: rgba(239, 68, 68, 0.10); }
 .mm-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Engine upgrade progress (EnginesCard EngineUpgrade) */
+.mm-upgrade { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border-primary); border-radius: 10px; background: var(--bg-primary); }
+.mm-upgrade__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.mm-upgrade__title { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); }
+.mm-upgrade__meta { font-size: 0.72rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mm-upgrade__stages { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 0; padding: 0; list-style: none; font-size: 0.72rem; color: var(--text-tertiary); }
+.mm-upgrade__stages li { display: inline-flex; align-items: center; gap: 6px; }
+.mm-upgrade__stages li[data-state="done"] { color: var(--text-secondary); }
+.mm-upgrade__stages li[data-state="active"] { color: var(--text-primary); font-weight: 600; }
+.mm-upgrade__dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border-secondary, var(--border-primary)); flex-shrink: 0; }
+.mm-upgrade__stages li[data-state="done"] .mm-upgrade__dot { background: var(--accent-primary); border-color: var(--accent-primary); }
+.mm-upgrade__stages li[data-state="active"] .mm-upgrade__dot { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 25%, transparent); animation: mm-upgrade-pulse 1.4s ease-in-out infinite; }
+@keyframes mm-upgrade-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-primary) 10%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .mm-upgrade__stages li[data-state="active"] .mm-upgrade__dot { animation: none; } }

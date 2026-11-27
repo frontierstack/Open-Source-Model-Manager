@@ -48,23 +48,42 @@ function fmtAgo(sec) {
     return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
 }
 
-// Upgrade state for llama.cpp: the button, live progress and the last result.
-function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
-    const [info, setInfo] = useState(null);
+// What an upgrade of each engine does, for the confirm dialog.
+const UPGRADE_TEXT = {
+    llamacpp: (cur, next) => [
+        `The new release is compiled on this server (20 to 90 minutes), then tested against ${cur} on a small model: it must answer, make tool calls if the current build can, and decode at least 85% as fast.`,
+        `Only then is it installed. ${cur} keeps serving the whole time and stays available for rollback. Loaded models move to the new build by themselves when nothing is using them.`,
+    ],
+    sglang: (cur) => [
+        'The new release is built on this server from SGLang\'s image with our patches (downloads about 30 GB), then started to check that it imports, sees the GPUs and its server starts.',
+        `Only then is it installed. ${cur} stays available for rollback; loaded models move to the new build when idle.`,
+    ],
+    strata: (cur, next, loaded) => [
+        `The new version is downloaded, then the real model is loaded on ${next} and on ${cur} with the same settings and compared: it must answer, make tool calls if the current version can, and decode at least 85% as fast. Each load takes a few minutes.`,
+        loaded.length
+            ? `The test needs every GPU, so ${loaded.join(', ')} is unloaded now and loaded again when the upgrade ends (on ${next} if it passed, else on ${cur}). Chats cannot use it in between.`
+            : `${cur} stays available for rollback.`,
+    ],
+    vllm: (cur, next) => [
+        `The new image is downloaded (about 20 GB) and started to check that it runs and sees the GPUs. There is no vLLM model on this server to compare speeds with.`,
+        `Models loaded afterwards use ${next}; ${cur} stays available for rollback.`,
+    ],
+};
+
+function fmtElapsed(sec) {
+    if (!sec) return '';
+    const m = Math.max(0, Math.round((Date.now() / 1000 - sec) / 60));
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+// Upgrade state for one engine: the button, a progress bar with the stages,
+// and the last result. `info` comes from GET /api/engines/upgrades.
+function EngineUpgrade({ engine, info, busyEngine, isAdmin, showSnackbar, onChanged, reload }) {
     const [confirm, setConfirm] = useState(false);
     const [busy, setBusy] = useState(false);
     const [showLog, setShowLog] = useState(false);
-    const load = useCallback(() => {
-        fetch('/api/engines/llamacpp/upgrade', { credentials: 'include' })
-            .then(r => (r.ok ? r.json() : null)).then(setInfo).catch(() => {});
-    }, []);
     const st = info?.status;
-    const running = st?.state === 'running' || info?.helperRunning;
-    useEffect(() => {
-        load();
-        const t = setInterval(load, running || info?.pendingReloads?.length ? 5000 : 30000);
-        return () => clearInterval(t);
-    }, [load, running, info?.pendingReloads?.length]);
+    const running = !!info?.running;
     const prevState = React.useRef(null);
     useEffect(() => {
         if (prevState.current === 'running' && st && st.state !== 'running') onChanged?.();
@@ -78,37 +97,67 @@ function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
             body: JSON.stringify(body || {}),
         }).then(r => r.json().then((j) => {
             showSnackbar?.(j.message || j.error, r.ok ? 'info' : 'error');
-            load();
+            reload();
         })).catch(e => showSnackbar?.(e.message, 'error')).finally(() => { setBusy(false); setConfirm(false); });
     };
 
-    const canUpgrade = isAdmin && engine.updateAvailable && !running;
+    const otherBusy = busyEngine && busyEngine !== engine.id;
+    const canUpgrade = isAdmin && engine.updateAvailable && !running && (engine.installed || engine.id === 'vllm');
+    const canRollback = isAdmin && info?.rollbackAvailable && !running;
     const showResult = st && !running && (st.state === 'failed' || st.state === 'interrupted'
         || (st.state === 'succeeded' && Date.now() / 1000 - (st.promotedAt || 0) < 7 * 86400));
+    const stages = Array.isArray(st?.stages) ? st.stages : [];
+    const pct = info?.progress?.value != null ? Math.round(info.progress.value * 100) : null;
+    const inner = info?.progress?.stageProgress;
+    if (!canUpgrade && !canRollback && !running && !showResult) return null;
+    const text = (UPGRADE_TEXT[engine.id] || UPGRADE_TEXT.vllm)(engine.version || 'the current version', engine.latest, engine.running || []);
     return (
-        <Box sx={{ flexBasis: '100%', pl: 0, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-            {(canUpgrade || (isAdmin && info?.rollbackAvailable && !running)) && (
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        <Box sx={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            {(canUpgrade || canRollback) && (
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                     {canUpgrade && (
-                        <Button size="small" variant="contained" disabled={busy} onClick={() => setConfirm(true)} sx={SMALL_BTN}>
-                            Upgrade to {engine.latest}
-                        </Button>
+                        <Tooltip title={otherBusy ? 'Another engine is upgrading; one at a time.' : ''}>
+                            <span>
+                                <Button size="small" variant="contained" disabled={busy || !!otherBusy} onClick={() => setConfirm(true)} sx={SMALL_BTN}>
+                                    {engine.installed ? `Upgrade to ${engine.latest}` : `Install ${engine.latest}`}
+                                </Button>
+                            </span>
+                        </Tooltip>
                     )}
-                    {isAdmin && info?.rollbackAvailable && !running && (
-                        <Tooltip title={`Go back to the build that was installed before ${st?.target || 'the last upgrade'}`}>
-                            <Button size="small" variant="outlined" disabled={busy} onClick={() => post('/api/engines/llamacpp/rollback')} sx={SMALL_BTN}>
-                                Roll back
-                            </Button>
+                    {canRollback && (
+                        <Tooltip title={`Go back to ${st?.rollbackVersion || st?.from || 'the previous version'}`}>
+                            <span>
+                                <Button size="small" variant="outlined" disabled={busy || !!otherBusy} onClick={() => post(`/api/engines/${engine.id}/rollback`)} sx={SMALL_BTN}>
+                                    Roll back{st?.rollbackVersion || st?.from ? ` to ${st.rollbackVersion || st.from}` : ''}
+                                </Button>
+                            </span>
                         </Tooltip>
                     )}
                 </Box>
             )}
             {running && (
-                <Box>
+                <Box className="mm-upgrade">
+                    <div className="mm-upgrade__head">
+                        <span className="mm-upgrade__title">Upgrading to {st?.target || engine.latest}</span>
+                        <span className="mm-upgrade__meta">{pct != null ? `${pct}% · ` : ''}{fmtElapsed(st?.startedAt)}</span>
+                    </div>
+                    <LinearProgress variant={pct != null ? 'determinate' : 'indeterminate'} value={pct ?? 0} sx={{ height: 5, borderRadius: 3 }} />
+                    {stages.length > 0 && (
+                        <ol className="mm-upgrade__stages">
+                            {stages.map((name, i) => {
+                                const state = i < st.stageIndex ? 'done' : i === st.stageIndex ? 'active' : 'todo';
+                                return (
+                                    <li key={name} data-state={state}>
+                                        <span className="mm-upgrade__dot" />
+                                        {name}{state === 'active' && inner != null ? ` · ${Math.round(inner * 100)}%` : ''}
+                                    </li>
+                                );
+                            })}
+                        </ol>
+                    )}
                     <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-                        {st?.step || 'Starting'} · started {fmtAgo(st?.startedAt)}. The current build keeps serving until the new one passes.
+                        {st?.step || 'Starting'}. {engine.version || 'The current version'} stays in place until the new one passes.
                     </Typography>
-                    <LinearProgress sx={{ mt: 0.5, height: 3, borderRadius: 2 }} />
                 </Box>
             )}
             {showResult && (
@@ -119,6 +168,7 @@ function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
                     {st.state === 'failed' && `Upgrade to ${st.target} was not installed: ${st.error || st.step}. ${st.from} is still in use.`}
                     {st.state === 'interrupted' && `The upgrade to ${st.target} stopped without finishing. ${st.from} is still in use.`}
                     {info?.pendingReloads?.length > 0 && ` Moving ${info.pendingReloads.join(', ')} when idle.`}
+                    {info?.restorePending && ' Loading the Strata model again…'}
                 </Alert>
             )}
             {isAdmin && info?.log?.length > 0 && (running || st?.state === 'failed') && (
@@ -134,19 +184,16 @@ function LlamaUpgrade({ engine, isAdmin, showSnackbar, onChanged }) {
                 </Box>
             )}
             <Dialog open={confirm} onClose={() => setConfirm(false)} maxWidth="xs" fullWidth>
-                <DialogTitle>Upgrade llama.cpp to {engine.latest}?</DialogTitle>
+                <DialogTitle>{engine.installed ? 'Upgrade' : 'Install'} {engine.label} {engine.latest}?</DialogTitle>
                 <DialogContent>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                        The new release is compiled on this server (20 to 90 minutes), then tested against {engine.version} on a small model: it must answer, make tool calls if the current build can, and decode at least 85% as fast.
-                    </Typography>
-                    <Typography variant="body2">
-                        Only then is it installed. {engine.version} keeps serving the whole time and stays available for rollback. Loaded models move to the new build by themselves when nothing is using them.
-                    </Typography>
+                    {text.map((t, i) => <Typography key={i} variant="body2" sx={{ mb: i < text.length - 1 ? 1 : 0 }}>{t}</Typography>)}
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setConfirm(false)} sx={{ textTransform: 'none' }}>Cancel</Button>
-                    <Button variant="contained" disabled={busy} onClick={() => post('/api/engines/llamacpp/upgrade', { version: engine.latest })} sx={{ textTransform: 'none' }}>
-                        Upgrade
+                    <Button variant="contained" disabled={busy}
+                        onClick={() => post(`/api/engines/${engine.id}/upgrade`, { version: engine.latest, unload: engine.id === 'strata' })}
+                        sx={{ textTransform: 'none' }}>
+                        {engine.id === 'strata' && engine.running?.length ? 'Unload and upgrade' : engine.installed ? 'Upgrade' : 'Install'}
                     </Button>
                 </DialogActions>
             </Dialog>
@@ -158,9 +205,9 @@ function StatusBadge({ tone = 'neutral', children }) {
     return <span className={`mm-badge mm-badge--${tone}`}>{children}</span>;
 }
 
-function EngineRow({ engine, isAdmin, onInstall, showSnackbar, onChanged }) {
+function EngineRow({ engine, upgrade, busyEngine, reloadUpgrades, isAdmin, onInstall, showSnackbar, onChanged }) {
     const running = engine.running.length;
-    const canPull = isAdmin && !engine.installed && engine.id === 'vllm';
+    const canPull = isAdmin && !engine.installed && engine.id === 'vllm' && !engine.updateAvailable;
     return (
         <div className="mm-engine">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -173,17 +220,15 @@ function EngineRow({ engine, isAdmin, onInstall, showSnackbar, onChanged }) {
                         ? <StatusBadge tone="ok">Running · {running}</StatusBadge>
                         : engine.installed ? <StatusBadge>Installed</StatusBadge> : <StatusBadge tone="muted">Not installed</StatusBadge>}
                     {engine.version && <StatusBadge tone="muted">{engine.version}</StatusBadge>}
-                    {engine.updateAvailable && (
-                        <Tooltip title={engine.id === 'llamacpp' ? 'Upgrade here, or with sudo ./update.sh' : 'Pick this up with ./update.sh'}>
-                            <span><StatusBadge tone="warn">{engine.latest} available</StatusBadge></span>
-                        </Tooltip>
-                    )}
+                    {upgrade?.running
+                        ? <StatusBadge tone="ok">Upgrading{upgrade.progress?.value != null ? ` · ${Math.round(upgrade.progress.value * 100)}%` : ''}</StatusBadge>
+                        : engine.updateAvailable && <StatusBadge tone="warn">{engine.latest} available</StatusBadge>}
                     {canPull && <Button size="small" variant="outlined" onClick={() => onInstall(engine.id)} sx={{ ...SMALL_BTN, ml: 0.5 }}>Install</Button>}
                 </div>
             </div>
-            {engine.id === 'llamacpp' && engine.installed && (
-                <div className="mt-2"><LlamaUpgrade engine={engine} isAdmin={isAdmin} showSnackbar={showSnackbar} onChanged={onChanged} /></div>
-            )}
+            <div className="mt-2 empty:hidden">
+                <EngineUpgrade engine={engine} info={upgrade} busyEngine={busyEngine} isAdmin={isAdmin} showSnackbar={showSnackbar} onChanged={onChanged} reload={reloadUpgrades} />
+            </div>
         </div>
     );
 }
@@ -228,6 +273,18 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
             .then(r => (r.ok ? r.json() : null)).then(setData).catch(() => {});
     }, []);
     useEffect(() => { refresh(); const t = setInterval(refresh, 30000); return () => clearInterval(t); }, [refresh]);
+    // Upgrade progress for every engine: every 4 s while one runs, else 30 s.
+    const [upgrades, setUpgrades] = useState(null);
+    const loadUpgrades = useCallback(() => {
+        fetch('/api/engines/upgrades', { credentials: 'include' })
+            .then(r => (r.ok ? r.json() : null)).then(setUpgrades).catch(() => {});
+    }, []);
+    const upgrading = !!upgrades?.busy || Object.values(upgrades?.engines || {}).some(u => u.running || u.restorePending || u.pendingReloads?.length);
+    useEffect(() => {
+        loadUpgrades();
+        const t = setInterval(loadUpgrades, upgrading ? 4000 : 30000);
+        return () => clearInterval(t);
+    }, [loadUpgrades, upgrading]);
     useEffect(() => {
         fetch('/api/engines/plan', {
             method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
@@ -287,7 +344,7 @@ export default function EnginesCard({ isAdmin, showSnackbar, onChanged }) {
         >
             <div className="flex flex-col gap-4">
                 <div className="mm-engine-list">
-                    {data.engines.map(e => <EngineRow key={e.id} engine={e} isAdmin={isAdmin} onInstall={install} showSnackbar={showSnackbar} onChanged={refresh} />)}
+                    {data.engines.map(e => <EngineRow key={e.id} engine={e} upgrade={upgrades?.engines?.[e.id]} busyEngine={upgrades?.busy} reloadUpgrades={loadUpgrades} isAdmin={isAdmin} onInstall={install} showSnackbar={showSnackbar} onChanged={refresh} />)}
                 </div>
 
                 <div className="mm-panel">

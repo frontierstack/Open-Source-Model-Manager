@@ -758,6 +758,14 @@ if [ -x "$PROJECT_DIR/scripts/engine-upgrade.sh" ]; then
         if [ "$ENGINE_UPGRADE" = true ]; then log_step "$up_msg It will be built, tested against the current build and installed if it passes."
         else log_skip "$up_msg Not upgrading (--no-engine-upgrade)."; fi
     }
+    # The other engines are upgraded from the console (Engines card) or with
+    # engine-upgrade.sh --engine <id>: Strata's test needs every GPU, vLLM and
+    # SGLang downloads are large. Just say when a newer release is out.
+    for eng in strata vllm sglang; do
+        [ "$eng" = vllm ] && ! docker images --format '{{.Repository}}' | grep -qx 'vllm/vllm-openai' && continue
+        eng_msg=$("$PROJECT_DIR/scripts/engine-upgrade.sh" --engine "$eng" check 2>/dev/null) && \
+            log_skip "$eng_msg Upgrade it from My Models → Inference engines, or: sudo ./scripts/engine-upgrade.sh --engine $eng upgrade"
+    done
 fi
 
 if [ "$DRY_RUN" = true ]; then
@@ -814,12 +822,14 @@ build_component() {
                 -t "${COMP_IMAGE[$comp]}" "$PROJECT_DIR/sandbox-runtime" > "$log" 2>&1 || rc=$?
             ;;
         llamacpp|sglang)
-            # A llama.cpp release installed by scripts/engine-upgrade.sh (newer
-            # than the Dockerfile pin) stays the version a rebuild produces.
+            # A llama.cpp / SGLang release installed by scripts/engine-upgrade.sh
+            # (newer than the Dockerfile pin) stays the version a rebuild produces.
             local -a ref_args=()
-            if [ "$comp" = llamacpp ] && [ -x "$PROJECT_DIR/scripts/engine-upgrade.sh" ]; then
-                local eref; eref=$("$PROJECT_DIR/scripts/engine-upgrade.sh" effective-ref 2>/dev/null)
-                [ -n "$eref" ] && ref_args=(--build-arg "LLAMACPP_REF=$eref")
+            if [ -x "$PROJECT_DIR/scripts/engine-upgrade.sh" ]; then
+                local eref; eref=$("$PROJECT_DIR/scripts/engine-upgrade.sh" effective-ref "$comp" 2>/dev/null)
+                if [ -n "$eref" ]; then
+                    if [ "$comp" = llamacpp ]; then ref_args=(--build-arg "LLAMACPP_REF=$eref"); else ref_args=(--build-arg "SGLANG_VERSION=$eref"); fi
+                fi
             fi
             docker compose --profile build-only build "${BUILD_ARGS[@]}" "${ref_args[@]}" "${NO_CACHE_ARGS[@]}" "$comp" > "$log" 2>&1 || rc=$?
             ;;

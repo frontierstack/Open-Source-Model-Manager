@@ -7,7 +7,7 @@
 #   sudo ./scripts/engines.sh refresh     # bring installed engines to the pinned versions
 #
 # Pinned versions live in webapp/services/engineVersions.json (the webapp reads
-# the same file). On a CPU without AVX2 Strata is compiled from source for that
+# the same file); a newer version promoted by scripts/engine-upgrade.sh wins. On a CPU without AVX2 Strata is compiled from source for that
 # CPU (strata/Dockerfile); elsewhere its published image is pulled.
 set -euo pipefail
 
@@ -15,9 +15,21 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 VERSIONS="$PROJECT_DIR/webapp/services/engineVersions.json"
 
-json_field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" "$VERSIONS" | head -1; }
-STRATA_VERSION="$(json_field strata)"
-VLLM_VERSION="$(json_field vllm)"
+json_field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" "$2" 2>/dev/null | head -1; }
+version_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
+# A version promoted by scripts/engine-upgrade.sh (console Upgrade button) wins
+# while it is newer than the checkout's pin; the webapp applies the same rule.
+models_dir() {
+    local p; p=$(docker inspect modelserver-webapp-1 --format '{{range .Mounts}}{{if eq .Destination "/models"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
+    if [ -n "$p" ] && [ -d "$p" ]; then echo "$p"; else echo "$PROJECT_DIR/models"; fi
+}
+OVERRIDES="$(models_dir)/.modelserver/engine-upgrade/versions.json"
+effective_version() {
+    local pin over; pin=$(json_field "$1" "$VERSIONS"); over=$(json_field "$1" "$OVERRIDES")
+    if [ -n "$over" ] && version_gt "$over" "$pin"; then echo "$over"; else echo "$pin"; fi
+}
+STRATA_VERSION="$(effective_version strata)"
+VLLM_VERSION="$(effective_version vllm)"
 VLLM_IMAGE="vllm/vllm-openai:$VLLM_VERSION"
 STRATA_PUBLISHED="ghcr.io/niko1221/strata:$STRATA_VERSION-cuda13"
 STRATA_LOCAL="modelserver-strata:latest"
@@ -48,7 +60,7 @@ install_strata() {
         docker build --build-arg STRATA_VERSION="$STRATA_VERSION" \
             --build-arg RUNTIME_IMAGE="$STRATA_PUBLISHED" \
             --build-arg BUILD_JOBS="${BUILD_JOBS:-$(nproc)}" \
-            -t "$STRATA_LOCAL" "$PROJECT_DIR/strata"
+            -t "$STRATA_LOCAL" -t "modelserver-strata:$STRATA_VERSION" "$PROJECT_DIR/strata"
     fi
 }
 
