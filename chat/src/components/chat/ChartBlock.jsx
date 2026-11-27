@@ -4,7 +4,7 @@ import {
     ScatterChart, Scatter, ZAxis, ComposedChart, RadarChart, Radar, PolarGrid,
     PolarAngleAxis, PolarRadiusAxis, RadialBarChart, RadialBar, FunnelChart, Funnel,
     Treemap, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, LabelList,
-    ResponsiveContainer,
+    ResponsiveContainer, Customized, Curve,
 } from 'recharts';
 
 // Inline renderer for the render_chart tool (server: webapp/services/chartSpec.js).
@@ -229,6 +229,37 @@ function EndLabel({ fmt, last }) {
     };
 }
 
+
+// A line that plots the same values as a bar series is drawn from that bar's
+// own rectangles: through the top-centre of each bar. Recharts places a Line
+// at the CATEGORY centre, which with grouped bars falls between them, and its
+// stroke + glow sat a few pixels above dense bars.
+function BarTopLine({ formattedGraphicalItems, barKey, barName, color, curve, dots, dashed, animKey }) {
+    const item = (formattedGraphicalItems || []).find(g => g && g.item && g.item.props
+        && g.item.props.dataKey === barKey && g.item.props.name === barName && Array.isArray(g.props && g.props.data));
+    if (!item) return null;
+    const points = item.props.data
+        .filter(r => r && Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.width) && r.value != null)
+        .map(r => {
+            const v = Array.isArray(r.value) ? r.value[1] : r.value;
+            const h = Number.isFinite(r.height) ? r.height : 0;
+            // The bar's far end from the baseline: its top, or its bottom for a negative bar.
+            const top = (v < 0) === (h >= 0) ? r.y + h : r.y;
+            return { x: r.x + r.width / 2, y: top };
+        });
+    if (points.length < 2) return null;
+    return (
+        <g className="chart-bartop-line" key={animKey} style={{ pointerEvents: 'none' }}>
+            <Curve type={curve} layout="horizontal" points={points} stroke={color} strokeWidth={2.5} fill="none"
+                strokeLinecap="round" strokeLinejoin="round" strokeDasharray={dashed ? '6 5' : undefined}
+                pathLength={dashed ? undefined : 1} className={dashed ? undefined : 'chart-bartop-path'} />
+            {dots && !dashed && points.map((pt, i) => (
+                <circle key={i} cx={pt.x} cy={pt.y} r={3.5} fill={color} stroke="var(--surface)" strokeWidth={2} className="chart-bartop-dot" />
+            ))}
+        </g>
+    );
+}
+
 // ── cartesian: line / area / bar / combo (+ histogram) ─────────────────────
 function CartesianChart({ spec, palette, fmt, hidden, gid }) {
     const xKey = xKeyOf(spec);
@@ -261,6 +292,16 @@ function CartesianChart({ spec, palette, fmt, hidden, gid }) {
     const valueAxis = { tick: axisTick, axisLine: false, tickLine: false, tickFormatter: percent ? (v) => `${Math.round(v * 100)}%` : fmt.axis, width: 56 };
     const catAxis = { dataKey: xKey, tick: axisTick, axisLine: { stroke: 'var(--rule)' }, tickLine: false, minTickGap: 12, interval: 'preserveStartEnd' };
 
+    // The visible bar series a line traces: same key, or every value equal.
+    const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
+    const traceTarget = (s, axisId) => {
+        if (horizontal || percent) return null;
+        const cands = visible.filter(b => markOf(b) === 'bar'
+            && (!horizontal && b.yAxis === 'right' && hasRight ? 'right' : 'left') === axisId);
+        return cands.find(b => b.dataKey === s.dataKey)
+            || cands.find(b => data.every(r => num(r[b.dataKey]) === num(r[s.dataKey])))
+            || null;
+    };
     const marks = ordered.map(s => {
         const i = series.indexOf(s);
         const color = colorOf(s);
@@ -285,6 +326,16 @@ function CartesianChart({ spec, palette, fmt, hidden, gid }) {
         // dot at the centre of every bar.
         const overBars = bars.length > 0;
         const dots = !many && (overBars || data.length <= 30);
+        const traced = traceTarget(s, axisId);
+        if (traced) {
+            // Invisible Line keeps the tooltip and hover dot; BarTopLine draws it.
+            return [
+                <Line {...common} type={curveOf(s)} stroke="transparent" strokeWidth={0} dot={false} legendType="none"
+                    activeDot={{ r: 5.5, fill: color, stroke: 'var(--surface)', strokeWidth: 2 }} isAnimationActive={false} />,
+                <Customized key={`trace-${s.dataKey}${s.name}`} component={(p) => BarTopLine({ ...p, barKey: traced.dataKey, barName: traced.name,
+                    color, curve: curveOf(s), dots, dashed: s.dashed, animKey: `${traced.dataKey}-${data.length}` })} />,
+            ];
+        }
         return (
             <Line {...common} type={curveOf(s)} stroke={color} strokeWidth={overBars ? 2.5 : 2} strokeDasharray={s.dashed ? '6 5' : undefined}
                 strokeLinecap="round" strokeLinejoin="round"
@@ -320,7 +371,7 @@ function CartesianChart({ spec, palette, fmt, hidden, gid }) {
             )}
             <Tooltip content={<ChartTooltip fmt={fmt} colorMap={Object.fromEntries(series.map(s => [s.name, colorOf(s)]))} />} cursor={bars.length ? { fill: 'var(--ink)', fillOpacity: 0.05 } : { stroke: 'var(--ink-3)', strokeWidth: 1 }} />
             {refLines(spec, data, visible.map(s => s.dataKey), fmt, horizontal)}
-            {marks}
+            {marks.flat()}
         </Wrapper>
     );
 }
