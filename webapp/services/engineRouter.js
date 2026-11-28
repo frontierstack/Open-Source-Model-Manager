@@ -172,7 +172,10 @@ function rankStrata(model, hw, vram, opts = {}) {
     if (hw.diskFreeGiB != null && hw.diskFreeGiB < size.downloadGiB + 40) {
         out.warnings.push(`Needs about ${(size.downloadGiB + 40).toFixed(0)} GB free for the download and prepared pack; ${hw.diskFreeGiB.toFixed(0)} GB is free now.`);
     }
-    if (vram.freeGiB < vramNeedGiB) {
+    // Strata streams whatever does not fit, so a size larger than every card
+    // together still loads on idle GPUs. "Occupied" means other models hold the
+    // memory: free short of what this size would use, capped at 90% of the total.
+    if (vram.totalGiB && vram.freeGiB < Math.min(vramNeedGiB, vram.totalGiB * 0.9)) {
         out.requires.push('free-gpus');
         out.warnings.push('The GPUs are occupied by other loaded models, which must be unloaded first.');
     }
